@@ -138,6 +138,8 @@
         <postStartupActivity implementation="io.github.bstrauss.newspeak.library.NewspeakCoreLibraryStartup"/>
         <!-- The selected traced run's icons and hints, and the watched methods' eyes, in every editor. -->
         <postStartupActivity implementation="io.github.bstrauss.newspeak.devtool.editor.DecorationsStartup"/>
+        <!-- The traced runs' files an earlier run of the IDE left behind, deleted once per IDE start. -->
+        <postStartupActivity implementation="io.github.bstrauss.newspeak.devtool.TraceFilesSweep"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

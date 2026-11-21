@@ -1,8 +1,16 @@
 package io.github.bstrauss.newspeak.devtool
 
+import com.intellij.execution.RunManager
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.xmlb.XmlSerializer
+import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
+import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
+import io.github.bstrauss.newspeak.run.nothingTracedNotice
+import java.nio.file.Files
 
 class WatchedMethodsTest : BasePlatformTestCase() {
     /** A list of its own, never the project's service, which outlives a test. */
@@ -168,6 +176,80 @@ class WatchedMethodsTest : BasePlatformTestCase() {
         assertTrue(modules.keys.containsAll(SHIPPED_MODULE_IDS))
         val module = myFixture.addFileToProject("single/Single.ns", "class Single = () ()\n").virtualFile
         assertEquals(setOf("Single") + SHIPPED_MODULE_IDS, programModules(module) { ModuleIdentity("Single", null) }.keys)
+    }
+
+    fun testAnAbsoluteModulePathIsFound() {
+        val program = Files.createTempDirectory("newspeak-program")
+        val elsewhere = Files.createTempDirectory("newspeak-modules")
+        val demoPath = elsewhere.resolve("Demo.ns")
+        Files.writeString(demoPath, "class Demo = () ()\n")
+        val written = FileUtil.toSystemIndependentName(demoPath.toString())
+        val projectPath = program.resolve("newspeak.json")
+        Files.writeString(projectPath, """{ "main": "App.ns", "modules": [{ "path": "$written", "as": "legacy.Demo" }] }""")
+        Files.writeString(program.resolve("App.ns"), "class App = () ()\n")
+        val fileSystem = LocalFileSystem.getInstance()
+        val projectFile = checkNotNull(fileSystem.refreshAndFindFileByNioFile(projectPath))
+        val demo = checkNotNull(fileSystem.refreshAndFindFileByNioFile(demoPath))
+        val modules = programModules(projectFile) { file -> if (file == demo) ModuleIdentity("com.acme.Demo", "1.0.0") else ModuleIdentity("App", null) }
+        assertEquals(setOf("1.0.0"), modules["legacy.Demo"])
+        // The project file found through a run configuration's program, the module's `as` through its absolute path.
+        val runManager = RunManager.getInstance(project)
+        val settings = runManager.createConfiguration("App", NewspeakConfigurationType.getInstance().factory)
+        (settings.configuration as NewspeakRunConfiguration).program = projectPath.toString()
+        runManager.addConfiguration(settings)
+        try {
+            assertEquals("legacy.Demo", projectAliasOf(demo, project))
+        } finally {
+            runManager.removeConfiguration(settings)
+        }
+    }
+
+    fun testARunStartWaitsForTheServerToRun() {
+        // A client that comes up initializing after it was started, and runs two looks later.
+        var started = false
+        var looks = 0
+        val running = runningClient(
+            lookup = { if (started) "client" else null },
+            start = {
+                started = true
+                true
+            },
+            isRunning = { _ -> ++looks >= 3 },
+            isCancelled = { false },
+            pause = { _ -> },
+        )
+        assertEquals("client", running)
+        assertTrue(started)
+        // A server that cannot start is not waited for, nor is one that never runs waited for past the bound.
+        var now = 0L
+        assertNull(runningClient<String>({ null }, { false }, { true }, { false }, pause = { _ -> now += 1 }, clock = { now }))
+        assertEquals(0L, now)
+        assertNull(runningClient({ "client" }, { true }, { false }, { false }, timeoutMilliseconds = 500, pause = { milliseconds -> now += milliseconds }, clock = { now }))
+        assertTrue(now >= 500)
+        // A running client is answered at once, never started again.
+        assertEquals("client", runningClient({ "client" }, { throw AssertionError("started again") }, { true }, { false }))
+    }
+
+    fun testARunThatTracesNothingSaysWhichEntriesWereDropped() {
+        val watched = watchedMethods()
+        watched.replaceEntries(listOf(WatchedMethods.Entry("Elsewhere>>run"), WatchedMethods.Entry("Gone>><=")))
+        val modules = SHIPPED_MODULE_IDS.associateWith { emptySet<String>() }
+        val filters = watched.filters(modules)
+        val dropped = watched.droppedPatterns(modules)
+        assertEquals(listOf("Elsewhere>>run", "Gone>><="), dropped)
+        val configuration = (NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration).apply {
+            program = "/work/app/Hello.ns"
+            options.traceCategories = mutableListOf("compile")
+        }
+        assertEquals(
+            NewspeakBundle.message("devtool.watched.nothing.traced.content", "Elsewhere&gt;&gt;run, Gone&gt;&gt;&lt;="),
+            nothingTracedNotice(configuration, filters, dropped),
+        )
+        // A run that still traces something, and one that traces nothing by its own settings, say nothing.
+        watched.replaceEntries(listOf(WatchedMethods.Entry("Elsewhere>>run"), WatchedMethods.Entry("newspeak.core.Kernel/Array>>at:")))
+        assertNull(nothingTracedNotice(configuration, watched.filters(modules), watched.droppedPatterns(modules)))
+        configuration.options.traceCategories = mutableListOf()
+        assertNull(nothingTracedNotice(configuration, filters, dropped))
     }
 
     fun testTheShippedIdsAreTheCoreLibrarySDeclarations() {

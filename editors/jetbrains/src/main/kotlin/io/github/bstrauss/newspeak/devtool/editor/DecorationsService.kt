@@ -126,31 +126,23 @@ class DecorationsService internal constructor(
         val inlays = ArrayList<Inlay<*>>()
     }
 
-    /** What the tooltips read off the run's events, made once per batch. */
+    /** What the tooltips read off the run's tallies, made once per batch. */
     private class Summary(run: TraceRun) {
         val deoptimizations = HashMap<Int, Int>()
         val lastDeoptimization = HashMap<Int, Event>()
-        val inliningAt = HashMap<Pair<Int, Int>, Event>()
-        val transitionAt = HashMap<Pair<Int, Int>, Event>()
+        val inliningAt: Map<Pair<Int, Int>, Event> = run.lastInlining
+        val transitionAt: Map<Pair<Int, Int>, Event> = run.lastTransition
 
         init {
-            for (event in run.events) {
-                val body = event.body
-                when {
-                    event.event == "inlined" || event.event == "declined" -> {
-                        val inBody = event.integer("in-body")
-                        val at = event.integer("at")
-                        if (inBody != null && at != null) inliningAt[inBody to at] = event
-                    }
-                    event.event == "transition" -> {
-                        val site = event.integer("site")
-                        if (body != null && site != null) transitionAt[body to site] = event
-                    }
-                    event.category == "deoptimize" && body != null -> {
-                        val root = run.bodies[body]?.family ?: body
-                        deoptimizations.merge(root, 1, Int::plus)
-                        lastDeoptimization[root] = event
-                    }
+            // The root's last deoptimization is the latest of its bodies'.
+            val lastOrder = HashMap<Int, Long>()
+            for ((body, tally) in run.tallies) {
+                val last = tally.lastDeoptimization ?: continue
+                val root = run.bodies[body]?.family ?: body
+                deoptimizations.merge(root, tally.deoptimizations, Int::plus)
+                if (tally.lastDeoptimizationOrder > (lastOrder[root] ?: -1L)) {
+                    lastOrder[root] = tally.lastDeoptimizationOrder
+                    lastDeoptimization[root] = last
                 }
             }
         }

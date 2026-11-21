@@ -14,6 +14,8 @@ import com.intellij.execution.process.KillableColoredProcessHandler
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.options.SettingsEditorGroup
@@ -21,6 +23,7 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -245,8 +248,28 @@ class NewspeakRunState(
         } else {
             read()
         }
-        return watched.filters(modules)
+        val filters = watched.filters(modules)
+        nothingTracedNotice(configuration, filters, watched.droppedPatterns(modules))?.let { content ->
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("Newspeak")
+                .createNotification(NewspeakBundle.message("devtool.watched.nothing.traced.title"), content, NotificationType.WARNING)
+                .notify(configuration.project)
+        }
+        return filters
     }
+}
+
+/**
+ * What the run says where the watched entries it [dropped] -- those that
+ * name no module of the program or the binary, which ns-next would refuse
+ * -- leave [filters] tracing and listing nothing that [configuration] asks
+ * for: the entries named, as notification text; null where the run traces
+ * something, or traces nothing by its own settings.
+ */
+fun nothingTracedNotice(configuration: NewspeakRunConfiguration, filters: TraceFilters, dropped: List<String>): String? {
+    if (dropped.isEmpty() || !configuration.tracesAnything() || writesTrace(configuration, filters)) return null
+    val named = dropped.joinToString(", ") { pattern -> StringUtil.escapeXmlEntities(pattern) }
+    return NewspeakBundle.message("devtool.watched.nothing.traced.content", named)
 }
 
 /** `crates/ns-cli/src/debug/agent.rs`'s `SECRET_VARIABLE`: where ns-next --debug-connect takes the secret it returns. */

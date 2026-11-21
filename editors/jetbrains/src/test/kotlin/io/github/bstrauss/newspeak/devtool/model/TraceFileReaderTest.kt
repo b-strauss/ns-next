@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.devtool.model
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -7,6 +8,10 @@ import io.github.bstrauss.newspeak.NewspeakBundle
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.Collections
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 class TraceFileReaderTest : BasePlatformTestCase() {
     /** What a reader published, in order, on the EDT. */
@@ -176,6 +181,74 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertTrue(received.batches.all { batch -> batch.size <= BATCH_RECORDS })
         val positions = received.records.drop(1).map { record -> (record as Event).integer("at") }
         assertEquals((0 until count).toList(), positions)
+    }
+
+    fun testABacklogWaitsForTheLastBatchToBeApplied() {
+        val file = traceFile()
+        val count = 3 * BATCH_RECORDS
+        Files.newBufferedWriter(file).use { writer ->
+            writer.write(HEADER)
+            writer.write("\n")
+            for (index in 0 until count) {
+                writer.write("""{"kind":"event","category":"osr","body":7,"event":"osr-entered","at":$index}""")
+                writer.write("\n")
+            }
+        }
+        // The EDT's queue as the reader fills it, run by hand.
+        val queued = LinkedBlockingQueue<Runnable>()
+        val received = Received()
+        val reader = TraceFileReader(
+            file,
+            { batch -> received.batches += batch },
+            { error -> received.errors += error },
+            { task -> queued.add(task) },
+            { milliseconds -> Thread.sleep(milliseconds) },
+            System::currentTimeMillis,
+        )
+        Disposer.register(testRootDisposable, reader)
+        reader.finish()
+        var applied = 0
+        while (received.records.size < count + 1) {
+            val task = checkNotNull(queued.poll(WAIT_SECONDS.toLong(), TimeUnit.SECONDS)) { "a batch is handed over" }
+            // Longer than the reader needs to read and parse a batch: a reader that does not wait would have queued the next.
+            Thread.sleep(3 * PUBLICATION_MILLISECONDS)
+            assertEquals("no batch is handed over before the last was applied", 0, queued.size)
+            task.run()
+            applied++
+        }
+        assertTrue("the backlog came in several batches", applied > 2)
+        assertEquals(emptyList<String>(), received.errors)
+    }
+
+    fun testAQuietFileIsLookedAtLessOften() {
+        val file = traceFile()
+        Files.writeString(file, HEADER + "\n")
+        // The time as the pauses pass it, so that the waits are the reader's own and not the machine's.
+        val now = AtomicLong()
+        val pauses = Collections.synchronizedList(ArrayList<Long>())
+        val received = Received()
+        val reader = TraceFileReader(
+            file,
+            { batch -> received.batches += batch },
+            { error -> received.errors += error },
+            { task -> ApplicationManager.getApplication().invokeLater(task) },
+            { milliseconds ->
+                pauses.add(milliseconds)
+                now.addAndGet(milliseconds)
+                Thread.sleep(1)
+            },
+            now::get,
+        )
+        Disposer.register(testRootDisposable, reader)
+        waitFor("the header arrives and the file stays quiet") { received.records.isNotEmpty() && pauses.size >= 6 }
+        // The header waits no longer than its publication is due; then each look waits twice as long, up to the longest.
+        assertEquals(listOf(POLL_MILLISECONDS, 100L, 50L, 400L, LONGEST_POLL_MILLISECONDS, LONGEST_POLL_MILLISECONDS), pauses.take(6))
+        val looks = pauses.size
+        Files.writeString(file, """{"kind":"event","category":"osr","body":7,"event":"osr-entered","at":1}""" + "\n", StandardOpenOption.APPEND)
+        fun afterTheBytes() = synchronized(pauses) { pauses.drop(looks).firstOrNull { pause -> pause != LONGEST_POLL_MILLISECONDS } }
+        waitFor("the event arrives and the reader looks again") { received.records.size == 2 && afterTheBytes() != null }
+        assertEquals("appended bytes bring the wait back to the shortest", POLL_MILLISECONDS, afterTheBytes())
+        reader.finish()
     }
 
     private companion object {

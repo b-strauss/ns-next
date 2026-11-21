@@ -5,10 +5,8 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindowManager
@@ -17,23 +15,17 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManager
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
-import com.intellij.util.concurrency.AppExecutorUtil
+import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.model.TraceFileReader
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import io.github.bstrauss.newspeak.devtool.ui.RunPanel
 import io.github.bstrauss.newspeak.devtool.ui.TOOL_WINDOW_ID
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import io.github.bstrauss.newspeak.run.writesTrace
-import java.io.IOException
-import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.UUID
-
-/** The directory under the IDE's temporary directory that every traced run's file lies in. */
-private const val TRACE_DIRECTORY = "newspeak-trace"
 
 private val TIME_OF_DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss")
 
@@ -47,17 +39,21 @@ private val TIME_OF_DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:
  * drops them all. Read and changed on the EDT only.
  *
  * [contentManager] answers the tool window's contents, null where the
- * project has none; tests hand in a manager of their own.
+ * project has none, and [traceFiles] makes and lets go the runs' files;
+ * tests hand in their own.
  */
 @Service(Service.Level.PROJECT)
 class TracedRuns internal constructor(
     private val project: Project,
+    private val traceFiles: TraceFiles = TraceFiles.getInstance(),
     private val contentManager: () -> ContentManager?,
 ) : Disposable {
     constructor(project: Project) : this(
         project,
-        { ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID)?.contentManager },
+        contentManager = { ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID)?.contentManager },
     )
+
+    private var disposed = false
 
     /** One run: its file, what releases its reader and file, and its tab, if the tool window has one. */
     private class Traced(val run: TraceRun, val file: Path, val disposable: Disposable) {
@@ -103,24 +99,26 @@ class TracedRuns internal constructor(
         startProcess: (traceFile: Path?) -> ProcessHandler,
     ): ProcessHandler {
         if (!writesTrace(configuration, filters)) return startProcess(null)
-        val directory = Path.of(PathManager.getTempPath(), TRACE_DIRECTORY)
-        val file = directory.resolve("trace-${UUID.randomUUID()}.jsonl")
-        try {
-            Files.createDirectories(directory)
-            // A file left at the path would be read before the runtime truncates it.
-            Files.deleteIfExists(file)
-        } catch (exception: IOException) {
-            // The runtime refuses a path it cannot create, which the run's console then says.
-            thisLogger().warn("cannot prepare the trace file $file", exception)
+        val file = traceFiles.newFile()
+        val handler = try {
+            startProcess(file)
+        } catch (exception: Exception) {
+            traceFiles.release(file)
+            throw exception
         }
-        val handler = startProcess(file)
         val application = ApplicationManager.getApplication()
         if (application.isDispatchThread) {
-            started(configuration, file, handler, filters)
+            register(configuration, file, handler, filters)
         } else {
-            application.invokeLater({ started(configuration, file, handler, filters) }, project.disposed)
+            // Never expired: a project closed meanwhile still lets its file go.
+            application.invokeLater { register(configuration, file, handler, filters) }
         }
         return handler
+    }
+
+    /** [started], or, for a project closed since the process started, the file let go: no tab will ever own it. */
+    private fun register(configuration: NewspeakRunConfiguration, file: Path, handler: ProcessHandler, filters: TraceFilters) {
+        if (disposed || project.isDisposed) traceFiles.release(file) else started(configuration, file, handler, filters)
     }
 
     /**
@@ -145,7 +143,7 @@ class TracedRuns internal constructor(
             changed()
         }
         // Registered before the reader, so disposed after it: the file outlives what reads it.
-        Disposer.register(disposable) { deleteLater(file) }
+        Disposer.register(disposable) { traceFiles.release(file) }
         Disposer.register(disposable, reader)
         handler.addProcessListener(
             object : ProcessListener {
@@ -169,6 +167,7 @@ class TracedRuns internal constructor(
         val entry = traced.firstOrNull { candidate -> candidate.run === run } ?: return
         traced.remove(entry)
         Disposer.dispose(entry.disposable)
+        CodeListingFile.unlinkListingsOf(run)
         entry.content?.let { content -> content.manager?.removeContent(content, true) }
         if (selected === run) selected = traced.lastOrNull()?.run
         changed()
@@ -181,6 +180,8 @@ class TracedRuns internal constructor(
     }
 
     override fun dispose() {
+        disposed = true
+        for (entry in traced) CodeListingFile.unlinkListingsOf(entry.run)
         traced.clear()
         listeners.clear()
     }
@@ -215,17 +216,6 @@ class TracedRuns internal constructor(
 
     private fun changed() {
         for (listener in listeners.toList()) listener()
-    }
-
-    /** Off the EDT, as every file operation of the tool is. */
-    private fun deleteLater(file: Path) {
-        AppExecutorUtil.getAppExecutorService().execute {
-            try {
-                Files.deleteIfExists(file)
-            } catch (exception: IOException) {
-                thisLogger().info("cannot delete the trace file $file", exception)
-            }
-        }
     }
 
     companion object {

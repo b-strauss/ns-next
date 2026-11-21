@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 
 /** The longest a record read waits before it is published, so that the tool window follows a run live. */
 internal const val PUBLICATION_MILLISECONDS = 200L
@@ -19,8 +21,16 @@ internal const val PUBLICATION_MILLISECONDS = 200L
 /** The most records one batch holds, so that the EDT is never held long by one. */
 internal const val BATCH_RECORDS = 5_000
 
-/** How long the reader waits for the file to grow before it looks again. */
-private const val POLL_MILLISECONDS = 50L
+/** How long the reader waits for the file to grow before it looks again, right after it last grew. */
+internal const val POLL_MILLISECONDS = 50L
+
+/**
+ * The longest the reader waits before it looks again: while nothing is
+ * appended each wait doubles up to it, so that a run that has gone quiet
+ * costs a look twice a second, and the first bytes appended bring it back
+ * to [POLL_MILLISECONDS].
+ */
+internal const val LONGEST_POLL_MILLISECONDS = 500L
 
 private const val READ_BYTES = 64 * 1024
 
@@ -33,23 +43,48 @@ private const val VERSION = 1
  * each complete line parsed into its [TraceRecord], a line not yet ended
  * kept until its end arrives, and the records handed to [onBatch] on the
  * EDT in the file's order, a batch at most every
- * [PUBLICATION_MILLISECONDS] or as soon as it holds [BATCH_RECORDS]. A file
- * that is no trace, a version this reader does not know and a line that is
- * no record are reported once to [onError], on the EDT, after the records
- * read before them, and end the reading.
- * The file need not exist yet: the reader waits for the runtime to create it.
+ * [PUBLICATION_MILLISECONDS] or as soon as it holds [BATCH_RECORDS]. The
+ * next batch is handed over only once the last one was applied, so that a
+ * backlog -- a file written faster than the EDT takes it -- waits in the
+ * file, never in the EDT's queue. A file that is no trace, a version this
+ * reader does not know and a line that is no record are reported once to
+ * [onError], on the EDT, after the records read before them, and end the
+ * reading. The file need not exist yet: the reader waits for the runtime
+ * to create it, looking less often the longer nothing comes, from
+ * [POLL_MILLISECONDS] up to [LONGEST_POLL_MILLISECONDS].
  *
  * Reads until it is disposed, or, once [finish] is called, to the file's
  * end.
+ *
+ * [dispatch] runs a task on the EDT, [pause] waits and [clock] answers the
+ * time in milliseconds; tests hand in their own.
  */
-class TraceFileReader(
+class TraceFileReader internal constructor(
     private val path: Path,
     private val onBatch: (List<TraceRecord>) -> Unit,
     private val onError: (String) -> Unit,
+    private val dispatch: (Runnable) -> Unit,
+    private val pause: (Long) -> Unit,
+    private val clock: () -> Long,
 ) : Disposable {
+    constructor(path: Path, onBatch: (List<TraceRecord>) -> Unit, onError: (String) -> Unit) : this(
+        path,
+        onBatch,
+        onError,
+        { task -> ApplicationManager.getApplication().invokeLater(task) },
+        { milliseconds -> Thread.sleep(milliseconds) },
+        System::currentTimeMillis,
+    )
+
     @Volatile private var disposed = false
 
     @Volatile private var finished = false
+
+    /** Held from a batch's hand-over until the EDT applied it: what makes the reader wait for the EDT. */
+    private val applying = Semaphore(1)
+
+    /** How long the next look waits: [POLL_MILLISECONDS] right after bytes arrived, doubling up to [LONGEST_POLL_MILLISECONDS]. */
+    private var wait = POLL_MILLISECONDS
 
     init {
         AppExecutorUtil.getAppExecutorService().execute { read() }
@@ -70,21 +105,24 @@ class TraceFileReader(
             val channel = open() ?: return
             channel.use {
                 val buffer = ByteBuffer.allocate(READ_BYTES)
-                var lastPublication = System.currentTimeMillis()
+                var lastPublication = clock()
                 while (!disposed) {
                     // Read before looking at the end, so that what was written before `finish` is read.
                     val ending = finished
                     buffer.clear()
                     val read = channel.read(buffer)
                     if (read > 0) {
+                        wait = POLL_MILLISECONDS
                         buffer.flip()
                         if (!lines.take(buffer)) return
                     } else if (ending) {
                         break
                     } else {
-                        Thread.sleep(POLL_MILLISECONDS)
+                        // Records read wait no longer than their publication is due, however long the file stays quiet.
+                        val due = (PUBLICATION_MILLISECONDS - (clock() - lastPublication)).coerceAtLeast(1)
+                        waitForBytes(if (lines.pending.isEmpty()) wait else wait.coerceAtMost(due))
                     }
-                    val now = System.currentTimeMillis()
+                    val now = clock()
                     if (lines.pending.isNotEmpty() && now - lastPublication >= PUBLICATION_MILLISECONDS) {
                         publish(lines.drain())
                         lastPublication = now
@@ -106,17 +144,34 @@ class TraceFileReader(
             val ending = finished
             if (Files.exists(path)) return FileChannel.open(path, StandardOpenOption.READ)
             if (ending) return null
-            Thread.sleep(POLL_MILLISECONDS)
+            waitForBytes(wait)
         }
         return null
     }
 
-    private fun publish(batch: List<TraceRecord>) {
-        ApplicationManager.getApplication().invokeLater { if (!disposed) onBatch(batch) }
+    /** Waits [milliseconds] for the file to change, and makes the next wait twice as long, up to [LONGEST_POLL_MILLISECONDS]. */
+    private fun waitForBytes(milliseconds: Long) {
+        pause(milliseconds)
+        wait = (wait * 2).coerceAtMost(LONGEST_POLL_MILLISECONDS)
     }
 
+    /** Hands [batch] to the EDT once the last batch was applied; nothing once the reader is disposed. */
+    private fun publish(batch: List<TraceRecord>) {
+        while (!applying.tryAcquire(POLL_MILLISECONDS, TimeUnit.MILLISECONDS)) {
+            if (disposed) return
+        }
+        dispatch {
+            try {
+                if (!disposed) onBatch(batch)
+            } finally {
+                applying.release()
+            }
+        }
+    }
+
+    /** Reports [error] on the EDT, after every batch handed over before it. */
     private fun report(error: String) {
-        ApplicationManager.getApplication().invokeLater { if (!disposed) onError(error) }
+        dispatch { if (!disposed) onError(error) }
     }
 
     /** Splits the bytes read at `\n` into records, and publishes a batch whenever one is full. */

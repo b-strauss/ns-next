@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.devtool.model
 
+import com.google.gson.JsonObject
 import com.intellij.openapi.util.Disposer
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import org.junit.Assert.assertEquals
@@ -136,15 +137,42 @@ class TraceRunTest {
         traceRun.add(
             records(
                 event(5, "inlining", "declined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"reason":"over-weight","at":3"""),
+                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
                 // Another copy's plan, which its own outcome decides.
                 event(5, "inlining", "inlined", ""","key":"Demo/Box","entered":"Demo","in-body":5,"callee":3,"at":7"""),
-                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
             ),
         )
         assertEquals(mapOf(3 to SendOutcome(inlining = "declined: over-weight", cache = null)), traceRun.sends(5))
         // Without the `optimize` category, the plan's listing says how the compile ended.
         traceRun.add(records("""{"kind":"inlining","body":5,"key":"Demo/Box","entered":"Demo","scopes":[],"arms":[],"declined":[],"outcome":{"installed":800}}"""))
         assertEquals(SendOutcome(inlining = "inlined", cache = null), traceRun.sends(5)[7])
+    }
+
+    @Test fun testACompileWhoseOutcomeIsWithheldIsDroppedAtTheNextRecord() {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["inlining","deoptimize","code-zone"],"listings":["inlining"]}""",
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]},{"at":7,"site":null,"call":null,"selector":[]}]}""",
+                // A compile whose plan the listings filter withheld: nothing says whether its copy was installed.
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"at":3"""),
+                // A body described between two inlining events belongs to no compile.
+                """{"kind":"body","body":6,"name":"Demo>>helper","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000002","statements":[],"sends":[]}""",
+                event(5, "inlining", "declined", ""","key":"Demo","entered":null,"in-body":5,"callee":6,"reason":"over-weight","at":7"""),
+            ),
+        )
+        assertEquals("a compile's stretch waits for its outcome", 2, traceRun.waitingDecisions)
+        traceRun.add(records(event(6, "compile", "compiled", ""","trigger":"call","bytes":64""")))
+        assertEquals("the stretch ended without an outcome", 0, traceRun.waitingDecisions)
+        // A later compile of the same copy, whose plan is heard, says nothing of the send at 3.
+        traceRun.add(
+            records(
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":6,"at":7"""),
+                """{"kind":"inlining","body":5,"key":"Demo","entered":null,"scopes":[],"arms":[],"declined":[],"outcome":{"installed":800}}""",
+            ),
+        )
+        assertEquals(mapOf(7 to SendOutcome(inlining = "inlined", cache = null)), traceRun.sends(5))
+        assertEquals(0, traceRun.waitingDecisions)
     }
 
     /** A run whose header names [categories] and [listings], with a body whose send at 3 a plan inlines. */
@@ -319,6 +347,31 @@ class TraceRunTest {
         assertEquals(MethodState.BASELINE, traceRun.state(99))
         assertEquals(emptyMap<Int, SendOutcome>(), traceRun.sends(99))
         assertEquals(1, traceRun.events.size)
+    }
+
+    @Test fun testARunKeepsItsLastEventsAndCountsEveryOne() {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                event(3, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900"""),
+                event(3, "deoptimize", "retired", ""","key":null,"entered":null,"reason":"exits","version":null"""),
+                event(3, "inlining", "declined", ""","key":null,"entered":null,"in-body":3,"callee":4,"reason":"over-weight","at":2"""),
+            ),
+        )
+        val osr = Event("osr", 3, "osr-entered", JsonObject())
+        traceRun.add(List(KEPT_EVENTS) { osr })
+        assertEquals(KEPT_EVENTS, traceRun.events.size)
+        assertEquals(3L, traceRun.droppedEvents)
+        assertEquals(KEPT_EVENTS + 3L, traceRun.eventCount)
+        assertTrue("the oldest are dropped", traceRun.events.all { kept -> kept === osr })
+        // What the dropped events said stays.
+        val tally = checkNotNull(traceRun.tallies[3])
+        assertEquals(1, tally.deoptimizations)
+        assertEquals(1, tally.declines)
+        assertEquals(900, tally.largestOptimized)
+        assertEquals("retired", tally.lastDeoptimization?.event)
+        assertEquals("declined", traceRun.lastInlining[3 to 2]?.event)
+        assertEquals(MethodState.DEOPTIMIZED, traceRun.state(3))
     }
 
     @Test fun testListenersHearEachBatch() {

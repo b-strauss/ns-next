@@ -2,17 +2,23 @@ package io.github.bstrauss.newspeak.devtool
 
 import com.intellij.execution.process.NopProcessHandler
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManager
+import io.github.bstrauss.newspeak.devtool.editor.CodeListing
+import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
+import io.github.bstrauss.newspeak.devtool.editor.ListingPosition
 import io.github.bstrauss.newspeak.devtool.ui.RunPanel
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class TracedRunsTest : BasePlatformTestCase() {
     private lateinit var contents: ContentManager
@@ -87,6 +93,55 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertNull(tracedRuns.selected)
         assertTrue(told > 0)
         waitUntil { !Files.exists(file) }
+    }
+
+    fun testAClosedRunsListingTabsKeepTheirTextAndLetTheRunGo() {
+        start(configuration("Hello"))
+        val run = tracedRuns.runs.single()
+        val listing = CodeListingFile(CodeListing("Demo>>run baseline", "--- code {Demo>>run}\n--- end\n", listOf(ListingPosition(1, 0), null), run))
+        val textOnly = CodeListingFile("frame code", "text")
+        tracedRuns.close(run)
+        assertNull("the run is let go", listing.listing.run)
+        assertEquals("--- code {Demo>>run}\n--- end\n", listing.listing.text)
+        assertEquals("Demo>>run baseline", listing.listing.title)
+        assertEquals("frame code", textOnly.listing.title)
+    }
+
+    fun testARunWhoseProjectClosedBeforeItRegisteredLetsItsFileGo() {
+        val handed = AtomicReference<Path>()
+        val configuration = configuration("Hello")
+        // Started off the EDT, the run registers later on it -- by when its project has closed.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            tracedRuns.start(configuration, TraceFilters.EVERYTHING) { traceFile ->
+                // The runtime creates the file as it starts.
+                Files.writeString(checkNotNull(traceFile), "")
+                handed.set(traceFile)
+                NopProcessHandler()
+            }
+        }.get(10, TimeUnit.SECONDS)
+        val file = checkNotNull(handed.get())
+        assertTrue(Files.exists(file))
+        Disposer.dispose(tracedRuns)
+        waitUntil { !Files.exists(file) }
+        assertEmpty(tracedRuns.runs)
+    }
+
+    fun testTheSweepDeletesOnlyTheFilesNoLiveRunNames() {
+        val directory = Files.createTempDirectory("newspeak-trace")
+        val left = directory.resolve("trace-left.jsonl")
+        Files.writeString(left, "")
+        val files = TraceFiles(directory)
+        val running = files.newFile()
+        Files.writeString(running, "")
+        files.sweepOnce()
+        assertFalse("a file of an earlier run of the IDE", Files.exists(left))
+        assertTrue("a running trace", Files.exists(running))
+        // Once per IDE start.
+        Files.writeString(left, "")
+        files.sweepOnce()
+        assertTrue(Files.exists(left))
+        files.release(running)
+        waitUntil { !Files.exists(running) && !files.isLive(running) }
     }
 
     fun testTheNewestRunIsSelected() {

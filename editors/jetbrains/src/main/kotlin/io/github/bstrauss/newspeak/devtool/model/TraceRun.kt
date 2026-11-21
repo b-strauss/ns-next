@@ -22,6 +22,41 @@ enum class MethodState { INTERPRETED, BASELINE, TWIN, OPTIMIZED, DEOPTIMIZED, AB
 data class SendOutcome(val inlining: String?, val cache: String?)
 
 /**
+ * The most events a run keeps as such, the oldest dropped first: a run that
+ * traces for long writes events without end, and only the Events tab
+ * shows them one by one. What they say of a body's tiers, its sends, its
+ * caches and its counts is kept beside them for the run's length, so that
+ * no state, hint or count changes when an event is dropped.
+ */
+const val KEPT_EVENTS = 200_000
+
+/** What a body's events counted: the Methods tab's columns and the gutter icon's tooltip. */
+class EventTally {
+    /** Its copies retired or invalidated, every `deoptimize` event. */
+    var deoptimizations = 0
+        internal set
+
+    /** Its code abandoned for its exits. */
+    var abandonments = 0
+        internal set
+
+    /** Callees an optimizing compile of it declined to inline. */
+    var declines = 0
+        internal set
+
+    /** The bytes of its largest optimized copy an `optimized` event announced; 0 for none. */
+    var largestOptimized = 0
+        internal set
+
+    /** Its last `deoptimize` event and its place among the run's events; null before any. */
+    var lastDeoptimization: Event? = null
+        internal set
+
+    var lastDeoptimizationOrder = -1L
+        internal set
+}
+
+/**
  * One traced run, [name]d by its configuration and [started] at a time
  * (decision 26), narrowed by the [filters] it was started with: the records
  * [TraceFileReader] read, and what the editor and the tool window draw from
@@ -33,7 +68,10 @@ data class SendOutcome(val inlining: String?, val cache: String?)
  */
 class TraceRun(val name: String, val started: Instant, private val filters: TraceFilters = TraceFilters.EVERYTHING) {
     private val describedBodies = HashMap<Int, Body>()
-    private val recordedEvents = ArrayList<Event>()
+    private val recordedEvents = ArrayDeque<Event>()
+    private val eventTallies = HashMap<Int, EventTally>()
+    private val inliningEvents = HashMap<Pair<Int, Int>, Event>()
+    private val transitionEvents = HashMap<Pair<Int, Int>, Event>()
     private val bytecodeListings = HashMap<Int, Bytecode>()
     private val codeListings = HashMap<Int, MutableList<Code>>()
     private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
@@ -51,12 +89,24 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     private val caches = HashMap<SendKey, CacheHistory>()
 
     /**
-     * The plan's decisions of each optimizing compile whose outcome has not
-     * arrived yet: a compile's `inlined` and `declined` events precede its
-     * `optimized`, `refused` or `deferred` event, and only an installed
-     * copy's plan says what became of a send.
+     * The optimizing compile whose outcome has not arrived yet, and the
+     * plan's decisions its `inlined` and `declined` events made: only an
+     * installed copy's plan says what became of a send. A compile runs
+     * whole at one safepoint, its inlining events one stretch of the file
+     * followed by its outcome -- its `optimized`, `refused` or `deferred`
+     * event, then its plan's record -- so any other record but a body's
+     * description or a bytecode listing, which the file places wherever a
+     * body is first named, ends the stretch: a compile whose outcome the
+     * events filter, the listings filter or a plan the runtime could not
+     * name (`jit/mod.rs`, `record_plan`) withheld is dropped there, its
+     * decisions never shown, since whether its copy was installed is
+     * never heard. So at most one compile's decisions wait.
      */
-    private val plannedInlining = HashMap<CompileKey, MutableList<Pair<SendKey, String>>>()
+    private var openCompile: CompileKey? = null
+    private var openDecisions = ArrayList<Pair<SendKey, String>>()
+
+    /** How many decisions wait for their compile's outcome. */
+    internal val waitingDecisions: Int get() = openDecisions.size
 
     /**
      * Whether a compile's outcome can arrive: an `optimize` event or an
@@ -77,8 +127,28 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     /** Every body described, by its number. */
     val bodies: Map<Int, Body> get() = describedBodies
 
-    /** Every event, in the file's order. */
+    /**
+     * The last [KEPT_EVENTS] events, in the file's order: the Events tab's
+     * rows. What the run says of a body, a send or a cache is kept apart
+     * from them, for the run's length.
+     */
     val events: List<Event> get() = recordedEvents
+
+    /** How many events were taken in all; the first of [events] is the one taken at `eventCount - events.size`. */
+    var eventCount = 0L
+        private set
+
+    /** How many of the earliest events [events] no longer holds. */
+    val droppedEvents: Long get() = eventCount - recordedEvents.size
+
+    /** What the events said of each body, by the number of the body they are about. */
+    val tallies: Map<Int, EventTally> get() = eventTallies
+
+    /** The last `inlined` or `declined` event at each send, by the number of the body its scope runs and the send's index there. */
+    val lastInlining: Map<Pair<Int, Int>, Event> get() = inliningEvents
+
+    /** The last cache transition at each site, by its family's root and the site's number. */
+    val lastTransition: Map<Pair<Int, Int>, Event> get() = transitionEvents
 
     /** Each body's bytecode, by its root's number. */
     val bytecode: Map<Int, Bytecode> get() = bytecodeListings
@@ -189,6 +259,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                 is Event -> take(record)
                 is Bytecode -> bytecodeListings[record.body] = record
                 is Code -> {
+                    leaveOpenCompile()
                     codeListings.getOrPut(record.body) { ArrayList() }.add(record)
                     countListed(record)
                 }
@@ -210,11 +281,23 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     }
 
     private fun take(event: Event) {
-        recordedEvents.add(event)
+        recordedEvents.addLast(event)
+        if (recordedEvents.size > KEPT_EVENTS) recordedEvents.removeFirst()
+        val order = eventCount++
+        tally(event, order)
         val body = event.body
+        if (event.category == INLINING) {
+            // A compile's inlining events, whatever their kind, belong to its stretch.
+            if (body != null) continueCompile(compileKey(body, event))
+            when (event.event) {
+                "inlined" -> plan(event, "inlined")
+                "declined" -> plan(event, "declined: ${event.text("reason")}")
+            }
+            return
+        }
+        val concluded = body != null && event.category == "optimize" && event.event in OUTCOMES
+        if (!concluded) leaveOpenCompile()
         when (event.event) {
-            "inlined" -> plan(event, "inlined")
-            "declined" -> plan(event, "declined: ${event.text("reason")}")
             "transition" -> {
                 val site = event.integer("site")
                 if (body != null && site != null) caches.getOrPut(SendKey(body, site)) { CacheHistory() }.take(event)
@@ -229,13 +312,40 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
             }
             else -> if (body != null) {
                 histories.getOrPut(body) { BodyHistory() }.take(event)
+                if (concluded) concludePlan(compileKey(body, event), installed = event.event == "optimized")
                 when (event.event) {
-                    "optimized" -> concludePlan(compileKey(body, event), installed = true)
-                    "refused", "deferred" -> if (event.category == "optimize") concludePlan(compileKey(body, event), installed = false)
                     "retired", "invalidated" -> copyGone(compileKey(body, event))
                     "freed" -> if (event.text("tier") == "optimized") copyGone(compileKey(body, event))
                 }
             }
+        }
+    }
+
+    /** Counts [event], the [order]th taken, into what the tabs and the tooltips read, which [events] may drop. */
+    private fun tally(event: Event, order: Long) {
+        val body = event.body
+        when (event.event) {
+            "inlined", "declined" -> {
+                val inBody = event.integer("in-body")
+                val at = event.integer("at")
+                if (inBody != null && at != null) inliningEvents[inBody to at] = event
+            }
+            "transition" -> {
+                val site = event.integer("site")
+                if (body != null && site != null) transitionEvents[body to site] = event
+            }
+        }
+        if (body == null) return
+        val tally = eventTallies.getOrPut(body) { EventTally() }
+        if (event.category == "deoptimize") {
+            tally.deoptimizations++
+            tally.lastDeoptimization = event
+            tally.lastDeoptimizationOrder = order
+        }
+        when (event.event) {
+            "abandoned" -> tally.abandonments++
+            "declined" -> tally.declines++
+            "optimized" -> event.integer("bytes")?.let { bytes -> tally.largestOptimized = maxOf(tally.largestOptimized, bytes) }
         }
     }
 
@@ -252,12 +362,29 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
             inliningAtSends[send] = outcome
             return
         }
-        plannedInlining.getOrPut(key) { ArrayList() }.add(send to outcome)
+        openDecisions.add(send to outcome)
+    }
+
+    /** An inlining event of the compile [key]: the open compile's, or the first of a new one, which ends the open one unheard. */
+    private fun continueCompile(key: CompileKey) {
+        if (openCompile == key) return
+        leaveOpenCompile()
+        openCompile = key
+    }
+
+    /** A record of no compile's stretch arrived: the open compile's outcome was withheld, and its decisions are dropped. */
+    private fun leaveOpenCompile() {
+        openCompile = null
+        if (openDecisions.isNotEmpty()) openDecisions = ArrayList()
     }
 
     /** The compile [key] ended: its decisions apply to the sends if its copy was [installed], and are dropped otherwise. */
     private fun concludePlan(key: CompileKey, installed: Boolean) {
-        val decisions = plannedInlining.remove(key) ?: return
+        val open = openCompile
+        val decisions = openDecisions
+        leaveOpenCompile()
+        // Another compile's outcome: the open one's was withheld.
+        if (open != key || decisions.isEmpty()) return
         if (!installed) return
         // A key's new copy replaces its old one and is the one installed last.
         liveCopies.remove(key)
@@ -276,6 +403,13 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         val inBody = event.integer("in-body") ?: return null
         val at = event.integer("at") ?: return null
         return SendKey(inBody, at)
+    }
+
+    private companion object {
+        const val INLINING = "inlining"
+
+        /** The `optimize` events that end a compile: its copy installed, refused or put off. */
+        val OUTCOMES = setOf("optimized", "refused", "deferred")
     }
 
     /** A send by its body and index, or a cache site by its family's root and number. */

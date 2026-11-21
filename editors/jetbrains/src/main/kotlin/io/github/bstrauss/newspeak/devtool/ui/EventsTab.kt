@@ -5,16 +5,19 @@ import com.google.gson.JsonElement
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.table.TableView
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.ColumnInfo
+import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.ListTableModel
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.devtool.model.Event
+import io.github.bstrauss.newspeak.devtool.model.KEPT_EVENTS
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
 import java.awt.CardLayout
@@ -85,7 +88,7 @@ fun traceLine(run: TraceRun, event: Event): String =
     "[${event.category}] {${event.body?.let { body -> bodyName(run, body) }.orEmpty()}} ${eventWord(event)}${eventFields(run, event)}"
 
 /** An event of the table: its place in the file's order, which is the time's, and the cells it shows. */
-data class EventRow(val order: Int, val event: Event, val body: String, val fields: String) {
+data class EventRow(val order: Long, val event: Event, val body: String, val fields: String) {
     /** What the grouped view shows: the event and its fields, the method being the group. */
     override fun toString(): String = "[${event.category}] ${eventWord(event)}$fields"
 }
@@ -95,6 +98,8 @@ data class EventRow(val order: Int, val event: Event, val body: String, val fiel
  * events in time order, filtered by category and by a substring of the body's
  * name, as a table, grouped under their methods, or as the text trace's own
  * lines. A double click opens the source an event with a position names.
+ * It shows the events the run keeps, the last [KEPT_EVENTS], and says how
+ * many earlier ones were dropped.
  */
 class EventsTab(private val project: Project, private val run: TraceRun, parent: Disposable) : JPanel(BorderLayout()) {
     /** One box per category, by its name, all selected: an event of a category unchecked is hidden. */
@@ -130,6 +135,9 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
             override fun valueOf(item: EventRow): Any = value(item)
         }
 
+    /** The model's rows, which it holds as they are, so that the oldest can be taken off in place. */
+    private var rowItems = ArrayList<EventRow>()
+
     /** The events that pass the filters, a row each, in time order. */
     val model = ListTableModel<EventRow>(
         arrayOf<ColumnInfo<EventRow, *>>(
@@ -139,7 +147,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
             column("devtool.events.column.event") { row -> eventWord(row.event) },
             column("devtool.events.column.fields") { row -> row.fields.trim() },
         ),
-        ArrayList<EventRow>(),
+        rowItems,
     )
 
     val table = TableView(model)
@@ -149,7 +157,14 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
     val treeModel = DefaultTreeModel(treeRoot)
     private val tree = Tree(treeModel).apply { isRootVisible = false }
 
-    private var taken = 0
+    /** Says how many of the run's earliest events it no longer keeps; hidden while it keeps every one. */
+    val droppedLabel = JBLabel().apply {
+        border = JBUI.Borders.empty(0, 8, 4, 8)
+        isVisible = false
+    }
+
+    /** The run's events up to which the rows were made, counted from the run's first. */
+    private var taken = 0L
     private var textFed = 0
     private var treeFed = 0
     private val groups = HashMap<String, DefaultMutableTreeNode>()
@@ -169,7 +184,10 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         filters.add(bodyFilter)
         filters.add(groupByMethod)
         filters.add(textView)
-        add(filters, BorderLayout.NORTH)
+        val head = JPanel(BorderLayout())
+        head.add(filters, BorderLayout.NORTH)
+        head.add(droppedLabel, BorderLayout.SOUTH)
+        add(head, BorderLayout.NORTH)
         add(views, BorderLayout.CENTER)
         table.addMouseListener(
             object : MouseAdapter() {
@@ -215,10 +233,11 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
 
     /** Every filter changed: the rows are made afresh, and the views that are not shown are made when they are. */
     private fun refilter() {
-        taken = 0
+        taken = 0L
         textFed = 0
         treeFed = 0
-        model.items = ArrayList()
+        rowItems = ArrayList()
+        model.items = rowItems
         text.text = ""
         treeRoot.removeAllChildren()
         groups.clear()
@@ -231,17 +250,58 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         val shown = categoryBoxes.filterValues { box -> box.isSelected }.keys
         val needle = bodyFilter.text.trim()
         val events = run.events
+        val first = run.droppedEvents
+        dropRowsBefore(first)
         val added = ArrayList<EventRow>()
-        for (order in taken until events.size) {
-            val event = events[order]
+        for (order in maxOf(taken, first) until run.eventCount) {
+            val event = events[(order - first).toInt()]
             if (event.category !in shown) continue
             if (needle.isNotEmpty() && event.body?.let { body -> needle in bodyName(run, body) } != true) continue
             added.add(EventRow(order, event, event.body?.let { body -> bodyName(run, body) }.orEmpty(), eventFields(run, event)))
         }
-        taken = events.size
+        taken = run.eventCount
         if (added.isNotEmpty()) model.addRows(added)
+        if (first > 0) {
+            droppedLabel.text = NewspeakBundle.message("devtool.events.dropped", first, KEPT_EVENTS)
+            droppedLabel.isVisible = true
+        }
         feedViews()
     }
+
+    /**
+     * Takes away the rows of the events the run dropped, which are the
+     * oldest, from the table, the text and the tree alike, leaving the
+     * table's selection and scroll on the rows that stay.
+     */
+    private fun dropRowsBefore(first: Long) {
+        val rows = rowItems
+        val dropped = rows.indexOfFirst { row -> row.order >= first }.let { index -> if (index < 0) rows.size else index }
+        if (dropped == 0) return
+        val gone = ArrayList(rows.subList(0, dropped))
+        rows.subList(0, dropped).clear()
+        model.fireTableRowsDeleted(0, dropped - 1)
+        val textDropped = minOf(dropped, textFed)
+        if (textDropped > 0) {
+            // A line a row, with no newline after the last.
+            val end = if (textDropped < textFed) text.getLineStartOffset(textDropped) else text.document.length
+            text.replaceRange("", 0, end)
+            textFed -= textDropped
+        }
+        val treeDropped = minOf(dropped, treeFed)
+        for (row in gone.subList(0, treeDropped)) {
+            // A group's children are its rows in order, so a dropped row is its group's first.
+            val name = groupName(row)
+            val group = groups[name] ?: continue
+            if (group.childCount > 0) treeModel.removeNodeFromParent(group.getChildAt(0) as DefaultMutableTreeNode)
+            if (group.childCount == 0) {
+                treeModel.removeNodeFromParent(group)
+                groups.remove(name)
+            }
+        }
+        treeFed -= treeDropped
+    }
+
+    private fun groupName(row: EventRow): String = row.event.body?.let { body -> bodyName(run, rootOf(run, body)) }.orEmpty()
 
     /** Brings the shown view of the text or the tree up to the rows, which the other is brought to when it is shown. */
     private fun feedViews() {
@@ -255,7 +315,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         } else if (groupByMethod.isSelected) {
             for (index in treeFed until rows.size) {
                 val row = rows[index]
-                val name = row.event.body?.let { body -> bodyName(run, rootOf(run, body)) }.orEmpty()
+                val name = groupName(row)
                 val group = groups.getOrPut(name) {
                     DefaultMutableTreeNode(name).also { node -> treeModel.insertNodeInto(node, treeRoot, treeRoot.childCount) }
                 }

@@ -2464,27 +2464,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     reviews), none of them a wrong decoration -- what the plugin cannot
     know it leaves out, and a body whose text does not fit is shown
     stale, never decorated in the wrong place:
-    - *The first traced run can leave a watched method out*: with no
-      language server client yet, `newspeak/moduleIdentity` has no
-      answer, and a watched pattern naming a program module that no
-      project file names with `as` is left out of the run's filters
-      without a word, since a pattern the run might refuse is worse
-      than one left out ([developer-tool.md](design/developer-tool.md),
-      "The plugin's half"; `devtool/WatchedMethods.kt`, `filters`).
-    - *A narrower listings filter leaves a compile's decisions
-      pending*: a run that lists inlining plans is taken to conclude
-      every compile by its plan's record, but `--print-filter` -- or
-      `record_plan`'s early return -- may withhold the record of a
-      compile whose `inlined` and `declined` events the events filter
-      let through, so its decisions stay pending: the sends show no
-      inlining, never a wrong one, and `plannedInlining` keeps them for
-      the run's length, never pruned (`devtool/model/TraceRun.kt`,
-      `outcomeCanArrive`; `jit/mod.rs`, `record_plan`).
-    - *A project closed at a traced run's start leaves its file*: a
-      project disposed between the process's start and the
-      `invokeLater` that registers the run never deletes the run's trace
-      file, and a deletion queued at the IDE's shutdown may not run
-      (`devtool/TracedRuns.kt`, `start`, `deleteLater`).
     - *The Methods tab counts optimized copies only*: "Code bytes" is
       the largest optimized copy's, never baseline or twin code, and a
       body the run has no description of has no row
@@ -2494,15 +2473,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       scroll back at the start at every stop, and `fileClosed` ends the
       follower when one of two split editors of the tab closes
       (`debugger/FrameCodeFollower.kt`).
-    - *An absolute module path drops its watched patterns*: a
-      `newspeak.json` module given by an absolute path is looked up with
-      `findFileByRelativePath`, which finds nothing, so its module's id
-      is unknown and the watched patterns naming it are left out of the
-      run's filters (`devtool/WatchedMethods.kt`, `programModules`).
-    - *A run whose every watched entry was dropped says nothing*: where
-      no entry is left for either kind, the run traces and lists
-      nothing and opens no tab, without a notice why
-      (`devtool/WatchedMethods.kt`, `filters`; `devtool/TracedRuns.kt`).
     - *A method without a state has no gutter menu*: the menu of Show
       Code, Show Inlining and Open in Tool Window hangs from the state
       icon, so a method the run says nothing of how it ran -- every
@@ -2522,11 +2492,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     - *No decoration test draws a deoptimized icon*: `TraceRunTest`
       holds the state, but no `DecorationsTest` shows a method's icon
       as deoptimized (`devtool/editor/StateGutterRenderer.kt`).
-    - *Nothing bounds a run's memory*: a `TraceRun` keeps every record
-      for the run's length and the tool window keeps every run until
-      its tab closes, and an open `CodeListingFile` holds its run's
-      `TraceRun` after the tab closed (`devtool/model/TraceRun.kt`,
-      `devtool/editor/CodeListingFile.kt`).
+    - *A run's records but its events are unbounded*: a `TraceRun`
+      keeps its last 200,000 events (`KEPT_EVENTS`), but every body's
+      description, every listing and every plan for the run's length,
+      and the tool window keeps every run until its tab closes
+      (`devtool/model/TraceRun.kt`, `devtool/TracedRuns.kt`).
     - *The plugin's bytecode listing is flatter than the text one*: it
       has no method line and does not nest a block at its `MakeClosure`,
       and its machine-code listing's head writes no `base=`, though the
@@ -2534,14 +2504,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       ([developer-tool.md](design/developer-tool.md), "The plugin's
       half", decision 14; `devtool/editor/CodeListingFile.kt`,
       `codeListing`).
-    - *The reader polls and does not pace a backlog*: it looks for
-      appended bytes every 50 ms for the run's whole length, and a
-      backlog -- a file written faster than read -- is published as
-      batches of 5,000 records back to back, each on the event dispatch
-      thread, with no pause between them
-      (`devtool/model/TraceFileReader.kt`;
-      [developer-tool.md](design/developer-tool.md), "The plugin's
-      half").
     - *No test holds the Events tab's text to `trace.rs`*: the "Text"
       view writes each event as the text trace's line, its field order
       read from `trace.rs`, but only reading is checked for all 28

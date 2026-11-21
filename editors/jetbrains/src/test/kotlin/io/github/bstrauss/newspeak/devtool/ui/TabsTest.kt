@@ -3,6 +3,10 @@ package io.github.bstrauss.newspeak.devtool.ui
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.google.gson.JsonObject
+import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.devtool.model.Event
+import io.github.bstrauss.newspeak.devtool.model.KEPT_EVENTS
 import io.github.bstrauss.newspeak.devtool.model.MethodState
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
@@ -160,6 +164,36 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals(before + 1, tab.text.text.lines().size)
         run.add(records(listOf(eventLine(2, "compile", "revived", ""","by":"decay""""))))
         assertEquals(before + 2, tab.text.text.lines().size)
+    }
+
+    fun testEventsShowTheEventsTheRunKeepsAndSayHowManyWereDropped() {
+        val run = TraceRun("Demo", Instant.EPOCH)
+        val body = """{"kind":"body","body":1,"name":"Demo>>run","module":{"id":"Demo","version":null},"range":null,"checksum":"0000000000000000","statements":[],"sends":[]}"""
+        run.add(records(listOf(body)))
+        fun events(from: Int, count: Int) = List(count) { index ->
+            Event("osr", 1, "osr-entered", JsonObject().apply { addProperty("at", from + index) })
+        }
+        run.add(events(0, KEPT_EVENTS))
+        val tab = EventsTab(project, run, testRootDisposable)
+        assertFalse("nothing was dropped yet", tab.droppedLabel.isVisible)
+        tab.groupByMethod.isSelected = true
+        tab.textView.isSelected = true
+        val root = tab.treeModel.root as DefaultMutableTreeNode
+        tab.table.setRowSelectionInterval(10, 10)
+        val selected = tab.table.selectedObject
+        run.add(events(KEPT_EVENTS, 3))
+        assertEquals(KEPT_EVENTS, tab.table.rowCount)
+        assertEquals("the oldest rows go", 3L, tab.visibleRows.first().order)
+        assertSame("the selection stays on its row", selected, tab.table.selectedObject)
+        val lines = tab.text.text.lines()
+        assertEquals(KEPT_EVENTS, lines.size)
+        assertEquals("[osr] {Demo>>run} osr-entered at=3", lines.first())
+        assertEquals("[osr] {Demo>>run} osr-entered at=${KEPT_EVENTS + 2}", lines.last())
+        // The tree was fed before the text was shown; it lost its oldest rows too.
+        assertEquals(KEPT_EVENTS - 3, (root.getChildAt(0) as DefaultMutableTreeNode).childCount)
+        assertEquals("at=3", ((root.getChildAt(0).getChildAt(0) as DefaultMutableTreeNode).userObject as EventRow).fields.trim())
+        assertTrue(tab.droppedLabel.isVisible)
+        assertEquals(NewspeakBundle.message("devtool.events.dropped", 3L, KEPT_EVENTS), tab.droppedLabel.text)
     }
 
     fun testABatchKeepsTheInliningTreesExpansionAndSelection() {

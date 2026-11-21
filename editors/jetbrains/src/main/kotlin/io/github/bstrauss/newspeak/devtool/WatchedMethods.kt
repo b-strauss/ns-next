@@ -14,6 +14,7 @@ import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
@@ -23,6 +24,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
 import com.intellij.platform.lsp.api.LspClientManager
+import com.intellij.platform.lsp.api.LspServerState
 import com.intellij.util.xmlb.annotations.Attribute
 import com.intellij.util.xmlb.annotations.Tag
 import com.intellij.util.xmlb.annotations.XCollection
@@ -34,6 +36,8 @@ import io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 import org.eclipse.lsp4j.Position
+import java.nio.file.InvalidPathException
+import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -142,13 +146,18 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
     fun filters(modules: Map<String, Set<String>>? = null): TraceFilters {
         val current = entries
         if (current.isEmpty()) return TraceFilters.EVERYTHING
-        val taken = current.filter { entry ->
-            if (modules == null) patternModule(entry.pattern) != null else runTakes(entry.pattern, modules)
-        }
+        val taken = current.filter { entry -> takes(entry, modules) }
         val events = taken.filter(Entry::events).map(Entry::pattern)
         val listings = taken.filter(Entry::listings).map(Entry::pattern)
         return TraceFilters(events, listings, noEvents = events.isEmpty(), noListings = listings.isEmpty())
     }
+
+    /** The patterns [filters] leaves out for the same [modules]: those a run would refuse, in the entries' order. */
+    fun droppedPatterns(modules: Map<String, Set<String>>? = null): List<String> =
+        entries.filterNot { entry -> takes(entry, modules) }.map(Entry::pattern)
+
+    private fun takes(entry: Entry, modules: Map<String, Set<String>>?): Boolean =
+        if (modules == null) patternModule(entry.pattern) != null else runTakes(entry.pattern, modules)
 
     /** The kept names of [file]'s methods when they are the current document's; never asks. */
     fun currentMethodNames(file: VirtualFile): List<MethodName>? {
@@ -202,9 +211,12 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
 
     /**
      * The id and version the loader gives the module of [file], as the
-     * server answers them; null with no client yet, no answer in time, or
-     * a `:module:` the loader refuses. Waits, so never on the event
-     * dispatch thread.
+     * server answers them; null where no server starts in time, with no
+     * answer in time, or for a `:module:` the loader refuses. A run's
+     * start asks before any editor may have started the server, so with
+     * no client it starts one and waits for it, up to
+     * [CLIENT_START_MILLISECONDS]. Waits, so never on the event dispatch
+     * thread.
      */
     fun moduleIdentity(file: VirtualFile): ModuleIdentity? = identifier(file)
 
@@ -213,7 +225,12 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
     internal var identifier: (VirtualFile) -> ModuleIdentity? = ::askIdentity
 
     private fun askIdentity(file: VirtualFile): ModuleIdentity? {
-        val client = client() ?: return null
+        val client = runningClient(
+            lookup = ::existingClient,
+            start = { NewspeakLspIntegrationProvider.registered()?.startClient(project) == true },
+            isRunning = { candidate -> candidate.state == LspServerState.Running },
+            isCancelled = { ProgressManager.getInstance().progressIndicator?.isCanceled == true },
+        ) ?: return null
         val parameters = ModuleIdentityParameters(client.getDocumentIdentifier(file))
         val answer = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
             (server as NewspeakLanguageServer).moduleIdentity(parameters)
@@ -224,12 +241,13 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
 
     /** The server's client; with none it starts one, as `DocumentSymbolCache` does, and answers null. */
     private fun client(): LspClient? {
-        val client = LspClientManager.getInstance(project)
-            .getClients(NewspeakLspIntegrationProvider::class.java)
-            .firstOrNull()
+        val client = existingClient()
         if (client == null) NewspeakLspIntegrationProvider.registered()?.startClient(project)
         return client
     }
+
+    private fun existingClient(): LspClient? =
+        LspClientManager.getInstance(project).getClients(NewspeakLspIntegrationProvider::class.java).firstOrNull()
 
     /** Null when there is no client yet or no answer in time; with no client it starts one, as `DocumentSymbolCache` does. */
     private fun askServer(file: VirtualFile): List<MethodName>? {
@@ -256,7 +274,42 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
 
         /** What ends a pattern that selects by a prefix, as the runtime's filter reads it. */
         const val PREFIX_MARK = "..."
+
+        /** The longest a run's start waits for the language server to start and initialize: a server that takes longer leaves the watched patterns its answers would have kept out. */
+        const val CLIENT_START_MILLISECONDS = 10_000L
+
+        /** How often the wait looks at the client's state. */
+        const val CLIENT_POLL_MILLISECONDS = 50L
     }
+}
+
+/**
+ * A client that is running: the one [lookup] answers, or, with none, the
+ * one [start] starts -- which answers false where no server can be
+ * started, as one not installed cannot -- waited for until [isRunning]
+ * says it is, for at most [timeoutMilliseconds]; null where none runs in
+ * time or [isCancelled] says the wait was cancelled. Never on the event
+ * dispatch thread. [pause] and [clock] are the tests'.
+ */
+internal fun <Client : Any> runningClient(
+    lookup: () -> Client?,
+    start: () -> Boolean,
+    isRunning: (Client) -> Boolean,
+    isCancelled: () -> Boolean,
+    timeoutMilliseconds: Long = WatchedMethods.CLIENT_START_MILLISECONDS,
+    pause: (Long) -> Unit = { milliseconds -> Thread.sleep(milliseconds) },
+    clock: () -> Long = System::currentTimeMillis,
+): Client? {
+    val found = lookup()
+    if (found != null && isRunning(found)) return found
+    if (found == null && !start()) return null
+    val deadline = clock() + timeoutMilliseconds
+    while (clock() < deadline && !isCancelled()) {
+        pause(WatchedMethods.CLIENT_POLL_MILLISECONDS)
+        val client = lookup()
+        if (client != null && isRunning(client)) return client
+    }
+    return null
 }
 
 /** A method of a file: its name in the tools' syntax, its declaration's range and its pattern's, in document offsets. */
@@ -361,12 +414,30 @@ private class Listed(val alias: String?)
 /** How [projectFile] lists [module]; null where it does not, or cannot be read as a project file. */
 private fun listedAlias(projectFile: VirtualFile, module: VirtualFile): Listed? {
     val directory = projectFile.parent ?: return null
-    val entry = projectModuleEntries(projectFile)?.firstOrNull { entry -> directory.findFileByRelativePath(entry.path) == module } ?: return null
+    val entry = projectModuleEntries(projectFile)?.firstOrNull { entry -> moduleFile(directory, entry.path) == module } ?: return null
     return Listed(entry.alias)
 }
 
-/** A module a project file names: its [path], `/`-separated and relative to the file's directory, and its `as`. */
+/** A module a project file names: its [path], `/`-separated, relative to the file's directory or absolute, and its `as`. */
 internal data class ProjectModuleEntry(val path: String, val alias: String?)
+
+/**
+ * The module file [written] names, as ns-next resolves a project file's
+ * path (`crates/ns-cli/src/project.rs`, `resolve_written_path`): relative
+ * to [directory], or, for a path with a root of its own, that path -- on
+ * Windows `/x/A.ns` on the directory's drive. Null for a file the virtual
+ * file system does not hold.
+ */
+internal fun moduleFile(directory: VirtualFile, written: String): VirtualFile? {
+    val path = try {
+        Path.of(written)
+    } catch (_: InvalidPathException) {
+        return null
+    }
+    if (path.root == null) return directory.findFileByRelativePath(written)
+    val resolved = directory.fileSystem.getNioPath(directory)?.resolve(path) ?: path
+    return LocalFileSystem.getInstance().findFileByNioFile(resolved)
+}
 
 /**
  * The modules [projectFile] names -- `main`'s first, then each of
@@ -416,7 +487,7 @@ fun programModules(programFile: VirtualFile?, identityOf: (VirtualFile) -> Modul
     if (programFile.name == PROJECT_FILE_NAME) {
         val directory = programFile.parent ?: return modules
         for (entry in projectModuleEntries(programFile).orEmpty()) {
-            val file = directory.findFileByRelativePath(entry.path)
+            val file = moduleFile(directory, entry.path)
             val identity = file?.let(identityOf)
             val id = entry.alias ?: identity?.id ?: continue
             add(id, identity?.version)

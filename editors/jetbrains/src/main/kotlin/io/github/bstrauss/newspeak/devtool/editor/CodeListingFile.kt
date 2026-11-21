@@ -11,6 +11,8 @@ import io.github.bstrauss.newspeak.devtool.model.Bytecode
 import io.github.bstrauss.newspeak.devtool.model.Code
 import io.github.bstrauss.newspeak.devtool.model.Scope
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
+import java.util.Collections
+import java.util.WeakHashMap
 import javax.swing.Icon
 
 /** The bytecode instruction a line of a listing stands for: its [body] and its [index] there. */
@@ -46,14 +48,37 @@ object CodeListingFileType : FileType {
 /**
  * A listing in an editor tab of its own (`docs/design/developer-tool.md`,
  * decision 30): read-only, and kept while the tool window's view moves on,
- * so that two copies can be compared.
+ * so that two copies can be compared. Once its run's tab closes it keeps
+ * its text and lets the run go ([unlinkListingsOf]): a listing tab left
+ * open never holds a run's records, and links nothing from then on.
  */
-class CodeListingFile(val listing: CodeListing) : LightVirtualFile(listing.title, CodeListingFileType, listing.text) {
+class CodeListingFile(listing: CodeListing) : LightVirtualFile(listing.title, CodeListingFileType, listing.text) {
     /** A listing of [text] alone, named [name]: the debugger's frame code. */
     constructor(name: String, text: String) : this(CodeListing(name, text))
 
+    /** What the tab shows: the listing as built, and its text alone once its run was closed. */
+    var listing: CodeListing = listing
+        private set
+
     init {
         isWritable = false
+        if (listing.run != null) linkedFiles.add(this)
+    }
+
+    /** Drops the link to the run, keeping the title and the text. */
+    internal fun unlink() {
+        listing = CodeListing(listing.title, listing.text)
+        linkedFiles.remove(this)
+    }
+
+    companion object {
+        /** Every listing file that still names its run, held weakly: a file nothing else holds goes with its link. */
+        private val linkedFiles: MutableSet<CodeListingFile> = Collections.newSetFromMap(WeakHashMap())
+
+        /** [run]'s tab closed: every listing file built from it keeps its text and lets it go. Called on the EDT. */
+        fun unlinkListingsOf(run: TraceRun) {
+            for (file in linkedFiles.toList()) if (file.listing.run === run) file.unlink()
+        }
     }
 }
 

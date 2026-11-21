@@ -1137,7 +1137,10 @@ The records:
   `inlining` record, so a reader holds a compile's `inlined` and
   `declined` events until it arrives and drops them for a refused or
   deferred copy -- unless neither can arrive, when it takes them at
-  once.
+  once. A compile's inlining events are one stretch, followed by its
+  outcome: any other record but a `body` or a `bytecode` record, which
+  stand wherever a body is first named, ends it, and a compile whose
+  outcome a filter withheld is dropped there.
 - `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
   before the first record that names `N`: the body's name as the text
   trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,
@@ -1263,12 +1266,21 @@ refuses an entry not of the trace filter's form (`WatchPatterns.kt`,
 the grammar `TraceFilter::parse` reads). A run's filters are built from
 the list as it stands at its start: everything for an empty list, and
 otherwise each kind narrowed to the entries that want it and name a
-module the run has -- one its project file names, by its `as` or else
-by the id and version `newspeak/moduleIdentity` answers, the single
-module run from its source, or a shipped one -- since `ns-next run`
-refuses a pattern naming no module of the program with exit status 2.
-A kind no entry is left for is not asked for at all, since a run
-without a pattern would trace every body.
+module the run has -- one its project file names, by a path relative
+to it or absolute, as ns-next resolves it, by its `as` or else by the
+id and version `newspeak/moduleIdentity` answers, the single module
+run from its source, or a shipped one -- since `ns-next run` refuses a
+pattern naming no module of the program with exit status 2. The start
+asks the server off the event dispatch thread, under a modal progress
+where it is on it, and with no client yet starts one and waits for it
+to run, at most 10 s (`CLIENT_START_MILLISECONDS`), so that the first
+run of a session, before any editor started the server, keeps its
+patterns; a module whose identity no answer gives is left out, since a
+run refused is worse than a watch left out. A kind no entry is left
+for is not asked for at all, since a run without a pattern would trace
+every body; where that leaves a run that asks for events or listings
+nothing to trace, a balloon of the plugin's notification group says so
+and names the entries left out (`nothingTracedNotice`).
 
 **Traced runs** (`TracedRuns.kt`, decisions 24 and 26). Run and Debug
 start their process through `NewspeakRunState.startProcess` alike; a
@@ -1277,13 +1289,27 @@ run that traces or lists anything is handed a temporary file,
 directory, and gets a `TraceRun` named by its configuration and the
 time and a tab of the tool window, and is selected. Closing its tab
 drops the run, its reader and its file, the newest run left becoming
-the selected one, whose decorations the editor shows. The reader
-(`TraceFileReader`) follows the file on a pooled thread, looking for
-appended bytes every 50 ms, keeps an incomplete last line until its
-newline arrives, parses each record with the platform's Gson
-(`TraceRecords.kt`), and publishes them in batches of at most 5,000
-records through `invokeLater`, no record waiting more than 200 ms for
-its batch; once the process ends it reads to the end. A first line that
+the selected one, whose decorations the editor shows, and every
+listing tab built from it (`CodeListingFile`) keeps its text and lets
+the run go, linking nothing from then on. No trace file outlives the
+IDE session that wrote it: the files are the application's
+(`TraceFiles.kt`), each named live from before its process starts
+until its run lets it go; a run whose project closed before the run
+was registered lets its file go at once; and the first project opened
+in an IDE session sweeps the directory of every file no live run
+names (`TraceFilesSweep`), which a deletion an earlier session's end
+cut short, or a file a still running process held open, left behind
+-- application-wide, so that it never deletes another open project's
+running trace. The reader (`TraceFileReader`) follows the file on a
+pooled thread, looking for appended bytes 50 ms after it last found
+some, each look after a quiet one waiting twice as long, up to 500 ms;
+keeps an incomplete last line until its newline arrives, parses each
+record with the platform's Gson (`TraceRecords.kt`), and publishes
+them in batches of at most 5,000 records through `invokeLater`, no
+record waiting more than 200 ms for its batch, the next batch handed
+over only once the event dispatch thread applied the last, so that a
+backlog waits in the file and never in the thread's queue; once the
+process ends it reads to the end. A first line that
 is no header of `ns-next-trace`, a version other than 1, a malformed
 line and an unreadable file end the reading with a message in the run's
 tab, after the records read before it. A `TraceRun` (`TraceRun.kt`),
@@ -1308,11 +1334,20 @@ or by a bytecode listing, since a body is described whenever any
 delivery names it. By the same rule, each send's outcome: the inlining
 decision of the last optimizing compile that planned it and whose
 installed copy still lives -- held until the compile's outcome arrives
-unless the header says none can, gone with the copy's retirement,
+unless the header says none can, and dropped unshown where the next
+record but a description or a bytecode listing is no part of the
+compile, its outcome withheld by a filter, so that at most one
+compile's decisions wait; gone with the copy's retirement,
 invalidation, freeing or the zone's replacement, and shown only where
 `deoptimize` and `code-zone` are traced --, and the state of its cache, `mono`, `poly <n>` with
 the receivers seen since it was last vacant, or `mega`, a block's
-sites by its family's root.
+sites by its family's root. A run keeps its last 200,000 events as
+such (`KEPT_EVENTS`), the Events tab's rows, dropping the oldest; what
+the events say of a body's state, a send, a cache and the Methods
+tab's and the icons' counts is kept beside them for the run's length,
+so that nothing the editor or the other views show changes when an
+event is dropped. The rest of a run -- its descriptions, listings and
+plans -- and every run until its tab is closed stay in memory.
 
 **The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
 traced run (`RunPanel`) of four views. Methods lists every method the
@@ -1322,7 +1357,8 @@ abandonments, the code bytes of its largest optimized copy and the
 callees declined in it, sortable, a double click opening it. Events is the trace as a table, filtered by category and by a part
 of the method's name, grouped by method on request, a double click
 going to the event's place in the source, and with "Text" the same rows
-as the text trace's lines. Code shows the bytecode and machine code of
+as the text trace's lines; it shows the events the run keeps, and says
+how many earlier ones were dropped. Code shows the bytecode and machine code of
 the body at the caret of a source editor, the innermost whose range
 holds it, with a chooser of its copies -- its bytecode, then each
 install, baseline, twin and optimized per key -- over a read-only
@@ -1403,13 +1439,20 @@ refusals. The analyzer's `tests/protocol.rs` pins
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the
 command line, its greying and the free field's refusal;
 `WatchedMethodsTest` the list, its storage, the patterns a run takes
-and its filters; `TraceFileReaderTest` and `TraceRunTest` the records,
+and its filters, an absolute module path, the wait for the server and
+the notice of a run left nothing to trace; `TraceFileReaderTest` and `TraceRunTest` the records,
 a partial line, a refused version, a malformed line after records, a
-large file read in bounded batches, the states, a state only where the
+large file read in bounded batches, a backlog handed over a batch at
+a time once the last was applied, the waits of a quiet file, the states, a state only where the
 trace knows it, a tier only where its end can be heard, events and
-listings alike, and a send's inlining going with its copy and shown
-only where its end can be heard; `TracedRunsTest` the tabs and the file's deletion;
-`TabsTest` the four views, the inlining tree kept across a batch;
+listings alike, a send's inlining going with its copy and shown
+only where its end can be heard, a compile whose outcome was withheld
+dropped, and the events kept beside counts that keep every one;
+`TracedRunsTest` the tabs, the file's deletion, at a tab's close and
+for a project closed before its run registered, the sweep, and a
+closed run's listing tabs; `TabsTest` the four views, the inlining
+tree kept across a batch, the Events tab's oldest rows dropped with
+the run's;
 `DecorationsTest` the icons, none for a method a caches-only run or a
 filtered-out callee says nothing of, the hints, the eyes, staleness,
 the checksum over an emoji and over CRLF line ends, and a library file;

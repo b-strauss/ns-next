@@ -92,12 +92,12 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
         val abandons = HashMap<Int, Int>()
         val declined = HashMap<Int, Int>()
         val installed = HashMap<Int, Int>()
-        for (event in run.events) {
-            val body = event.body?.let { number -> rootOf(run, number) } ?: continue
-            if (event.category == "deoptimize") deopts.merge(body, 1, Int::plus)
-            if (event.event == "abandoned") abandons.merge(body, 1, Int::plus)
-            if (event.event == "declined") declined.merge(body, 1, Int::plus)
-            if (event.event == "optimized") event.integer("bytes")?.let { bytes -> installed.merge(body, bytes, ::maxOf) }
+        for ((number, tally) in run.tallies) {
+            val body = rootOf(run, number)
+            deopts.merge(body, tally.deoptimizations, Int::plus)
+            abandons.merge(body, tally.abandonments, Int::plus)
+            declined.merge(body, tally.declines, Int::plus)
+            installed.merge(body, tally.largestOptimized, ::maxOf)
         }
         for ((number, codes) in run.code) {
             val root = rootOf(run, number)
