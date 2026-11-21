@@ -15,7 +15,13 @@ when they were written.
 
 ## Next
 
-**The debugger's stage 6: hot swap, then edit-and-continue of running
+**The MCP server and the trace file** (decided with the user on
+2026-11-21, after the developer tool's stage 3): an agent reaches through
+MCP what the plugin reads from `--trace-file` -- a method's events, its
+listings and its inlining plan, bounded -- as the item of that name below
+describes. It needs its questions decided and a plan of its own.
+
+Then **the debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
 [debugger.md](design/debugger.md), "Planned: the order of building
