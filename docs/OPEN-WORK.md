@@ -2529,6 +2529,16 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       method of a run that lists bytecode alone -- reaches none of them
       from the gutter, only from the tool window
       (`devtool/editor/DecorationsService.kt`, `stateIcon`).
+    - *Nothing says why a tier is not shown*: a tier is shown only where
+      its end can be heard (`compile` and `code-zone` for baseline and
+      twin, `deoptimize` and `code-zone` for optimized copies and the
+      sends' inlining; [developer-tool.md](design/developer-tool.md),
+      "Stage 3", `TraceRun`), so a run that traces only `compile`
+      shows no icons, and one without `deoptimize` labels an optimized
+      method by its baseline tier, while neither the Developer Tool
+      tab's hover sentences nor the tool window nor the icon's tooltip
+      names the categories missing (`devtool/model/TraceRun.kt`,
+      `heardOf`; `messages/NewspeakBundle.properties`).
     - *No decoration test draws a deoptimized icon*: `TraceRunTest`
       holds the state, but no `DecorationsTest` shows a method's icon
       as deoptimized (`devtool/editor/StateGutterRenderer.kt`).
