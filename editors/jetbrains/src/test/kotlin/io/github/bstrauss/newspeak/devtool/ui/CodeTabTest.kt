@@ -60,7 +60,9 @@ class CodeTabTest : BasePlatformTestCase() {
         return """{"kind":"body","body":$number,"name":"$name","family":${family ?: "null"},"module":{"id":"Demo","version":null},"source":{"file":"$file"},"range":${range(within)},"checksum":"${sourceChecksum(within)}","statements":[$statements],"sends":[]}"""
     }
 
-    private fun tracedRun(): TraceRun {
+    private fun tracedRun(): TraceRun = TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(tracedRecords()) }
+
+    private fun tracedRecords(): List<TraceRecord> {
         val lines = listOf(
             """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""",
             body(
@@ -89,7 +91,7 @@ class CodeTabTest : BasePlatformTestCase() {
                 """{"offset":8,"text":"ret","scope":0,"at":5,"annotation":null}],""" +
                 """"data":[],"scopes":[{"scope":0,"body":1,"parent":null},{"scope":1,"body":2,"parent":[0,4]}],"mark":null}""",
         )
-        return TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(lines.map { line -> checkNotNull(TraceRecord.parse(line)) }) }
+        return lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
     }
 
     private fun tab(run: TraceRun): CodeTab {
@@ -133,6 +135,24 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(listOf("bytecode"), (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label })
         editor.caretAt("class Demo")
         assertEquals("outside every body the tab stays", 2, tab.shownBody)
+    }
+
+    fun testACaretPlacedBeforeTheTabShowsItsBodyAtOnce() {
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val tab = tab(tracedRun())
+        assertEquals("no caret move is needed", 1, tab.shownBody)
+        assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- bytecode {Demo>>run:}\n"))
+    }
+
+    fun testACaretPlacedBeforeTheRecordsShowsItsBodyWhenTheyArrive() {
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val run = TraceRun("Demo", Instant.EPOCH)
+        val tab = tab(run)
+        assertNull(tab.shownBody)
+        run.add(tracedRecords())
+        assertEquals(1, tab.shownBody)
     }
 
     fun testTheChooserListsEveryCopy() {

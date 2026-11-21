@@ -9,6 +9,8 @@ import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
@@ -49,7 +51,10 @@ class CodeCopy(val label: String, val listing: () -> CodeListing) {
  * together ([LinkedHighlighting]).
  *
  * Only while its run is [tracedRuns]' selected one does it follow the
- * caret, so that two runs' tabs never both draw. It places the caret and
+ * caret, so that two runs' tabs never both draw; it takes the caret as it
+ * stands, without waiting for it to move, when records arrive before it
+ * showed a body, when its run is selected again and when another editor
+ * is selected. It places the caret and
  * the source's statements by the bodies [decorations] keeps markers of,
  * which follow every edit, and links nothing in a method changed since the
  * run (decision 32).
@@ -84,6 +89,9 @@ class CodeTab(
     /** Set while the tab writes its viewer, whose caret then moves without the user. */
     private var updating = false
 
+    /** Whether its run was the selected one at the last change of [tracedRuns]. */
+    private var wasActive = tracedRuns.selected === run
+
     init {
         Disposer.register(parent) { EditorFactory.getInstance().releaseEditor(viewer) }
         val open = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
@@ -104,11 +112,28 @@ class CodeTab(
             },
             parent,
         )
-        run.onChanged(parent) { shownBody?.let { body -> offer(body, keepChoice = true) } }
-        // A run no longer selected leaves nothing drawn for the selected one's tab to draw over.
-        tracedRuns.addListener({ if (!active()) highlighting.deselect() }, parent)
+        project.messageBus.connect(parent).subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            object : FileEditorManagerListener {
+                override fun selectionChanged(event: FileEditorManagerEvent) = followSelectedEditor()
+            },
+        )
+        // The caret stood in a method before the run described it: the records name its body now.
+        run.onChanged(parent) { shownBody?.let { body -> offer(body, keepChoice = true) } ?: followSelectedEditor() }
+        tracedRuns.addListener(
+            {
+                val nowActive = active()
+                // A run no longer selected leaves nothing drawn for the selected one's tab to draw over.
+                if (!nowActive) highlighting.deselect()
+                // The caret moved while another run was selected.
+                if (nowActive && !wasActive) followSelectedEditor()
+                wasActive = nowActive
+            },
+            parent,
+        )
         // A method an edit made stale is linked no longer, without waiting for the caret to move.
         decorations.addStalenessListener({ if (active()) highlighting.refresh() }, parent)
+        followSelectedEditor()
     }
 
     /** Shows the copies of [body], its bytecode first: the gutter menu's "Show Code" and the caret's body. */
@@ -173,6 +198,11 @@ class CodeTab(
     }
 
     private fun active(): Boolean = tracedRuns.selected === run
+
+    /** Takes the caret of the selected editor as it stands, as if it had just moved there. */
+    private fun followSelectedEditor() {
+        FileEditorManager.getInstance(project).selectedTextEditor?.let(::caretMoved)
+    }
 
     private fun caretMoved(editor: Editor) {
         if (updating || editor.isDisposed) return

@@ -144,11 +144,12 @@
              (NewspeakDocumentSymbols). -->
         <lang.psiStructureViewFactory language="Newspeak"
                                       implementationClass="io.github.bstrauss.newspeak.structure.NewspeakStructureViewFactory"/>
-        <!-- A tab per traced run, which TracedRuns adds; at the bottom, beside Run and Debug, whose
+        <!-- A tab per traced run, which TracedRuns adds and closing drops with its data; at the bottom, beside Run and Debug, whose
              consoles it follows, and never shown on its own, which would hide theirs. -->
         <toolWindow id="Newspeak JIT"
                     anchor="bottom"
                     secondary="false"
+                    canCloseContents="true"
                     icon="AllIcons.Toolwindows.ToolWindowProfiler"
                     factoryClass="io.github.bstrauss.newspeak.devtool.ui.DeveloperToolWindowFactory"/>
         <!-- Alt+Enter on a method: watch or unwatch it, as the context menus' action does. -->
