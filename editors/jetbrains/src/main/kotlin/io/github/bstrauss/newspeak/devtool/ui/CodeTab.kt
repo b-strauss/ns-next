@@ -30,9 +30,12 @@ import io.github.bstrauss.newspeak.devtool.editor.listingOf
 import io.github.bstrauss.newspeak.devtool.editor.showListing
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
+import java.awt.Dimension
 import java.awt.FlowLayout
+import javax.swing.AbstractButton
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
+import javax.swing.JList
 import javax.swing.JPanel
 
 /** A copy of a body the chooser offers: its [label] and how its listing is made. */
@@ -71,10 +74,35 @@ class CodeTab(
     /** The read-only editor the listing is shown in. */
     val viewer: Editor = EditorFactory.getInstance().createViewer(document, project)
 
-    /** The copies of the body shown. */
-    val chooser = ComboBox<CodeCopy>()
+    /**
+     * The copies of the body shown, as wide as its longest label -- a key
+     * and an entered application make an optimized copy's long --, never
+     * cut but where the tab is narrower than the bar would be.
+     */
+    val chooser: ComboBox<CodeCopy> = object : ComboBox<CodeCopy>() {
+        override fun getPreferredSize(): Dimension {
+            val size = super.getPreferredSize()
+            val list = JList<CodeCopy>()
+            val widest = (0 until itemCount).maxOfOrNull { index ->
+                renderer.getListCellRendererComponent(list, getItemAt(index), -1, false, false).preferredSize.width
+            } ?: 0
+            // The arrow and the border around the label.
+            val chrome = insets.left + insets.right + components.filterIsInstance<AbstractButton>().sumOf { button -> button.preferredSize.width }
+            val wanted = maxOf(size.width, widest + chrome)
+            val room = roomForChooser()
+            return Dimension(if (room > 0) minOf(wanted, room) else wanted, size.height)
+        }
+    }
 
     private val title = JBLabel()
+
+    private val openButton = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
+        addActionListener { listing?.let(::openInEditor) }
+    }
+
+    private val bar = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
+        border = JBUI.Borders.empty(2, 4)
+    }
 
     val highlighting = LinkedHighlighting(project, run, { document -> decorations.placedBodies(document, run) }, parent)
 
@@ -94,15 +122,9 @@ class CodeTab(
 
     init {
         Disposer.register(parent) { EditorFactory.getInstance().releaseEditor(viewer) }
-        val open = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
-            addActionListener { listing?.let(::openInEditor) }
-        }
-        val bar = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
-            border = JBUI.Borders.empty(2, 4)
-            add(title)
-            add(chooser)
-            add(open)
-        }
+        bar.add(title)
+        bar.add(chooser)
+        bar.add(openButton)
         add(bar, BorderLayout.NORTH)
         add(viewer.component, BorderLayout.CENTER)
         chooser.addActionListener { showChosen() }
@@ -161,6 +183,9 @@ class CodeTab(
         shownBody = body
         title.text = bodyName(run, body)
         chooser.model = DefaultComboBoxModel(copies.toTypedArray())
+        // Another body's labels: the chooser takes their width, and the bar is laid out again.
+        bar.revalidate()
+        bar.repaint()
         val index = copies.indexOfFirst { copy -> copy.label == chosen }.takeIf { found -> found >= 0 } ?: 0
         if (copies.isNotEmpty()) chooser.selectedIndex = index
         showChosen()
@@ -195,6 +220,14 @@ class CodeTab(
             updating = false
         }
         highlighting.refresh()
+    }
+
+    /** The width the bar leaves the chooser beside the title and the button: the tab's, 0 before it was laid out. */
+    private fun roomForChooser(): Int {
+        if (width <= 0) return 0
+        val layout = bar.layout as FlowLayout
+        val gaps = layout.hgap * BAR_GAPS + bar.insets.left + bar.insets.right
+        return maxOf(width - title.preferredSize.width - openButton.preferredSize.width - gaps, 1)
     }
 
     private fun active(): Boolean = tracedRuns.selected === run
@@ -241,6 +274,9 @@ class CodeTab(
 
     private companion object {
         const val BYTECODE = "bytecode"
+
+        /** A flow layout's gaps around and between the bar's three components. */
+        const val BAR_GAPS = 4
         const val NEWSPEAK_EXTENSION = "ns"
     }
 }

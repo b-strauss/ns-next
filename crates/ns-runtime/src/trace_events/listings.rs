@@ -47,11 +47,29 @@ pub struct BytecodeListing {
     pub bodies: Vec<ListedBody>,
 }
 
-/// One body of a bytecode listing, its instructions apart.
+/// One body of a bytecode listing, its instructions apart, with what
+/// the text's line above them writes: `kind` its word there (`method`,
+/// `block`, `initializer` or `superclass clause`) and its counts of
+/// arguments and registers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedBody {
     pub body: BodyName,
+    pub kind: &'static str,
+    pub argument_count: u16,
+    pub register_count: u16,
     pub instructions: Vec<ListedInstruction>,
+}
+
+/// The word `bytecode::disassemble` writes for `kind` at the start of a
+/// body's line, so that a reader of the structured listing writes the
+/// line the text has.
+fn kind_word(kind: bytecode::CodeKind) -> &'static str {
+    match kind {
+        bytecode::CodeKind::Method => "method",
+        bytecode::CodeKind::Block => "block",
+        bytecode::CodeKind::Initializer => "initializer",
+        bytecode::CodeKind::SuperclassClause => "superclass clause",
+    }
 }
 
 /// One instruction of a listed body: `text` is what `instruction_lines`
@@ -84,7 +102,13 @@ fn listed_bodies(
                 text,
             })
             .collect();
-        listed.push(ListedBody { body, instructions });
+        listed.push(ListedBody {
+            body,
+            kind: kind_word(code.kind),
+            argument_count: code.argument_count,
+            register_count: code.register_count,
+            instructions,
+        });
         let blocks: Vec<Rc<CompiledCode>> = code
             .instructions()
             .iter()

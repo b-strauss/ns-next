@@ -73,12 +73,12 @@ class CodeTabTest : BasePlatformTestCase() {
             """{"kind":"bytecode","body":3,"bodies":[{"body":3,"instructions":[{"index":0,"statement":0,"text":"LoadLiteral r1, 7"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
             body(2, "[] in Demo>>run:", BLOCK, 1, """{"instructions":[0,2],"range":${range(BLOCK_STATEMENT, BLOCK)}}"""),
             """{"kind":"bytecode","body":1,"bodies":[""" +
-                """{"body":1,"instructions":[""" +
+                """{"body":1,"kind":"method","arguments":1,"registers":20,"instructions":[""" +
                 """{"index":0,"statement":0,"text":"LoadLiteral r3, 1"},{"index":1,"statement":0,"text":"SendPublic r4 <- r0 #+ (r3) @0"},""" +
                 """{"index":2,"statement":0,"text":"StoreLocal r2 <- r4"},{"index":3,"statement":1,"text":"MakeClosure r5, [] -> copying r2"},""" +
                 """{"index":4,"statement":1,"text":"SendPublic r6 <- r5 #value () @1"},{"index":5,"statement":1,"text":"Return r6"}]},""" +
-                """{"body":2,"instructions":[{"index":0,"statement":0,"text":"SendPublic r1 <- r0 #* (r2) @0"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
-            """{"kind":"code","body":1,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":40,"instructions":[""" +
+                """{"body":2,"kind":"block","arguments":0,"registers":16,"instructions":[{"index":0,"statement":0,"text":"SendPublic r1 <- r0 #* (r2) @0"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
+            """{"kind":"code","body":1,"tier":"baseline","key":null,"entered":null,"architecture":"x64","base":12288,"bytes":40,"instructions":[""" +
                 """{"offset":0,"text":"push rbp","scope":null,"at":null,"annotation":null},""" +
                 """{"offset":1,"text":"mov rax,1","scope":0,"at":0,"annotation":null},""" +
                 """{"offset":5,"text":"call rcx","scope":0,"at":1,"annotation":"cell site 0"},""" +
@@ -165,15 +165,16 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(
             """
             --- bytecode {Demo>>run:}
+            method Demo>>run: (args 1, registers 20)
                0   stmt 0  LoadLiteral r3, 1
                1   stmt 0  SendPublic r4 <- r0 #+ (r3) @0
                2   stmt 0  StoreLocal r2 <- r4
                3   stmt 1  MakeClosure r5, [] -> copying r2
+                    block block (args 0, registers 16)
+                       0   stmt 0  SendPublic r1 <- r0 #* (r2) @0
+                       1   stmt 0  Return r1
                4   stmt 1  SendPublic r6 <- r5 #value () @1
                5   stmt 1  Return r6
-            block {[] in Demo>>run:}
-               0   stmt 0  SendPublic r1 <- r0 #* (r2) @0
-               1   stmt 0  Return r1
             --- end
 
             """.trimIndent(),
@@ -182,7 +183,7 @@ class CodeTabTest : BasePlatformTestCase() {
         choose(tab, "baseline")
         assertEquals(
             """
-            --- code {Demo>>run:} baseline x64 bytes=40
+            --- code {Demo>>run:} baseline x64 base=0x3000 bytes=40
                 +0x0000  push rbp
               @0  stmt 0  LoadLiteral r3, 1
                 +0x0001  mov rax,1
@@ -235,7 +236,7 @@ class CodeTabTest : BasePlatformTestCase() {
         choose(tab, "twin")
         assertEquals(
             """
-            --- code {Demo>>other} twin x64 bytes=8
+            --- code {Demo>>other} twin x64 base=0x1000 bytes=8
               out of line
                 +0x0000  jmp rbx
               @0  stmt 0  LoadLiteral r1, 7
@@ -285,7 +286,8 @@ class CodeTabTest : BasePlatformTestCase() {
         val editor = openSource()
         tab.show(1)
         val viewer = tab.viewer
-        viewer.caretModel.moveToLogicalPosition(LogicalPosition(1, 0))
+        // Line 1 is the method's line; line 2 its first instruction.
+        viewer.caretModel.moveToLogicalPosition(LogicalPosition(2, 0))
         val statement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
         assertEquals(FIRST, editor.document.getText(statement.textRange))
         assertEquals(linkedColor(0), statement.textAttributesKey)
@@ -294,7 +296,9 @@ class CodeTabTest : BasePlatformTestCase() {
         viewer.caretModel.moveToLogicalPosition(LogicalPosition(8, 0))
         val blockStatement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
         assertEquals(BLOCK_STATEMENT, editor.document.getText(blockStatement.textRange))
-        // A line that stands for no instruction highlights nothing.
+        // A line that stands for no instruction -- the head, a body's line -- highlights nothing.
+        viewer.caretModel.moveToLogicalPosition(LogicalPosition(6, 0))
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
         viewer.caretModel.moveToLogicalPosition(LogicalPosition(0, 0))
         assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
     }
@@ -402,6 +406,29 @@ class CodeTabTest : BasePlatformTestCase() {
         run.add(listOf(checkNotNull(TraceRecord.parse(baselineAgain.replace("\"bytes\":8", "\"bytes\":12")))))
         assertEquals("baseline (2)", (tab.chooser.selectedItem as CodeCopy).label)
         assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
+    }
+
+    fun testTheChooserIsAsWideAsItsLongestLabel() {
+        val long = """{"kind":"code","body":1,"tier":"optimized","key":"newspeak.core.Kernel/Integer","entered":"newspeak.core.Kernel/Number","architecture":"x64","bytes":4,"instructions":[],"data":[],"scopes":[{"scope":0,"body":1,"parent":null}],"mark":null}"""
+        val run = tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(long)))) }
+        val tab = tab(run)
+        tab.setSize(2000, 400)
+        // Measured first with the copies of a body whose labels are short.
+        tab.show(3)
+        val short = tab.chooser.preferredSize.width
+        tab.show(1)
+        val list = javax.swing.JList<CodeCopy>()
+        val needed = (0 until tab.chooser.itemCount).map { index ->
+            val copy = tab.chooser.getItemAt(index)
+            copy.label to tab.chooser.renderer.getListCellRendererComponent(list, copy, -1, false, false).preferredSize.width
+        }
+        assertTrue(needed.toString(), needed.any { (label, _) -> label == "optimized key=newspeak.core.Kernel/Integer entered=newspeak.core.Kernel/Number" })
+        val wide = tab.chooser.preferredSize.width
+        for ((label, width) in needed) assertTrue("$label needs $width, the chooser wants $wide", wide > width)
+        assertTrue("$short, $wide", wide > short)
+        // A tab narrower than the bar bounds it.
+        tab.setSize(300, 400)
+        assertTrue(tab.chooser.preferredSize.width.toString(), tab.chooser.preferredSize.width < 300)
     }
 
     private companion object {

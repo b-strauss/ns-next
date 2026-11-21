@@ -200,6 +200,28 @@ fn a_bytecode_listing_lists_each_body_structured() {
             );
         }
     }
+    // Each body's line above its instructions is the text's: the root's
+    // first, named as the trace names it, a block's as the text names it.
+    let lines: Vec<&str> = listing.text.lines().map(str::trim_start).collect();
+    for (position, body) in listing.bodies.iter().enumerate() {
+        let name = if position == 0 {
+            listing.body.name.as_str()
+        } else {
+            "block"
+        };
+        let line = format!(
+            "{} {name} (args {}, registers {})",
+            body.kind, body.argument_count, body.register_count
+        );
+        assert!(
+            lines.contains(&line.as_str()),
+            "{line} is not in\n{}",
+            listing.text
+        );
+    }
+    assert_eq!(listing.bodies[0].kind, "method");
+    assert_eq!(listing.bodies[1].kind, "block");
+    assert_eq!(listing.bodies[1].argument_count, 1);
 }
 
 #[test]

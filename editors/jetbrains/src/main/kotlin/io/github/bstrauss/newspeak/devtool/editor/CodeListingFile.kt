@@ -8,6 +8,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.testFramework.LightVirtualFile
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.model.Bytecode
+import io.github.bstrauss.newspeak.devtool.model.BytecodeBody
 import io.github.bstrauss.newspeak.devtool.model.Code
 import io.github.bstrauss.newspeak.devtool.model.Scope
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
@@ -113,30 +114,64 @@ private fun statementWord(statement: Int?): String = statement?.let { index -> "
 private fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: "#$body"
 
 /**
- * [bytecode]'s listing: the head `--- bytecode {<body>}`, the root's
- * instructions, then each block it makes after a line `block {<body>}`,
- * and `--- end`. The record holds no counts of arguments and registers,
- * so the text listing's line of them is not written.
+ * [bytecode]'s listing as the text listing writes it: the head `---
+ * bytecode {<body>}`, the root's line -- its kind, its name, its counts of
+ * arguments and registers -- and its instructions, each block it makes
+ * nested eight columns deeper under its `MakeClosure` with the line
+ * `block block (args …, registers …)` the text names every block by, and
+ * `--- end`. The record lists the blocks in the order the text nests them,
+ * so the next block not yet written is the one a `MakeClosure` makes. A
+ * record without the counts writes the line without them.
  */
 fun bytecodeListing(run: TraceRun, bytecode: Bytecode): CodeListing {
     val writer = ListingWriter()
     val name = bodyName(run, bytecode.body)
     writer.line("--- bytecode {$name}")
-    for (listed in bytecode.bodies) {
-        if (listed.body != bytecode.body) writer.line("block {${bodyName(run, listed.body)}}")
-        for (instruction in listed.instructions) {
-            writer.line(instructionLine(instruction.index, instruction.statement, instruction.text), ListingPosition(listed.body, instruction.index))
+    val bodies = bytecode.bodies
+    var next = 0
+    // A worklist, not recursion: an image's body chooses how deep its blocks nest.
+    val pending = ArrayDeque<NestedBody>()
+    fun begin(depth: Int) {
+        val listed = bodies[next]
+        val pad = " ".repeat(depth * BLOCK_INDENT)
+        val root = next == 0
+        val line = StringBuilder(pad).append(listed.kind ?: if (root) METHOD else BLOCK).append(' ').append(if (root) name else BLOCK)
+        if (listed.arguments != null && listed.registers != null) line.append(" (args ${listed.arguments}, registers ${listed.registers})")
+        writer.line(line.toString())
+        pending.addLast(NestedBody(listed, 0, depth))
+        next++
+    }
+    while (next < bodies.size) {
+        // A block the record lists past every `MakeClosure` stands one level in, after the rest.
+        begin(if (next == 0) 0 else 1)
+        while (pending.isNotEmpty()) {
+            val nested = pending.removeLast()
+            val instruction = nested.body.instructions.getOrNull(nested.position) ?: continue
+            val pad = " ".repeat(nested.depth * BLOCK_INDENT)
+            writer.line(pad + instructionLine(instruction.index, instruction.statement, instruction.text), ListingPosition(nested.body.body, instruction.index))
+            pending.addLast(NestedBody(nested.body, nested.position + 1, nested.depth))
+            if (instruction.text.startsWith(MAKE_CLOSURE) && next < bodies.size) begin(nested.depth + 1)
         }
     }
     writer.line(END)
     return writer.build("$name bytecode", run)
 }
 
+/** A body of a bytecode listing being written: the [position] of its next instruction and how many blocks deep it stands. */
+private class NestedBody(val body: BytecodeBody, val position: Int, val depth: Int)
+
+/** How many columns deeper the text listing writes a block than the body that makes it. */
+private const val BLOCK_INDENT = 8
+
+private const val METHOD = "method"
+private const val BLOCK = "block"
+private const val MAKE_CLOSURE = "MakeClosure "
+
 /**
- * [code]'s listing as the CLI writes it -- its head, an optimized copy's
- * scope tree, each stretch named where its scope or index changes, the
- * instructions at their offsets with their annotations, the data words --
- * but for the head's `base=`.
+ * [code]'s listing as the CLI writes it -- its head, `base=` where the
+ * record gives the address, an optimized copy's scope tree, each stretch
+ * named where its scope or index changes, the instructions at their
+ * offsets with their annotations, the data words.
  */
 fun codeListing(run: TraceRun, code: Code): CodeListing {
     val writer = ListingWriter()
@@ -146,6 +181,7 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
         head.append(" key={$key}")
         code.entered?.let { entered -> head.append(" entered={$entered}") }
     }
+    code.base?.let { base -> head.append(" base=0x").append(java.lang.Long.toHexString(base)) }
     head.append(" bytes=${code.bytes}")
     writer.line(head.toString())
     val optimized = code.tier == OPTIMIZED

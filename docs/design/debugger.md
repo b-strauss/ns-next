@@ -6157,7 +6157,10 @@ agent that refuses is answered with a notification of the plugin's
 stop and every selection of another frame it asks again on the
 connection's thread and writes the answer on the event dispatch thread,
 only the latest request's, since several selections' answers arrive in
-no fixed order; it ends when the tab closes or the session stops, its
+no fixed order, as the change between the old text and the new alone,
+each editor's caret then at the marked line, so that a step never
+scrolls the tab to its start (`FrameCodeFollowerTest`); it ends when the
+tab's last editor closes -- not one split of it -- or the session stops, its
 lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
 disposed with the project at the latest), and is not made for a session
 that stopped while the first answer was on its way

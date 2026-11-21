@@ -104,8 +104,19 @@ data class Event(val category: String, val body: Int?, val event: String, val fi
 /** An instruction of a bytecode listing: its [index], its statement, null outside every statement, and its text. */
 data class BytecodeInstruction(val index: Int, val statement: Int?, val text: String)
 
-/** One body of a bytecode listing, the root or a block it makes. */
-data class BytecodeBody(val body: Int, val instructions: List<BytecodeInstruction>)
+/**
+ * One body of a bytecode listing, the root or a block it makes, with what
+ * the text listing's line above its instructions writes: its [kind]
+ * (`method`, `block`, `initializer`, `superclass clause`) and its counts of
+ * [arguments] and [registers], each null in a record that does not give it.
+ */
+data class BytecodeBody(
+    val body: Int,
+    val instructions: List<BytecodeInstruction>,
+    val kind: String? = null,
+    val arguments: Int? = null,
+    val registers: Int? = null,
+)
 
 /** A body's bytecode: the root [body] first in [bodies], then the blocks it makes. */
 data class Bytecode(val body: Int, val bodies: List<BytecodeBody>) : TraceRecord
@@ -226,6 +237,9 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
                     val fields = instruction.asJsonObject
                     BytecodeInstruction(fields.requiredInteger("index"), fields.optionalInteger("statement"), fields.requiredText("text"))
                 },
+                kind = listed.optionalText("kind"),
+                arguments = listed.optionalInteger("arguments"),
+                registers = listed.optionalInteger("registers"),
             )
         },
     )

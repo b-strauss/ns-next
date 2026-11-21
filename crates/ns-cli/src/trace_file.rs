@@ -520,6 +520,9 @@ pub(crate) fn listing_record(listing: &Listing) -> Value {
     }
 }
 
+/// A `bytecode` record: each body of `bytecode`, the root first, with what
+/// the text listing's line above its instructions writes -- its kind, its
+/// arguments and its registers -- and its instructions.
 fn bytecode_record(bytecode: &BytecodeListing) -> Value {
     let BytecodeListing {
         body,
@@ -540,7 +543,13 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
                     })
                 })
                 .collect();
-            json!({ "body": number(&listed.body), "instructions": instructions })
+            json!({
+                "body": number(&listed.body),
+                "kind": listed.kind,
+                "arguments": listed.argument_count,
+                "registers": listed.register_count,
+                "instructions": instructions,
+            })
         })
         .collect();
     json!({ "kind": "bytecode", "body": number(body), "bodies": bodies })
@@ -785,7 +794,7 @@ mod tests {
     use crate::trace::tests::{every_event, split_outside_braces};
     use ns_runtime::trace_events::{
         Annotation, Architecture, CodeTier, CurrentText, DataWord, DescribedSend,
-        DescribedStatement,
+        DescribedStatement, ListedBody, ListedInstruction,
     };
 
     /// The fields whose values name a body, by the line's names.
@@ -829,6 +838,84 @@ mod tests {
         }
     }
 
+    /// The plugin's fixture of every event (`EventsFixtureTest`), from the
+    /// repository's root: each event's record and the line the text trace
+    /// writes of it, which the plugin's Events tab is held to.
+    const EVENTS_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../editors/jetbrains/src/test/resources/devtool/events.jsonl"
+    );
+
+    /// One line of the fixture per event of `every_event`: the bodies it
+    /// names, each named body numbered apart by its first place in the
+    /// line -- `every_event` numbers every body 1 --, the event's record
+    /// naming them by those numbers, and its text line.
+    fn events_fixture() -> String {
+        let mut fixture = String::new();
+        for (event, line) in every_event() {
+            let mut record = event_record(&event);
+            let parts = split_outside_braces(line);
+            let mut names: Vec<String> = Vec::new();
+            let mut number_of = |name: &str| {
+                let position = names
+                    .iter()
+                    .position(|known| known == name)
+                    .unwrap_or_else(|| {
+                        names.push(name.to_string());
+                        names.len() - 1
+                    });
+                position + 1
+            };
+            let body = parts[1]
+                .strip_prefix('{')
+                .and_then(|rest| rest.strip_suffix('}'))
+                .expect("a line names its body in braces");
+            if !body.is_empty() {
+                record["body"] = json!(number_of(body));
+            }
+            for field in &parts[3..] {
+                let (name, value) = field.split_once('=').expect("a field is name=value");
+                if BODY_FIELDS.contains(&name) {
+                    let named = value
+                        .strip_prefix('{')
+                        .and_then(|rest| rest.strip_suffix('}'))
+                        .expect("a body field names its body in braces");
+                    record[name] = json!(number_of(named));
+                }
+            }
+            let bodies: Vec<Value> = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| json!({ "body": index + 1, "name": name }))
+                .collect();
+            let entry = json!({ "bodies": bodies, "record": record, "line": line });
+            fixture.push_str(&entry.to_string());
+            fixture.push('\n');
+        }
+        fixture
+    }
+
+    /// The fixture holds every event as this build writes it: a change to
+    /// an event's record or line fails here until the fixture is written
+    /// again by `regenerate_the_events_fixture`, which the plugin's test
+    /// then holds the Events tab to.
+    #[test]
+    fn the_events_fixture_is_current() {
+        let written = std::fs::read_to_string(EVENTS_FIXTURE)
+            .unwrap_or_else(|error| panic!("{EVENTS_FIXTURE}: {error}"));
+        // A checkout may have given the file CRLF line ends.
+        assert!(
+            written.replace("\r\n", "\n") == events_fixture(),
+            "{EVENTS_FIXTURE} is stale: run `cargo test -p ns-cli --bins regenerate_the_events_fixture -- --ignored`"
+        );
+    }
+
+    #[test]
+    #[ignore = "regenerates the plugin's events fixture; run deliberately"]
+    fn regenerate_the_events_fixture() {
+        std::fs::write(EVENTS_FIXTURE, events_fixture()).expect("write the events fixture");
+    }
+
     #[test]
     fn a_record_is_one_line() {
         for (event, _) in every_event() {
@@ -847,6 +934,60 @@ mod tests {
             !header_record(TraceCategories::default(), Printing::default())
                 .to_string()
                 .contains('\n')
+        );
+    }
+
+    /// A bytecode record gives each body what the text listing's line of
+    /// it writes, so that a reader writes the line as the text does.
+    #[test]
+    fn a_bytecode_record_gives_each_body_its_line() {
+        let listing = Listing::Bytecode(BytecodeListing {
+            body: BodyName {
+                number: 1,
+                name: "Demo>>run".to_string(),
+            },
+            text: String::new(),
+            bodies: vec![
+                ListedBody {
+                    body: BodyName {
+                        number: 1,
+                        name: "Demo>>run".to_string(),
+                    },
+                    kind: "method",
+                    argument_count: 1,
+                    register_count: 16,
+                    instructions: vec![ListedInstruction {
+                        index: 0,
+                        statement: Some(0),
+                        text: "Return r0".to_string(),
+                    }],
+                },
+                ListedBody {
+                    body: BodyName {
+                        number: 2,
+                        name: "[] in Demo>>run".to_string(),
+                    },
+                    kind: "block",
+                    argument_count: 0,
+                    register_count: 14,
+                    instructions: Vec::new(),
+                },
+            ],
+        });
+        let record = listing_record(&listing);
+        assert_eq!(record["kind"], "bytecode");
+        assert_eq!(
+            record["bodies"],
+            json!([
+                {
+                    "body": 1,
+                    "kind": "method",
+                    "arguments": 1,
+                    "registers": 16,
+                    "instructions": [{"index": 0, "statement": 0, "text": "Return r0"}],
+                },
+                {"body": 2, "kind": "block", "arguments": 0, "registers": 14, "instructions": []},
+            ])
         );
     }
 

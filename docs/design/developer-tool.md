@@ -1210,10 +1210,14 @@ The records:
   `selector` without the line's `#`; `declined-no-body`'s `reasons` an
   array of `{"reason":…,"count":n}` in the line's order; `retired`'s
   `version` `null` where the line writes `none`.
-- `{"kind":"bytecode","body":N,"bodies":[{"body":N,"instructions":[{"index":i,"statement":s|null,"text":…}]}]}`,
-  a body's bytecode, the root and then the blocks it makes, each
-  instruction's text as the text listing writes it after its index and
-  statement columns.
+- `{"kind":"bytecode","body":N,"bodies":[{"body":N,"kind":…,"arguments":a,"registers":r,"instructions":[{"index":i,"statement":s|null,"text":…}]}]}`,
+  a body's bytecode, the root and then the blocks it makes in the order
+  the text listing nests them, each body with what the text's line above
+  its instructions writes -- its `kind` (`method`, `block`,
+  `initializer`, `superclass clause`) and its counts of arguments and
+  registers, a reader taking a body without them as one whose line has
+  none -- and each instruction's text as the text listing writes it
+  after its index and statement columns.
 - `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"base":address,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
   an install's machine code, decoded by `ns-cli` as the text listing
   decodes it (`listing::annotated`, the one walk that places the
@@ -1259,7 +1263,9 @@ debugger's (`debugger/`).
 **The "Developer Tool" tab** (`DeveloperToolTab.kt`, decision 21) of a
 Newspeak run configuration has a checkbox for each of the seven
 categories, with "All", one for each listing kind, each saying on hover
-in a sentence what it holds, and the link "Manage watched methods…";
+in a sentence what it holds -- `compile`'s, `deoptimize`'s and
+`code-zone`'s also which of the editor's tier icons need it --, and the
+link "Manage watched methods…";
 the configuration stores them (`traceCategories`, `printBytecode`,
 `printCode`, `printInlining`). They apply to `run`, and are greyed while
 the command the configuration's form shows is `bench`. The first tab's
@@ -1378,18 +1384,28 @@ event is dropped. The rest of a run -- its descriptions, listings and
 plans -- and every run until its tab is closed stay in memory.
 
 **The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
-traced run (`RunPanel`) of four views. Methods lists every method the
-run described -- a block counted as its method's -- with its state,
+traced run (`RunPanel`) of four views, above them the error that ended
+the reading of the run's file, if one did, and a line naming the
+categories the run's header lacks that the tier icons need
+(`TraceRun.missingTierCategories`): "No tier icons: trace … too"
+without `compile`, "No icons of baseline, twin or optimized code: …"
+without `code-zone`, "No icons of optimized copies, which show as their
+baseline tier: …" without `deoptimize`. Methods lists every method the
+run names -- described, or named by its number alone, `#<number>` as
+the events name it -- a block counted as its method's, with its state,
 blank for one the run has none of, copies, deoptimizations,
-abandonments, the code bytes of its largest optimized copy and the
-callees declined in it, sortable, a double click opening it. Events is the trace as a table, filtered by category and by a part
+abandonments, the code bytes of its largest install of each tier, a
+column each for baseline, twin and optimized, from the installs'
+events and listings alike, and the callees declined in it, sortable, a
+double click opening it. Events is the trace as a table, filtered by category and by a part
 of the method's name, grouped by method on request, a double click
 going to the event's place in the source, and with "Text" the same rows
 as the text trace's lines; it shows the events the run keeps, and says
 how many earlier ones were dropped. Code shows the bytecode and machine code of
 the body at the caret of a source editor, the innermost whose range
 holds it, with a chooser of its copies -- its bytecode, then each
-install, baseline, twin and optimized per key -- over a read-only
+install, baseline, twin and optimized per key, the chooser as wide as
+its longest label but where the tab is narrower -- over a read-only
 viewer of the listing in the text listing's format, built from the
 records, a copy installed again under the same tier and key numbered
 (`baseline (2)`), so that the choice a batch keeps is the same install;
@@ -1401,12 +1417,12 @@ the source and the listing's lines whose instructions or machine-code
 stretches belong to it, in either direction, one colour per statement
 from six keys of the colour settings' own; only a Newspeak file's or a
 listing's caret moves the link, and an edit that makes a method stale
-takes its link away at once (`DecorationsService.addStalenessListener`). The plugin's bytecode
-listing has no method line and does not nest a block at its
-`MakeClosure`, as the text listing does, and its machine-code listing's
-head writes no `base=`, which the record holds (`Code.base`); a first
-stretch out of line is named as the text listing names it, by the
-record's `out-of-line`. Inlining is a tree per
+takes its link away at once (`DecorationsService.addStalenessListener`). The plugin's
+listings are the text listing's: the bytecode with its body's line and
+each block nested eight columns deeper under its `MakeClosure`, the
+next block the record lists being the one a `MakeClosure` makes; the
+machine code's head with `base=` from the record's `base`; a first
+stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
 that the tree keeps its expansion and selection, its scopes nested
 under the scope whose send inlined them, the arms and the declines
@@ -1420,10 +1436,15 @@ yet refreshed on a pooled thread and opened once found.
 decorates every open editor of a body's file, a program's or the core
 library's, from the selected run's records: an icon at each method's
 header (`StateGutterRenderer`) -- its state, badged when the method is
-watched, its tooltip the counts and the last deoptimization's reason, a
-click opening Unwatch, Show Code, Show Inlining and Open in Tool Window
--- for a method the run says how it ran, the eye otherwise if it is
-watched -- and a hint after each send the run says something of
+watched, its tooltip the counts, the last deoptimization's reason and,
+for a method shown as its baseline tier because its optimized copies'
+end cannot be heard, the categories missing (`TraceRun.unheardCopies`),
+a click opening Watch or Unwatch, Show Code, Show Inlining and Open in
+Tool Window -- for a method the run says how it ran; a neutral icon
+with the same menu, "The run listed this method's code but traced
+nothing of how it ran", for one the run lists the bytecode, machine
+code or a plan of but says no state of (`TraceRun.isListed`); the eye
+otherwise if it is watched -- and a hint after each send the run says something of
 (`SendInlayRenderer`), `inlined` or `declined: <reason>` and the cache's
 state, the events' fields on hover; each block at its own range. A
 watched method the run has no body of shows an eye. Both icons and
@@ -1440,7 +1461,12 @@ in the frames' context menu and the debugger's toolbar, asks the agent
 for the selected frame's code (`nsNext/frameCode`) and opens it in a
 read-only `CodeListingFile` tab, which `FrameCodeFollower` fills with
 the selected frame's code at every stop and every selection of another
-frame until the tab closes or the session ends, its lifetime the
+frame until the last editor of the tab closes -- a split's closing
+leaves it following -- or the session ends, replacing only the text
+between the longest common start and end of the old and the new, so
+that a step leaves the view where the text is unchanged, then putting
+each editor's caret at the marked line and scrolling it into view only
+where it is not shown, its lifetime the
 session's (`NewspeakDebugProcess.sessionLifetime`); a refusal is shown
 as a notification of the plugin's group with the agent's words
 ([debugger.md](debugger.md), "The JetBrains plugin").
@@ -1455,9 +1481,14 @@ text, a body whose counterpart differs only in a comment with its
 statements and sends, and a body a later edit moved where it stands
 now;
 `crates/ns-runtime/tests/printing.rs` the structured bytecode listing
-beside its text. `trace_file.rs`'s unit tests hold every event of
-`trace.rs`'s `every_event` to a record with every field its line
-writes, every record to one line, a range to UTF-16 columns counted in
+beside its text, each body's line among them. `trace_file.rs`'s unit
+tests hold every event of `trace.rs`'s `every_event` to a record with
+every field its line writes, and the plugin's fixture
+`src/test/resources/devtool/events.jsonl` -- each event's record, its
+bodies numbered apart, and its line -- to what this build writes
+(`the_events_fixture_is_current`, written again by the ignored
+`regenerate_the_events_fixture`), a bytecode record to each body's
+line, every record to one line, a range to UTF-16 columns counted in
 the file's text where it holds the body and else in the text the
 description hands, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
 instructions to the text listing's, an out-of-line stretch told from
@@ -1483,15 +1514,22 @@ only where its end can be heard, a compile whose outcome was withheld
 dropped, and the events kept beside counts that keep every one;
 `TracedRunsTest` the tabs, the file's deletion, at a tab's close and
 for a project closed before its run registered, the sweep, and a
-closed run's listing tabs; `TabsTest` the four views, the inlining
-tree kept across a batch, the Events tab's oldest rows dropped with
-the run's;
-`DecorationsTest` the icons, none for a method a caches-only run or a
-filtered-out callee says nothing of, the hints, the eyes, staleness,
-the checksum over an emoji and over CRLF line ends, and a library file;
-`CodeTabTest` the caret's body, the chooser, a copy installed again,
-the linked highlighting, kept through another editor's caret and gone
-with an edit, and the editor tab. `NewspeakDebugProcessTest`, in
+closed run's listing tabs; `TabsTest` the four views, the bytes of
+every tier and a body the run did not describe, the run's line of
+missing categories, the inlining tree kept across a batch, the Events
+tab's oldest rows dropped with the run's; `EventsFixtureTest` the
+Events tab's text of every event of the fixture equal to its line;
+`DecorationsTest` the icons, a deoptimized one, the neutral icon and
+its menu for a method only listed, the categories an optimized method
+shown as its baseline tier needs, none for a method a caches-only run
+or a filtered-out callee says nothing of, the hints, the eyes,
+staleness, the checksum over an emoji and over CRLF line ends, and a
+library file; `CodeTabTest` the caret's body, the chooser and its
+width, a copy installed again, the listings, the linked highlighting,
+kept through another editor's caret and gone with an edit, and the
+editor tab; `FrameCodeFollowerTest` the frame's code written as a
+change that shows the marked line, and only the tab's last editor
+ending the follower. `NewspeakDebugProcessTest`, in
 `debugProcessTest`, runs Show Frame Code against the real runtime, and
 its refusal against a fake agent. And
 `TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`

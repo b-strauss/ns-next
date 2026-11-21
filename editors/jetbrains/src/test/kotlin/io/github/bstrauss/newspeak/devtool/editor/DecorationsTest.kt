@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.devtool.editor
 
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -429,6 +430,86 @@ class DecorationsTest : BasePlatformTestCase() {
         }
         tracedRuns.selected = run
         assertEquals(listOf(lineOf(SQUARE)), icons(editor).map { (line, _) -> line })
+    }
+
+    fun testADeoptimizedMethodShowsItsIcon() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        HEADER,
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        event(1, "compile", "compiled"),
+                        event(1, "optimize", "optimized", ""","key":null,"entered":null,"bytes":100"""),
+                        event(1, "deoptimize", "invalidated", ""","key":null,"entered":null,"cause":"bulk-forward""""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val square = icons(editor).single().second
+        assertEquals(MethodState.DEOPTIMIZED, square.state)
+        assertFalse(square.stale)
+        assertEquals("deoptimized · 0 copies · 1 deoptimizations · last: invalidated, bulk-forward", square.tooltipText)
+        assertSame(StateGutterRenderer(MethodState.DEOPTIMIZED, stale = false, watched = false, "", square.popupMenuActions).icon, square.icon)
+        assertNotSame(StateGutterRenderer(MethodState.OPTIMIZED, stale = false, watched = false, "", square.popupMenuActions).icon, square.icon)
+    }
+
+    /** The texts of [renderer]'s menu, in its order. */
+    private fun menu(renderer: StateGutterRenderer): List<String?> =
+        (renderer.popupMenuActions as DefaultActionGroup).childActionsOrStubs.map { action -> action.templateText }
+
+    fun testAListedMethodWithoutAStateShowsTheNeutralIconAndItsMenu() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":[],"listings":["bytecode"]}""",
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        bodyJson(5, "Demo>>smile", source, DEMO, SMILE, checksum = SMILE_CHECKSUM),
+                        """{"kind":"bytecode","body":1,"bodies":[{"body":1,"instructions":[{"index":0,"statement":0,"text":"Return r0"}]}]}""",
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        // Only the method the run lists: smile is described, never listed.
+        val square = icons(editor).single()
+        assertEquals(lineOf(SQUARE), square.first)
+        val renderer = square.second
+        assertNull(renderer.state)
+        assertTrue(renderer.listed)
+        assertEquals("The run listed this method's code but traced nothing of how it ran", renderer.tooltipText)
+        assertNotSame(StateGutterRenderer(null, stale = false, watched = true, "", renderer.popupMenuActions).icon, renderer.icon)
+        assertEquals(listOf("Watch Method", "Show Code", "Show Inlining", "Open in Tool Window"), menu(renderer))
+    }
+
+    fun testAnOptimizedMethodWhoseCopiesCannotBeHeardSaysWhichCategoriesItNeeds() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["compile","optimize","code-zone"],"listings":[]}""",
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        event(1, "compile", "compiled"),
+                        event(1, "optimize", "optimized", ""","key":null,"entered":null,"bytes":100"""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val square = icons(editor).single().second
+        assertEquals(MethodState.BASELINE, square.state)
+        assertEquals("baseline · 0 copies · 0 deoptimizations · shown as its baseline tier: trace deoptimize too to see its optimized copies", square.tooltipText)
     }
 
     private companion object {

@@ -300,10 +300,10 @@ class NewspeakRunState(
 
 /**
  * What the run says where the watched entries it [dropped] -- those that
- * name no module of the program or the binary, which ns-next would refuse
- * -- leave [filters] tracing and listing nothing that [configuration] asks
- * for: the entries named, as notification text; null where the run traces
- * something, or traces nothing by its own settings.
+ * name no module the run knows of -- leave [filters] tracing and listing
+ * nothing that [configuration] asks for: the entries named, as
+ * notification text; null where the run traces something, or traces
+ * nothing by its own settings.
  */
 fun nothingTracedNotice(configuration: NewspeakRunConfiguration, filters: TraceFilters, dropped: List<String>): String? {
     if (dropped.isEmpty() || !configuration.tracesAnything() || writesTrace(configuration, filters)) return null

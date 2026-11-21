@@ -14,7 +14,12 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JPanel
 
-/** A method of the Methods tab: a root body and what its events say of it, its [state] null where the run knows nothing of how it ran. */
+/**
+ * A method of the Methods tab: a root body and what its events say of it,
+ * its [state] null where the run knows nothing of how it ran, and the
+ * bytes of its largest install of each tier -- [baselineBytes],
+ * [twinBytes], [optimizedBytes] -- 0 for a tier never installed.
+ */
 data class MethodRow(
     val body: Int,
     val name: String,
@@ -22,18 +27,21 @@ data class MethodRow(
     val copies: Int,
     val deopts: Int,
     val abandons: Int,
-    val codeBytes: Int,
+    val baselineBytes: Int,
+    val twinBytes: Int,
+    val optimizedBytes: Int,
     val declined: Int,
 )
 
 /**
  * The Methods tab (`docs/design/developer-tool.md`, decision 29): every
- * method the run described -- a block is its method's, so its events count under its root and its name with
- * `[] in` is left out -- with its state, blank where the run knows nothing of
- * how it ran, how many optimized copies it has,
- * how often it deoptimized and was abandoned, its largest copy's code and the
- * callees the optimizer declined in it; sortable by every column, a double
- * click opening the method.
+ * method the run names -- described, or named by number alone, as the
+ * events name it, `#<number>` -- a block counted as its method's, its
+ * name with `[] in` left out, with its state, blank where the run knows
+ * nothing of how it ran, how many optimized copies it has, how often it
+ * deoptimized and was abandoned, the code of its largest install of each
+ * tier, a column a tier, and the callees the optimizer declined in it;
+ * sortable by every column, a double click opening the method.
  */
 class MethodsTab(private val project: Project, private val run: TraceRun, parent: Disposable) : JPanel(BorderLayout()) {
     private fun column(key: String, comparator: Comparator<MethodRow>, value: (MethodRow) -> Any) =
@@ -51,7 +59,9 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
             column("devtool.methods.column.copies", compareBy(MethodRow::copies)) { row -> row.copies },
             column("devtool.methods.column.deopts", compareBy(MethodRow::deopts)) { row -> row.deopts },
             column("devtool.methods.column.abandons", compareBy(MethodRow::abandons)) { row -> row.abandons },
-            column("devtool.methods.column.bytes", compareBy(MethodRow::codeBytes)) { row -> row.codeBytes },
+            column("devtool.methods.column.baseline", compareBy(MethodRow::baselineBytes)) { row -> row.baselineBytes },
+            column("devtool.methods.column.twin", compareBy(MethodRow::twinBytes)) { row -> row.twinBytes },
+            column("devtool.methods.column.optimized", compareBy(MethodRow::optimizedBytes)) { row -> row.optimizedBytes },
             column("devtool.methods.column.declined", compareBy(MethodRow::declined)) { row -> row.declined },
         ),
         rows(),
@@ -91,29 +101,47 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
         val deopts = HashMap<Int, Int>()
         val abandons = HashMap<Int, Int>()
         val declined = HashMap<Int, Int>()
-        val installed = HashMap<Int, Int>()
+        val largest = HashMap<Pair<Int, String>, Int>()
+        fun install(root: Int, tier: String, bytes: Int) {
+            largest.merge(root to tier, bytes, ::maxOf)
+        }
+        // A body the run names only by its number has a row of its own, as the events name it.
+        val methods = run.bodies.keys.filterTo(HashSet()) { number -> rootOf(run, number) == number }
         for ((number, tally) in run.tallies) {
             val body = rootOf(run, number)
+            methods += body
             deopts.merge(body, tally.deoptimizations, Int::plus)
             abandons.merge(body, tally.abandonments, Int::plus)
             declined.merge(body, tally.declines, Int::plus)
-            installed.merge(body, tally.largestOptimized, ::maxOf)
+            install(body, BASELINE, tally.largestBaseline)
+            install(body, TWIN, tally.largestTwin)
+            install(body, OPTIMIZED, tally.largestOptimized)
         }
         for ((number, codes) in run.code) {
             val root = rootOf(run, number)
-            installed.merge(root, codes.filter { code -> code.tier == "optimized" }.maxOfOrNull { code -> code.bytes } ?: 0, ::maxOf)
+            methods += root
+            for (code in codes) install(root, code.tier, code.bytes)
         }
-        return run.bodies.values.filter { body -> rootOf(run, body.number) == body.number }.map { body ->
+        for (number in run.bytecode.keys) methods += rootOf(run, number)
+        return methods.map { body ->
             MethodRow(
-                body.number,
-                body.name,
-                run.state(body.number),
-                run.copies(body.number),
-                deopts[body.number] ?: 0,
-                abandons[body.number] ?: 0,
-                installed[body.number] ?: 0,
-                declined[body.number] ?: 0,
+                body,
+                bodyName(run, body),
+                run.state(body),
+                run.copies(body),
+                deopts[body] ?: 0,
+                abandons[body] ?: 0,
+                largest[body to BASELINE] ?: 0,
+                largest[body to TWIN] ?: 0,
+                largest[body to OPTIMIZED] ?: 0,
+                declined[body] ?: 0,
             )
         }.sortedBy { row -> row.body }
+    }
+
+    private companion object {
+        const val BASELINE = "baseline"
+        const val TWIN = "twin"
+        const val OPTIMIZED = "optimized"
     }
 }

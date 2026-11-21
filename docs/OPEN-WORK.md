@@ -2464,54 +2464,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     reviews), none of them a wrong decoration -- what the plugin cannot
     know it leaves out, and a body whose text does not fit is shown
     stale, never decorated in the wrong place:
-    - *The Methods tab counts optimized copies only*: "Code bytes" is
-      the largest optimized copy's, never baseline or twin code, and a
-      body the run has no description of has no row
-      (`devtool/ui/MethodsTab.kt`).
-    - *Show Frame Code resets the view at every step*: the follower
-      replaces the tab's text with `setText`, which puts its caret and
-      scroll back at the start at every stop, and `fileClosed` ends the
-      follower when one of two split editors of the tab closes
-      (`debugger/FrameCodeFollower.kt`).
-    - *A method without a state has no gutter menu*: the menu of Show
-      Code, Show Inlining and Open in Tool Window hangs from the state
-      icon, so a method the run says nothing of how it ran -- every
-      method of a run that lists bytecode alone -- reaches none of them
-      from the gutter, only from the tool window
-      (`devtool/editor/DecorationsService.kt`, `stateIcon`).
-    - *Nothing says why a tier is not shown*: a tier is shown only where
-      its end can be heard (`compile` and `code-zone` for baseline and
-      twin, `deoptimize` and `code-zone` for optimized copies and the
-      sends' inlining; [developer-tool.md](design/developer-tool.md),
-      "Stage 3", `TraceRun`), so a run that traces only `compile`
-      shows no icons, and one without `deoptimize` labels an optimized
-      method by its baseline tier, while neither the Developer Tool
-      tab's hover sentences nor the tool window nor the icon's tooltip
-      names the categories missing (`devtool/model/TraceRun.kt`,
-      `heardOf`; `messages/NewspeakBundle.properties`).
-    - *No decoration test draws a deoptimized icon*: `TraceRunTest`
-      holds the state, but no `DecorationsTest` shows a method's icon
-      as deoptimized (`devtool/editor/StateGutterRenderer.kt`).
     - *Everything of a run but its events is unbounded*: a `TraceRun`
       keeps its last 200,000 events (`KEPT_EVENTS`), but every body's
       description, every listing and every plan for the run's length,
       and the tool window keeps every run until its tab closes
       (`devtool/model/TraceRun.kt`, `devtool/TracedRuns.kt`).
-    - *The plugin's bytecode listing is flatter than the text one*: it
-      has no method line and does not nest a block at its `MakeClosure`,
-      and its machine-code listing's head writes no `base=`, though the
-      `code` record gives the address as `base`
-      ([developer-tool.md](design/developer-tool.md), "The plugin's
-      half", decision 14; `devtool/editor/CodeListingFile.kt`,
-      `codeListing`).
-    - *No test holds the Events tab's text to `trace.rs`*: the "Text"
-      view writes each event as the text trace's line, its field order
-      read from `trace.rs`, but only reading is checked for all 28
-      kinds of event; a test comparing the plugin's lines with
-      `trace.rs`'s `every_event` lines would hold the two together
-      (`devtool/ui/EventsTab.kt`, `TabsTest`;
-      [developer-tool.md](design/developer-tool.md), "The events and
-      their lines").
 - **The MCP server and the trace file** (noted 2026-11-21, with the
   developer tool's stage 3's design; not designed yet): `debug_start`
   passes `--trace` and the lines arrive with the program's output, and

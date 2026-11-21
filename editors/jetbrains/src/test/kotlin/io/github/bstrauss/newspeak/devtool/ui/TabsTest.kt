@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.google.gson.JsonObject
@@ -40,7 +41,34 @@ class TabsTest : BasePlatformTestCase() {
         val optimized = rows.getValue("newspeak.core.Kernel/Number>>to:do:")
         assertEquals(MethodState.OPTIMIZED, optimized.state)
         assertEquals(1, optimized.copies)
-        assertEquals(1269, optimized.codeBytes)
+        assertEquals(1269, optimized.optimizedBytes)
+        assertEquals(2816, optimized.baselineBytes)
+        assertEquals(0, optimized.twinBytes)
+    }
+
+    fun testMethodsShowTheBytesOfEveryTier() {
+        val run = fixtureRun(
+            eventLine(3, "compile", "compiled-twin", ""","bytes":1800"""),
+            """{"kind":"code","body":3,"tier":"twin","key":null,"entered":null,"architecture":"x64","base":4096,"bytes":1900,"instructions":[],"data":[],"scopes":[],"mark":null}""",
+        )
+        val tab = MethodsTab(project, run, testRootDisposable)
+        val square = tab.model.items.single { row -> row.name == "Demo>>square:" }
+        assertEquals(1216, square.baselineBytes)
+        // The largest of the twin's installs, whether an event or a listing tells of it.
+        assertEquals(1900, square.twinBytes)
+        assertEquals(0, square.optimizedBytes)
+        val columns = (0 until tab.model.columnCount).map { index -> tab.model.getColumnName(index) }
+        assertEquals(listOf("Baseline bytes", "Twin bytes", "Optimized bytes"), columns.subList(5, 8))
+    }
+
+    fun testMethodsListABodyTheRunDidNotDescribe() {
+        val run = fixtureRun(eventLine(40, "compile", "compiled", ""","trigger":"call","bytes":512"""))
+        val tab = MethodsTab(project, run, testRootDisposable)
+        val undescribed = tab.model.items.single { row -> row.body == 40 }
+        // Named as the events name it.
+        assertEquals("#40", undescribed.name)
+        assertEquals(MethodState.BASELINE, undescribed.state)
+        assertEquals(512, undescribed.baselineBytes)
     }
 
     fun testMethodsSortByCopies() {
@@ -139,7 +167,7 @@ class TabsTest : BasePlatformTestCase() {
         // The state and the copies are the root's own; the block's bytes and declines are added to it.
         assertEquals(MethodState.INTERPRETED, main.state)
         assertEquals(0, main.copies)
-        assertEquals(3601, main.codeBytes)
+        assertEquals(3601, main.optimizedBytes)
         assertEquals(1, main.declined)
     }
 
@@ -231,6 +259,26 @@ class TabsTest : BasePlatformTestCase() {
         val node = square.userObject as InliningNode
         assertEquals(5, node.body)
         assertEquals(3, node.at)
+    }
+
+    fun testARunsTabNamesTheCategoriesTheTierIconsNeed() {
+        fun header(categories: String) =
+            """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":[$categories],"listings":["bytecode"]}"""
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(records(listOf(header(""""compile","caches"""")))) }
+        val panel = RunPanel(project, run).also { created -> Disposer.register(testRootDisposable, created) }
+        assertEquals("No icons of baseline, twin or optimized code: trace deoptimize and code-zone too", panel.shownTierNotice)
+        // A listing-only run shows no tier at all.
+        assertEquals("No tier icons: trace compile, deoptimize and code-zone too", tierNotice(listOf("compile", "deoptimize", "code-zone")))
+        assertEquals("No icons of optimized copies, which show as their baseline tier: trace deoptimize too", tierNotice(listOf("deoptimize")))
+        assertNull(tierNotice(emptyList()))
+        // Every category a tier needs traced: no line.
+        val full = TraceRun("Full", Instant.EPOCH).also { traced -> traced.add(records(listOf(header(""""compile","deoptimize","code-zone"""")))) }
+        assertEquals(emptyList<String>(), full.missingTierCategories())
+        // A header that does not say what it traces is taken to trace everything.
+        val unsaid = TraceRun("Unsaid", Instant.EPOCH).also { traced ->
+            traced.add(records(listOf("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""")))
+        }
+        assertEquals(emptyList<String>(), unsaid.missingTierCategories())
     }
 
     private companion object {

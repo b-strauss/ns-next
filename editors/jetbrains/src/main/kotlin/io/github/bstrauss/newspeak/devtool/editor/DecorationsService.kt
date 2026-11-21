@@ -42,6 +42,7 @@ import io.github.bstrauss.newspeak.devtool.model.SourceRange
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import io.github.bstrauss.newspeak.devtool.ui.RunPanel
 import io.github.bstrauss.newspeak.devtool.ui.TOOL_WINDOW_ID
+import io.github.bstrauss.newspeak.devtool.ui.categoryList
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -283,7 +284,7 @@ class DecorationsService internal constructor(
         if (current != null) {
             for (method in methods) {
                 val root = method.root
-                // A method the run knows nothing of how it ran has no icon; the eye stands there if it is watched.
+                // A method the run neither lists nor knows how it ran has no icon; the eye stands there if it is watched.
                 if (showIcons && root != null && root.marker.isValid) {
                     stateIcon(current, method, root.body)?.let { renderer ->
                         decorations.highlighters += icon(editor, root.marker.startOffset, renderer)
@@ -365,10 +366,21 @@ class DecorationsService internal constructor(
             gutterIconRenderer = renderer
         }
 
-    /** The icon of [method], whose root is [root]; null where [traced] knows nothing of how it ran. */
+    /**
+     * The icon of [method], whose root is [root]: its state, or, where
+     * [traced] knows nothing of how it ran but lists its code -- its
+     * bytecode, its machine code or a plan of it -- the neutral icon with
+     * the same menu, so that the listings are reached from the gutter;
+     * null where the run neither lists it nor knows how it ran.
+     */
     private fun stateIcon(traced: TraceRun, method: MethodMarkers, root: Body): StateGutterRenderer? {
-        val state = traced.state(root.number) ?: return null
+        val state = traced.state(root.number)
         val watched = watchedMethods.isWatched(root.name)
+        if (state == null) {
+            if (!isListed(traced, method)) return null
+            val tooltip = NewspeakBundle.message(if (method.stale) "devtool.stale" else "devtool.gutter.listed")
+            return StateGutterRenderer(null, stale = method.stale, watched = watched, tooltip, methodActions(traced, root), listed = true)
+        }
         val actions = methodActions(traced, root)
         if (method.stale) return StateGutterRenderer(state, stale = true, watched = watched, NewspeakBundle.message("devtool.stale"), actions)
         val summary = summary()
@@ -382,8 +394,13 @@ class DecorationsService internal constructor(
             val reason = last.text("reason") ?: last.text("cause")
             if (reason != null) tooltip += NewspeakBundle.message("devtool.gutter.last", last.event, reason)
         }
+        val unheard = traced.unheardCopies(root.number)
+        if (unheard.isNotEmpty()) tooltip += NewspeakBundle.message("devtool.gutter.unheard", categoryList(unheard))
         return StateGutterRenderer(state, stale = false, watched = watched, tooltip, actions)
     }
+
+    /** Whether [traced] lists code of one of [method]'s bodies: its bytecode, an install's machine code or an inlining plan. */
+    private fun isListed(traced: TraceRun, method: MethodMarkers): Boolean = method.bodies.any { marker -> traced.isListed(marker.body.number) }
 
     private fun summary(): Summary = summary ?: Summary(checkNotNull(run)).also { made -> summary = made }
 

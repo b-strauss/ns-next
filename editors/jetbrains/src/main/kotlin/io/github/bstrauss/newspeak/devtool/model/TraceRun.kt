@@ -44,6 +44,14 @@ class EventTally {
     var declines = 0
         internal set
 
+    /** The bytes of its largest baseline code a `compiled` event announced; 0 for none. */
+    var largestBaseline = 0
+        internal set
+
+    /** The bytes of its largest reifying twin a `compiled-twin` event announced; 0 for none. */
+    var largestTwin = 0
+        internal set
+
     /** The bytes of its largest optimized copy an `optimized` event announced; 0 for none. */
     var largestOptimized = 0
         internal set
@@ -72,6 +80,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     private val eventTallies = HashMap<Int, EventTally>()
     private val transitionEvents = HashMap<Pair<Int, Int>, Event>()
     private val bytecodeListings = HashMap<Int, Bytecode>()
+    private val listedBodies = HashSet<Int>()
     private val codeListings = HashMap<Int, MutableList<Code>>()
     private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
     private val plansInOrder = ArrayList<Inlining>()
@@ -158,6 +167,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     /** Every optimizing compile's plan, in the file's order. */
     val plans: List<Inlining> get() = plansInOrder
 
+    /** Whether the run lists code of [body]: its bytecode, alone or in its method's listing, an install's machine code or an inlining plan of it. */
+    fun isListed(body: Int): Boolean = body in listedBodies
+
     /**
      * [body]'s state after its events in their order, its listed machine
      * code counted among them where no event announced it -- and a tier
@@ -180,6 +192,30 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
             MethodState.OPTIMIZED -> if (copiesEndHeard(body)) state else baseState(body, history.base)
             else -> baseState(body, state)
         }
+    }
+
+    /**
+     * The categories [state] needs to show [body]'s optimized copies that
+     * the header says are not traced, `deoptimize` or `code-zone`, where
+     * its events say it runs optimized code and [state] shows its baseline
+     * tier, or nothing, for want of them; empty otherwise, a body whose
+     * events the filter withheld among them.
+     */
+    fun unheardCopies(body: Int): List<String> {
+        if (histories[body]?.state != MethodState.OPTIMIZED || copiesEndHeard(body)) return emptyList()
+        return COPIES_END.filter { category -> categories?.contains(category) == false }
+    }
+
+    /**
+     * The categories a tier's icon needs -- `compile` for every one,
+     * `code-zone` for baseline, twin and optimized code, `deoptimize` for
+     * optimized copies -- that the header says are not traced, in the
+     * order of the categories; empty before the header and for a header
+     * that does not say.
+     */
+    fun missingTierCategories(): List<String> {
+        val traced = categories ?: return emptyList()
+        return TIER_CATEGORIES.filter { category -> category !in traced }
     }
 
     /** How many optimized copies of [body] are installed, as its events and listings say; 0 where their end cannot be heard. */
@@ -261,13 +297,19 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                 }
                 is Body -> describedBodies[record.number] = record
                 is Event -> take(record)
-                is Bytecode -> bytecodeListings[record.body] = record
+                is Bytecode -> {
+                    bytecodeListings[record.body] = record
+                    listedBodies.add(record.body)
+                    for (listed in record.bodies) listedBodies.add(listed.body)
+                }
                 is Code -> {
                     leaveOpenCompile()
+                    listedBodies.add(record.body)
                     codeListings.getOrPut(record.body) { ArrayList() }.add(record)
                     countListed(record)
                 }
                 is Inlining -> {
+                    listedBodies.add(record.body)
                     inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
                     plansInOrder.add(record)
                     // The plan's own outcome, for a trace without the `optimize` category.
@@ -345,6 +387,8 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         when (event.event) {
             "abandoned" -> tally.abandonments++
             "declined" -> tally.declines++
+            "compiled" -> event.integer("bytes")?.let { bytes -> tally.largestBaseline = maxOf(tally.largestBaseline, bytes) }
+            "compiled-twin" -> event.integer("bytes")?.let { bytes -> tally.largestTwin = maxOf(tally.largestTwin, bytes) }
             "optimized" -> event.integer("bytes")?.let { bytes -> tally.largestOptimized = maxOf(tally.largestOptimized, bytes) }
         }
     }
@@ -408,6 +452,12 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     private companion object {
         const val INLINING = "inlining"
+
+        /** What tells of the end of an optimized copy: a retirement or an invalidation, a free or the zone replaced. */
+        val COPIES_END = listOf("deoptimize", "code-zone")
+
+        /** Every category a tier's icon needs, in the categories' order. */
+        val TIER_CATEGORIES = listOf("compile", "deoptimize", "code-zone")
 
         /** The `optimize` events that end a compile: its copy installed, refused or put off. */
         val OUTCOMES = setOf("optimized", "refused", "deferred")
