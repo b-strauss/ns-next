@@ -303,7 +303,7 @@ fn pattern_text(pattern: &ast::MessagePattern) -> String {
 /// From the pattern's first name to its last. A keyword pattern is never
 /// empty (recovery leaves one without a name out whole); the fallback keeps
 /// the function total.
-fn pattern_span(pattern: &ast::MessagePattern) -> Span {
+pub(crate) fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     match pattern {
         ast::MessagePattern::Unary { selector, .. } => selector.span,
         ast::MessagePattern::Binary {

@@ -36,6 +36,7 @@ use crate::documents::LineIndex;
 use crate::file_uri::file_path_of;
 use crate::folding;
 use crate::hover;
+use crate::method_names;
 use crate::semantic_tokens;
 
 pub type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -147,6 +148,7 @@ fn answer(
         CodeActionRequest::METHOD => code_actions_of(documents, request),
         HoverRequest::METHOD => hover_of(documents, request),
         breakable::METHOD => breakable_lines_of(documents, breakable, request),
+        method_names::METHOD => method_names_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -269,6 +271,58 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
             .unwrap_or_default(),
     };
     Response::new_ok(request.id, DocumentSymbolResponse::Nested(symbols))
+}
+
+/// A document's methods in the tools' syntax (`method_names.rs`), each
+/// with its declaration's range and its pattern's. Like its symbols, a
+/// document never opened is read from disk: the plugin names the method
+/// at a gutter's line of any file it shows. A URI that names no readable
+/// file has no methods.
+fn method_names_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let identifier: Result<TextDocumentIdentifier, _> = serde_json::from_value(
+        request
+            .params
+            .get("textDocument")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let identifier = match identifier {
+        Ok(identifier) => identifier,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                format!("malformed {} request: {error}", method_names::METHOD),
+            );
+        }
+    };
+    let encode = |document: &Document| -> Vec<serde_json::Value> {
+        let range = |span: Span| {
+            Range::new(
+                document.line_index.position(&document.text, span.start),
+                document.line_index.position(&document.text, span.end),
+            )
+        };
+        document
+            .analysis
+            .method_names
+            .iter()
+            .map(|method| {
+                serde_json::json!({
+                    "name": method.name,
+                    "range": range(method.span),
+                    "selectionRange": range(method.selection),
+                })
+            })
+            .collect()
+    };
+    let names = match documents.get(identifier.uri.as_str()) {
+        Some(document) => encode(document),
+        None => document_on_disk(&identifier.uri)
+            .map(|document| encode(&document))
+            .unwrap_or_default(),
+    };
+    Response::new_ok(request.id, names)
 }
 
 /// The file `uri` names, read and analysed as `didOpen` would have it, or

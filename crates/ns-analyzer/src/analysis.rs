@@ -39,6 +39,8 @@ pub struct Analysis {
     pub declarations: HashMap<Span, Declared>,
     pub folds: Vec<Fold>,
     pub symbols: Vec<Symbol>,
+    /// Every method named in the tools' syntax (`method_names.rs`).
+    pub method_names: Vec<crate::method_names::MethodName>,
     pub hints: Vec<crate::hints::Hint>,
 }
 
@@ -81,6 +83,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                 declarations: HashMap::new(),
                 folds: Vec::new(),
                 symbols: Vec::new(),
+                method_names: Vec::new(),
                 hints: Vec::new(),
             }
         }
@@ -121,6 +124,7 @@ fn analyze_unguarded(text: &str, path: Option<&Path>) -> Analysis {
     }
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
+    let method_names = crate::method_names::method_names(&resolution.module, text);
     // Only a source that parses without error gets hints: their fixes are
     // made against the tree `parse` answers.
     let hints = crate::hints::hints_of(text);
@@ -143,6 +147,7 @@ fn analyze_unguarded(text: &str, path: Option<&Path>) -> Analysis {
         declarations,
         folds,
         symbols,
+        method_names,
         hints,
     }
 }

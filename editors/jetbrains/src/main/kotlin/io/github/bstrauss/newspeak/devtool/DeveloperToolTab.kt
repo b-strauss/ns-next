@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool
 
 import com.intellij.openapi.options.SettingsEditor
+import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.dsl.builder.panel
 import io.github.bstrauss.newspeak.NewspeakBundle
@@ -15,8 +16,10 @@ val LISTING_KINDS: List<String> = listOf("bytecode", "code", "inlining")
  * The "Developer Tool" tab of a Newspeak run configuration: which trace
  * categories and which listings a run asks ns-next for. `bench` rejects the
  * options, so the tab is greyed while the configuration's command is it.
+ * The methods a run narrows to are the project's watched methods, which
+ * the link manages ([WatchedMethodsDialog]).
  */
-class DeveloperToolTab : SettingsEditor<NewspeakRunConfiguration>() {
+class DeveloperToolTab(private val project: Project) : SettingsEditor<NewspeakRunConfiguration>() {
     /** One box per trace category, by its name; each has its sentence as tooltip. */
     val categoryBoxes: Map<String, JBCheckBox> = TRACE_CATEGORIES.associateWith { name ->
         JBCheckBox(NewspeakBundle.message("devtool.category.$name")).apply {
@@ -58,8 +61,7 @@ class DeveloperToolTab : SettingsEditor<NewspeakRunConfiguration>() {
             listingBoxes.values.forEach { box -> row { cell(box) } }
         }
         row {
-            // Task 5's dialog lives behind this; until then there is nothing to open.
-            link(NewspeakBundle.message("devtool.watched.methods.link")) {}.enabled(false)
+            link(NewspeakBundle.message("devtool.watched.methods.link")) { WatchedMethodsDialog(project).show() }
         }
     }
 

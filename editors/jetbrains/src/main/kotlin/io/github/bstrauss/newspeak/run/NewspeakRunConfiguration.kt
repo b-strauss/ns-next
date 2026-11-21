@@ -28,6 +28,7 @@ import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
 import io.github.bstrauss.newspeak.devtool.LISTING_KINDS
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.devtool.TraceFilters
+import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -136,7 +137,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
         SettingsEditorGroup<NewspeakRunConfiguration>().apply {
             val editor = NewspeakRunConfigurationEditor()
-            val tab = DeveloperToolTab()
+            val tab = DeveloperToolTab(project)
             editor.onCommandChanged(tab::showCommand)
             addEditor(NewspeakBundle.message("run.configuration.editor.tab.title"), editor)
             addEditor(NewspeakBundle.message("devtool.tab.title"), tab)
@@ -205,7 +206,9 @@ class NewspeakRunState(
     var debugSecret: String? = null
 
     override fun startProcess(): ProcessHandler {
-        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress)
+        // The watched methods as they stand at the start: a later change applies to the next run.
+        val filters = WatchedMethods.getInstance(configuration.project).filters()
+        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, filters = filters)
         debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
         val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
         ProcessTerminatedListener.attach(handler)

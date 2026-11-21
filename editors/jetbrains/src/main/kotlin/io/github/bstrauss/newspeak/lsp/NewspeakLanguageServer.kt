@@ -21,7 +21,21 @@ interface NewspeakLanguageServer : LanguageServer {
      */
     @JsonRequest("newspeak/breakableLines")
     fun breakableLines(parameters: BreakableLinesParameters): CompletableFuture<BreakableLinesAnswer>
+
+    /**
+     * Every method of a document named in the tools' syntax, in source
+     * order, with its declaration's range and its pattern's; a document
+     * never opened is read from disk.
+     */
+    @JsonRequest("newspeak/methodNames")
+    fun methodNames(parameters: MethodNamesParameters): CompletableFuture<List<MethodNamesEntry>>
 }
+
+/** The method names request's parameters: the document asked about. */
+class MethodNamesParameters(val textDocument: TextDocumentIdentifier)
+
+/** One method of the answer, read by Gson, which sets the fields whatever the server left out. */
+class MethodNamesEntry(val name: String? = null, val range: Range? = null, val selectionRange: Range? = null)
 
 /** The request's parameters: the document asked about. */
 class BreakableLinesParameters(val textDocument: TextDocumentIdentifier)

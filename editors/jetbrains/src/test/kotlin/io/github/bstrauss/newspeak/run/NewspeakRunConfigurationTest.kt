@@ -352,7 +352,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     }
 
     fun testBenchGreysTheTab() {
-        val tab = DeveloperToolTab()
+        val tab = DeveloperToolTab(project)
         Disposer.register(testRootDisposable, tab)
         val bench = configuration().apply { command = NewspeakCommand.BENCH }
         tab.resetFrom(bench)
@@ -364,7 +364,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
 
     fun testTheTabFollowsTheCommandOfTheFirstTab() {
         val editor = NewspeakRunConfigurationEditor()
-        val tab = DeveloperToolTab()
+        val tab = DeveloperToolTab(project)
         Disposer.register(testRootDisposable, editor)
         Disposer.register(testRootDisposable, tab)
         editor.onCommandChanged(tab::showCommand)
@@ -384,7 +384,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
             options.printBytecode = true
             options.printInlining = true
         }
-        val tab = DeveloperToolTab()
+        val tab = DeveloperToolTab(project)
         Disposer.register(testRootDisposable, tab)
         tab.resetFrom(shown)
         assertFalse(tab.allBox.isSelected)
@@ -397,7 +397,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     }
 
     fun testEveryCheckboxHasItsSentence() {
-        val tab = DeveloperToolTab()
+        val tab = DeveloperToolTab(project)
         Disposer.register(testRootDisposable, tab)
         for ((name, box) in tab.categoryBoxes) {
             assertEquals(NewspeakBundle.message("devtool.category.$name.tooltip"), box.toolTipText)

@@ -135,6 +135,14 @@
              (NewspeakDocumentSymbols). -->
         <lang.psiStructureViewFactory language="Newspeak"
                                       implementationClass="io.github.bstrauss.newspeak.structure.NewspeakStructureViewFactory"/>
+        <!-- Alt+Enter on a method: watch or unwatch it, as the context menus' action does. -->
+        <intentionAction>
+            <language>Newspeak</language>
+            <className>io.github.bstrauss.newspeak.devtool.WatchMethodIntention</className>
+            <bundleName>messages.NewspeakBundle</bundleName>
+            <categoryKey>devtool.watch.method.category</categoryKey>
+            <skipBeforeAfter>true</skipBeforeAfter>
+        </intentionAction>
     </extensions>
 
     <actions>
@@ -156,6 +164,12 @@
         <action id="io.github.bstrauss.newspeak.MarkObject"
                 class="io.github.bstrauss.newspeak.debugger.NewspeakMarkObjectAction">
             <add-to-group group-id="XDebugger.ValueGroup" anchor="after" relative-to-action="Debugger.MarkObject"/>
+        </action>
+        <!-- The method at the caret or on the gutter's line, into or out of the project's watched methods. -->
+        <action id="io.github.bstrauss.newspeak.WatchMethod"
+                class="io.github.bstrauss.newspeak.devtool.WatchMethodAction">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="EditorGutterPopupMenu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>
