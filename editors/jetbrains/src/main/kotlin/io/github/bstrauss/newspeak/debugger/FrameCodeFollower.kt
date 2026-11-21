@@ -11,6 +11,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Condition
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.xdebugger.XDebugSession
@@ -42,7 +43,14 @@ class FrameCodeFollower private constructor(
     @Volatile
     private var ended = false
 
+    /** Set when the follower's lifetime is over -- ended, or its session or project gone -- after which a deferred step does nothing. */
+    @Volatile
+    private var over = false
+
+    private val released = Condition<Any?> { over }
+
     init {
+        Disposer.register(lifetime) { over = true }
         session.addSessionListener(
             object : XDebugSessionListener {
                 override fun sessionPaused() = refresh()
@@ -63,6 +71,7 @@ class FrameCodeFollower private constructor(
                     ApplicationManager.getApplication().invokeLater(
                         { if (!ended && closesFollower(source, closed, file)) end() },
                         ModalityState.any(),
+                        released,
                     )
                 }
             },
@@ -80,6 +89,7 @@ class FrameCodeFollower private constructor(
             ApplicationManager.getApplication().invokeLater(
                 { if (!ended && requested.get() == sequence) write(code) },
                 ModalityState.nonModal(),
+                released,
             )
         }
     }
