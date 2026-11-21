@@ -167,6 +167,14 @@ class DecorationsService internal constructor(
     /** Whether the content component's tooltip is a hint's, which leaving the hint takes away. */
     private var hintTooltipShown = false
 
+    /**
+     * This service's markers in a document's user data. A key of its own,
+     * since a core library file is one document shared by every open
+     * project, each decorating it with its own run: one project's markers
+     * must never replace, nor its clear dispose, another's.
+     */
+    private val markersKey = Key.create<DocumentMarkers>("newspeak.devtool.decorations.${System.identityHashCode(this)}")
+
     init {
         val factory = EditorFactory.getInstance()
         factory.addEditorFactoryListener(
@@ -205,7 +213,7 @@ class DecorationsService internal constructor(
                 if (libraryName == NewspeakCoreLibrary.NAME) {
                     ApplicationManager.getApplication().invokeLater(
                         {
-                            for (document in documents) document.getUserData(MARKERS)?.forgetOtherFiles()
+                            for (document in documents) document.getUserData(markersKey)?.forgetOtherFiles()
                             decorateAll()
                         },
                         project.disposed,
@@ -247,8 +255,8 @@ class DecorationsService internal constructor(
         for ((editor, decorations) in editors) if (!editor.isDisposed) remove(decorations)
         editors.clear()
         for (document in documents) {
-            document.getUserData(MARKERS)?.dispose()
-            document.putUserData(MARKERS, null)
+            document.getUserData(markersKey)?.dispose()
+            document.putUserData(markersKey, null)
         }
         documents.clear()
         runDisposable?.let(Disposer::dispose)
@@ -295,8 +303,8 @@ class DecorationsService internal constructor(
 
     /** The markers of [document]'s bodies in [traced], made for each body the first time the document is decorated with it. */
     private fun markersOf(document: Document, file: VirtualFile, traced: TraceRun): DocumentMarkers {
-        val markers = document.getUserData(MARKERS)?.takeIf { kept -> kept.run === traced } ?: DocumentMarkers(traced).also { made ->
-            document.putUserData(MARKERS, made)
+        val markers = document.getUserData(markersKey)?.takeIf { kept -> kept.run === traced } ?: DocumentMarkers(traced).also { made ->
+            document.putUserData(markersKey, made)
             documents.add(document)
         }
         val path = file.fileSystem.getNioPath(file) ?: return markers
@@ -354,7 +362,7 @@ class DecorationsService internal constructor(
 
     /** Re-checks the methods [event] touched; a method that became stale, or the run's again, redecorates its document's editors. */
     private fun changed(event: DocumentEvent) {
-        val markers = event.document.getUserData(MARKERS)?.takeIf { kept -> kept.run === run } ?: return
+        val markers = event.document.getUserData(markersKey)?.takeIf { kept -> kept.run === run } ?: return
         val changeEnd = event.offset + event.newLength
         var flipped = false
         for (method in markers.methods.values) {
@@ -483,8 +491,6 @@ class DecorationsService internal constructor(
         fun getInstance(project: Project): DecorationsService = project.service()
 
         private const val NEWSPEAK_EXTENSION = "ns"
-
-        private val MARKERS = Key.create<DocumentMarkers>("newspeak.devtool.decorations")
     }
 }
 

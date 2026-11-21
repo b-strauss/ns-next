@@ -348,6 +348,28 @@ class DecorationsTest : BasePlatformTestCase() {
         assertEquals(listOf(true, false, false), icons.map { (_, renderer) -> renderer.stale })
     }
 
+    fun testTwoOwnersOfOneDocumentKeepTheirOwnMarkers() {
+        // Two projects' services decorating one shared document, as a core library file is: one service each.
+        val editor = openDemo()
+        decorations()
+        tracedRuns.selected = demoRun()
+        val otherRuns = TracedRuns(project) { null }.also { runs -> Disposer.register(testRootDisposable, runs) }
+        DecorationsService(project, otherRuns, watchedMethods, { libraryDirectory }, { settings }).also { other ->
+            Disposer.register(testRootDisposable, other)
+        }
+        otherRuns.selected = demoRun(name = "Other")
+        assertEquals(6, icons(editor).size)
+        // The other's clear takes its own decorations and markers only.
+        otherRuns.selected = null
+        val icons = icons(editor)
+        assertEquals(listOf(lineOf(SQUARE), lineOf(MAIN), lineOf(SMILE)), icons.map { (line, _) -> line })
+        assertEquals(2, hints(editor).size)
+        // And the first still follows the document's edits.
+        val offset = DEMO.indexOf("x * x")
+        WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(offset, "1 + ") }
+        assertEquals(listOf(true, false, false), icons(editor).map { (_, renderer) -> renderer.stale })
+    }
+
     fun testARangeOutsideTheTextIsNotDecorated() {
         val editor = openDemo()
         decorations()
