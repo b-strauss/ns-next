@@ -41,7 +41,15 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(emptyList<String>(), received.errors)
         val records = received.records
 
-        assertEquals(Header(version = 1, architecture = "x64"), records.first())
+        assertEquals(
+            Header(
+                version = 1,
+                architecture = "x64",
+                categories = listOf("compile", "osr", "optimize", "inlining", "deoptimize", "code-zone", "caches"),
+                listings = listOf("bytecode", "code", "inlining"),
+            ),
+            records.first(),
+        )
 
         val block = records.filterIsInstance<Body>().single { body -> body.number == 5 }
         assertEquals("[] in Demo>>main:args:", block.name)

@@ -1055,11 +1055,18 @@ the language server's and the DAP agent's count).
 
 The records:
 
-- `{"kind":"header","format":"ns-next-trace","version":1,"architecture":…}`,
+- `{"kind":"header","format":"ns-next-trace","version":1,"architecture":…,"categories":[…],"listings":[…]}`,
   the first line: the format's name and version, which a reader that
-  does not know them refuses, and the architecture the file's `code`
+  does not know them refuses, the architecture the file's `code`
   records are instructions of, `"x64"` or `"aarch64"`, `null` for a
-  binary without a JIT.
+  binary without a JIT, the categories traced, by their names in their
+  documented order, and the listings printed, of `"bytecode"`, `"code"`
+  and `"inlining"`: what tells a reader which records can arrive. An
+  optimizing compile's outcome comes only as an `optimize` event or an
+  `inlining` record, so a reader holds a compile's `inlined` and
+  `declined` events until it arrives and drops them for a refused or
+  deferred copy -- unless neither can arrive, when it takes them at
+  once.
 - `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
   before the first record that names `N`: the body's name as the text
   trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,

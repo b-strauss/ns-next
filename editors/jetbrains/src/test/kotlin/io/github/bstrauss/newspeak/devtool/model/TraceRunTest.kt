@@ -146,6 +146,38 @@ class TraceRunTest {
         assertEquals(SendOutcome(inlining = "inlined", cache = null), traceRun.sends(5)[7])
     }
 
+    /** A run whose header names [categories] and [listings], with a body whose send at 3 a plan inlines. */
+    private fun planned(categories: String, listings: String): TraceRun {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":$categories,"listings":$listings}""",
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]}]}""",
+                event(5, "inlining", "inlined", ""","key":null,"entered":null,"in-body":5,"callee":3,"at":3"""),
+            ),
+        )
+        return traceRun
+    }
+
+    @Test fun testAPlanNoOutcomeCanConcludeIsTakenAtOnce() {
+        val inlined = mapOf(3 to SendOutcome(inlining = "inlined", cache = null))
+        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining"]""", """["code"]""").sends(5))
+        assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize"]""", "[]").sends(5))
+        assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining"]""", """["inlining"]""").sends(5))
+        // A header that does not say is taken to trace an outcome.
+        val unsaid = run()
+        unsaid.add(
+            records(
+                """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""",
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]}]}""",
+                event(5, "inlining", "inlined", ""","key":null,"entered":null,"in-body":5,"callee":3,"at":3"""),
+            ),
+        )
+        assertEquals(emptyMap<Int, SendOutcome>(), unsaid.sends(5))
+        unsaid.add(records(event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900""")))
+        assertEquals(inlined, unsaid.sends(5))
+    }
+
     @Test fun testABodyWithoutADescriptionIsAccepted() {
         val traceRun = run()
         traceRun.add(records(event(99, "compile", "compiled", ""","trigger":"entry","bytes":64""")))

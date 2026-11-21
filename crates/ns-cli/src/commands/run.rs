@@ -97,10 +97,11 @@ pub(crate) fn execute(
         // refused as a malformed filter is. The file replaces standard
         // error (decision 20), and only its reader needs the bodies'
         // positions.
+        let categories = trace_categories.unwrap_or_default();
         let sink: Box<dyn TraceSink> = match trace_options.file {
             Some(path) => {
                 let modules = trace_file::ModuleTexts::new(program::debug_modules(&program));
-                match trace_file::create(path, modules) {
+                match trace_file::create(path, modules, categories, printing) {
                     Ok(sink) => Box::new(sink),
                     Err(refusal) => return refuse_trace(&refusal),
                 }
@@ -109,7 +110,7 @@ pub(crate) fn execute(
         };
         loaded.interpreter.set_trace(
             TraceSettings {
-                categories: trace_categories.unwrap_or_default(),
+                categories,
                 filter: trace_filter,
                 printing,
                 print_filter,

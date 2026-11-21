@@ -41,6 +41,14 @@ class TraceRun(val name: String, val started: Instant) {
      * copy's plan says what became of a send.
      */
     private val plannedInlining = HashMap<CompileKey, MutableList<Pair<SendKey, String>>>()
+
+    /**
+     * Whether a compile's outcome can arrive: an `optimize` event or an
+     * inlining listing. Where the header says neither is traced, a plan's
+     * decisions are taken as they come, for nothing would ever conclude
+     * them; a header that does not say is taken to trace them.
+     */
+    private var outcomeCanArrive = true
     private val listeners = ArrayList<() -> Unit>()
 
     /** The architecture the run's machine code is instructions of, from the header; null without a JIT or before it arrived. */
@@ -87,7 +95,12 @@ class TraceRun(val name: String, val started: Instant) {
         if (batch.isEmpty()) return
         for (record in batch) {
             when (record) {
-                is Header -> architecture = record.architecture
+                is Header -> {
+                    architecture = record.architecture
+                    val categories = record.categories
+                    val listings = record.listings
+                    outcomeCanArrive = categories == null || listings == null || "optimize" in categories || "inlining" in listings
+                }
                 is Body -> describedBodies[record.number] = record
                 is Event -> take(record)
                 is Bytecode -> bytecodeListings[record.body] = record
@@ -138,6 +151,10 @@ class TraceRun(val name: String, val started: Instant) {
     private fun plan(event: Event, outcome: String) {
         val body = event.body ?: return
         val send = inliningAt(event) ?: return
+        if (!outcomeCanArrive) {
+            inliningAtSends[send] = outcome
+            return
+        }
         plannedInlining.getOrPut(compileKey(body, event)) { ArrayList() }.add(send to outcome)
     }
 

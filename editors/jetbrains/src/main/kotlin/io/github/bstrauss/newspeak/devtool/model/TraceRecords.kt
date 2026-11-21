@@ -45,8 +45,18 @@ class MalformedRecordException(message: String) : Exception(message)
 /** `[startLine, startColumn, endLine, endColumn]`, counted from 0, the columns in UTF-16 code units. */
 data class SourceRange(val startLine: Int, val startColumn: Int, val endLine: Int, val endColumn: Int)
 
-/** The file's first line: the format's [version] and the [architecture] its `code` records are instructions of, null without a JIT. */
-data class Header(val version: Int, val architecture: String?) : TraceRecord
+/**
+ * The file's first line: the format's [version], the [architecture] its
+ * `code` records are instructions of, null without a JIT, and the
+ * [categories] traced and [listings] printed, by their names, each null in
+ * a header that does not say.
+ */
+data class Header(
+    val version: Int,
+    val architecture: String?,
+    val categories: List<String>? = null,
+    val listings: List<String>? = null,
+) : TraceRecord
 
 /** A statement of a body: its [instructions], from the first up to, not including, the last, and its source. */
 data class Statement(val instructions: IntRange, val range: SourceRange?)
@@ -154,7 +164,12 @@ data class Inlining(
 ) : TraceRecord
 
 private fun parseObject(record: JsonObject): TraceRecord? = when (record.requiredText("kind")) {
-    "header" -> Header(record.requiredInteger("version"), record.optionalText("architecture"))
+    "header" -> Header(
+        record.requiredInteger("version"),
+        record.optionalText("architecture"),
+        record.optional("categories")?.asJsonArray?.map { name -> name.asString },
+        record.optional("listings")?.asJsonArray?.map { name -> name.asString },
+    )
         .also { if (record.requiredText("format") != FORMAT) throw MalformedRecordException("no ns-next trace") }
     "body" -> {
         val module = record.required("module").asJsonObject

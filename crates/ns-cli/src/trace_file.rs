@@ -15,7 +15,7 @@ use ns_runtime::trace_events::{
     ArmKind, BodyDescription, BodyName, BytecodeListing, CodeListing, InliningListing,
     InliningOutcome, ListedScope, Listing, Position,
 };
-use ns_runtime::{TraceEvent, TraceEventKind, TraceSink};
+use ns_runtime::{Printing, TraceCategories, TraceCategory, TraceEvent, TraceEventKind, TraceSink};
 use ns_syntax::Span;
 use ns_tooling::lines::LineIndex;
 use serde_json::{Map, Value, json};
@@ -621,13 +621,37 @@ fn inlining_record(inlining: &InliningListing) -> Value {
     })
 }
 
-/// The `header` record, the file's first line.
-fn header_record() -> Value {
+/// The `header` record, the file's first line: besides the format, the
+/// categories traced and the listings printed, so that a reader knows
+/// which records can arrive -- an optimizing compile's outcome, which
+/// says whether its inlining decisions stand, comes only as an
+/// `optimize` event or an inlining listing.
+fn header_record(categories: TraceCategories, printing: Printing) -> Value {
+    let categories: Vec<&str> = TraceCategory::ALL
+        .into_iter()
+        .filter(|category| categories.contains(*category))
+        .map(TraceCategory::name)
+        .collect();
+    let Printing {
+        bytecode,
+        code,
+        inlining,
+    } = printing;
+    let listings: Vec<&str> = [
+        (bytecode, "bytecode"),
+        (code, "code"),
+        (inlining, "inlining"),
+    ]
+    .into_iter()
+    .filter_map(|(printed, kind)| printed.then_some(kind))
+    .collect();
     json!({
         "kind": "header",
         "format": FORMAT,
         "version": VERSION,
         "architecture": architecture(),
+        "categories": categories,
+        "listings": listings,
     })
 }
 
@@ -639,17 +663,23 @@ pub(crate) struct TraceFileSink {
 }
 
 /// Creates the trace file at `path`, replacing one there, and writes its
-/// header; refuses a path no file can be created at, naming it, so that
+/// header, naming the `categories` traced and the listings `printing`
+/// prints; refuses a path no file can be created at, naming it, so that
 /// the run is refused before anything of it runs rather than trace into
 /// nothing.
-pub(crate) fn create(path: &Path, modules: ModuleTexts) -> Result<TraceFileSink, String> {
+pub(crate) fn create(
+    path: &Path,
+    modules: ModuleTexts,
+    categories: TraceCategories,
+    printing: Printing,
+) -> Result<TraceFileSink, String> {
     let file = File::create(path)
         .map_err(|error| format!("--trace-file: cannot create `{}`: {error}", path.display()))?;
     let mut sink = TraceFileSink {
         file: BufWriter::new(file),
         modules,
     };
-    sink.write(&header_record());
+    sink.write(&header_record(categories, printing));
     // A reader that opens the file at once finds it a trace.
     sink.flushed();
     Ok(sink)
@@ -748,7 +778,34 @@ mod tests {
             bodies: Vec::new(),
         });
         assert!(!listing_record(&listing).to_string().contains('\n'));
-        assert!(!header_record().to_string().contains('\n'));
+        assert!(
+            !header_record(TraceCategories::default(), Printing::default())
+                .to_string()
+                .contains('\n')
+        );
+    }
+
+    /// The header names the categories traced and the listings printed,
+    /// each in its documented order.
+    #[test]
+    fn the_header_names_what_is_traced() {
+        let categories = TraceCategories::default()
+            .with(TraceCategory::Caches)
+            .with(TraceCategory::Compile);
+        let printing = Printing {
+            bytecode: false,
+            code: true,
+            inlining: true,
+        };
+        let header = header_record(categories, printing);
+        assert_eq!(header["kind"], "header");
+        assert_eq!(header["format"], FORMAT);
+        assert_eq!(header["version"], VERSION);
+        assert_eq!(header["categories"], json!(["compile", "caches"]));
+        assert_eq!(header["listings"], json!(["code", "inlining"]));
+        let nothing = header_record(TraceCategories::default(), Printing::default());
+        assert_eq!(nothing["categories"], json!([]));
+        assert_eq!(nothing["listings"], json!([]));
     }
 
     /// The texts of one program module, `Demo`, read from `/work/Demo.ns`.
