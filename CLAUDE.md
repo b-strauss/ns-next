@@ -134,7 +134,10 @@ Rust 1.100.0, edition 2024, seven crates:
   again from the module's current text through either lowerer's
   collector, keeps per body only when the body compiled again is alike
   (`bytecode::compiles_alike`), caches weakly and clears at every
-  install, and by which `Interpreter::breakable_statements` answers a
+  install -- and, for the trace's descriptions, compiles a level again
+  from the current text with a family root's own source laid where its
+  member stands, so that a body is described as it was compiled
+  (`Cache::own_placement`) --, and by which `Interpreter::breakable_statements` answers a
   module's breakable statements without loading it
   (`metadata/breakable.rs`); and breakpoints and stepping: a breakpoint
   patches its slot of the body in place, the original kept beside the
@@ -315,8 +318,9 @@ Rust 1.100.0, edition 2024, seven crates:
   printing code"). `--trace-file=<path>`, which needs `--trace` or a
   print option, writes the events and the listings into the file
   instead of standard error, as one JSON object a line -- a header, each
-  body described once by number with its source range, checksum,
-  statements and sends (`TraceSettings::describe_bodies`,
+  body described once by number with its source range, the text that
+  range counts in (`placed`), checksum, statements and sends
+  (`TraceSettings::describe_bodies`,
   `trace_events/descriptions.rs`), then the events and the listings
   naming bodies by number -- flushed at every flush's end, and refuses a
   path no file can be created at with exit status 2 before the program

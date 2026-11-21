@@ -5,6 +5,9 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.NewspeakBundle
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.ReadableByteChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -173,6 +176,42 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         waitFor("the error arrives") { received.errors.isNotEmpty() }
         assertEquals(listOf(NewspeakBundle.message("devtool.file.malformed", "3", "no `category`")), received.errors)
         // Published before the error: the records up to the malformed line, none after it.
+        assertEquals(2, received.records.size)
+        assertEquals("compiled", (received.records[1] as Event).event)
+    }
+
+    fun testAnUnreadableFileKeepsTheRecordsReadBeforeIt() {
+        val file = traceFile()
+        val compiled = """{"kind":"event","category":"compile","body":3,"event":"compiled","trigger":"call","bytes":1216}"""
+        // The file's bytes, then a read the operating system refuses.
+        val bytes = ByteBuffer.wrap((HEADER + "\n" + compiled + "\n").toByteArray())
+        val channel = object : ReadableByteChannel {
+            override fun read(destination: ByteBuffer): Int {
+                if (!bytes.hasRemaining()) throw IOException("the disk is gone")
+                val count = minOf(destination.remaining(), bytes.remaining())
+                repeat(count) { destination.put(bytes.get()) }
+                return count
+            }
+
+            override fun isOpen() = true
+
+            override fun close() {}
+        }
+        val received = Received()
+        val reader = TraceFileReader(
+            file,
+            { batch -> received.batches += batch },
+            { error -> received.errors += error },
+            {},
+            { task -> ApplicationManager.getApplication().invokeLater(task) },
+            { milliseconds -> Thread.sleep(milliseconds) },
+            System::currentTimeMillis,
+            { _ -> channel },
+        )
+        Disposer.register(testRootDisposable, reader)
+        waitFor("the error arrives") { received.errors.isNotEmpty() }
+        assertEquals(listOf(NewspeakBundle.message("devtool.file.unreadable", file.toString(), "the disk is gone")), received.errors)
+        // Published before the error: every record read.
         assertEquals(2, received.records.size)
         assertEquals("compiled", (received.records[1] as Event).event)
     }

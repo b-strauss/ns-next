@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.intellij.openapi.util.Disposer
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -211,9 +212,18 @@ class TraceRunTest {
         return traceRun
     }
 
-    @Test fun testAPlanNoOutcomeCanConcludeIsTakenAtOnce() {
+    @Test fun testAPlanNoOutcomeCanConcludeIsNeverShown() {
         val inlined = mapOf(3 to SendOutcome(inlining = "inlined", cache = null))
-        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining","deoptimize","code-zone"]""", """["code"]""").sends(5))
+        // Whether the copy was installed is never heard: a refused or deferred compile's decision would stand for good.
+        val unconcluded = planned("""["inlining","deoptimize","code-zone"]""", """["code"]""")
+        // The same copy compiled again and again, each compile declining a callee, as a deferral retried while the zone stays full.
+        repeat(3) {
+            unconcluded.add(records(event(5, "inlining", "declined", ""","key":null,"entered":null,"in-body":5,"callee":4,"reason":"over-weight","at":3""")))
+        }
+        assertEquals("neither `optimize` nor the plans traced", emptyMap<Int, SendOutcome>(), unconcluded.sends(5))
+        assertNull(unconcluded.inliningEvent(5, 3))
+        assertEquals("nothing waits", 0, unconcluded.waitingDecisions)
+        assertEquals("no compile is heard installed, so none of its declines counts", 0, unconcluded.tallies[5]?.declines ?: 0)
         assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize","deoptimize","code-zone"]""", "[]").sends(5))
         assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining","deoptimize","code-zone"]""", """["inlining"]""").sends(5))
         // A header that does not say is taken to trace an outcome.
@@ -228,6 +238,18 @@ class TraceRunTest {
         assertEquals(emptyMap<Int, SendOutcome>(), unsaid.sends(5))
         unsaid.add(records(event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900""")))
         assertEquals(inlined, unsaid.sends(5))
+    }
+
+    @Test fun testDeclinesCountOnlyForAnInstalledCopy() {
+        val traceRun = run()
+        val declined = event(5, "inlining", "declined", ""","key":null,"entered":null,"in-body":5,"callee":4,"reason":"over-weight","at":3""")
+        // Deferred twice, then installed: only the installed compile's decline counts.
+        repeat(2) { traceRun.add(records(declined, event(5, "optimize", "deferred", ""","key":null,"entered":null,"reason":"zone-full""""))) }
+        assertEquals(0, traceRun.tallies[5]?.declines ?: 0)
+        traceRun.add(records(declined, event(5, "optimize", "refused", ""","key":null,"entered":null,"reason":"too-large"""")))
+        assertEquals(0, traceRun.tallies[5]?.declines ?: 0)
+        traceRun.add(records(declined, event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900""")))
+        assertEquals(1, checkNotNull(traceRun.tallies[5]).declines)
     }
 
     @Test fun testASendsInliningGoesWithItsCopy() {
@@ -363,6 +385,20 @@ class TraceRunTest {
         assertEquals(MethodState.DEOPTIMIZED, all.state(5))
     }
 
+    @Test fun testABodyPlacedInTheCurrentTextHasNoPlaceInTheFile() {
+        val ranged = { placed: String -> """{"kind":"body","body":4,"name":"Demo>>helper","family":null,"module":{"id":"Demo","version":null},"source":{"file":"/work/Demo.ns"},"range":[12,2,14,3],"placed":"$placed","checksum":"0000000000000001","statements":[{"instructions":[0,1],"range":[13,4,13,9]}],"sends":[{"at":0,"site":0,"call":[13,4,13,9],"selector":[[13,6,13,9]]}]}""" }
+        val current = TraceRecord.parse(ranged("current")) as Body
+        assertTrue(current.placedInCurrentText)
+        assertNull(current.range)
+        assertNull(current.statements.single().range)
+        assertNull(current.sends.single().call)
+        assertEquals(listOf<SourceRange?>(null), current.sends.single().selector)
+        val inFile = TraceRecord.parse(ranged("source")) as Body
+        assertFalse(inFile.placedInCurrentText)
+        assertEquals(SourceRange(12, 2, 14, 3), inFile.range)
+        assertEquals(SourceRange(13, 6, 13, 9), inFile.sends.single().selector.single())
+    }
+
     @Test fun testABodyWithoutADescriptionIsAccepted() {
         val traceRun = run()
         traceRun.add(records(event(99, "compile", "compiled", ""","trigger":"entry","bytes":64""")))
@@ -376,9 +412,9 @@ class TraceRunTest {
         val traceRun = run()
         traceRun.add(
             records(
+                event(3, "inlining", "declined", ""","key":null,"entered":null,"in-body":3,"callee":4,"reason":"over-weight","at":2"""),
                 event(3, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900"""),
                 event(3, "deoptimize", "retired", ""","key":null,"entered":null,"reason":"exits","version":null"""),
-                event(3, "inlining", "declined", ""","key":null,"entered":null,"in-body":3,"callee":4,"reason":"over-weight","at":2"""),
             ),
         )
         val osr = Event("osr", 3, "osr-entered", JsonObject())

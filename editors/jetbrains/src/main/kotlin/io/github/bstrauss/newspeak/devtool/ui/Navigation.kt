@@ -50,15 +50,17 @@ fun navigate(
     }
 }
 
-/** [body]'s name as the text trace writes it between braces; `#<number>` for a body the file did not describe. */
-fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: "#$body"
+/**
+ * [body]'s name as the text trace writes it between braces: a family root
+ * the file did not describe, since its code was gone, by its blocks'
+ * names; `#<number>` for another body the file did not describe.
+ */
+fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: run.undescribedRootName(body) ?: "#$body"
 
 /**
  * The method [body] belongs to: a block's root, from its description's
- * family. A body the file did not describe, and a block whose root it
- * did not describe either, stands for itself.
+ * family, whether or not the file described the root -- a block of a
+ * root whose code was gone is counted as its method's too. A body the
+ * file did not describe stands for itself.
  */
-fun rootOf(run: TraceRun, body: Int): Int {
-    val family = run.bodies[body]?.family ?: return body
-    return if (run.bodies.containsKey(family)) family else body
-}
+fun rootOf(run: TraceRun, body: Int): Int = run.bodies[body]?.family ?: body

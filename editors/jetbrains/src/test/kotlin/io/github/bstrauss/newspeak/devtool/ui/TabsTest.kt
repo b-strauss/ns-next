@@ -163,7 +163,10 @@ class TabsTest : BasePlatformTestCase() {
         """{"kind":"event","category":"$category","body":$body,"event":"$event"$fields}"""
 
     fun testMethodsCountABlockUnderItsMethod() {
-        val run = fixtureRun(eventLine(5, "inlining", "declined", ""","in-body":5,"callee":3,"reason":"over-weight","at":7"""))
+        val run = fixtureRun(
+            eventLine(5, "inlining", "declined", ""","key":null,"entered":null,"in-body":5,"callee":3,"reason":"over-weight","at":7"""),
+            eventLine(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":100"""),
+        )
         val tab = MethodsTab(project, run, testRootDisposable)
         assertTrue("a block has no row of its own", tab.model.items.none { row -> row.body == 5 })
         val main = tab.model.items.single { row -> row.name == "Demo>>main:args:" }
@@ -172,6 +175,22 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals(0, main.copies)
         assertEquals(3601, main.optimizedBytes)
         assertEquals(1, main.declined)
+    }
+
+    fun testMethodsCountTheBlocksOfARootWhoseCodeWasGoneUnderIt() {
+        val block = { number: Int -> """{"kind":"body","body":$number,"name":"[] in Demo>>gone","family":69,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[]}""" }
+        val run = fixtureRun(
+            block(70),
+            block(71),
+            eventLine(70, "compile", "compiled", ""","trigger":"call","bytes":64"""),
+            eventLine(71, "compile", "compiled", ""","trigger":"call","bytes":96"""),
+            eventLine(69, "caches", "transition", ""","before":"vacant","after":"monomorphic","selector":"size","site":0,"receiver":"Demo""""),
+        )
+        val tab = MethodsTab(project, run, testRootDisposable)
+        assertTrue("no block has a row of its own", tab.model.items.none { row -> row.body == 70 || row.body == 71 })
+        val gone = tab.model.items.single { row -> row.body == 69 }
+        assertEquals("Demo>>gone", gone.name)
+        assertEquals(96, gone.baselineBytes)
     }
 
     fun testEventsGroupABlockUnderItsMethodAndGrowWithTheRun() {

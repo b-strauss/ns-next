@@ -35,8 +35,9 @@ private val TIME_OF_DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:
  * into a temporary file of its own, which a [TraceFileReader] follows into
  * the run's [TraceRun], shown as a tab of the "Newspeak JIT" tool window.
  * The newest run is [selected], whose decorations the editor shows; closing
- * its tab drops the run, its reader and its file, and closing the project
- * drops them all. Read and changed on the EDT only.
+ * its tab drops the run and its reader, and its file once its process has
+ * ended, and closing the project drops them all. Read and changed on the
+ * EDT only.
  *
  * [contentManager] answers the tool window's contents, null where the
  * project has none, and [traceFiles] makes and lets go the runs' files;
@@ -147,8 +148,8 @@ class TracedRuns internal constructor(
             },
             run::ended,
         )
-        // Registered before the reader, so disposed after it: the file outlives what reads it.
-        Disposer.register(disposable) { traceFiles.release(file) }
+        // Registered before the reader, so disposed after it: the file outlives what reads it, and what writes it.
+        Disposer.register(disposable) { releaseOnceEnded(file, handler) }
         Disposer.register(disposable, reader)
         handler.addProcessListener(
             object : ProcessListener {
@@ -167,7 +168,29 @@ class TracedRuns internal constructor(
         return run
     }
 
-    /** Drops [run]: its tab, its reader and its file. */
+    /**
+     * Lets [file] go once [handler]'s process has ended: a tab closed while
+     * its run goes on drops its reader at once, and the file, which the
+     * process still writes, when the process ends, so that no file is left
+     * behind that a deleted name no longer reaches.
+     */
+    private fun releaseOnceEnded(file: Path, handler: ProcessHandler) {
+        if (handler.isProcessTerminated) {
+            traceFiles.release(file)
+            return
+        }
+        handler.addProcessListener(
+            object : ProcessListener {
+                override fun processTerminated(event: ProcessEvent) {
+                    traceFiles.release(file)
+                }
+            },
+        )
+        // A process that ended while the listener was added is told of by neither.
+        if (handler.isProcessTerminated) traceFiles.release(file)
+    }
+
+    /** Drops [run]: its tab and its reader at once, and its file once its process has ended. */
     fun close(run: TraceRun) {
         val entry = traced.firstOrNull { candidate -> candidate.run === run } ?: return
         traced.remove(entry)

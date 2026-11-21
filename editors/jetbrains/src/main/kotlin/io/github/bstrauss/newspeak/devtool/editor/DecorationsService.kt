@@ -378,7 +378,13 @@ class DecorationsService internal constructor(
         val watched = watchedMethods.isWatched(root.name)
         if (state == null) {
             if (!isListed(traced, method)) return null
-            val tooltip = NewspeakBundle.message(if (method.stale) "devtool.stale" else "devtool.gutter.listed")
+            // A method the run traced events of has no state only for want of the categories that would say whether its tiers are over.
+            val missing = traced.missingTierCategories()
+            val tooltip = when {
+                method.stale -> NewspeakBundle.message("devtool.stale")
+                missing.isNotEmpty() && root.number in traced.tallies -> NewspeakBundle.message("devtool.gutter.listed.unheard", categoryList(missing))
+                else -> NewspeakBundle.message("devtool.gutter.listed")
+            }
             return StateGutterRenderer(null, stale = method.stale, watched = watched, tooltip, methodActions(traced, root), listed = true)
         }
         val actions = methodActions(traced, root)

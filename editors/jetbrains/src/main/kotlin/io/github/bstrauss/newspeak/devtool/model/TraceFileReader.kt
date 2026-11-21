@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.ReadableByteChannel
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -47,7 +48,8 @@ private const val VERSION = 1
  * next batch is handed over only once the last one was applied, so that a
  * backlog -- a file written faster than the EDT takes it -- waits in the
  * file, never in the EDT's queue. A file that is no trace, a version this
- * reader does not know and a line that is no record are reported once to
+ * reader does not know, a line that is no record and a file that can no
+ * longer be read are reported once to
  * [onError], on the EDT, after the records read before them, and end the
  * reading. The file need not exist yet: the reader waits for the runtime
  * to create it, looking less often the longer nothing comes, from
@@ -56,8 +58,9 @@ private const val VERSION = 1
  * Reads until it is disposed, or, once [finish] is called, to the file's
  * end, and then tells [onEnd], on the EDT, after the last batch.
  *
- * [dispatch] runs a task on the EDT, [pause] waits and [clock] answers the
- * time in milliseconds; tests hand in their own.
+ * [dispatch] runs a task on the EDT, [pause] waits, [clock] answers the
+ * time in milliseconds and [openChannel] opens the file; tests hand in
+ * their own.
  */
 class TraceFileReader internal constructor(
     private val path: Path,
@@ -67,6 +70,7 @@ class TraceFileReader internal constructor(
     private val dispatch: (Runnable) -> Unit,
     private val pause: (Long) -> Unit,
     private val clock: () -> Long,
+    private val openChannel: (Path) -> ReadableByteChannel = { file -> FileChannel.open(file, StandardOpenOption.READ) },
 ) : Disposable {
     constructor(path: Path, onBatch: (List<TraceRecord>) -> Unit, onError: (String) -> Unit, onEnd: () -> Unit = {}) : this(
         path,
@@ -136,16 +140,18 @@ class TraceFileReader internal constructor(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         } catch (exception: IOException) {
+            // The records read before the error are the run's as much as a malformed line's are.
+            if (lines.pending.isNotEmpty()) publish(lines.drain())
             report(NewspeakBundle.message("devtool.file.unreadable", path.toString(), exception.message ?: exception.javaClass.simpleName))
         }
     }
 
     /** The file, once the runtime has created it; null if the reader was disposed or finished before. */
-    private fun open(): FileChannel? {
+    private fun open(): ReadableByteChannel? {
         while (!disposed) {
             // Looked at before trying, so that a file created just before `finish` is still read.
             val ending = finished
-            if (Files.exists(path)) return FileChannel.open(path, StandardOpenOption.READ)
+            if (Files.exists(path)) return openChannel(path)
             if (ending) return null
             waitForBytes(wait)
         }

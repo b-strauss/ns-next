@@ -432,6 +432,32 @@ class DecorationsTest : BasePlatformTestCase() {
         assertEquals(listOf(lineOf(SQUARE)), icons(editor).map { (line, _) -> line })
     }
 
+    fun testABodyPlacedInTheCurrentTextIsNotDecorated() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        // An edit's `helper`, its range counted in the runtime's edited text, where it lands on `smile`'s lines in the file.
+        val helper = bodyJson(9, "Demo>>helper", source, DEMO, SMILE, checksum = "0000000000000009", sends = listOf(sendJson(DEMO, SMILE, 1, 0, "'😀' size", "size")))
+            .replace(""""checksum":""", """"placed":"current","checksum":""")
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        HEADER,
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        helper,
+                        event(1, "compile", "compiled"),
+                        event(9, "compile", "compiled"),
+                        event(9, "caches", "transition", ""","before":"vacant","after":"monomorphic","selector":"size","site":0,"receiver":"String""""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        assertEquals(listOf(lineOf(SQUARE)), icons(editor).map { (line, _) -> line })
+        assertEquals(emptyList<Pair<Int, String>>(), hints(editor))
+    }
+
     fun testADeoptimizedMethodShowsItsIcon() {
         val editor = openDemo()
         decorations()
@@ -510,6 +536,31 @@ class DecorationsTest : BasePlatformTestCase() {
         val square = icons(editor).single().second
         assertEquals(MethodState.BASELINE, square.state)
         assertEquals("baseline · 0 copies · 0 deoptimizations · optimized, shown as baseline: trace deoptimize too to see its optimized copies", square.tooltipText)
+    }
+
+    fun testAListedMethodWhoseTiersCannotBeHeardSaysWhichCategoriesItNeeds() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["optimize"],"listings":["bytecode"]}""",
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        """{"kind":"bytecode","body":1,"bodies":[{"body":1,"instructions":[{"index":0,"statement":0,"text":"Return r0"}]}]}""",
+                        event(1, "optimize", "optimized", ""","key":null,"entered":null,"bytes":100"""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val square = icons(editor).single().second
+        assertNull(square.state)
+        assertEquals(
+            "The run listed this method's code; how it runs is shown only where its end can be heard: trace compile, deoptimize and code-zone too",
+            square.tooltipText,
+        )
     }
 
     private companion object {

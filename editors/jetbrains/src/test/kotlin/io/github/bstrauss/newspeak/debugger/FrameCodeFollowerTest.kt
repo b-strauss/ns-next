@@ -1,8 +1,12 @@
 package io.github.bstrauss.newspeak.debugger
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 
@@ -54,6 +58,22 @@ class FrameCodeFollowerTest : BasePlatformTestCase() {
         assertTrue(FrameCodeFollower.closesFollower(manager, file, file))
         val other = CodeListingFile("other", "text\n")
         assertFalse(FrameCodeFollower.closesFollower(manager, other, file))
+    }
+
+    fun testADeferredStepAfterTheLifetimesDisposalDoesNothing() {
+        val session = Disposer.newDisposable(testRootDisposable, "session")
+        val lifetime = Disposer.newDisposable(session, "follower")
+        val released = FrameCodeFollower.expiresWith(lifetime)
+        val steps = ArrayList<String>()
+        ApplicationManager.getApplication().invokeLater({ steps += "before" }, ModalityState.any(), released)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals("a step while the follower lives runs", listOf("before"), steps)
+        ApplicationManager.getApplication().invokeLater({ steps += "after" }, ModalityState.any(), released)
+        // The session ends, and with it the follower's lifetime, before the step reaches the event dispatch thread.
+        Disposer.dispose(session)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(listOf("before"), steps)
+        assertTrue(released.value(null))
     }
 
     private companion object {

@@ -164,6 +164,15 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(1, tab.shownBody)
     }
 
+    fun testAChosenListingIsBuiltOnce() {
+        val tab = tab(tracedRun())
+        val before = tab.listingsShown
+        tab.show(1)
+        assertEquals("the body offered", before + 1, tab.listingsShown)
+        choose(tab, "baseline")
+        assertEquals("a copy chosen", before + 2, tab.listingsShown)
+    }
+
     fun testTheChooserListsEveryCopy() {
         val tab = tab(tracedRun())
         tab.show(1)

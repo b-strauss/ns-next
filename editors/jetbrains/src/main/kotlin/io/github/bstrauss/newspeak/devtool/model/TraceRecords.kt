@@ -73,6 +73,12 @@ data class Send(val at: Int, val site: Int?, val call: SourceRange?, val selecto
  * as it was compiled could be had, a body an edit compiled and a later one
  * replaced among them, and the [checksum] of its source, by which a reader
  * tells whether the text it holds is the one the body was compiled from.
+ *
+ * A record whose `placed` is `current` counts its ranges in the runtime's
+ * current text of the module, which an edit made and no file the plugin
+ * holds is: such a body is read with [placedInCurrentText] set and every
+ * range null, so that nothing decorates, links or navigates into the
+ * file's text at lines that belong to other text.
  */
 data class Body(
     val number: Int,
@@ -86,6 +92,7 @@ data class Body(
     val checksum: String,
     val statements: List<Statement>,
     val sends: List<Send>,
+    val placedInCurrentText: Boolean = false,
 ) : TraceRecord
 
 /**
@@ -200,6 +207,9 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
     "body" -> {
         val module = record.required("module").asJsonObject
         val source = record.optional("source")?.asJsonObject
+        // A record without `placed` comes from a runtime that placed every body in the text its source names.
+        val inCurrentText = record.optionalText("placed") == "current"
+        val placedRange = { element: JsonElement? -> if (inCurrentText) null else sourceRange(element) }
         Body(
             number = record.requiredInteger("body"),
             name = record.requiredText("name"),
@@ -208,22 +218,23 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
             moduleVersion = module.optionalText("version"),
             file = source?.optionalText("file"),
             library = source?.optionalText("library"),
-            range = sourceRange(record.optional("range")),
+            range = placedRange(record.optional("range")),
             checksum = record.requiredText("checksum"),
             statements = record.requiredArray("statements").map { element ->
                 val statement = element.asJsonObject
                 val instructions = statement.requiredArray("instructions")
-                Statement(instructions[0].asInt until instructions[1].asInt, sourceRange(statement.optional("range")))
+                Statement(instructions[0].asInt until instructions[1].asInt, placedRange(statement.optional("range")))
             },
             sends = record.requiredArray("sends").map { element ->
                 val send = element.asJsonObject
                 Send(
                     at = send.requiredInteger("at"),
                     site = send.optionalInteger("site"),
-                    call = sourceRange(send.optional("call")),
-                    selector = send.requiredArray("selector").map { token -> sourceRange(token.takeUnless { value -> value.isJsonNull }) },
+                    call = placedRange(send.optional("call")),
+                    selector = send.requiredArray("selector").map { token -> placedRange(token.takeUnless { value -> value.isJsonNull }) },
                 )
             },
+            placedInCurrentText = inCurrentText,
         )
     }
     "event" -> {

@@ -1161,12 +1161,18 @@ The records:
   optimizing compile's outcome comes only as an `optimize` event or an
   `inlining` record, so a reader holds a compile's `inlined` and
   `declined` events until it arrives and drops them for a refused or
-  deferred copy -- unless neither can arrive, when it takes them at
-  once. A compile's inlining events are one stretch, followed by its
-  outcome: any other record but a `body` or a `bytecode` record, which
-  stand wherever a body is first named, ends it, and a compile whose
-  outcome a filter withheld is dropped there.
-- `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
+  deferred copy -- and where neither can arrive takes none of them,
+  since whether the copy was installed is never heard. A compile's
+  inlining events are one stretch, followed by its outcome: any other
+  record but a `body` or a `bytecode` record, which stand wherever a
+  body is first named, ends it, and a compile whose outcome a filter
+  withheld is dropped there. Where plans are printed, a compile whose
+  plan the runtime withholds -- one naming a scope whose code the heap
+  no longer names -- traces no inlining events either
+  (`jit::inlining_traceable`), so that two compiles of one copy in a
+  row never run together into one stretch that the second's plan
+  concludes.
+- `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"placed":"source"|"current"|null,"checksum":…,"statements":[…],"sends":[…]}`,
   before the first record that names `N`: the body's name as the text
   trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,
   `family`, the number of its family's root -- the method, factory,
@@ -1194,11 +1200,18 @@ The records:
   whose metadata the runtime could not compile again alike from its own
   source. Every range is counted in a text that holds the body's source
   as it was compiled: the program file's text as read where it holds it
-  at the body's span, else the runtime's current text where its
-  declaration of the body's member holds it; every range is `null` where
-  neither does -- a body an edit compiled and a later edit replaced --,
-  whose `checksum` is still that of its own source, so that a reader
-  decorates nothing of it rather than decorate the wrong place.
+  at the body's span or at the span the runtime's current text holds it
+  at, else the runtime's current text where its declaration of the
+  body's member holds it; every range is `null` where neither does -- a
+  body an edit compiled and a later edit replaced --, whose `checksum`
+  is still that of its own source, so that a reader decorates nothing of
+  it rather than decorate the wrong place. `placed` names the text the
+  ranges count in: `"source"`, the text `source` names -- the program's
+  file as read, or the core library's file, whose text no edit changes
+  --; `"current"`, the runtime's current text of the module, which an
+  edit made and no file holds, so that a reader holding the file places
+  nothing of the body there; `null` where every range is. A reader of a
+  record without it takes `"source"`.
   Three kinds of
   body take a number and no `body` record -- one no mixin holds, one
   whose source no text holds, and a block's family root whose code was
@@ -1313,7 +1326,9 @@ to run, once for the whole start, at most 10 s
 (`CLIENT_START_MILLISECONDS`), a server that stopped or failed ending
 the wait at once, and on a thread other than the event dispatch
 thread under a background progress, cancellable, where a wait is
-possible -- so that the first run of a session, before any editor
+possible, waited for at most that wait, a request's timeout for each
+module and a second (`readBound`), a task the platform never ran
+answering as a cancel does -- so that the first run of a session, before any editor
 started the server, keeps its patterns; a module whose identity no answer gives is left out, since a
 run refused is worse than a watch left out. A kind no entry is left
 for is not asked for at all, since a run without a pattern would trace
@@ -1328,7 +1343,8 @@ run that traces or lists anything is handed a temporary file,
 `newspeak-trace/trace-<uuid>.jsonl` under the IDE's temporary
 directory, and gets a `TraceRun` named by its configuration and the
 time and a tab of the tool window, and is selected. Closing its tab
-drops the run, its reader and its file, the newest run left becoming
+drops the run and its reader at once, and its file once its process has
+ended, since the process writes it until then, the newest run left becoming
 the selected one, whose decorations the editor shows, and every
 listing tab built from it (`CodeListingFile`) keeps its text and lets
 the run go, linking nothing from then on. No trace file outlives the
@@ -1340,7 +1356,9 @@ in an IDE session sweeps the directory of every file no live run
 names (`TraceFilesSweep`), which a deletion an earlier session's end
 cut short, or a file a still running process held open, left behind
 -- application-wide, so that it never deletes another open project's
-running trace. The reader (`TraceFileReader`) follows the file on a
+running trace. A file's size on disk is bounded by what its run traces,
+as any log's is: the categories, listings and filters a run is started
+with are what keeps it small. The reader (`TraceFileReader`) follows the file on a
 pooled thread, looking for appended bytes 50 ms after it last found
 some, each look after a quiet one waiting twice as long, up to 500 ms;
 keeps an incomplete last line until its newline arrives, parses each
@@ -1352,7 +1370,10 @@ backlog waits in the file and never in the thread's queue; once the
 process ends it reads to the end. A first line that
 is no header of `ns-next-trace`, a version other than 1, a malformed
 line and an unreadable file end the reading with a message in the run's
-tab, after the records read before it. A `TraceRun` (`TraceRun.kt`),
+tab, after the records read before it. A body placed in the runtime's
+current text (`"placed":"current"`) is read with every range `null`
+(`Body.placedInCurrentText`): its lines are those of text no file holds,
+so nothing decorates, links or navigates into the file there. A `TraceRun` (`TraceRun.kt`),
 read and changed on the event dispatch thread only, keeps the records
 by body number, the header's categories and the filters the run was
 started with, and decides each body's state from its events in order
@@ -1373,8 +1394,8 @@ has a body the trace names only as a callee, a scope, a cache's family
 or by a bytecode listing, since a body is described whenever any
 delivery names it. By the same rule, each send's outcome: the inlining
 decision of the last optimizing compile that planned it and whose
-installed copy still lives -- held until the compile's outcome arrives
-unless the header says none can, and dropped unshown where the next
+installed copy still lives -- held until the compile's outcome arrives,
+never taken where the header says none can, and dropped unshown where the next
 record but a description or a bytecode listing is no part of the
 compile, its outcome withheld by a filter, or the file ends, so that
 at most one compile's decisions wait; the hint's tooltip shows the
@@ -1404,8 +1425,10 @@ the events name it -- a block counted as its method's, with its state,
 blank for one the run has none of, copies, deoptimizations,
 abandonments, the code bytes of its largest install of each tier, a
 column each for baseline, twin and optimized, from the installs'
-events and listings alike, and the callees declined in it, sortable, a
-double click opening it. Events is the trace as a table, filtered by category and by a part
+events and listings alike, and the callees declined in it by the
+compiles whose copy was heard installed, sortable, a double click
+opening it; a block whose root's code was gone by the flush counts as
+that root's method, named by its blocks' name. Events is the trace as a table, filtered by category and by a part
 of the method's name, grouped by method on request, a double click
 going to the event's place in the source, and with "Text" the same rows
 as the text trace's lines; it shows the events the run keeps, and says
@@ -1457,7 +1480,10 @@ a click opening Watch or Unwatch, Show Code, Show Inlining and Open in
 Tool Window -- for a method the run says how it ran; a neutral icon
 with the same menu, "The run listed this method's code but traced
 nothing of how it ran", for one the run lists the bytecode, machine
-code or a plan of but says no state of (`TraceRun.isListed`); the eye
+code or a plan of but says no state of (`TraceRun.isListed`), its
+tooltip naming the categories the run lacks (`TraceRun.missingTierCategories`)
+where the run traced events of the method but could not say whether
+its tiers are over; the eye
 otherwise if it is watched -- and a hint after each send the run says something of
 (`SendInlayRenderer`), `inlined` or `declined: <reason>` and the cache's
 state, the events' fields on hover; each block at its own range. A
@@ -1505,49 +1531,60 @@ bodies numbered apart, and its line -- to what this build writes
 `regenerate_the_events_fixture`), a bytecode record to each body's
 line, every record to one line, a range to UTF-16 columns counted in
 the file's text where it holds the body and else in the text the
-description hands, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
+description hands, the file placing a moved body where it holds it,
+each record's `placed`, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
 instructions to the text listing's, an out-of-line stretch told from
 no position; `tests/cli.rs` a run's file -- its header, every record
 parsed, every body number described before a record names it, an edit
 installed during the run and the bodies it superseded or moved each
-described in the text it was compiled from, a recommented body's
+described in the text it was compiled from and said placed there, a recommented body's
 statements at their file lines and a body a later edit moved where it
 stands -- and the two
 refusals. The analyzer's `tests/protocol.rs` pins
-`newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
+`newspeak/methodNames` and `newspeak/moduleIdentity`. `jit/mod.rs`'s
+`inlining_events_go_where_their_plan_goes` the inlining events of a
+compile whose printed plan is withheld. In the plugin,
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the
-command line, its greying and the free field's refusal;
+command line, its greying and the free field's refusal, and the bound
+of the start's read of the modules;
 `WatchedMethodsTest` the list, its storage, the patterns a run takes
 and its filters, an absolute module path, the wait for the server and
 the notice of a run left nothing to trace; `TraceFileReaderTest` and `TraceRunTest` the records,
-a partial line, a refused version, a malformed line after records, a
+a partial line, a refused version, a malformed line and an unreadable
+file after records, a body placed in the current text read unplaced, a
 large file read in bounded batches, a backlog handed over a batch at
 a time once the last was applied, the waits of a quiet file, the states, a state only where the
 trace knows it, a tier only where its end can be heard, events and
 listings alike, a send's inlining going with its copy and shown
-only where its end can be heard, a compile whose outcome was withheld
-dropped, and the events kept beside counts that keep every one;
-`TracedRunsTest` the tabs, the file's deletion, at a tab's close and
-for a project closed before its run registered, the sweep, and a
-closed run's listing tabs; `TabsTest` the four views, the bytes of
+only where its end can be heard, none where no outcome can arrive, a
+compile whose outcome was withheld dropped, the declines of installed
+copies alone, and the events kept beside counts that keep every one;
+`TracedRunsTest` the tabs, closable as the registered tool window
+declares them, the file's deletion, at a tab's close, once its process
+ended for a tab closed while it runs, and for a project closed before
+its run registered, the sweep, and a closed run's listing tabs;
+`TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
 missing categories, the inlining tree kept across a batch, the Events
 tab's oldest rows dropped with the run's; `EventsFixtureTest` the
 Events tab's text of every event of the fixture equal to its line;
 `DecorationsTest` the icons, a deoptimized one, the neutral icon and
-its menu for a method only listed, the categories an optimized method
-shown as its baseline tier needs, none for a method a caches-only run
+its menu for a method only listed, the categories it lacks where its
+tiers cannot be heard, the categories an optimized method
+shown as its baseline tier needs, none for a body placed in the
+runtime's current text, none for a method a caches-only run
 or a filtered-out callee says nothing of, the hints, the eyes,
 staleness, the checksum over an emoji and over CRLF line ends, and a
-library file; `CodeTabTest` the caret's body, the chooser, every label
+library file; `CodeTabTest` the caret's body, the chooser, a listing
+built once per choice, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its
 `MakeClosure`, the linked highlighting,
 kept through another editor's caret and gone with an edit, and the
 editor tab; `FrameCodeFollowerTest` the frame's code written as a
-change that shows the marked line, and only the tab's last editor
-ending the follower. `NewspeakDebugProcessTest`, in
+change that shows the marked line, only the tab's last editor
+ending the follower, and a deferred step expiring with its lifetime. `NewspeakDebugProcessTest`, in
 `debugProcessTest`, runs Show Frame Code against the real runtime, and
 its refusal against a fake agent. And
 `TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`

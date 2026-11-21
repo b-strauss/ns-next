@@ -106,7 +106,7 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
             largest.merge(root to tier, bytes, ::maxOf)
         }
         // A body the run names only by its number has a row of its own, as the events name it.
-        val methods = run.bodies.keys.filterTo(HashSet()) { number -> rootOf(run, number) == number }
+        val methods = run.bodies.keys.mapTo(HashSet()) { number -> rootOf(run, number) }
         for ((number, tally) in run.tallies) {
             val body = rootOf(run, number)
             methods += body

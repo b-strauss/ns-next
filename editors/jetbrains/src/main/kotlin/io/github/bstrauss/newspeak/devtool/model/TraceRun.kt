@@ -40,7 +40,7 @@ class EventTally {
     var abandonments = 0
         internal set
 
-    /** Callees an optimizing compile of it declined to inline. */
+    /** Callees its optimizing compiles declined to inline, each counted once its compile's copy is heard installed. */
     var declines = 0
         internal set
 
@@ -70,12 +70,15 @@ class EventTally {
  * [TraceFileReader] read, and what the editor and the tool window draw from
  * them. Read and changed on the EDT only.
  *
- * A body number may come without a [Body]: a body no mixin holds, or one
- * whose range lies outside its module's text. Such a body may have a state
- * and has no sends, since only a description lists them.
+ * A body number may come without a [Body]: a body no mixin holds, one
+ * whose source no text holds, and a block's family root whose code was
+ * gone by the flush. Such a body may have a state and has no sends, since
+ * only a description lists them; a body described may still have no
+ * range, where no text the plugin holds places it.
  */
 class TraceRun(val name: String, val started: Instant, private val filters: TraceFilters = TraceFilters.EVERYTHING) {
     private val describedBodies = HashMap<Int, Body>()
+    private val familyNames = HashMap<Int, String>()
     private val recordedEvents = ArrayDeque<Event>()
     private val eventTallies = HashMap<Int, EventTally>()
     private val transitionEvents = HashMap<Pair<Int, Int>, Event>()
@@ -118,9 +121,10 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     /**
      * Whether a compile's outcome can arrive: an `optimize` event or an
-     * inlining listing. Where the header says neither is traced, a plan's
-     * decisions are taken as they come, for nothing would ever conclude
-     * them; a header that does not say is taken to trace them.
+     * inlining listing. Where the header says neither is traced, no plan's
+     * decisions are taken, for nothing would ever say whether its copy was
+     * installed -- a refused or deferred compile's would stand for good;
+     * a header that does not say is taken to trace them.
      */
     private var outcomeCanArrive = true
 
@@ -134,6 +138,14 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     /** Every body described, by its number. */
     val bodies: Map<Int, Body> get() = describedBodies
+
+    /**
+     * The name of the family root [root] where the file described a block
+     * of it but not the root itself -- its code was gone by the flush --:
+     * a block's name without its `[] in `, which every block of a family
+     * shares; null for a root the file described and for another number.
+     */
+    fun undescribedRootName(root: Int): String? = if (root in describedBodies) null else familyNames[root]
 
     /**
      * The last [KEPT_EVENTS] events, in the file's order: the Events tab's
@@ -280,8 +292,13 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
      */
     fun inliningEvent(body: Int, at: Int): Event? = inliningAtSends[SendKey(body, at)]?.event?.takeIf { inliningEnds() }
 
-    /** A decision whose copy's end -- a retirement, an invalidation, a free, the zone replaced -- could never arrive would stand for good: none is shown. */
-    private fun inliningEnds(): Boolean = categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
+    /**
+     * A decision whose copy's beginning -- the compile's outcome -- or end
+     * -- a retirement, an invalidation, a free, the zone replaced -- could
+     * never arrive would stand for good: none is shown.
+     */
+    private fun inliningEnds(): Boolean =
+        outcomeCanArrive && categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
 
     /** Takes [batch], in the file's order, and tells the listeners once. */
     fun add(batch: List<TraceRecord>) {
@@ -295,7 +312,10 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                     categories = traced
                     outcomeCanArrive = traced == null || listings == null || "optimize" in traced || "inlining" in listings
                 }
-                is Body -> describedBodies[record.number] = record
+                is Body -> {
+                    describedBodies[record.number] = record
+                    record.family?.let { family -> familyNames.putIfAbsent(family, record.name.removePrefix(BLOCK_PREFIX)) }
+                }
                 is Event -> take(record)
                 is Bytecode -> {
                     bytecodeListings[record.body] = record
@@ -386,7 +406,6 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         }
         when (event.event) {
             "abandoned" -> tally.abandonments++
-            "declined" -> tally.declines++
             "compiled" -> event.integer("bytes")?.let { bytes -> tally.largestBaseline = maxOf(tally.largestBaseline, bytes) }
             "compiled-twin" -> event.integer("bytes")?.let { bytes -> tally.largestTwin = maxOf(tally.largestTwin, bytes) }
             "optimized" -> event.integer("bytes")?.let { bytes -> tally.largestOptimized = maxOf(tally.largestOptimized, bytes) }
@@ -397,16 +416,8 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     /** Keeps [event]'s decision at its send until its compile's outcome says whether the copy was installed. */
     private fun plan(event: Event, outcome: String) {
-        val body = event.body ?: return
+        if (event.body == null || !outcomeCanArrive) return
         val send = inliningAt(event) ?: return
-        val key = compileKey(body, event)
-        if (!outcomeCanArrive) {
-            // Nothing would conclude the compile: its decisions are its copy's at once.
-            val decision = Decision(send, outcome, event)
-            liveCopies[key] = liveCopies[key].orEmpty() + decision
-            inliningAtSends[send] = decision
-            return
-        }
         openDecisions.add(Decision(send, outcome, event))
     }
 
@@ -435,6 +446,8 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         liveCopies.remove(key)
         liveCopies[key] = decisions
         for (decision in decisions) inliningAtSends[decision.send] = decision
+        val declines = decisions.count { decision -> decision.event.event == "declined" }
+        if (declines > 0) eventTallies.getOrPut(key.body) { EventTally() }.declines += declines
     }
 
     /** The copy [key] is gone: each send it planned keeps the decision of the last live copy that planned it too, or none. */
@@ -452,6 +465,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     private companion object {
         const val INLINING = "inlining"
+
+        /** What a block's name begins with before the name of its family's root. */
+        const val BLOCK_PREFIX = "[] in "
 
         /** What tells of the end of an optimized copy: a retirement or an invalidation, a free or the zone replaced. */
         val COPIES_END = listOf("deoptimize", "code-zone")

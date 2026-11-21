@@ -104,6 +104,13 @@ class CodeTab(
     /** Set while the tab writes its viewer, whose caret then moves without the user. */
     private var updating = false
 
+    /** Set while [offer] fills the chooser, whose selection then changes without the user and is shown once, by [offer]. */
+    private var offering = false
+
+    /** How many times the tab built a listing and wrote it into its viewer; tests read it. */
+    internal var listingsShown = 0
+        private set
+
     /** Whether its run was the selected one at the last change of [tracedRuns]. */
     private var wasActive = tracedRuns.selected === run
 
@@ -114,7 +121,7 @@ class CodeTab(
         bar.add(openButton)
         add(bar, BorderLayout.NORTH)
         add(viewer.component, BorderLayout.CENTER)
-        chooser.addActionListener { showChosen() }
+        chooser.addActionListener { if (!offering) showChosen() }
         EditorFactory.getInstance().eventMulticaster.addCaretListener(
             object : CaretListener {
                 override fun caretPositionChanged(event: CaretEvent) = caretMoved(event.editor)
@@ -169,9 +176,14 @@ class CodeTab(
         if (keepChoice && shownBody == body && copies.map(CodeCopy::label) == (0 until chooser.itemCount).map { index -> chooser.getItemAt(index).label }) return
         shownBody = body
         title.text = bodyName(run, body)
-        chooser.model = DefaultComboBoxModel(copies.toTypedArray())
-        val index = copies.indexOfFirst { copy -> copy.label == chosen }.takeIf { found -> found >= 0 } ?: 0
-        if (copies.isNotEmpty()) chooser.selectedIndex = index
+        offering = true
+        try {
+            chooser.model = DefaultComboBoxModel(copies.toTypedArray())
+            val index = copies.indexOfFirst { copy -> copy.label == chosen }.takeIf { found -> found >= 0 } ?: 0
+            if (copies.isNotEmpty()) chooser.selectedIndex = index
+        } finally {
+            offering = false
+        }
         showChosen()
     }
 
@@ -194,6 +206,7 @@ class CodeTab(
     }
 
     private fun showChosen() {
+        listingsShown++
         val shown = (chooser.selectedItem as? CodeCopy)?.listing?.invoke()
         listing = shown
         updating = true

@@ -6599,6 +6599,9 @@ fn optimize(
     statistics.optimize_nanoseconds = statistics.optimize_nanoseconds.saturating_add(elapsed);
     if mutator.jit.tracer.traces(TraceCategory::Inlining)
         && let Some(decisions) = decisions.as_ref()
+        && inlining_traceable(decisions, mutator.jit.tracer.prints_inlining(), |id| {
+            mutator.heap.code(id).is_some()
+        })
     {
         trace_inlining(mutator, code, key, decisions);
     }
@@ -6780,6 +6783,27 @@ fn inlined_scopes(
             })
         })
         .collect()
+}
+
+/// Whether a compile's inlining events, those of `decisions`, are traced:
+/// always, but where plans are printed (`prints_plans`) and the plan names
+/// a scope whose code `names` does not, a plan `record_plan` withholds.
+/// A compile's events are one stretch its outcome ends, and where the plan
+/// is the only outcome a reader hears, a withheld one would leave them
+/// waiting for the next compile of the same copy, whose plan would then
+/// conclude both; so the events go wherever their plan goes.
+#[cfg(ns_jit)]
+fn inlining_traceable(
+    decisions: &optimizing::PlanDecisions,
+    prints_plans: bool,
+    names: impl Fn(crate::heap::CodeId) -> bool,
+) -> bool {
+    !prints_plans
+        || decisions
+            .scopes
+            .iter()
+            .skip(1)
+            .all(|scope| names(scope.code_id))
 }
 
 /// Records, when inlining plans are printed, the plan `decisions` of the
@@ -9687,6 +9711,37 @@ fn run_machine_code(
 #[cfg(test)]
 mod tests {
     use super::{CallReturn, JitSlot, ProgramCounterMap};
+
+    /// A compile whose printed plan names a scope the heap no longer
+    /// names traces none of its inlining events, since its plan, their
+    /// outcome where the `optimize` category is not traced, is withheld
+    /// and the next compile of the same copy would conclude them; without
+    /// printed plans, or with every scope named, it traces them.
+    #[cfg(ns_jit)]
+    #[test]
+    fn inlining_events_go_where_their_plan_goes() {
+        use super::optimizing::{PlanDecisions, PlannedScope};
+        use crate::heap::CodeId;
+        let id = |index| CodeId::from_index(index).unwrap();
+        let decisions = PlanDecisions::of_scopes(vec![
+            PlannedScope {
+                number: 0,
+                code_id: id(1),
+                parent: None,
+            },
+            PlannedScope {
+                number: 1,
+                code_id: id(2),
+                parent: Some((0, 3)),
+            },
+        ]);
+        let named = |gone: CodeId| move |candidate: CodeId| candidate != gone;
+        assert!(!super::inlining_traceable(&decisions, true, named(id(2))));
+        assert!(super::inlining_traceable(&decisions, false, named(id(2))));
+        assert!(super::inlining_traceable(&decisions, true, named(id(9))));
+        // The body's own scope is the compile's, which the heap names.
+        assert!(super::inlining_traceable(&decisions, true, named(id(1))));
+    }
 
     #[test]
     fn the_jit_is_available_on_its_architectures() {

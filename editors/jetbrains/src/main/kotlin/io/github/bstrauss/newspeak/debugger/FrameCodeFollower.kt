@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.debugger
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.WriteAction
@@ -18,6 +19,7 @@ import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebugSessionListener
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -43,14 +45,10 @@ class FrameCodeFollower private constructor(
     @Volatile
     private var ended = false
 
-    /** Set when the follower's lifetime is over -- ended, or its session or project gone -- after which a deferred step does nothing. */
-    @Volatile
-    private var over = false
-
-    private val released = Condition<Any?> { over }
+    /** True once the follower's lifetime is over -- ended, or its session or project gone -- after which a deferred step does nothing. */
+    private val released = expiresWith(lifetime)
 
     init {
-        Disposer.register(lifetime) { over = true }
         session.addSessionListener(
             object : XDebugSessionListener {
                 override fun sessionPaused() = refresh()
@@ -103,6 +101,18 @@ class FrameCodeFollower private constructor(
     }
 
     companion object {
+        /**
+         * The expiry of a step deferred to the event dispatch thread: true
+         * from [lifetime]'s disposal on, so that a step queued before it --
+         * a close decision, an answer's write -- runs nothing once the
+         * follower, its session or its project is gone.
+         */
+        internal fun expiresWith(lifetime: Disposable): Condition<Any?> {
+            val over = AtomicBoolean()
+            Disposer.register(lifetime) { over.set(true) }
+            return Condition { over.get() }
+        }
+
         /** Whether [closed], which [source] closed in one of its windows, was the last editor of the follower's [file]. */
         internal fun closesFollower(source: FileEditorManager, closed: VirtualFile, file: VirtualFile): Boolean = closed == file && !source.isFileOpen(file)
 

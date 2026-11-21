@@ -30,6 +30,7 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.lsp.api.LspClient
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.NewspeakDebuggeeProcessHandler
@@ -41,6 +42,7 @@ import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.programModules
+import io.github.bstrauss.newspeak.devtool.projectModuleEntries
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -48,6 +50,8 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /** The ns-next subcommand a Newspeak run configuration starts. */
 enum class NewspeakCommand(val subcommand: String) {
@@ -253,7 +257,7 @@ class NewspeakRunState(
                 true,
                 configuration.project,
             )
-            watched.mayWaitForServer() -> readUnderProgress(read) { programModules(programFile) { null } }
+            watched.mayWaitForServer() -> readUnderProgress(read, readBound(programFile)) { programModules(programFile) { null } }
             else -> read()
         }
         val filters = watched.filters(modules)
@@ -267,11 +271,13 @@ class NewspeakRunState(
     }
 
     /**
-     * [read] under a background progress, cancellable, waited for here;
-     * [cancelled] where the progress was cancelled before it ran.
+     * [read] under a background progress, cancellable, waited for here at
+     * most [boundMilliseconds]; [cancelled] where the progress was
+     * cancelled before it ran, or did not end in time.
      */
     private fun readUnderProgress(
         read: () -> Map<String, Set<String>>,
+        boundMilliseconds: Long,
         cancelled: () -> Map<String, Set<String>>,
     ): Map<String, Set<String>> {
         val result = CompletableFuture<Map<String, Set<String>>>()
@@ -290,12 +296,40 @@ class NewspeakRunState(
                 if (!result.isDone) result.complete(cancelled())
             }
         }.queue()
-        return try {
-            result.get()
-        } catch (exception: java.util.concurrent.ExecutionException) {
-            throw exception.cause ?: exception
-        }
+        return awaitRead(result, boundMilliseconds, cancelled)
     }
+}
+
+/**
+ * The longest a run's start waits for its program's modules to be read
+ * through the server: its start's wait and a request for each module
+ * [programFile] names, and a second for the task to be scheduled.
+ */
+internal fun readBound(programFile: VirtualFile?): Long {
+    val modules = if (programFile?.name == PROJECT_FILE_NAME) projectModuleEntries(programFile)?.size ?: 0 else 1
+    return WatchedMethods.CLIENT_START_MILLISECONDS + modules * LspClient.DEFAULT_REQUEST_TIMEOUT_MS + SCHEDULING_MILLISECONDS
+}
+
+/** What [readBound] allows a background task to start in. */
+private const val SCHEDULING_MILLISECONDS = 1_000L
+
+/**
+ * [result] once it is done, waited for at most [boundMilliseconds]: a
+ * task the platform dropped without running it or telling of its cancel
+ * -- its project disposed before it started -- answers [cancelled], as a
+ * cancel does, rather than hold the start for ever. A failed read's error
+ * is the start's.
+ */
+internal fun awaitRead(
+    result: CompletableFuture<Map<String, Set<String>>>,
+    boundMilliseconds: Long,
+    cancelled: () -> Map<String, Set<String>>,
+): Map<String, Set<String>> = try {
+    result.get(boundMilliseconds, TimeUnit.MILLISECONDS)
+} catch (_: TimeoutException) {
+    cancelled()
+} catch (exception: java.util.concurrent.ExecutionException) {
+    throw exception.cause ?: exception
 }
 
 /**

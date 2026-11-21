@@ -5,6 +5,7 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.wm.ToolWindowEP
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.content.ContentFactory
@@ -13,6 +14,7 @@ import io.github.bstrauss.newspeak.devtool.editor.CodeListing
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.editor.ListingPosition
 import io.github.bstrauss.newspeak.devtool.ui.RunPanel
+import io.github.bstrauss.newspeak.devtool.ui.TOOL_WINDOW_ID
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
 import java.nio.file.Files
@@ -84,8 +86,12 @@ class TracedRunsTest : BasePlatformTestCase() {
     }
 
     fun testClosingTheTabDeletesTheFile() {
-        val file = checkNotNull(start(configuration("Hello")))
+        val handler = NopProcessHandler()
+        val file = checkNotNull(start(configuration("Hello"), handler))
+        handler.startNotify()
         Files.writeString(file, """{"kind":"header","format":"ns-next-trace","version":1,"architecture":null}""" + "\n")
+        handler.destroyProcess()
+        waitUntil { handler.isProcessTerminated }
         var told = 0
         tracedRuns.addListener({ told++ }, testRootDisposable)
         contents.removeContent(contents.contents.single(), true)
@@ -93,6 +99,28 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertNull(tracedRuns.selected)
         assertTrue(told > 0)
         waitUntil { !Files.exists(file) }
+    }
+
+    fun testATabClosedWhileItsRunGoesOnDeletesTheFileWhenTheProcessEnds() {
+        val handler = NopProcessHandler()
+        val file = checkNotNull(start(configuration("Hello"), handler))
+        handler.startNotify()
+        Files.writeString(file, """{"kind":"header","format":"ns-next-trace","version":1,"architecture":null}""" + "\n")
+        contents.removeContent(contents.contents.single(), true)
+        assertEmpty("the run and its reader are dropped at once", tracedRuns.runs)
+        // Longer than a release takes: the process still writes the file.
+        Thread.sleep(200)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue("the file stays while its process runs", Files.exists(file))
+        assertTrue(TraceFiles.getInstance().isLive(file))
+        handler.destroyProcess()
+        waitUntil { !Files.exists(file) }
+    }
+
+    fun testTheToolWindowLetsItsTabsBeClosed() {
+        // The registered extension: without `canCloseContents` the platform draws no close button on a run's tab.
+        val window = ToolWindowEP.EP_NAME.extensionList.single { extension -> extension.id == TOOL_WINDOW_ID }
+        assertTrue(window.canCloseContents)
     }
 
     fun testAClosedRunsListingTabsKeepTheirTextAndLetTheRunGo() {

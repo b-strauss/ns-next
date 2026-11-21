@@ -362,6 +362,30 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         assertTrue(tab.categoryBoxes.values.all { box -> box.isEnabled })
     }
 
+    fun testAReadThatNeverEndsIsGivenUpAfterItsBound() {
+        val unknown = mapOf("Demo" to emptySet<String>())
+        // A task the platform dropped: nothing ever completes its result.
+        val dropped = java.util.concurrent.CompletableFuture<Map<String, Set<String>>>()
+        assertEquals(unknown, awaitRead(dropped, 20) { unknown })
+        val read = mapOf("Demo" to setOf("1.0.0"))
+        assertEquals(read, awaitRead(java.util.concurrent.CompletableFuture.completedFuture(read), 20) { unknown })
+        val failed = java.util.concurrent.CompletableFuture<Map<String, Set<String>>>()
+        failed.completeExceptionally(IllegalStateException("the read failed"))
+        assertEquals("the read failed", Assert.assertThrows(IllegalStateException::class.java) { awaitRead(failed, 20) { unknown } }.message)
+    }
+
+    fun testTheReadIsBoundedByTheServerWaitAndARequestPerModule() {
+        val directory = temporaryDirectory()
+        Files.writeString(directory.resolve("newspeak.json"), """{"modules":["A.ns","B.ns"]}""")
+        Files.writeString(directory.resolve("A.ns"), "class A = ()")
+        val project = checkNotNull(com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory.resolve("newspeak.json")))
+        val module = checkNotNull(com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory.resolve("A.ns")))
+        val request = com.intellij.platform.lsp.api.LspClient.DEFAULT_REQUEST_TIMEOUT_MS.toLong()
+        val start = io.github.bstrauss.newspeak.devtool.WatchedMethods.CLIENT_START_MILLISECONDS
+        assertEquals(start + 2 * request + 1_000, readBound(project))
+        assertEquals(start + request + 1_000, readBound(module))
+    }
+
     fun testTheTabFollowsTheCommandOfTheFirstTab() {
         val editor = NewspeakRunConfigurationEditor()
         val tab = DeveloperToolTab(project)

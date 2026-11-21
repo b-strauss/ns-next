@@ -1219,6 +1219,7 @@ fn trace_file_holds_header_bodies_and_events() {
         "{square}"
     );
     assert_eq!(square["range"][0], 1, "{square}");
+    assert_eq!(square["placed"], "source", "{square}");
 }
 
 /// A program that replaces `maker` with a version a line shorter, preceded
@@ -1421,6 +1422,7 @@ fn a_moved_body_is_placed_where_its_source_stands() {
         .unwrap_or_else(|| panic!("the first edit's maker described: {bodies:?}"));
     let range = &maker["range"];
     assert!(range.is_array(), "{maker}");
+    assert_eq!(maker["placed"], "current", "{maker}");
     assert_eq!(range[0], range[2], "one line: {maker}");
     let start = range[1].as_u64().unwrap();
     assert_eq!(range[3].as_u64().unwrap() - start, source.len() as u64);
@@ -1470,6 +1472,8 @@ fn an_edited_body_is_described_in_its_own_text() {
         .unwrap_or_else(|| panic!("the edit's maker described: {text}"));
     let range = &placed["range"];
     assert!(range.is_array(), "{placed}");
+    // Its ranges count in the edited text, which the file does not hold.
+    assert_eq!(placed["placed"], "current", "{placed}");
     assert_eq!(range[0], range[2], "one line: {placed}");
     assert_eq!(
         range[3].as_u64().unwrap() - range[1].as_u64().unwrap(),
@@ -1487,6 +1491,7 @@ fn an_edited_body_is_described_in_its_own_text() {
         serde_json::json!([line, column, line + 3, 5]),
         "{superseded}"
     );
+    assert_eq!(superseded["placed"], "source", "{superseded}");
     let later = bodies
         .iter()
         .find(|record| record["name"] == "Demo>>later:")
@@ -1494,6 +1499,7 @@ fn an_edited_body_is_described_in_its_own_text() {
     let (line, column) = edited_maker_position("later: count");
     assert_eq!(later["range"][0], line, "the file's line: {later}");
     assert_eq!(later["range"][1], column, "{later}");
+    assert_eq!(later["placed"], "source", "{later}");
     let (loop_line, loop_column) = edited_maker_position("1 to: count");
     assert!(
         later["sends"]

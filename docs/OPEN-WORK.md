@@ -2462,8 +2462,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   "Planned: the stages", "Open questions").
   - **What the developer tool's stage 3 left** (2026-11-21, its
     reviews), none of them a wrong decoration -- what the plugin cannot
-    know it leaves out, and a body whose text does not fit is shown
-    stale, never decorated in the wrong place:
+    know it leaves out, a body whose text does not fit is shown stale
+    and a body placed in a text no file holds is not decorated, never
+    decorated in the wrong place:
     - *Everything of a run but its events is unbounded*: a `TraceRun`
       keeps its last 200,000 events (`KEPT_EVENTS`), but every body's
       description, every listing and every plan for the run's length,
