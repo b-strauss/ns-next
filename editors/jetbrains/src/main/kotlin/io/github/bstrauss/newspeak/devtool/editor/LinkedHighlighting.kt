@@ -90,9 +90,7 @@ class LinkedHighlighting(
         val color = linkedColor(statementIndex)
         for (editor in listings) {
             val document = editor.document
-            for ((line, position) in checkNotNull(listingOf(document)).positions.withIndex()) {
-                if (position == null || position.body != bodyNumber || position.index !in statement.instructions) continue
-                if (line >= document.lineCount) continue
+            for (line in linkedLines(document)) {
                 highlighters += editor.markupModel.addRangeHighlighter(
                     color, document.getLineStartOffset(line), document.getLineEndOffset(line), LAYER, HighlighterTargetArea.LINES_IN_RANGE,
                 )
@@ -102,6 +100,23 @@ class LinkedHighlighting(
             val range = statement.range?.let(placed::place) ?: continue
             highlighters += editor.markupModel.addRangeHighlighter(color, range.startOffset, range.endOffset, LAYER, HighlighterTargetArea.EXACT_RANGE)
         }
+    }
+
+    /**
+     * The lines of the listing [document] that the selected statement
+     * links, in their order: those whose instruction lies in the
+     * statement's, in a scope of its body; none without a selection and
+     * for a document that is no listing of the run.
+     */
+    fun linkedLines(document: Document): List<Int> {
+        val (bodyNumber, statementIndex) = selected ?: return emptyList()
+        val statement = run.bodies[bodyNumber]?.statements?.getOrNull(statementIndex) ?: return emptyList()
+        val listing = listingOf(document)?.takeIf { listing -> listing.run === run } ?: return emptyList()
+        return listing.positions.withIndex()
+            .filter { (line, position) ->
+                position != null && position.body == bodyNumber && position.index in statement.instructions && line < document.lineCount
+            }
+            .map { (line, _) -> line }
     }
 
     /** Takes every highlight away. */

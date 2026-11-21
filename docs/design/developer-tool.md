@@ -1469,7 +1469,9 @@ its font without that border plus what the UI takes, bounded by the
 room the tab leaves but never below its shortest label's -- over a read-only
 viewer of the listing in the text listing's format, built from the
 records, a copy installed again under the same tier and key numbered
-(`baseline (2)`), so that the choice a batch keeps is the same install;
+(`baseline (2)`), so that the choice a batch keeps is the same install
+-- two `optimized` entries of one key are two installs of that copy,
+the second compiled anew after the first was retired or freed;
 "Open in Editor" (decision 30) opens the copy shown in a
 read-only editor tab that stays (`CodeListingFile`), the tab already
 open on it if there is one. Source, bytecode and machine code are
@@ -1478,7 +1480,18 @@ the source and the listing's lines whose instructions or machine-code
 stretches belong to it, in either direction, one colour per statement
 from six keys of the colour settings' own; only a Newspeak file's or a
 listing's caret moves the link, and an edit that makes a method stale
-takes its link away at once (`DecorationsService.addStalenessListener`). The plugin's
+takes its link away at once (`DecorationsService.addStalenessListener`).
+"Scroll with the editor", a toggle in the tab's bar, off until the user
+turns it on and remembered per project (`CodeTab.syncWithEditor`),
+makes the link scroll too: a source caret on a statement the shown
+listing links scrolls the viewer to the listing's lines of it, and a
+viewer caret on a line linked to a statement scrolls every source
+editor that shows its body to the statement, opening the body's file
+behind the viewer where no editor shows it, by the rule a view opens a
+file by, so that a body without a range in its file is opened nowhere;
+each only where the lines are not shown already. It scrolls and never
+moves a caret, and the selection and the caret of a file it opens are
+not followed, so that neither direction sets the other off. The plugin's
 listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
@@ -1607,7 +1620,9 @@ painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its
 `MakeClosure`, the linked highlighting,
-kept through another editor's caret and gone with an edit, and the
+kept through another editor's caret and gone with an edit, scrolling
+with the editor in either direction, off by default and remembered,
+a file opened for it followed by nothing, and the
 editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, that line alone coloured as the
 execution point in every editor of the tab, only the tab's last editor

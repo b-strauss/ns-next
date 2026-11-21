@@ -20,10 +20,8 @@ fun rangeOf(body: Body, at: Int?): SourceRange? = at?.let { index -> body.sends.
  * Opens [body]'s source at the call of its send [at], or at the body's own
  * range without one. A body number without a description, one without a
  * range and one whose file is gone navigate nowhere, since the range of
- * a body is the runtime's, never guessed. The file is looked up without a
- * refresh, which would block the event dispatch thread on the disk; one
- * the virtual file system does not hold yet is refreshed on a pooled
- * thread and opened once it is found.
+ * a body is the runtime's, never guessed; the file is found by
+ * [withSourceFile].
  */
 fun navigate(
     project: Project,
@@ -36,17 +34,27 @@ fun navigate(
     val range = rangeOf(described, at) ?: return
     // A library body's file lies under the directory the project shows the shipped sources from.
     val path = bodySourcePath(described, libraryDirectory) ?: return
-    val open = { file: VirtualFile -> OpenFileDescriptor(project, file, range.startLine, range.startColumn).navigate(true) }
+    withSourceFile(project, path) { file -> OpenFileDescriptor(project, file, range.startLine, range.startColumn).navigate(true) }
+}
+
+/**
+ * Calls [then] on the event dispatch thread with the file at [path]: at
+ * once for one the virtual file system holds, which is looked up without
+ * a refresh, since a refresh would block the thread on the disk; a file it
+ * does not hold yet is refreshed on a pooled thread and handed over once
+ * found, and one that is gone never.
+ */
+fun withSourceFile(project: Project, path: Path, then: (VirtualFile) -> Unit) {
     val fileSystem = LocalFileSystem.getInstance()
     val known = fileSystem.findFileByNioFile(path)
     if (known != null) {
-        open(known)
+        then(known)
         return
     }
     val application = ApplicationManager.getApplication()
     application.executeOnPooledThread {
         val found = fileSystem.refreshAndFindFileByNioFile(path) ?: return@executeOnPooledThread
-        application.invokeLater({ open(found) }, project.disposed)
+        application.invokeLater({ then(found) }, project.disposed)
     }
 }
 

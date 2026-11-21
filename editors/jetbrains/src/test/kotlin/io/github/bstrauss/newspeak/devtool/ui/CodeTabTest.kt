@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.ide.ui.laf.darcula.ui.DarculaComboBoxUI
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -11,6 +12,8 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.ui.JBUI
 import io.github.bstrauss.newspeak.devtool.TracedRuns
@@ -27,6 +30,7 @@ import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
 import java.nio.file.Path
+import java.awt.Container
 import java.awt.Rectangle
 import java.time.Instant
 import javax.swing.JComponent
@@ -51,6 +55,15 @@ class CodeTabTest : BasePlatformTestCase() {
         val settings = DeveloperToolDecorationsSettings.Settings()
         decorations = DecorationsService(project, tracedRuns, watchedMethods, { null }, { settings })
         Disposer.register(testRootDisposable, decorations)
+    }
+
+    // The light project, and its properties, outlive a test.
+    override fun tearDown() {
+        try {
+            PropertiesComponent.getInstance(project).unsetValue(SYNC_PROPERTY)
+        } finally {
+            super.tearDown()
+        }
     }
 
     /** `[startLine, startColumn, endLine, endColumn]` of [part] in [DEMO], searched from the start of [within]. */
@@ -522,7 +535,169 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(tab.chooser.preferredSize.width.toString(), tab.chooser.preferredSize.width > 40)
     }
 
+    // ---- Scroll with the editor ----
+
+    /**
+     * Gives [editor] a viewport of [lines] lines, scrolled to its start, as
+     * a laid-out window would, so that its visible area is what the tab
+     * scrolls by.
+     */
+    private fun showLines(editor: Editor, lines: Int) {
+        editor.scrollingModel.disableAnimation()
+        val height = editor.lineHeight * lines
+        editor.component.setBounds(0, 0, VIEW_WIDTH, height)
+        layOut(editor.component)
+        // What the component takes beside its lines -- borders, a scroll bar -- added once it is measured.
+        editor.component.setBounds(0, 0, VIEW_WIDTH, height + editor.component.height - editor.scrollingModel.visibleArea.height)
+        layOut(editor.component)
+        editor.scrollingModel.scrollVertically(0)
+        check(editor.scrollingModel.visibleArea.height == height) { "a visible area of ${editor.scrollingModel.visibleArea}" }
+    }
+
+    private fun layOut(component: Container) {
+        component.doLayout()
+        for (child in component.components) if (child is Container) layOut(child)
+    }
+
+    /** Whether the lines from [first] to [last] of [editor] are all in its visible area. */
+    private fun shows(editor: Editor, first: Int, last: Int): Boolean {
+        val visible = editor.scrollingModel.visibleArea
+        val top = editor.logicalPositionToXY(LogicalPosition(first, 0)).y
+        val bottom = editor.logicalPositionToXY(LogicalPosition(last, 0)).y + editor.lineHeight
+        return top >= visible.y && bottom <= visible.y + visible.height
+    }
+
+    /** The lines of the viewer the linked highlighting colours. */
+    private fun linkedViewerLines(tab: CodeTab): List<Int> =
+        tab.viewer.markupModel.allHighlighters
+            .filter { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+            .map { highlighter -> tab.viewer.document.getLineNumber(highlighter.startOffset) }
+            .sorted()
+
+    /** The viewer's first line of the block's statement in its method's bytecode. */
+    private fun blockLine(tab: CodeTab): Int = tab.viewer.document.text.lines().indexOfFirst { line -> "#* (r2)" in line }
+
+    fun testScrollWithTheEditorIsOffUntilTurnedOnAndRememberedPerProject() {
+        val tab = tab(tracedRun())
+        assertFalse(tab.syncWithEditor)
+        assertFalse(tab.syncAction.isSelected(TestActionEvent.createTestEvent()))
+        tab.syncAction.setSelected(TestActionEvent.createTestEvent(), true)
+        assertTrue(tab.syncWithEditor)
+        // Another run's tab of the project, as the next traced run opens, takes the choice.
+        assertTrue(CodeTab(project, tracedRun(), testRootDisposable, tracedRuns, decorations).syncWithEditor)
+        assertEquals("Scroll with the editor", tab.syncAction.templatePresentation.text)
+    }
+
+    fun testASourceCaretScrollsTheViewerToItsStatementsLines() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        showLines(tab.viewer, 2)
+        editor.caretAt("value", SECOND)
+        val linked = linkedViewerLines(tab)
+        assertTrue(linked.toString(), linked.size > 2)
+        // More lines than the viewer shows: the first at the top.
+        assertEquals(tab.viewer.logicalPositionToXY(LogicalPosition(linked.first(), 0)).y, tab.viewer.scrollingModel.verticalScrollOffset)
+        // The statement's lines shown already stay where they are, the line above them too.
+        showLines(tab.viewer, linked.last() - linked.first() + 2)
+        val above = tab.viewer.logicalPositionToXY(LogicalPosition(linked.first() - 1, 0)).y
+        tab.viewer.scrollingModel.scrollVertically(above)
+        assertEquals(above, tab.viewer.scrollingModel.verticalScrollOffset)
+        editor.caretModel.moveToOffset(DEMO.indexOf("value", DEMO.indexOf(SECOND)) + 3)
+        assertEquals(linked, linkedViewerLines(tab))
+        assertEquals(above, tab.viewer.scrollingModel.verticalScrollOffset)
+        assertEquals("the viewer's caret stays", 0, tab.viewer.caretModel.offset)
+    }
+
+    fun testAViewerCaretScrollsTheSourceToItsStatementWithoutMovingItsCaret() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val caret = editor.caretModel.offset
+        showLines(editor, 1)
+        // The block's statement, in the method's bytecode: the source's line 3.
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        val statementLine = editor.document.getLineNumber(DEMO.indexOf(BLOCK_STATEMENT, DEMO.indexOf(BLOCK)))
+        assertTrue(shows(editor, statementLine, statementLine))
+        assertFalse("the first line scrolled out", shows(editor, 0, 0))
+        assertEquals("the source's caret stays", caret, editor.caretModel.offset)
+        // Neither direction sets off the other: the tab shows the method still, and the block's statement is linked.
+        assertEquals(1, tab.shownBody)
+        assertEquals(2 to 0, tab.highlighting.selected)
+        assertEquals(blockLine(tab), tab.viewer.caretModel.logicalPosition.line)
+    }
+
+    fun testAViewerCaretOpensTheSourceThatNoEditorShowsInTheBackground() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val manager = FileEditorManager.getInstance(project)
+        val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source))
+        tab.show(1)
+        val shown = tab.listingsShown
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue(manager.isFileOpen(file))
+        val opened = checkNotNull(manager.getSelectedEditor(file) as? TextEditor).editor
+        assertEquals("the opened editor's caret is not moved", 0, opened.caretModel.offset)
+        // The opening is followed by nothing: the listing, its body and the link are the viewer's.
+        assertEquals(shown, tab.listingsShown)
+        assertEquals(1, tab.shownBody)
+        assertEquals(2 to 0, tab.highlighting.selected)
+        // A user's caret in the opened file is followed again.
+        opened.caretAt(OTHER_STATEMENT)
+        assertEquals(3, tab.shownBody)
+    }
+
+    fun testABodyPlacedInNoFileOpensNothing() {
+        val run = tracedRun()
+        // A body whose ranges count in the runtime's text, not the file's: the reader keeps no range of it.
+        val current = body(4, "Demo>>elsewhere", OTHER, null, """{"instructions":[0,2],"range":${range(OTHER_STATEMENT)}}""")
+            .replace("\"kind\":\"body\",", "\"kind\":\"body\",\"placed\":\"current\",")
+        run.add(
+            listOf(
+                checkNotNull(TraceRecord.parse(current)),
+                checkNotNull(
+                    TraceRecord.parse(
+                        """{"kind":"bytecode","body":4,"bodies":[{"body":4,"instructions":[{"index":0,"statement":0,"text":"LoadLiteral r1, 9"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
+                    ),
+                ),
+            ),
+        )
+        val tab = tab(run)
+        tab.syncWithEditor = true
+        tab.show(4)
+        val line = tab.viewer.document.text.lines().indexOfFirst { text -> "LoadLiteral r1, 9" in text }
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(line, 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(0, FileEditorManager.getInstance(project).openFiles.size)
+    }
+
+    fun testWhileOffNothingScrolls() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        showLines(tab.viewer, 2)
+        showLines(editor, 1)
+        editor.caretAt("value", SECOND)
+        assertEquals(0, tab.viewer.scrollingModel.verticalScrollOffset)
+        assertTrue("the link stands as before", linkedViewerLines(tab).isNotEmpty())
+        editor.caretModel.moveToOffset(0)
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        assertEquals(0, editor.scrollingModel.verticalScrollOffset)
+        // Nothing is opened either.
+        FileEditorManager.getInstance(project).closeFile(checkNotNull(editor.virtualFile))
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab) - 1, 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(0, FileEditorManager.getInstance(project).openFiles.size)
+    }
+
     private companion object {
+        const val SYNC_PROPERTY = "newspeak.devtool.code.scrollWithEditor"
+        const val VIEW_WIDTH = 800
+
         const val PADDING = "ComboBox.padding"
         const val FIRST = "y:: x + 1"
         const val SECOND = "^[y * 2] value"

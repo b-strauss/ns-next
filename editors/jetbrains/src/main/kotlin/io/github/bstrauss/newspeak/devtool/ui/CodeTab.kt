@@ -1,8 +1,15 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.CaretEvent
@@ -11,10 +18,12 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import io.github.bstrauss.newspeak.NewspeakBundle
@@ -24,15 +33,19 @@ import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.LinkedHighlighting
 import io.github.bstrauss.newspeak.devtool.editor.PlacedBody
+import io.github.bstrauss.newspeak.devtool.editor.bodySourcePath
 import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.codeListing
 import io.github.bstrauss.newspeak.devtool.editor.listingOf
 import io.github.bstrauss.newspeak.devtool.editor.showListing
+import io.github.bstrauss.newspeak.devtool.model.SourceRange
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
+import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.nio.file.Path
 import javax.swing.ComboBoxModel
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
@@ -55,7 +68,12 @@ class CodeCopy(val label: String, val listing: () -> CodeListing) {
  * baseline, twin and optimized per key -- over a read-only viewer of the
  * listing, and "Open in Editor", which puts the copy shown into an editor
  * tab that stays. Source, bytecode and machine code are highlighted
- * together ([LinkedHighlighting]).
+ * together ([LinkedHighlighting]). A copy installed again under the same
+ * tier and key -- an optimized copy compiled anew after its retirement --
+ * is offered once more, its label numbered: `optimized key=Demo (2)`.
+ * "Scroll with the editor" ([syncWithEditor]) scrolls the viewer to the
+ * listing lines of a source caret's statement and the source to the
+ * statement of a viewer caret's line.
  *
  * Only while its run is [tracedRuns]' selected one does it follow the
  * caret, so that two runs' tabs never both draw; it takes the caret as it
@@ -72,6 +90,7 @@ class CodeTab(
     parent: Disposable,
     private val tracedRuns: TracedRuns = TracedRuns.getInstance(project),
     private val decorations: DecorationsService = DecorationsService.getInstance(project),
+    private val libraryDirectory: () -> Path? = { project.service<NewspeakCoreLibrary>().directory },
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
 
@@ -85,6 +104,25 @@ class CodeTab(
 
     private val openButton = JButton(NewspeakBundle.message("devtool.code.open"), AllIcons.Actions.MoveToWindow).apply {
         addActionListener { listing?.let(::openInEditor) }
+    }
+
+    /** The toggle of [syncWithEditor]. */
+    val syncAction: ToggleAction = object : ToggleAction(
+        NewspeakBundle.message("devtool.code.sync"),
+        NewspeakBundle.message("devtool.code.sync"),
+        AllIcons.General.AutoscrollToSource,
+    ) {
+        override fun isSelected(event: AnActionEvent): Boolean = syncWithEditor
+
+        override fun setSelected(event: AnActionEvent, state: Boolean) {
+            syncWithEditor = state
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    private val toolbar = ActionManager.getInstance().createActionToolbar(TOOLBAR_PLACE, DefaultActionGroup(syncAction), true).apply {
+        targetComponent = this@CodeTab
     }
 
     private val bar = JPanel(FlowLayout(FlowLayout.LEFT)).apply {
@@ -107,6 +145,23 @@ class CodeTab(
     /** Set while [offer] fills the chooser, whose selection then changes without the user and is shown once, by [offer]. */
     private var offering = false
 
+    /**
+     * Whether the viewer and the source editors scroll with each other's
+     * caret: the project's choice, off until the user turns it on. It
+     * scrolls and never moves a caret, so that neither direction sets off
+     * the other.
+     */
+    var syncWithEditor: Boolean
+        get() = PropertiesComponent.getInstance(project).getBoolean(SYNC_PROPERTY, false)
+        set(value) = PropertiesComponent.getInstance(project).setValue(SYNC_PROPERTY, value, false)
+
+    /**
+     * The source file the tab is opening for a viewer's caret, whose
+     * selection, and the caret its editor comes with, name nothing the user
+     * chose: they are not followed.
+     */
+    private var openedForSync: VirtualFile? = null
+
     /** How many times the tab built a listing and wrote it into its viewer; tests read it. */
     internal var listingsShown = 0
         private set
@@ -119,6 +174,7 @@ class CodeTab(
         bar.add(title)
         bar.add(chooser)
         bar.add(openButton)
+        bar.add(toolbar.component)
         add(bar, BorderLayout.NORTH)
         add(viewer.component, BorderLayout.CENTER)
         chooser.addActionListener { if (!offering) showChosen() }
@@ -131,7 +187,10 @@ class CodeTab(
         project.messageBus.connect(parent).subscribe(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
-                override fun selectionChanged(event: FileEditorManagerEvent) = followSelectedEditor()
+                override fun selectionChanged(event: FileEditorManagerEvent) {
+                    if (event.newFile != null && event.newFile == openedForSync) return
+                    followSelectedEditor()
+                }
             },
         )
         // The caret stood in a method before the run described it: the records name its body now.
@@ -224,7 +283,7 @@ class CodeTab(
         if (width <= 0) return null
         val layout = bar.layout as FlowLayout
         val gaps = layout.hgap * BAR_GAPS + bar.insets.left + bar.insets.right
-        return width - title.preferredSize.width - openButton.preferredSize.width - gaps
+        return width - title.preferredSize.width - openButton.preferredSize.width - toolbar.component.preferredSize.width - gaps
     }
 
     private fun active(): Boolean = tracedRuns.selected === run
@@ -246,10 +305,13 @@ class CodeTab(
         if (shownListing != null) {
             if (shownListing.run !== run) return
             highlighting.selectInstruction(shownListing.positions.getOrNull(editor.caretModel.logicalPosition.line))
+            if (editor === viewer && syncWithEditor) highlighting.selected?.let { (body, statement) -> scrollSource(body, statement) }
             return
         }
         // Only a Newspeak file's caret names a statement: another editor's -- a console scrolling with the program's output -- leaves the link as it is.
-        if (FileDocumentManager.getInstance().getFile(document)?.extension != NEWSPEAK_EXTENSION) return
+        val file = FileDocumentManager.getInstance().getFile(document)
+        if (file?.extension != NEWSPEAK_EXTENSION) return
+        if (file == openedForSync) return
         val caret = editor.caretModel.offset
         // Bodies nest, so the innermost holding the caret starts last, and of those ends first.
         val placed = decorations.placedBodies(document, run)
@@ -267,13 +329,86 @@ class CodeTab(
             .filter { (_, range) -> range.startOffset <= caret && caret <= range.endOffset }
             .maxWithOrNull(compareBy<Pair<Int, TextRange>> { (_, range) -> range.startOffset }.thenByDescending { (_, range) -> range.endOffset })
         highlighting.select(body.number, statement?.first)
+        if (statement != null && syncWithEditor) {
+            val lines = highlighting.linkedLines(viewer.document)
+            if (lines.isNotEmpty()) {
+                scrollIntoView(viewer, viewer.document.getLineStartOffset(lines.first()), viewer.document.getLineEndOffset(lines.last()))
+            }
+        }
+    }
+
+    /**
+     * Scrolls every source editor that shows [body] to its [statement],
+     * their carets where they are; opens the body's file, without taking
+     * the focus from the viewer, where no editor shows it, and a body the
+     * run's records place in no file -- one without a range, or placed in
+     * a text that is not the file's ([navigate]'s rule) -- nowhere. A
+     * method changed since the run is scrolled to nowhere, as it is
+     * linked nowhere.
+     */
+    private fun scrollSource(body: Int, statement: Int) {
+        val described = run.bodies[body] ?: return
+        val range = described.statements.getOrNull(statement)?.range ?: return
+        val shown = EditorFactory.getInstance().allEditors
+            .filter { editor -> !editor.isDisposed && editor.project === project && listingOf(editor.document) == null }
+            .mapNotNull { editor ->
+                decorations.placedBodies(editor.document, run).firstOrNull { placed -> placed.body.number == body }?.let { placed -> editor to placed }
+            }
+        if (shown.isNotEmpty()) {
+            for ((editor, placed) in shown) {
+                placed.place(range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+            }
+            return
+        }
+        if (described.range == null) return
+        val path = bodySourcePath(described, libraryDirectory()) ?: return
+        withSourceFile(project, path) { file -> openForSync(file, body, range) }
+    }
+
+    /** Opens [file] behind the viewer, and scrolls it to [range] of [body] once its editor is loaded. */
+    private fun openForSync(file: VirtualFile, body: Int, range: SourceRange) {
+        val manager = FileEditorManager.getInstance(project)
+        openedForSync = file
+        val editors = try {
+            manager.openFile(file, false)
+        } finally {
+            // What the opening queued for later is still its own.
+            ApplicationManager.getApplication().invokeLater({ if (openedForSync == file) openedForSync = null }, project.disposed)
+        }
+        for (editor in editors.filterIsInstance<TextEditor>().map(TextEditor::getEditor)) {
+            manager.runWhenLoaded(editor) {
+                if (editor.isDisposed) return@runWhenLoaded
+                val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == body }
+                placed?.place(range)?.let { placedRange -> scrollIntoView(editor, placedRange.startOffset, placedRange.endOffset) }
+            }
+        }
+    }
+
+    /**
+     * Scrolls [editor] vertically so that the lines from [startOffset] to
+     * [endOffset] are shown, where they are not already: by the least
+     * distance, and with the first line at the top where they do not fit.
+     */
+    private fun scrollIntoView(editor: Editor, startOffset: Int, endOffset: Int) {
+        val visible = editor.scrollingModel.visibleArea
+        val top = editor.offsetToXY(startOffset).y
+        val bottom = editor.offsetToXY(endOffset).y + editor.lineHeight
+        if (top >= visible.y && bottom <= visible.y + visible.height) return
+        val target = if (top < visible.y || bottom - top > visible.height) top else bottom - visible.height
+        editor.scrollingModel.scrollVertically(target)
     }
 
     private companion object {
         const val BYTECODE = "bytecode"
 
-        /** A flow layout's gaps around and between the bar's three components. */
-        const val BAR_GAPS = 4
+        /** The project's property that remembers [syncWithEditor]. */
+        const val SYNC_PROPERTY = "newspeak.devtool.code.scrollWithEditor"
+
+        /** The place of the bar's toolbar, for the action system. */
+        const val TOOLBAR_PLACE = "NewspeakCodeTab"
+
+        /** A flow layout's gaps around and between the bar's four components. */
+        const val BAR_GAPS = 5
         const val NEWSPEAK_EXTENSION = "ns"
     }
 }
