@@ -649,6 +649,22 @@ after all, a scope that would create a block -- is declined at its
 sender's send, and one dropped only with its parent, which lies in no
 scope of the copy, is not reported.
 
+#### The inlining events and a withheld plan
+
+Where plans are printed (`--print-inlining`, whatever the print filter
+then keeps), a compile whose plan the runtime withholds -- one naming a
+scope whose code the heap no longer names, which `record_plan` cannot
+name and which no compile at the tree's safepoint meets -- writes none
+of its `inlining` events either, on standard error and in a trace file
+alike; its `optimized` event still counts its `inlined-sites`. The
+events go wherever their plan goes because the plan is a compile's
+outcome where `optimize` is not traced: a compile's events are one
+stretch that only its outcome ends, and a withheld plan would leave them
+waiting for the next compile of the same copy, whose plan would
+conclude both. The one decision is `inlined_scopes`, which the trace of
+the events (`optimize_one`) and `record_plan` both ask. Without printed
+plans every compile's events are written.
+
 ### The filter
 
 `TraceFilter` (`trace_events/filter.rs`) delivers the events of the
@@ -836,7 +852,9 @@ values, and the host formats it.
   each callee sent instead, with stage 1's reason. An arm or a decline
   in a scope the code does not lay out, and an arm whose inlined scope
   is not laid out, are left out: they have no number, and the graph
-  sends their site.
+  sends their site. A plan naming a scope whose code the heap no longer
+  names is withheld, and with it the compile's `inlining` events ("The
+  inlining events and a withheld plan").
 - **No JIT.** On a target without `cfg(ns_jit)` bytecode is printed, and
   `--print-code` and `--print-inlining` print nothing.
 
@@ -1167,11 +1185,10 @@ The records:
   record but a `body` or a `bytecode` record, which stand wherever a
   body is first named, ends it, and a compile whose outcome a filter
   withheld is dropped there. Where plans are printed, a compile whose
-  plan the runtime withholds -- one naming a scope whose code the heap
-  no longer names -- traces no inlining events either
-  (`jit::inlining_traceable`), so that two compiles of one copy in a
-  row never run together into one stretch that the second's plan
-  concludes.
+  plan the runtime withholds traces no inlining events either ("The
+  inlining events and a withheld plan"), so that two compiles of one
+  copy in a row never run together into one stretch that the second's
+  plan concludes.
 - `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"placed":"source"|"current"|null,"checksum":…,"statements":[…],"sends":[…]}`,
   before the first record that names `N`: the body's name as the text
   trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,
@@ -1210,8 +1227,12 @@ The records:
   file as read, or the core library's file, whose text no edit changes
   --; `"current"`, the runtime's current text of the module, which an
   edit made and no file holds, so that a reader holding the file places
-  nothing of the body there; `null` where every range is. A reader of a
-  record without it takes `"source"`.
+  nothing of the body there; `null` where every range is. A block whose
+  family's root was described is placed only in the text the root was
+  placed in, in none where the root is in none: its bytes alone may
+  stand in the file at its span inside the file's other version of a
+  method an edit replaced around it. A reader of a record without
+  `placed` takes `"source"`.
   Three kinds of
   body take a number and no `body` record -- one no mixin holds, one
   whose source no text holds, and a block's family root whose code was
@@ -1351,7 +1372,8 @@ the run go, linking nothing from then on. No trace file outlives the
 IDE session that wrote it: the files are the application's
 (`TraceFiles.kt`), each named live from before its process starts
 until its run lets it go; a run whose project closed before the run
-was registered lets its file go at once; and the first project opened
+was registered lets its file go once its process has ended, as a closed
+tab does; and the first project opened
 in an IDE session sweeps the directory of every file no live run
 names (`TraceFilesSweep`), which a deletion an earlier session's end
 cut short, or a file a still running process held open, left behind
@@ -1532,7 +1554,7 @@ bodies numbered apart, and its line -- to what this build writes
 line, every record to one line, a range to UTF-16 columns counted in
 the file's text where it holds the body and else in the text the
 description hands, the file placing a moved body where it holds it,
-each record's `placed`, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
+each record's `placed`, a block in its root's text, a body no text holds to `null` ranges, a shipped body to the library and a `code` record's
 instructions to the text listing's, an out-of-line stretch told from
 no position; `tests/cli.rs` a run's file -- its header, every record
 parsed, every body number described before a record names it, an edit
@@ -1541,9 +1563,7 @@ described in the text it was compiled from and said placed there, a recommented 
 statements at their file lines and a body a later edit moved where it
 stands -- and the two
 refusals. The analyzer's `tests/protocol.rs` pins
-`newspeak/methodNames` and `newspeak/moduleIdentity`. `jit/mod.rs`'s
-`inlining_events_go_where_their_plan_goes` the inlining events of a
-compile whose printed plan is withheld. In the plugin,
+`newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the
 command line, its greying and the free field's refusal, and the bound
 of the start's read of the modules;
@@ -1562,7 +1582,7 @@ copies alone, and the events kept beside counts that keep every one;
 `TracedRunsTest` the tabs, closable as the registered tool window
 declares them, the file's deletion, at a tab's close, once its process
 ended for a tab closed while it runs, and for a project closed before
-its run registered, the sweep, and a closed run's listing tabs;
+its run registered once its process ended, the sweep, and a closed run's listing tabs;
 `TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
 missing categories, the inlining tree kept across a batch, the Events

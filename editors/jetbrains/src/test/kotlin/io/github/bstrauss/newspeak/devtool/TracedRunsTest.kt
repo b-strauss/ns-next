@@ -138,18 +138,24 @@ class TracedRunsTest : BasePlatformTestCase() {
     fun testARunWhoseProjectClosedBeforeItRegisteredLetsItsFileGo() {
         val handed = AtomicReference<Path>()
         val configuration = configuration("Hello")
+        val handler = NopProcessHandler().also { started -> started.startNotify() }
         // Started off the EDT, the run registers later on it -- by when its project has closed.
         ApplicationManager.getApplication().executeOnPooledThread {
             tracedRuns.start(configuration, TraceFilters.EVERYTHING) { traceFile ->
                 // The runtime creates the file as it starts.
                 Files.writeString(checkNotNull(traceFile), "")
                 handed.set(traceFile)
-                NopProcessHandler()
+                handler
             }
         }.get(10, TimeUnit.SECONDS)
         val file = checkNotNull(handed.get())
         assertTrue(Files.exists(file))
         Disposer.dispose(tracedRuns)
+        // The registration the pooled thread queued finds the project closed; the process still writes the file.
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        Thread.sleep(200)
+        assertTrue("the file stays while its process runs", Files.exists(file))
+        handler.destroyProcess()
         waitUntil { !Files.exists(file) }
         assertEmpty(tracedRuns.runs)
     }

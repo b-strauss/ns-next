@@ -161,23 +161,6 @@ impl PlanDecisions {
     pub(crate) fn number_of(&self, scope: graph::ScopeId) -> Option<u32> {
         self.numbers.get(scope.0 as usize).copied().flatten()
     }
-
-    /// A plan that lays out `scopes`, numbered in their order, and decided
-    /// nothing else: what a test of the trace's handling of the scopes
-    /// needs.
-    #[cfg(test)]
-    pub(crate) fn of_scopes(scopes: Vec<PlannedScope>) -> PlanDecisions {
-        let numbers = (0..scopes.len())
-            .map(|number| u32::try_from(number).ok())
-            .collect();
-        PlanDecisions {
-            inlined: Vec::new(),
-            declined: Vec::new(),
-            scopes,
-            arms: Vec::new(),
-            numbers,
-        }
-    }
 }
 
 /// A scope the code of a compile lays out: its number, its body and the

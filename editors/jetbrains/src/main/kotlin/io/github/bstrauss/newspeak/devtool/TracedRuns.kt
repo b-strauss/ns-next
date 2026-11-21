@@ -117,9 +117,9 @@ class TracedRuns internal constructor(
         return handler
     }
 
-    /** [started], or, for a project closed since the process started, the file let go: no tab will ever own it. */
+    /** [started], or, for a project closed since the process started, the file let go once the process has ended: no tab will ever own it. */
     private fun register(configuration: NewspeakRunConfiguration, file: Path, handler: ProcessHandler, filters: TraceFilters) {
-        if (disposed || project.isDisposed) traceFiles.release(file) else started(configuration, file, handler, filters)
+        if (disposed || project.isDisposed) releaseOnceEnded(file, handler) else started(configuration, file, handler, filters)
     }
 
     /**

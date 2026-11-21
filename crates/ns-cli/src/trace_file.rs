@@ -6,6 +6,7 @@
 //! trace's names, every body is named by its number, and every position
 //! is a range of lines and UTF-16 columns of its module's text.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -106,6 +107,9 @@ pub(crate) struct ModuleSources {
     /// `Rc`, and a text it makes again after an install, alike, finds its
     /// index by its contents.
     lines: Vec<(Rc<str>, LineIndex)>,
+    /// The text each family root described was placed in, by its number,
+    /// `None` for one placed in none, which its blocks are placed in too.
+    roots: HashMap<u32, Option<Placed>>,
 }
 
 impl ModuleSources {
@@ -123,6 +127,7 @@ impl ModuleSources {
                 })
                 .collect(),
             lines: Vec::new(),
+            roots: HashMap::new(),
         }
     }
 
@@ -132,7 +137,9 @@ impl ModuleSources {
     /// its span -- the body's version was read in it, whatever an edit did
     /// around it -- or where the runtime's current text holds it, since
     /// that is the text a reader shows; else the runtime's current text,
-    /// where the description says it holds that source; else none.
+    /// where the description says it holds that source; else none. A block
+    /// whose family's root was described is placed only in the text the
+    /// root was placed in.
     fn placing<'sources>(
         &'sources mut self,
         description: &'sources BodyDescription,
@@ -162,6 +169,28 @@ impl ModuleSources {
                     })
             })
             .flatten();
+        // A block stands in the text its family's root was placed in, or in
+        // none: its bytes alone may stand in the file where the file holds
+        // another version of the method, which an edit replaced around it.
+        let root = description
+            .family
+            .as_ref()
+            .and_then(|family| self.roots.get(&family.number).copied());
+        let held = match root {
+            Some(None) => return None,
+            Some(Some(Placed::Current)) => None,
+            Some(Some(Placed::Source)) => Some(held?),
+            None => held,
+        };
+        if description.family.is_none() {
+            let placed = match held {
+                Some(_) => Some(Placed::Source),
+                None if description.current.is_none() => None,
+                None if description.shipped_path.is_some() => Some(Placed::Source),
+                None => Some(Placed::Current),
+            };
+            self.roots.insert(description.body.number, placed);
+        }
         match held {
             Some((index, start)) => {
                 let ProgramSource { text, lines, .. } = &mut self.program[index];
@@ -1379,6 +1408,58 @@ mod tests {
         assert!(record["placed"].is_null(), "{record}");
         assert_eq!(record["checksum"], "0000000000000001");
         assert_eq!(record["source"], json!({ "file": "/work/Demo.ns" }));
+    }
+
+    /// A block of a method an edit compiled is placed where its root is,
+    /// in the runtime's current text, even where its own bytes stand in
+    /// the file at its span -- inside the file's other version of the
+    /// method, which the edit replaced around the block -- and a block of
+    /// a root placed in no text in none.
+    #[test]
+    fn a_block_is_placed_in_its_roots_text() {
+        let file = "Demo = (\n  run = ( ^[:x | x] )\n)";
+        let edited = "Demo = (\n  run = ( ^[:x | x] (* longer *) )\n)";
+        let block_start = u32::try_from(file.find("[:x").unwrap()).unwrap();
+        let block = Span::new(block_start, block_start + 8);
+        // The block stands at the same span in both versions of `run`.
+        let bytes = block_start as usize..block.end as usize;
+        assert_eq!(&edited[bytes.clone()], &file[bytes]);
+        let mut sources = ModuleSources::new(vec![ProgramModule {
+            module: ModuleName::named("Demo"),
+            path: Some(PathBuf::from("/work/Demo.ns")),
+            identity: None,
+            text: Some(file.to_string()),
+        }]);
+        // The edit's `run`, whose source the file does not hold.
+        let root = run_in(edited, 1);
+        let record = body_record(&root, &mut sources);
+        assert_eq!(record["placed"], "current", "{record}");
+        let block_of = |number: u32, root: u32| BodyDescription {
+            body: BodyName {
+                number,
+                name: "[] in Demo>>run".to_string(),
+            },
+            family: Some(BodyName {
+                number: root,
+                name: "Demo>>run".to_string(),
+            }),
+            current: current_at(edited, block),
+            source: block,
+            checksum: source_checksum(&file.as_bytes()[block.start as usize..block.end as usize]),
+            statements: Vec::new(),
+            ..run_in(edited, number)
+        };
+        let record = body_record(&block_of(2, 1), &mut sources);
+        assert_eq!(record["placed"], "current", "{record}");
+        // A root no text holds leaves its block unplaced too.
+        let unplaced = BodyDescription {
+            current: None,
+            ..run_in(edited, 3)
+        };
+        assert!(body_record(&unplaced, &mut sources)["placed"].is_null());
+        let record = body_record(&block_of(4, 3), &mut sources);
+        assert!(record["placed"].is_null(), "{record}");
+        assert!(record["range"].is_null(), "{record}");
     }
 
     /// A body's code on the architecture this binary decodes, as the
