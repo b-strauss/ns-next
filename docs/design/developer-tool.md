@@ -494,11 +494,14 @@ of the tab of that configuration's last run once that run's process has
 ended, unless the tab is pinned, which the tab's menu offers as the Run
 tool window's does; the replaced run goes as a closed one does, its
 data and its file with it. A run still going is never replaced, nor
-another configuration's. IntelliJ's own consoles are reused by that
-rule (`RunContentManagerImpl`), so that a run repeated while working
-leaves one tab and a pinned one is kept to compare; where no tab of the
-configuration qualifies the platform takes another's ended one, which
-the tool window does not, since a traced run is kept to be compared.
+another configuration's, nor a run under the other executor: a traced
+Debug replaces a traced Debug, a Run a Run, as the platform's Run and
+Debug windows each reuse their own. IntelliJ's own consoles are reused
+by that rule (`RunContentManagerImpl`), so that a run repeated while
+working leaves one tab and a pinned one is kept to compare; where no
+tab of the configuration qualifies the platform takes another's ended
+one, which the tool window does not, since a traced run is kept to be
+compared.
 
 ## Stage 1: tracing
 
@@ -1391,15 +1394,23 @@ run that traces or lists anything is handed a temporary file,
 `newspeak-trace/trace-<uuid>.jsonl` under the IDE's temporary
 directory, and gets a `TraceRun` named by its configuration and the
 time and a tab of the tool window, and is selected. A run's tab takes
-the place of the tab of its configuration's last run (decision 35) where
-that run's process has ended and its tab is not pinned -- Pin Tab in the
-tab's menu, the platform's content pinning (`Content.isPinnable`) --,
-which goes as a closed one does: the platform's Run window chooses the
-tab it reuses the same way (`RunContentManagerImpl`'s
-`getContentFromManager`), an unpinned tab whose process has ended, the
-selected one first, by the configuration's name, but falls back on any
-such tab, another configuration's too, which the tool window does not,
-so that a run is replaced only by its own configuration's. Closing its tab
+the place of the tab of its configuration's last run under the same
+executor (decision 35) where that run's process has ended and its tab
+is not pinned -- Pin Tab in the tab's menu, the platform's content
+pinning (`Content.isPinnable`), a tab starting pinned where the advanced
+setting "start run configurations pinned"
+(`start.run.configurations.pinned`) says so --, which goes as a closed
+one does, once the new tab is added and selected, so that the selection
+never passes through another run. The platform's windows choose the tab
+they reuse the same way (`RunContentManagerImpl`'s
+`getContentFromManager`): an unpinned tab whose process has ended, by
+the configuration's name, the selected one first, then the first in the
+tabs' order, in the one window of the executor. The tool window differs
+where the platform's rule does not fit one window for both executors
+and runs kept to compare: it matches the executor itself, Run and Debug
+sharing it, and it never falls back, as the platform does, on another
+configuration's ended tab, so that a run is replaced only by its own
+configuration's. Closing its tab
 drops the run and its reader at once, and its file once its process has
 ended, since the process writes it until then, the newest run left becoming
 the selected one, whose decorations the editor shows, and every
@@ -1482,9 +1493,11 @@ the events kept stay in memory. A view reads a record again from the
 file (`readRecord`, `TraceRun.readCode`, `TraceRun.readPlan`) with the
 reader's own parsing, on a pooled thread, since one listing's line can
 be a few MiB, its outcome delivered on the event dispatch thread in the
-modality it was asked in (`RecordReads`), and says in its place that it
-is reading, and why it cannot where the file is gone, unreadable or
-shorter than the record; the file lives while the run's tab does.
+modality it was asked in (`RecordReads`); it keeps what it shows until
+the record arrives, says in its place that it is reading only once a
+read has taken 300 ms (`SLOW_READ_MILLISECONDS`), and why it cannot where
+the file is gone, unreadable or shorter than the record; the file lives
+while the run's tab does.
 
 **The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
 traced run (`RunPanel`) of four views, above them the error that ended
@@ -1518,8 +1531,11 @@ the renderer's border, so the chooser wants the widest label measured in
 its font without that border plus what the UI takes, bounded by the
 room the tab leaves but never below its shortest label's -- over a read-only
 viewer of the listing in the text listing's format, built from the
-records, an install's listing read from the file when it is chosen and
-a read for a copy no longer chosen when it arrives dropped, a copy
+records, an install's listing read from the file when it is chosen,
+the text shown before it kept until it arrives, a read for a copy no
+longer chosen when it arrives dropped, and a batch that offers the
+copies again with the chosen install unchanged leaving the viewer's
+text, caret and scroll as they are and reading nothing, a copy
 installed again under the same tier and key numbered
 (`baseline (2)`), so that the choice a batch keeps is the same install
 -- two `optimized` entries of one key are two installs of that copy,
@@ -1575,8 +1591,9 @@ machine code's head with `base=` from the record's `base`; a first
 stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
 that the tree keeps its expansion and selection, each plan's root made
-from its entry and its nodes read from the file as it is expanded and
-dropped as it is collapsed, so that the tab holds the plans open alone, its scopes nested
+from its entry and its nodes read from the file as it is first
+expanded and kept from then on, so that the tab holds the plans the user
+opened alone, its scopes nested
 under the scope whose send inlined them, the arms and the declines
 under each, the outcome at the root, a click going to the send. A view
 opens a program body's file by its path and a shipped body's under the
@@ -1678,19 +1695,22 @@ only where its end can be heard, none where no outcome can arrive, a
 compile whose outcome was withheld dropped, the declines of installed
 copies alone, and the events kept beside counts that keep every one, a listing's
 place in bytes across reads and characters of several bytes, a run of
-a thousand listings and plans keeping none of their text, and a
+a thousand listings and plans keeping none of their text anywhere it
+reaches, and a
 listing its file no longer gives read as an error that names why;
 `TracedRunsTest` the tabs, closable as the registered tool window
 declares them and pinnable, the file's deletion, at a tab's close, once its process
 ended for a tab closed while it runs, and for a project closed before
 its run registered once its process ended, the sweep, a closed run's
 listing tabs, and a rerun replacing its configuration's ended, unpinned
-tab and deleting its file, but neither a pinned one, a running one nor
-another configuration's;
+tab under its executor and deleting its file, the selected one first,
+then the first in the tabs' order, the selection going to the new run
+alone, but neither a pinned one, one the setting started pinned, a
+running one, another configuration's nor the other executor's;
 `TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
 missing categories, the inlining tree kept across a batch, a plan read
-as it is expanded, on a pooled thread, dropped as it is collapsed and
+as it is first expanded, on a pooled thread, kept across a collapse and
 saying so where its file is gone, the Events
 tab's oldest rows dropped with the run's; `EventsFixtureTest` the
 Events tab's text of every event of the fixture equal to its line;
@@ -1702,8 +1722,10 @@ runtime's current text, none for a method a caches-only run
 or a filtered-out callee says nothing of, the hints, the eyes,
 staleness, the checksum over an emoji and over CRLF line ends, and a
 library file; `CodeTabTest` the caret's body, the chooser, a listing
-built once per choice and read on a pooled thread, a read for a copy no
-longer chosen dropped, a listing whose file is gone saying so, every label
+built once per choice and read on a pooled thread, the text before it
+kept and the notice of a slow read, a batch that keeps the chosen install
+leaving the viewer alone, a read for a copy no longer chosen dropped, a
+listing whose file is gone saying so, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its

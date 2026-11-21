@@ -115,9 +115,11 @@ class CodeCopy private constructor(val label: String, val bytecode: Bytecode?, v
  * run (decision 32).
  *
  * An install's listing is read from the run's file ([reads], decision 34)
- * when it is chosen, the viewer saying so until it arrives and saying why
- * where the file no longer gives it; a read for a copy no longer chosen
- * when it arrives is dropped.
+ * when it is chosen, the viewer keeping the text it shows until it
+ * arrives -- saying that it reads only where the read takes long -- and
+ * saying why where the file no longer gives it; a read for a copy no
+ * longer chosen when it arrives is dropped, and a batch that leaves the
+ * chosen install as it is changes nothing in the viewer.
  */
 class CodeTab(
     private val project: Project,
@@ -253,7 +255,10 @@ class CodeTab(
     /** How many listings the tab asked for: a read delivers only while it is the last asked for. Read off the EDT too. */
     @Volatile private var listingRequests = 0L
 
-    /** The message the viewer shows in place of a listing -- while it is read, or why it cannot be -- null while none is. */
+    /** The install whose listing the viewer shows or is reading; null while it shows bytecode or nothing. */
+    private var shownInstall: CodeEntry? = null
+
+    /** The message the viewer shows in place of a listing -- while a read that takes long lasts, or why it cannot be -- null while none is. */
     var listingMessage: String? = null
         private set
 
@@ -397,18 +402,23 @@ class CodeTab(
     }
 
     private fun showChosen() {
-        listingsShown++
         val copy = chooser.selectedItem as? CodeCopy
-        val request = ++listingRequests
         val install = copy?.install
+        // The install shown, or being read, is left as it is: a batch that offers the body's copies again
+        // keeps the viewer's text, caret and scroll, and reads nothing again.
+        if (install != null && install == shownInstall) return
+        listingsShown++
+        val request = ++listingRequests
+        shownInstall = install
         if (install == null) {
             display(copy?.bytecode?.let { bytecode -> bytecodeListing(run, bytecode) }, null)
             return
         }
-        display(null, NewspeakBundle.message("devtool.record.reading"))
+        // The text shown stays until the new one is read; only a read that takes long says so in its place.
         reads.read(
             { !disposed && listingRequests == request },
             { run.readCode(install) },
+            { display(null, NewspeakBundle.message("devtool.record.reading")) },
         ) { outcome ->
             outcome.fold({ code -> display(codeListing(run, code), null) }, { error -> display(null, error.message.orEmpty()) })
         }

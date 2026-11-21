@@ -144,19 +144,28 @@ class TabsTest : BasePlatformTestCase() {
         (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
             .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
 
-    /** A plan's nodes are read from the file as it is expanded, and dropped as it is collapsed. */
-    fun testAPlanIsReadWhenExpandedAndDroppedWhenCollapsed() {
-        val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())
+    /**
+     * A plan's nodes are read from the file as it is first expanded, and
+     * kept across a collapse; whether the scopes inside stay open is the
+     * IDE's setting "collapse recursively", as in every tree.
+     */
+    fun testAPlanIsReadWhenExpandedAndKeptWhenCollapsed() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, counting)
         val plan = mainPlan(tab)
         val path = TreePath(plan.path)
         assertEquals(listOf(NewspeakBundle.message("devtool.record.reading")), plan.children().toList().map { node -> node.toString() })
         tab.tree.expandPath(path)
         assertTrue(tab.tree.isExpanded(path))
         assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+        val scope = plan.firstChild
+        tab.tree.expandPath(TreePath((scope as DefaultMutableTreeNode).path))
         tab.tree.collapsePath(path)
-        assertEquals(listOf(NewspeakBundle.message("devtool.record.reading")), plan.children().toList().map { node -> node.toString() })
+        assertSame("the nodes are kept", scope, plan.firstChild)
         tab.tree.expandPath(path)
-        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+        assertSame(scope, plan.firstChild)
+        assertEquals("read once", 1, readCount)
     }
 
     /** On a pooled thread, the plan arrives after the expansion, which stays. */

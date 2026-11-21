@@ -14,7 +14,6 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JPanel
 import javax.swing.event.TreeExpansionEvent
-import javax.swing.event.TreeExpansionListener
 import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
@@ -35,8 +34,9 @@ class InliningNode(val label: String, val body: Int?, val at: Int?) {
  * A plan's root is made from the entry the run keeps (decision 34); its
  * scopes, arms and declines are read from the run's file ([reads]) when
  * it is expanded, a node saying so until they arrive and saying why where
- * the file no longer gives them, and dropped again when it is collapsed,
- * so that the tab holds only the plans the user has open.
+ * the file no longer gives them, and kept from then on, so that the tab
+ * holds only the plans the user has opened and a collapsed one opens
+ * again as it was, without a read.
  */
 class InliningTab(
     private val project: Project,
@@ -65,15 +65,6 @@ class InliningTab(
                 }
 
                 override fun treeWillCollapse(event: TreeExpansionEvent) = Unit
-            },
-        )
-        tree.addTreeExpansionListener(
-            object : TreeExpansionListener {
-                override fun treeExpanded(event: TreeExpansionEvent) = Unit
-
-                override fun treeCollapsed(event: TreeExpansionEvent) {
-                    (event.path.lastPathComponent as? PlanRoot)?.let(::dropPlan)
-                }
             },
         )
         tree.addMouseListener(
@@ -145,15 +136,6 @@ class InliningTab(
         }
     }
 
-    /** [root] was collapsed: its plan's nodes are dropped, and read again when it is expanded again. */
-    private fun dropPlan(root: PlanRoot) {
-        // A read not delivered yet delivers nothing.
-        root.reading = null
-        if (!root.filled) return
-        unread(root)
-        treeModel.nodeStructureChanged(root)
-    }
-
     /** Adds [plan]'s scopes under [root], each under the one whose send inlined it, and each scope's arms and declines. */
     private fun addPlan(root: DefaultMutableTreeNode, plan: Inlining) {
         val bodies = plan.scopes.associate { scope -> scope.scope to scope.body }
@@ -184,8 +166,8 @@ class InliningTab(
 
     /**
      * A plan's root: its [entry], and whether its plan's nodes stand under
-     * it ([filled]) or are being read -- [reading] the read's token, which
-     * a collapse clears, so that an outdated read delivers nothing.
+     * it ([filled]) or are being read -- [reading] the read's token, so
+     * that one read at a time is made.
      */
     private class PlanRoot(val entry: PlanEntry, node: InliningNode) : DefaultMutableTreeNode(node) {
         var filled = false

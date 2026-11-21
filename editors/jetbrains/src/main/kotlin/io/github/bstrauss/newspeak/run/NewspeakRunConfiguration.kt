@@ -225,7 +225,7 @@ class NewspeakRunState(
     /** Under Run and Debug alike: the debug runner starts its process through this state too. */
     override fun startProcess(): ProcessHandler {
         val filters = watchedFilters()
-        return TracedRuns.getInstance(configuration.project).start(configuration, filters) { traceFile ->
+        return TracedRuns.getInstance(configuration.project).start(configuration, filters, environment.executor.id) { traceFile ->
             val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, traceFile, filters)
             debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
             val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)

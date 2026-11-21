@@ -8,6 +8,8 @@ import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
+import com.intellij.openapi.editor.event.DocumentEvent
+import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -474,7 +476,7 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
     }
 
-    /** The listing is read on a pooled thread, the viewer saying so meanwhile, and shown once it arrives. */
+    /** The listing is read on a pooled thread, the text shown before staying until it arrives. */
     fun testAListingIsReadOffTheEventDispatchThread() {
         val onTheEdt = AtomicReference<Boolean>()
         val watching = RecordReads(
@@ -485,23 +487,90 @@ class CodeTabTest : BasePlatformTestCase() {
                 }
             },
             { task, modality, expired -> ApplicationManager.getApplication().invokeLater(task, modality, expired) },
+            // Never slow, so that a loaded machine cannot put the notice between the two texts.
+            { _, _, _ -> },
         )
         val tab = tab(tracedRun(), reads = watching)
         tab.show(1)
+        val bytecode = tab.viewer.document.text
         choose(tab, "baseline")
-        assertNull("nothing is shown before the read", tab.listing)
-        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.listingMessage)
-        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.viewer.document.text)
-        PlatformTestUtil.waitWithEventsDispatching("the listing arrives", { tab.listing != null }, WAIT_SECONDS.toInt())
+        assertEquals("the text shown stays while the read lasts", bytecode, tab.viewer.document.text)
+        assertNull(tab.listingMessage)
+        PlatformTestUtil.waitWithEventsDispatching("the listing arrives", { tab.listing?.title == "Demo>>run: baseline" }, WAIT_SECONDS.toInt())
         assertEquals("read off the EDT", false, onTheEdt.get())
         assertNull(tab.listingMessage)
         assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- code {Demo>>run:} baseline x64 base=0x3000 bytes=40\n"))
     }
 
+    /** A read that takes long says so in the viewer once it has taken long, the text before it shown until then. */
+    fun testASlowReadSaysSoOnceItTakesLong() {
+        val reads = ArrayList<Runnable>()
+        val notices = ArrayList<Runnable>()
+        val tab = tab(tracedRun(), reads = RecordReads({ task -> reads += task }, { task, _, _ -> task.run() }, { task, _, _ -> notices += task }))
+        tab.show(1)
+        val bytecode = tab.viewer.document.text
+        choose(tab, "baseline")
+        assertEquals(bytecode, tab.viewer.document.text)
+        notices.single().run()
+        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.viewer.document.text)
+        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.listingMessage)
+        assertNull(tab.listing)
+        reads.single().run()
+        assertEquals("Demo>>run: baseline", checkNotNull(tab.listing).title)
+        // A read delivered before its notice is due shows no notice.
+        choose(tab, "optimized key=Demo")
+        reads.last().run()
+        notices.last().run()
+        assertEquals("Demo>>run: optimized key=Demo", checkNotNull(tab.listing).title)
+        assertNull(tab.listingMessage)
+    }
+
+    /**
+     * A batch that brings another install of the shown body, the chosen one
+     * left as it is, changes nothing in the viewer -- its text, its caret,
+     * its scroll -- and reads nothing again.
+     */
+    fun testABatchThatKeepsTheChosenInstallLeavesTheViewerAlone() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val run = tracedRun()
+        val tab = tab(run, reads = counting)
+        tab.show(1)
+        choose(tab, "optimized key=Demo")
+        assertEquals(1, readCount)
+        val text = tab.viewer.document.text
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(3, 2))
+        val caret = tab.viewer.caretModel.offset
+        val scroll = tab.viewer.scrollingModel.verticalScrollOffset
+        val shown = tab.listingsShown
+        var changes = 0
+        tab.viewer.document.addDocumentListener(
+            object : DocumentListener {
+                override fun documentChanged(event: DocumentEvent) {
+                    changes++
+                }
+            },
+            testRootDisposable,
+        )
+        run.add(
+            trace.records(
+                """{"kind":"code","body":1,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":8,"instructions":[{"offset":0,"text":"ret","scope":0,"at":5,"annotation":null}],"data":[],"scopes":[{"scope":0,"body":1,"parent":null}],"mark":null}""",
+            ),
+        )
+        assertEquals("the new install is offered", listOf("bytecode", "baseline", "optimized key=Demo", "baseline (2)"), (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label })
+        assertEquals("optimized key=Demo", (tab.chooser.selectedItem as CodeCopy).label)
+        assertEquals("nothing is read again", 1, readCount)
+        assertEquals(0, changes)
+        assertEquals(text, tab.viewer.document.text)
+        assertEquals(caret, tab.viewer.caretModel.offset)
+        assertEquals(scroll, tab.viewer.scrollingModel.verticalScrollOffset)
+        assertEquals(shown, tab.listingsShown)
+    }
+
     /** A read that arrives after another copy was chosen shows nothing: the last copy chosen is shown. */
     fun testAReadForACopyNoLongerChosenIsDropped() {
         val queued = ArrayList<Runnable>()
-        val tab = tab(tracedRun(), reads = RecordReads({ task -> queued += task }, { task, _, _ -> task.run() }))
+        val tab = tab(tracedRun(), reads = RecordReads({ task -> queued += task }, { task, _, _ -> task.run() }, { _, _, _ -> }))
         tab.show(1)
         choose(tab, "baseline")
         choose(tab, "optimized key=Demo")

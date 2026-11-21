@@ -15,7 +15,9 @@ import java.util.Collections
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.lang.reflect.Modifier
 import java.time.Instant
+import java.util.IdentityHashMap
 
 class TraceFileReaderTest : BasePlatformTestCase() {
     /** What a reader published, in order, on the EDT. */
@@ -172,8 +174,9 @@ class TraceFileReaderTest : BasePlatformTestCase() {
     /**
      * A run read from a file of many listings and plans keeps none of their
      * text: what it keeps of each is its entry, whose every field is a
-     * number, a short name or the record's place, and the listing is read
-     * back from the file whole.
+     * number, a short name or the record's place; nothing the run reaches
+     * holds the listings' text, and all the text it reaches is a small part
+     * of the file; and the listing is read back from the file whole.
      */
     fun testARunKeepsNoListingText() {
         val file = traceFile()
@@ -194,10 +197,54 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         val entries = run.code.values.flatten()
         assertEquals(installs, entries.size)
         for (entry in entries + run.plans) assertKeepsNoText(entry, marker)
+        val texts = textsReachedFrom(run)
+        assertTrue("a text the run reaches holds a listing's", texts.none { text -> marker in text })
+        val characters = texts.sumOf { text -> text.length.toLong() }
+        assertTrue("$characters characters of a ${Files.size(file)}-byte file", characters * KEPT_SHARE < Files.size(file))
         // Reading back gives the whole listing.
         val install = checkNotNull(run.code[1]).last()
         assertEquals("$marker 990", run.readCode(install).instructions.first().text)
         assertEquals(marker, run.readPlan(run.plans.last()).declined.single().reason)
+    }
+
+    /**
+     * Every text the object graph of [root] reaches, each object once: a
+     * collection's and a map's through their own iteration, an array's
+     * elements, and every other object's fields but for the JDK's own
+     * values, which hold no text of the run's.
+     */
+    private fun textsReachedFrom(root: Any): List<String> {
+        val texts = ArrayList<String>()
+        val seen = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>())
+        val pending = ArrayDeque<Any>()
+        pending.add(root)
+        while (pending.isNotEmpty()) {
+            val next = pending.removeLast()
+            if (!seen.add(next)) continue
+            when (next) {
+                is String -> texts += next
+                is Number, is Boolean, is Char, is Enum<*>, is Path, is Instant, is Class<*> -> Unit
+                is Map<*, *> -> for ((key, value) in next) {
+                    key?.let(pending::add)
+                    value?.let(pending::add)
+                }
+                is Iterable<*> -> for (element in next) element?.let(pending::add)
+                is Array<*> -> for (element in next) element?.let(pending::add)
+                else -> {
+                    var type: Class<*>? = next.javaClass
+                    while (type != null && type != Any::class.java) {
+                        check(!type.name.startsWith("java.")) { "a ${type.name} the walk does not know" }
+                        for (field in type.declaredFields) {
+                            if (Modifier.isStatic(field.modifiers) || field.type.isPrimitive) continue
+                            field.isAccessible = true
+                            field.get(next)?.let(pending::add)
+                        }
+                        type = type.superclass
+                    }
+                }
+            }
+        }
+        return texts
     }
 
     /** Fails where a field of [entry] holds the text [marker], or any text longer than a name. */
@@ -426,6 +473,9 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         const val WAIT_SECONDS = 60
         /** Longer than any tier, key or reason a code or plan entry names. */
         const val SHORT_TEXT = 100
+
+        /** How many times the file is larger, at least, than all the text a run of it keeps. */
+        const val KEPT_SHARE = 50
 
         const val HEADER = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}"""
     }
