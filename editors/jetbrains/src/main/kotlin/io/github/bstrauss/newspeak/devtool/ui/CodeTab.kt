@@ -214,6 +214,15 @@ class CodeTab(
     /** Whether its run was the selected one at the last change of [tracedRuns]. */
     private var wasActive = tracedRuns.selected === run
 
+    /** The scrolls waiting for a viewport; the tab's end, the toggle going off and the editor's release end them. */
+    private val pendingScrolls = ArrayList<PendingScroll>()
+
+    /** Set once the tab is disposed. */
+    private var disposed = false
+
+    /** A queued scroll runs no more once the tab is gone or the toggle is off. */
+    private val scrollExpired = Condition<Any?> { disposed || project.isDisposed || !syncWithEditor }
+
     init {
         Disposer.register(parent) {
             disposed = true
@@ -585,15 +594,6 @@ class CodeTab(
             pendingScrolls -= this
         }
     }
-
-    /** The scrolls waiting for a viewport; the tab's end, the toggle going off and the editor's release end them. */
-    private val pendingScrolls = ArrayList<PendingScroll>()
-
-    /** Set once the tab is disposed. */
-    private var disposed = false
-
-    /** A queued scroll runs no more once the tab is gone or the toggle is off. */
-    private val scrollExpired = Condition<Any?> { disposed || project.isDisposed || !syncWithEditor }
 
     /** Ends every opening without scrolling: nothing the openings set off is filtered any more. */
     private fun endSyncOpenings() {
