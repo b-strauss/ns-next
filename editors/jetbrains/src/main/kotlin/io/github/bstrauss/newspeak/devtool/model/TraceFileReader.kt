@@ -35,7 +35,8 @@ private const val VERSION = 1
  * EDT in the file's order, a batch at most every
  * [PUBLICATION_MILLISECONDS] or as soon as it holds [BATCH_RECORDS]. A file
  * that is no trace, a version this reader does not know and a line that is
- * no record are reported once to [onError], on the EDT, and end the reading.
+ * no record are reported once to [onError], on the EDT, after the records
+ * read before them, and end the reading.
  * The file need not exist yet: the reader waits for the runtime to create it.
  *
  * Reads until it is disposed, or, once [finish] is called, to the file's
@@ -157,7 +158,7 @@ class TraceFileReader(
             val record = try {
                 TraceRecord.parse(line)
             } catch (exception: MalformedRecordException) {
-                report(
+                fail(
                     if (lineNumber == 1) NewspeakBundle.message("devtool.file.format")
                     else NewspeakBundle.message("devtool.file.malformed", lineNumber.toString(), exception.message ?: ""),
                 )
@@ -165,16 +166,22 @@ class TraceFileReader(
             }
             if (lineNumber == 1) {
                 if (record !is Header) {
-                    report(NewspeakBundle.message("devtool.file.format"))
+                    fail(NewspeakBundle.message("devtool.file.format"))
                     return false
                 }
                 if (record.version != VERSION) {
-                    report(NewspeakBundle.message("devtool.file.version", record.version))
+                    fail(NewspeakBundle.message("devtool.file.version", record.version))
                     return false
                 }
             }
             if (record != null) pending.add(record)
             return true
+        }
+
+        /** Ends the reading with [error]: the records read before it are published first, so that the run keeps everything the file held up to it. */
+        private fun fail(error: String) {
+            if (pending.isNotEmpty()) publish(drain())
+            report(error)
         }
     }
 

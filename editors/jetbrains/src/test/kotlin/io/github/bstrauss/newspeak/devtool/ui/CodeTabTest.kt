@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -310,6 +311,49 @@ class CodeTabTest : BasePlatformTestCase() {
         tracedRuns.selected = TraceRun("Other", Instant.EPOCH)
         assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
         assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+    }
+
+    fun testACaretInAnotherEditorKeepsTheLink() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        assertEquals(3, highlightedLines(tab.viewer).size)
+        // An editor of no Newspeak file and no listing, as the Run console is, moving its caret as output arrives.
+        val console = EditorFactory.getInstance().createEditor(EditorFactory.getInstance().createDocument("output\nmore output\n"), project)
+        try {
+            console.caretModel.moveToOffset(console.document.textLength)
+            assertEquals(3, highlightedLines(tab.viewer).size)
+            assertEquals(1, editor.markupModel.allHighlighters.count { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+        } finally {
+            EditorFactory.getInstance().releaseEditor(console)
+        }
+    }
+
+    fun testAnEditInsideALinkedMethodTakesItsHighlightsAwayAtOnce() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        assertEquals(3, highlightedLines(tab.viewer).size)
+        val document = editor.document
+        // Typed inside run:, after the caret, which stays where it is: the method is stale, and its links go without a caret move.
+        WriteCommandAction.runWriteCommandAction(project) { document.insertString(document.text.indexOf("+ 1") + 1, " 0 +") }
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+    }
+
+    fun testACopyInstalledAgainKeepsItsChoice() {
+        val baselineAgain = """{"kind":"code","body":3,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":8,"instructions":[{"offset":0,"text":"ret","scope":0,"at":1,"annotation":null}],"data":[],"scopes":[{"scope":0,"body":3,"parent":null}],"mark":null}"""
+        val firstBaseline = baselineAgain.replace("\"bytes\":8", "\"bytes\":4")
+        val run = tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(firstBaseline)), checkNotNull(TraceRecord.parse(baselineAgain)))) }
+        val tab = tab(run)
+        tab.show(3)
+        assertEquals(listOf("bytecode", "baseline", "baseline (2)"), (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label })
+        choose(tab, "baseline (2)")
+        assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
+        // A batch offers the copies again: the choice is the same install, not the first of its label.
+        run.add(listOf(checkNotNull(TraceRecord.parse(baselineAgain.replace("\"bytes\":8", "\"bytes\":12")))))
+        assertEquals("baseline (2)", (tab.chooser.selectedItem as CodeCopy).label)
+        assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
     }
 
     private companion object {

@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.devtool.model.MethodState
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
@@ -10,6 +11,7 @@ import java.time.Instant
 import javax.swing.RowSorter
 import javax.swing.SortOrder
 import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.TreePath
 
 class TabsTest : BasePlatformTestCase() {
     private fun records(lines: List<String>): List<TraceRecord> = lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
@@ -104,13 +106,20 @@ class TabsTest : BasePlatformTestCase() {
         Files.writeString(library, "line zero\nline one\n  to: x do: y\n")
         val body = """{"kind":"body","body":1,"name":"K>>to:do:","module":{"id":"K","version":null},"source":{"library":"Kernel.ns"},"range":[2,2,2,14],"checksum":"0000000000000000","statements":[],"sends":[]}"""
         val run = TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(records(listOf(body))) }
+        val manager = FileEditorManager.getInstance(project)
         navigate(project, run, 1, null, libraryDirectory = directory)
-        val editor = checkNotNull(FileEditorManager.getInstance(project).selectedTextEditor)
+        // A file the virtual file system does not hold yet is refreshed off the event dispatch thread, then opened.
+        PlatformTestUtil.waitWithEventsDispatching("the file opens", { manager.selectedTextEditor != null }, WAIT_SECONDS)
+        val editor = checkNotNull(manager.selectedTextEditor)
         assertEquals("Kernel.ns", checkNotNull(editor.virtualFile).name)
         assertEquals(2, editor.caretModel.logicalPosition.line)
         assertEquals(2, editor.caretModel.logicalPosition.column)
+        // Known by now, it opens at once.
+        manager.closeFile(checkNotNull(editor.virtualFile))
+        navigate(project, run, 1, null, libraryDirectory = directory)
+        assertEquals("Kernel.ns", checkNotNull(manager.selectedTextEditor?.virtualFile).name)
         // A body without a description opens nothing.
-        FileEditorManager.getInstance(project).closeFile(checkNotNull(editor.virtualFile))
+        manager.closeFile(checkNotNull(manager.selectedTextEditor?.virtualFile))
         navigate(project, run, 99, null, libraryDirectory = directory)
         assertNull(FileEditorManager.getInstance(project).selectedTextEditor)
     }
@@ -153,6 +162,32 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals(before + 2, tab.text.text.lines().size)
     }
 
+    fun testABatchKeepsTheInliningTreesExpansionAndSelection() {
+        val run = fixtureRun()
+        val tab = InliningTab(project, run, testRootDisposable)
+        val root = tab.treeModel.root as DefaultMutableTreeNode
+        val plan = root.children().toList().map { node -> node as DefaultMutableTreeNode }
+            .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
+        val rootScope = plan.firstChild as DefaultMutableTreeNode
+        val scopePath = TreePath(rootScope.path)
+        tab.tree.expandPath(scopePath)
+        tab.tree.selectionPath = scopePath
+        val plans = root.childCount
+        run.add(records(listOf("""{"kind":"inlining","body":3,"key":null,"entered":null,"scopes":[{"scope":0,"body":3,"parent":null}],"arms":[],"declined":[],"outcome":{"refused":"zone-full"}}""")))
+        assertEquals("the new plan is appended", plans + 1, root.childCount)
+        assertTrue("the plan stays expanded", tab.tree.isExpanded(scopePath))
+        assertEquals("the selection stays", scopePath, tab.tree.selectionPath)
+    }
+
+    fun testMethodsLeaveTheStateOfAMethodTheRunKnowsNothingOfBlank() {
+        val header = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["caches"],"listings":[]}"""
+        val body = """{"kind":"body","body":1,"name":"Demo>>run","module":{"id":"Demo","version":null},"range":null,"checksum":"0000000000000000","statements":[],"sends":[]}"""
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(records(listOf(header, body))) }
+        val tab = MethodsTab(project, run, testRootDisposable)
+        assertNull(tab.model.items.single().state)
+        assertEquals("", tab.model.getValueAt(0, 1))
+    }
+
     fun testAScopeOpensTheSendThatInlinedIt() {
         val tab = InliningTab(project, fixtureRun(), testRootDisposable)
         val plan = (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
@@ -162,5 +197,9 @@ class TabsTest : BasePlatformTestCase() {
         val node = square.userObject as InliningNode
         assertEquals(5, node.body)
         assertEquals(3, node.at)
+    }
+
+    private companion object {
+        const val WAIT_SECONDS = 10
     }
 }

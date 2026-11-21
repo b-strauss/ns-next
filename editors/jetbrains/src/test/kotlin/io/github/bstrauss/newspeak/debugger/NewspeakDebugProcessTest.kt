@@ -40,6 +40,7 @@ import com.intellij.psi.PsiFileSystemItem
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
 import com.intellij.util.ThreeState
 import com.intellij.ui.ColoredTextContainer
@@ -922,6 +923,31 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
     }
 
+    /** A refused frame code is told in a notification with the agent's words, and opens no tab. */
+    fun testShowFrameCodeRefusedIsNotified() {
+        val faked = fakeSession()
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/frameCode" -> null
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        framesOf(session)
+        val reported = notifications()
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        onEdt { action.actionPerformed(TestActionEvent.createTestEvent(action, context)) }
+        val text = reported.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(text, REFUSAL in text)
+        assertTrue(runInEdtAndGet { FileEditorManager.getInstance(project).openFiles.none { file -> file is CodeListingFile } })
+    }
+
     /**
      * The core library's frames are library frames: the session respects
      * the frames view's Show Library Frames, and while it is off each run
@@ -1429,7 +1455,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
     }
 
     /** A fake agent that names the session's own process and returns its secret, as `ns-next`'s does. */
-    private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject): FakeAgent =
+    private fun identifiedAgent(faked: FakedSession, answer: (String, JsonObject) -> JsonObject?): FakeAgent =
         FakeAgent(
             faked.port,
             onAttach = {
@@ -1447,14 +1473,15 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     /**
      * A scripted agent in place of `ns-next`'s: it answers every request
-     * with what [answer] gives, a success, and after `attach` sends what
-     * [onAttach] sends. Its connection writes in order, so its events
-     * follow its answers as the real agent's do.
+     * with what [answer] gives, a success, or a refusal with [REFUSAL] where
+     * it gives null, and after `attach` sends what [onAttach] sends. Its
+     * connection writes in order, so its events follow its answers as the
+     * real agent's do.
      */
     private inner class FakeAgent(
         port: Int,
         private val onAttach: FakeAgent.() -> Unit,
-        private val answer: (String, JsonObject) -> JsonObject = { _, _ -> JsonObject() },
+        private val answer: (String, JsonObject) -> JsonObject? = { _, _ -> JsonObject() },
     ) {
         private val received = CopyOnWriteArrayList<JsonObject>()
         private val connection: DapConnection
@@ -1471,7 +1498,17 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                     received.add(request)
                     val command = request.get("command").asString
                     val arguments = request.getAsJsonObject("arguments") ?: JsonObject()
-                    connection.send(response(request).apply { add("body", answer(command, arguments)) })
+                    val body = answer(command, arguments)
+                    connection.send(
+                        response(request).apply {
+                            if (body != null) {
+                                add("body", body)
+                            } else {
+                                addProperty("success", false)
+                                addProperty("message", REFUSAL)
+                            }
+                        },
+                    )
                     if (command == "attach") onAttach()
                     if (command == "configurationDone") configured.complete(Unit)
                 },
@@ -1785,6 +1822,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     private companion object {
         const val WAIT_SECONDS = 30L
+
+        /** What a fake agent's refusal says. */
+        const val REFUSAL = "no frame 1 at this stop"
 
         /** The secret the fake sessions' processes were given, which an identified fake agent returns. */
         const val SECRET = "00112233445566778899aabbccddeeff"

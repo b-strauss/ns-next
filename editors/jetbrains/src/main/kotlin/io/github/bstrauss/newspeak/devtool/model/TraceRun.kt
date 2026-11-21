@@ -2,6 +2,8 @@ package io.github.bstrauss.newspeak.devtool.model
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.util.Disposer
+import io.github.bstrauss.newspeak.devtool.TraceFilters
+import io.github.bstrauss.newspeak.devtool.covers
 import java.time.Instant
 
 /** How a method ran, as its gutter icon says (`docs/design/developer-tool.md`, decision 27). */
@@ -9,7 +11,8 @@ enum class MethodState { INTERPRETED, BASELINE, TWIN, OPTIMIZED, DEOPTIMIZED, AB
 
 /**
  * What became of a send: [inlining] `inlined` or `declined: <reason>` by the
- * last optimizing compile that planned it and installed its copy, and [cache] its inline cache's
+ * last optimizing compile that planned it and whose installed copy still
+ * lives, and [cache] its inline cache's
  * state -- `mono`, `poly <n>` with the receivers it has seen since it was
  * last vacant, `mega` -- each null where the trace says nothing of it.
  */
@@ -17,21 +20,31 @@ data class SendOutcome(val inlining: String?, val cache: String?)
 
 /**
  * One traced run, [name]d by its configuration and [started] at a time
- * (decision 26): the records [TraceFileReader] read, and what the editor and
- * the tool window draw from them. Read and changed on the EDT only.
+ * (decision 26), narrowed by the [filters] it was started with: the records
+ * [TraceFileReader] read, and what the editor and the tool window draw from
+ * them. Read and changed on the EDT only.
  *
  * A body number may come without a [Body]: a body no mixin holds, or one
- * whose range lies outside its module's text. Such a body has a state and no
- * sends, since only a description lists them.
+ * whose range lies outside its module's text. Such a body may have a state
+ * and has no sends, since only a description lists them.
  */
-class TraceRun(val name: String, val started: Instant) {
+class TraceRun(val name: String, val started: Instant, private val filters: TraceFilters = TraceFilters.EVERYTHING) {
     private val describedBodies = HashMap<Int, Body>()
     private val recordedEvents = ArrayList<Event>()
     private val bytecodeListings = HashMap<Int, Bytecode>()
     private val codeListings = HashMap<Int, MutableList<Code>>()
     private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
+    private val plansInOrder = ArrayList<Inlining>()
     private val histories = HashMap<Int, BodyHistory>()
     private val inliningAtSends = HashMap<SendKey, String>()
+
+    /**
+     * The plan's decisions of each installed optimized copy that still
+     * lives, the copy installed last at the end: a send's inlining is that
+     * of the last of them that planned it, so that a copy retired,
+     * invalidated, freed or lost with the zone takes its decisions with it.
+     */
+    private val liveCopies = LinkedHashMap<CompileKey, List<Pair<SendKey, String>>>()
     private val caches = HashMap<SendKey, CacheHistory>()
 
     /**
@@ -49,6 +62,9 @@ class TraceRun(val name: String, val started: Instant) {
      * them; a header that does not say is taken to trace them.
      */
     private var outcomeCanArrive = true
+
+    /** The categories the header says are traced; null before it arrived and for a header that does not say. */
+    private var categories: List<String>? = null
     private val listeners = ArrayList<() -> Unit>()
 
     /** The architecture the run's machine code is instructions of, from the header; null without a JIT or before it arrived. */
@@ -70,11 +86,43 @@ class TraceRun(val name: String, val started: Instant) {
     /** Each body's optimizing compiles' plans, in their order. */
     val inlining: Map<Int, List<Inlining>> get() = inliningPlans
 
-    /** [body]'s state after its events in their order; [MethodState.INTERPRETED] for one without any. */
-    fun state(body: Int): MethodState = histories[body]?.state ?: MethodState.INTERPRETED
+    /** Every optimizing compile's plan, in the file's order. */
+    val plans: List<Inlining> get() = plansInOrder
 
-    /** How many optimized copies of [body] are installed. */
-    fun copies(body: Int): Int = histories[body]?.copies ?: 0
+    /**
+     * [body]'s state after its events in their order; for one without any,
+     * the tier its machine code was listed in; and otherwise
+     * [MethodState.INTERPRETED] only where a compile would have been heard
+     * of -- `compile` traced and the body's own events passing the run's
+     * filter. Null where the trace knows nothing of how it ran: a body named
+     * only as a callee, a scope, a cache's family or by a bytecode listing.
+     */
+    fun state(body: Int): MethodState? {
+        histories[body]?.let { history -> return history.state }
+        codeListings[body]?.let { codes ->
+            return if (codes.any { code -> code.tier == "optimized" }) MethodState.OPTIMIZED else tierState(codes.last().tier)
+        }
+        return MethodState.INTERPRETED.takeIf { compilesHeardOf(body) }
+    }
+
+    /** How many optimized copies of [body] are installed: as its events count them, or else as its listings do. */
+    fun copies(body: Int): Int = histories[body]?.copies ?: codeListings[body]?.count { code -> code.tier == "optimized" } ?: 0
+
+    /** Whether a `compile` event of [body] would have reached the run: its category traced and the body's name passing the events filter. */
+    private fun compilesHeardOf(body: Int): Boolean {
+        if (filters.noEvents) return false
+        // A header that does not say is taken to trace every category.
+        if (categories?.contains("compile") == false) return false
+        if (filters.events.isEmpty()) return true
+        val name = describedBodies[body]?.name ?: return false
+        return filters.events.any { pattern -> covers(pattern, name) }
+    }
+
+    private fun tierState(tier: String): MethodState = when (tier) {
+        "optimized" -> MethodState.OPTIMIZED
+        "twin" -> MethodState.TWIN
+        else -> MethodState.BASELINE
+    }
 
     /** What became of each send of [body] the trace says anything of, by the send's bytecode index. */
     fun sends(body: Int): Map<Int, SendOutcome> {
@@ -97,9 +145,10 @@ class TraceRun(val name: String, val started: Instant) {
             when (record) {
                 is Header -> {
                     architecture = record.architecture
-                    val categories = record.categories
+                    val traced = record.categories
                     val listings = record.listings
-                    outcomeCanArrive = categories == null || listings == null || "optimize" in categories || "inlining" in listings
+                    categories = traced
+                    outcomeCanArrive = traced == null || listings == null || "optimize" in traced || "inlining" in listings
                 }
                 is Body -> describedBodies[record.number] = record
                 is Event -> take(record)
@@ -107,6 +156,7 @@ class TraceRun(val name: String, val started: Instant) {
                 is Code -> codeListings.getOrPut(record.body) { ArrayList() }.add(record)
                 is Inlining -> {
                     inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
+                    plansInOrder.add(record)
                     // The plan's own outcome, for a trace without the `optimize` category.
                     concludePlan(CompileKey(record.body, record.key, record.entered), installed = record.installed != null)
                 }
@@ -134,12 +184,18 @@ class TraceRun(val name: String, val started: Instant) {
             // Every site vacated at once: none keeps the state or the receivers it had.
             "vacated" -> caches.clear()
             // The zone dropped every body's machine code, copies included.
-            "replaced" -> for (history in histories.values) history.lose()
+            "replaced" -> {
+                for (history in histories.values) history.lose()
+                liveCopies.clear()
+                inliningAtSends.clear()
+            }
             else -> if (body != null) {
                 histories.getOrPut(body) { BodyHistory() }.take(event)
                 when (event.event) {
                     "optimized" -> concludePlan(compileKey(body, event), installed = true)
                     "refused", "deferred" -> if (event.category == "optimize") concludePlan(compileKey(body, event), installed = false)
+                    "retired", "invalidated" -> copyGone(compileKey(body, event))
+                    "freed" -> if (event.text("tier") == "optimized") copyGone(compileKey(body, event))
                 }
             }
         }
@@ -151,17 +207,31 @@ class TraceRun(val name: String, val started: Instant) {
     private fun plan(event: Event, outcome: String) {
         val body = event.body ?: return
         val send = inliningAt(event) ?: return
+        val key = compileKey(body, event)
         if (!outcomeCanArrive) {
+            // Nothing would conclude the compile: its decisions are its copy's at once.
+            liveCopies[key] = liveCopies[key].orEmpty() + (send to outcome)
             inliningAtSends[send] = outcome
             return
         }
-        plannedInlining.getOrPut(compileKey(body, event)) { ArrayList() }.add(send to outcome)
+        plannedInlining.getOrPut(key) { ArrayList() }.add(send to outcome)
     }
 
     /** The compile [key] ended: its decisions apply to the sends if its copy was [installed], and are dropped otherwise. */
     private fun concludePlan(key: CompileKey, installed: Boolean) {
         val decisions = plannedInlining.remove(key) ?: return
-        if (installed) for ((send, outcome) in decisions) inliningAtSends[send] = outcome
+        if (!installed) return
+        // A key's new copy replaces its old one and is the one installed last.
+        liveCopies.remove(key)
+        liveCopies[key] = decisions
+        for ((send, outcome) in decisions) inliningAtSends[send] = outcome
+    }
+
+    /** The copy [key] is gone: each send it planned keeps the decision of the last live copy that planned it too, or none. */
+    private fun copyGone(key: CompileKey) {
+        liveCopies.remove(key) ?: return
+        inliningAtSends.clear()
+        for (decisions in liveCopies.values) for ((send, outcome) in decisions) inliningAtSends[send] = outcome
     }
 
     private fun inliningAt(event: Event): SendKey? {

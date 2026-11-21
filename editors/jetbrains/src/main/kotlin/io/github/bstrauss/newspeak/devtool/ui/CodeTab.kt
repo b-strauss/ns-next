@@ -7,6 +7,7 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -106,6 +107,8 @@ class CodeTab(
         run.onChanged(parent) { shownBody?.let { body -> offer(body, keepChoice = true) } }
         // A run no longer selected leaves nothing drawn for the selected one's tab to draw over.
         tracedRuns.addListener({ if (!active()) highlighting.deselect() }, parent)
+        // A method an edit made stale is linked no longer, without waiting for the caret to move.
+        decorations.addStalenessListener({ if (active()) highlighting.refresh() }, parent)
     }
 
     /** Shows the copies of [body], its bytecode first: the gutter menu's "Show Code" and the caret's body. */
@@ -143,10 +146,14 @@ class CodeTab(
         val copies = ArrayList<CodeCopy>()
         val bytecode = run.bytecode[body] ?: run.bytecode.values.firstOrNull { listed -> listed.bodies.any { part -> part.body == body } }
         if (bytecode != null) copies += CodeCopy(BYTECODE) { bytecodeListing(run, bytecode) }
+        // A copy installed again under the same tier and key is numbered, so that a choice kept by its label is the same install.
+        val installs = HashMap<String, Int>()
         for (code in run.code[body].orEmpty()) {
             val label = StringBuilder(code.tier)
             code.key?.let { key -> label.append(" key=").append(key) }
             code.entered?.let { entered -> label.append(" entered=").append(entered) }
+            val count = installs.merge(label.toString(), 1, Int::plus) ?: 1
+            if (count > 1) label.append(" (").append(count).append(')')
             copies += CodeCopy(label.toString()) { codeListing(run, code) }
         }
         return copies
@@ -181,6 +188,8 @@ class CodeTab(
             highlighting.selectInstruction(shownListing.positions.getOrNull(editor.caretModel.logicalPosition.line))
             return
         }
+        // Only a Newspeak file's caret names a statement: another editor's -- a console scrolling with the program's output -- leaves the link as it is.
+        if (FileDocumentManager.getInstance().getFile(document)?.extension != NEWSPEAK_EXTENSION) return
         val caret = editor.caretModel.offset
         // Bodies nest, so the innermost holding the caret starts last, and of those ends first.
         val placed = decorations.placedBodies(document, run)
@@ -202,5 +211,6 @@ class CodeTab(
 
     private companion object {
         const val BYTECODE = "bytecode"
+        const val NEWSPEAK_EXTENSION = "ns"
     }
 }

@@ -14,11 +14,11 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JPanel
 
-/** A method of the Methods tab: a root body and what its events say of it. */
+/** A method of the Methods tab: a root body and what its events say of it, its [state] null where the run knows nothing of how it ran. */
 data class MethodRow(
     val body: Int,
     val name: String,
-    val state: MethodState,
+    val state: MethodState?,
     val copies: Int,
     val deopts: Int,
     val abandons: Int,
@@ -29,7 +29,8 @@ data class MethodRow(
 /**
  * The Methods tab (`docs/design/developer-tool.md`, decision 29): every
  * method the run described -- a block is its method's, so its events count under its root and its name with
- * `[] in` is left out -- with its state, how many optimized copies it has,
+ * `[] in` is left out -- with its state, blank where the run knows nothing of
+ * how it ran, how many optimized copies it has,
  * how often it deoptimized and was abandoned, its largest copy's code and the
  * callees the optimizer declined in it; sortable by every column, a double
  * click opening the method.
@@ -46,7 +47,7 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
     val model = ListTableModel<MethodRow>(
         arrayOf<ColumnInfo<MethodRow, *>>(
             column("devtool.methods.column.name", compareBy(MethodRow::name)) { row -> row.name },
-            column("devtool.methods.column.state", compareBy(MethodRow::state)) { row -> row.state.name.lowercase() },
+            column("devtool.methods.column.state", compareBy(nullsFirst<MethodState>(), MethodRow::state)) { row -> row.state?.name?.lowercase().orEmpty() },
             column("devtool.methods.column.copies", compareBy(MethodRow::copies)) { row -> row.copies },
             column("devtool.methods.column.deopts", compareBy(MethodRow::deopts)) { row -> row.deopts },
             column("devtool.methods.column.abandons", compareBy(MethodRow::abandons)) { row -> row.abandons },

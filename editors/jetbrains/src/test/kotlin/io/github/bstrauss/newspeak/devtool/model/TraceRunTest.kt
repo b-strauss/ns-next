@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool.model
 
 import com.intellij.openapi.util.Disposer
+import io.github.bstrauss.newspeak.devtool.TraceFilters
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -176,6 +177,78 @@ class TraceRunTest {
         assertEquals(emptyMap<Int, SendOutcome>(), unsaid.sends(5))
         unsaid.add(records(event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900""")))
         assertEquals(inlined, unsaid.sends(5))
+    }
+
+    @Test fun testASendsInliningGoesWithItsCopy() {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]},{"at":7,"site":null,"call":null,"selector":[]}]}""",
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"at":3"""),
+                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
+                event(5, "inlining", "declined", ""","key":"Demo/Box","entered":"Demo","in-body":5,"callee":3,"reason":"over-weight","at":3"""),
+                event(5, "inlining", "inlined", ""","key":"Demo/Box","entered":"Demo","in-body":5,"callee":4,"at":7"""),
+                event(5, "optimize", "optimized", ""","key":"Demo/Box","entered":"Demo","bytes":800"""),
+            ),
+        )
+        assertEquals("the copy installed last decides", SendOutcome(inlining = "declined: over-weight", cache = null), traceRun.sends(5)[3])
+        // Retired, the later copy's decisions go: the send at 3 is the first copy's again, the one at 7 nothing's.
+        traceRun.add(records(event(5, "deoptimize", "retired", ""","key":"Demo/Box","entered":"Demo","reason":"exits","version":null""")))
+        assertEquals(mapOf(3 to SendOutcome(inlining = "inlined", cache = null)), traceRun.sends(5))
+        // Baseline code freed takes no copy's decisions.
+        traceRun.add(records(event(5, "code-zone", "freed", ""","key":null,"entered":null,"tier":"baseline","cause":"compaction"""")))
+        assertEquals(mapOf(3 to SendOutcome(inlining = "inlined", cache = null)), traceRun.sends(5))
+        traceRun.add(records(event(5, "code-zone", "freed", ""","key":"Demo","entered":null,"tier":"optimized","cause":"breakpoint"""")))
+        assertEquals("freed", emptyMap<Int, SendOutcome>(), traceRun.sends(5))
+
+        // Invalidated, and the zone replaced, likewise.
+        traceRun.add(
+            records(
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"at":3"""),
+                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
+            ),
+        )
+        assertEquals("inlined", traceRun.sends(5)[3]?.inlining)
+        traceRun.add(records(event(5, "deoptimize", "invalidated", ""","key":"Demo","entered":null,"cause":"edit"""")))
+        assertEquals("invalidated", emptyMap<Int, SendOutcome>(), traceRun.sends(5))
+        traceRun.add(
+            records(
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"at":3"""),
+                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
+                """{"kind":"event","category":"code-zone","body":null,"event":"replaced","bodies-freed":1}""",
+            ),
+        )
+        assertEquals("the zone replaced", emptyMap<Int, SendOutcome>(), traceRun.sends(5))
+    }
+
+    /** A body described before any event: a run with [header] and [filters], `Demo>>run` its body 5 and `Demo>>helper` its body 6. */
+    private fun described(header: String, filters: TraceFilters = TraceFilters.EVERYTHING): TraceRun {
+        val traceRun = TraceRun("Demo", Instant.EPOCH, filters)
+        traceRun.add(
+            records(
+                header,
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[]}""",
+                """{"kind":"body","body":6,"name":"Demo>>helper","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000002","statements":[],"sends":[]}""",
+            ),
+        )
+        return traceRun
+    }
+
+    @Test fun testAStateIsAnsweredOnlyWhereTheTraceKnowsIt() {
+        val cachesOnly = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["caches"],"listings":["bytecode"]}""")
+        assertNull("no compile traced", cachesOnly.state(5))
+        // A listing of its machine code says its tier all the same.
+        cachesOnly.add(records("""{"kind":"code","body":6,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":64,"instructions":[],"data":[],"scopes":[],"mark":null}"""))
+        assertEquals(MethodState.BASELINE, cachesOnly.state(6))
+
+        val compiles = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["compile","inlining"],"listings":[]}"""
+        assertEquals("compiles traced for every body", MethodState.INTERPRETED, described(compiles).state(6))
+        val filtered = described(compiles, TraceFilters(listOf("Demo>>run"), emptyList(), noEvents = false, noListings = true))
+        assertEquals(MethodState.INTERPRETED, filtered.state(5))
+        // helper is described as a callee of run's plan; its own events were filtered out.
+        filtered.add(records(event(5, "inlining", "inlined", ""","key":null,"entered":null,"in-body":5,"callee":6,"at":3""")))
+        assertNull("a callee filtered out", filtered.state(6))
+        assertEquals(MethodState.INTERPRETED, described(compiles, TraceFilters(listOf("Demo>>..."), emptyList(), noEvents = false, noListings = true)).state(6))
     }
 
     @Test fun testABodyWithoutADescriptionIsAccepted() {

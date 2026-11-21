@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.devtool.MethodName
+import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.model.MethodState
@@ -89,7 +90,7 @@ class DecorationsTest : BasePlatformTestCase() {
 
     private fun records(lines: List<String>): List<TraceRecord> = lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
 
-    /** The run of [DEMO]: `square:` optimized, `main:args:` baseline with its two blocks' sends decided, `smile` interpreted. */
+    /** The run of [DEMO]: `square:` optimized, `main:args:` optimized with its two blocks' sends decided and a second copy retired, `smile` interpreted. */
     private fun demoRun(path: Path = directory.resolve("Demo.ns"), name: String = "Demo"): TraceRun {
         val source = fileSource(path)
         val lines = listOf(
@@ -111,7 +112,8 @@ class DecorationsTest : BasePlatformTestCase() {
             event(2, "inlining", "declined", ""","in-body":3,"at":1,"callee":null,"reason":"over-weight","key":null,"entered":null"""),
             event(2, "inlining", "inlined", ""","in-body":4,"at":2,"callee":1,"key":null,"entered":null"""),
             event(2, "optimize", "optimized", ""","key":null,"entered":null,"bytes":200"""),
-            event(2, "deoptimize", "retired", ""","key":null,"entered":null,"reason":"exits","version":"none""""),
+            event(2, "optimize", "optimized", ""","key":"Demo/Other","entered":null,"bytes":150"""),
+            event(2, "deoptimize", "retired", ""","key":"Demo/Other","entered":null,"reason":"exits","version":"none""""),
             event(2, "caches", "transition", ""","before":"vacant","after":"monomorphic","selector":"square:","site":3,"receiver":"Demo""""),
             event(2, "caches", "transition", ""","before":"monomorphic","after":"polymorphic","selector":"square:","site":3,"receiver":"Demo/Other""""),
             event(2, "caches", "transition", ""","before":"vacant","after":"monomorphic","selector":"printString","site":2,"receiver":"Integer""""),
@@ -143,8 +145,8 @@ class DecorationsTest : BasePlatformTestCase() {
         assertFalse(square.stale)
         assertEquals("optimized · 1 copies · 0 deoptimizations", square.tooltipText)
         val main = icons[1].second
-        assertEquals(MethodState.DEOPTIMIZED, main.state)
-        assertTrue(main.tooltipText, main.tooltipText.startsWith("deoptimized · 0 copies · 1 deoptimizations"))
+        assertEquals(MethodState.OPTIMIZED, main.state)
+        assertTrue(main.tooltipText, main.tooltipText.startsWith("optimized · 1 copies · 1 deoptimizations"))
         assertTrue(main.tooltipText, "exits" in main.tooltipText)
     }
 
@@ -206,7 +208,7 @@ class DecorationsTest : BasePlatformTestCase() {
         assertEquals("Changed since the run", square.tooltipText)
         val main = icons.single { (line, _) -> line == lineOf(MAIN) }.second
         assertFalse(main.stale)
-        assertEquals(MethodState.DEOPTIMIZED, main.state)
+        assertEquals(MethodState.OPTIMIZED, main.state)
         // square: had no hint, so main:args:' hints are all that is left, at their places moved by the edit.
         assertEquals(mainHints, hints(editor).size)
         assertTrue(hints(editor).toString(), endOf("square:", SECOND_BLOCK) + 4 to "inlined · poly 2" in hints(editor))
@@ -368,6 +370,52 @@ class DecorationsTest : BasePlatformTestCase() {
         val offset = DEMO.indexOf("x * x")
         WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(offset, "1 + ") }
         assertEquals(listOf(true, false, false), icons(editor).map { (_, renderer) -> renderer.stale })
+    }
+
+    fun testACachesOnlyRunDrawsNoStateIcon() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["caches"],"listings":[]}""",
+                        bodyJson(2, "Demo>>main:args:", source, DEMO, MAIN, sends = listOf(sendJson(DEMO, MAIN, 3, 0, "args do: [:each | each printString]", "do:"))),
+                        event(2, "caches", "transition", ""","before":"vacant","after":"monomorphic","selector":"do:","site":0,"receiver":"Array""""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        // Nothing traced says how main:args: ran: no icon, but its send's cache.
+        assertEquals(emptyList<Pair<Int, StateGutterRenderer>>(), icons(editor))
+        assertEquals(listOf(endOf("do:", MAIN) to "mono"), hints(editor))
+    }
+
+    fun testAFilteredOutCalleeDrawsNoStateIcon() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val filters = TraceFilters(listOf("Demo>>main:args:"), emptyList(), noEvents = false, noListings = true)
+        val run = TraceRun("Demo", Instant.EPOCH, filters).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        HEADER,
+                        // square: is described as the callee of main:args:'s plan; its own events were filtered out.
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        bodyJson(2, "Demo>>main:args:", source, DEMO, MAIN),
+                        event(2, "compile", "compiled"),
+                        event(2, "inlining", "inlined", ""","in-body":2,"at":7,"callee":1,"key":null,"entered":null"""),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val icons = icons(editor)
+        assertEquals(listOf(lineOf(MAIN)), icons.map { (line, _) -> line })
+        assertEquals(MethodState.BASELINE, icons.single().second.state)
     }
 
     fun testARangeOutsideTheTextIsNotDecorated() {

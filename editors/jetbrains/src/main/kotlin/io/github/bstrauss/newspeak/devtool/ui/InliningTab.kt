@@ -31,7 +31,10 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
     /** One root per plan, in the order the file recorded them. */
     val treeModel = DefaultTreeModel(DefaultMutableTreeNode())
 
-    private val tree = Tree(treeModel).apply { isRootVisible = false }
+    val tree = Tree(treeModel).apply { isRootVisible = false }
+
+    /** How many of the run's plans the tree holds. */
+    private var fed = 0
 
     init {
         add(JBScrollPane(tree), BorderLayout.CENTER)
@@ -62,10 +65,12 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
         node.body?.let { body -> navigate(project, run, body, node.at) }
     }
 
+    /** A batch arrived: the plans after the last fed are appended, which leaves the tree's expansion and selection where they are. */
     private fun refresh() {
-        val root = DefaultMutableTreeNode()
-        for ((_, plans) in run.inlining.toSortedMap()) for (plan in plans) root.add(planNode(plan))
-        treeModel.setRoot(root)
+        val root = treeModel.root as DefaultMutableTreeNode
+        val plans = run.plans
+        for (index in fed until plans.size) treeModel.insertNodeInto(planNode(plans[index]), root, root.childCount)
+        fed = plans.size
     }
 
     private fun planNode(plan: Inlining): DefaultMutableTreeNode {

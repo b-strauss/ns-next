@@ -4,11 +4,15 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.DumbAware
 import com.intellij.xdebugger.XDebugSession
 import com.intellij.xdebugger.XDebuggerManager
+import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.debugger.dap.DapConnectionClosedException
 
 /**
  * Show Frame Code on the frame the frames view selects: asks the agent for
@@ -31,12 +35,29 @@ class ShowFrameCodeAction : AnAction(AllIcons.Debugger.Frame), DumbAware {
         val process = session.debugProcess as? NewspeakDebugProcess ?: return
         val frame = session.currentStackFrame as? NewspeakStackFrame ?: return
         process.frameCode(frame).whenComplete { code, failure ->
-            if (failure != null) return@whenComplete
+            if (failure != null) {
+                refused(session, failure)
+                return@whenComplete
+            }
             ApplicationManager.getApplication().invokeLater({ if (!session.isStopped) FrameCodeFollower.open(session, process, code) }, ModalityState.nonModal())
         }
+    }
+
+    /** The agent refused the frame's code -- a frame the stop no longer has, a connection gone --: the user asked, so the answer is shown. */
+    private fun refused(session: XDebugSession, failure: Throwable) {
+        if (session.isStopped || causeOf(failure) is DapConnectionClosedException) return
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup(NOTIFICATION_GROUP)
+            .createNotification(NewspeakBundle.message("devtool.frame.refused", messageOf(failure)), NotificationType.WARNING)
+            .notify(session.project)
     }
 
     /** The session the tool window shows, or, where its context names none, the project's current one. */
     private fun sessionOf(event: AnActionEvent): XDebugSession? =
         event.getData(XDebugSession.DATA_KEY) ?: event.project?.let { project -> XDebuggerManager.getInstance(project).currentSession }
+
+    private companion object {
+        /** The plugin's notification group (`plugin.xml`). */
+        const val NOTIFICATION_GROUP = "Newspeak"
+    }
 }

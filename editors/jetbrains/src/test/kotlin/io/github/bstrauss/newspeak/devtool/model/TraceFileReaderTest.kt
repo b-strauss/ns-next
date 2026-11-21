@@ -143,6 +143,20 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(emptyList<TraceRecord>(), received.records)
     }
 
+    fun testAMalformedLineKeepsTheRecordsBeforeIt() {
+        val file = traceFile()
+        val compiled = """{"kind":"event","category":"compile","body":3,"event":"compiled","trigger":"call","bytes":1216}"""
+        val withoutCategory = """{"kind":"event","body":3,"event":"compiled"}"""
+        Files.writeString(file, HEADER + "\n" + compiled + "\n" + withoutCategory + "\n" + compiled + "\n")
+        val received = Received()
+        reader(file, received).finish()
+        waitFor("the error arrives") { received.errors.isNotEmpty() }
+        assertEquals(listOf(NewspeakBundle.message("devtool.file.malformed", "3", "no `category`")), received.errors)
+        // Published before the error: the records up to the malformed line, none after it.
+        assertEquals(2, received.records.size)
+        assertEquals("compiled", (received.records[1] as Event).event)
+    }
+
     fun testALargeFileIsReadInBatches() {
         val file = traceFile()
         val count = 200_000

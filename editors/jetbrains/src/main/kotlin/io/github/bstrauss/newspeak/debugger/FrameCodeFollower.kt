@@ -28,7 +28,7 @@ class FrameCodeFollower private constructor(
     private val process: NewspeakDebugProcess,
     val file: CodeListingFile,
 ) {
-    private val lifetime = Disposer.newDisposable("Newspeak frame code of ${file.name}")
+    private val lifetime = Disposer.newDisposable(process.sessionLifetime, "Newspeak frame code of ${file.name}")
     private val requested = AtomicInteger()
 
     @Volatile

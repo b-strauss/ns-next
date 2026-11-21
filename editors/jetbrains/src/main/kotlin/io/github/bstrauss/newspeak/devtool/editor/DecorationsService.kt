@@ -166,6 +166,8 @@ class DecorationsService internal constructor(
     /** Whether the content component's tooltip is a hint's, which leaving the hint takes away. */
     private var hintTooltipShown = false
 
+    private val stalenessListeners = ArrayList<() -> Unit>()
+
     /**
      * This service's markers in a document's user data. A key of its own,
      * since a core library file is one document shared by every open
@@ -290,9 +292,12 @@ class DecorationsService internal constructor(
         if (current != null) {
             for (method in methods) {
                 val root = method.root
+                // A method the run knows nothing of how it ran has no icon; the eye stands there if it is watched.
                 if (showIcons && root != null && root.marker.isValid) {
-                    decorations.highlighters += icon(editor, root.marker.startOffset, stateIcon(current, method, root.body))
-                    iconOffsets += root.marker.startOffset
+                    stateIcon(current, method, root.body)?.let { renderer ->
+                        decorations.highlighters += icon(editor, root.marker.startOffset, renderer)
+                        iconOffsets += root.marker.startOffset
+                    }
                 }
                 if (showHints && !method.stale) for (body in method.bodies) hints(editor, current, body, decorations)
             }
@@ -359,7 +364,9 @@ class DecorationsService internal constructor(
                 flipped = true
             }
         }
-        if (flipped) for (editor in EditorFactory.getInstance().getEditors(event.document, project)) decorate(editor)
+        if (!flipped) return
+        for (editor in EditorFactory.getInstance().getEditors(event.document, project)) decorate(editor)
+        for (listener in stalenessListeners.toList()) listener()
     }
 
     private fun icon(editor: Editor, offset: Int, renderer: StateGutterRenderer): RangeHighlighter =
@@ -367,11 +374,12 @@ class DecorationsService internal constructor(
             gutterIconRenderer = renderer
         }
 
-    private fun stateIcon(traced: TraceRun, method: MethodMarkers, root: Body): StateGutterRenderer {
+    /** The icon of [method], whose root is [root]; null where [traced] knows nothing of how it ran. */
+    private fun stateIcon(traced: TraceRun, method: MethodMarkers, root: Body): StateGutterRenderer? {
+        val state = traced.state(root.number) ?: return null
         val watched = watchedMethods.isWatched(root.name)
         val actions = methodActions(traced, root)
-        if (method.stale) return StateGutterRenderer(traced.state(root.number), stale = true, watched = watched, NewspeakBundle.message("devtool.stale"), actions)
-        val state = traced.state(root.number)
+        if (method.stale) return StateGutterRenderer(state, stale = true, watched = watched, NewspeakBundle.message("devtool.stale"), actions)
         val summary = summary()
         var tooltip = NewspeakBundle.message(
             "devtool.gutter.tooltip",
@@ -468,6 +476,16 @@ class DecorationsService internal constructor(
             editor.contentComponent.toolTipText = null
             hintTooltipShown = false
         }
+    }
+
+    /**
+     * Calls [listener] whenever an edit makes a method of the decorated run
+     * stale, or the run's again, until [parent] is disposed: what draws by
+     * [placedBodies] -- the Code tab's linked highlighting -- draws again.
+     */
+    fun addStalenessListener(listener: () -> Unit, parent: Disposable) {
+        stalenessListeners.add(listener)
+        Disposer.register(parent) { stalenessListeners.remove(listener) }
     }
 
     /** The run decorated: the selected one, whose bodies [placedBodies] places; null while none is. */

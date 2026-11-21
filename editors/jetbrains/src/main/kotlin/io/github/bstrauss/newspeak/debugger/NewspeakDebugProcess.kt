@@ -584,6 +584,13 @@ class NewspeakDebugProcess(
     /** The frame-code tab that follows the session's selected frame, none while there is none. */
     internal var frameCodeFollower: FrameCodeFollower? = null
 
+    /**
+     * What lasts while the session does -- the frame-code tab's follower --:
+     * disposed at its `stop()`, and with the project at the latest, so that
+     * a project closed without a stop leaks nothing.
+     */
+    internal val sessionLifetime = Disposer.newDisposable(NewspeakSkippedClasses.getInstance(session.project), "Newspeak debug session")
+
     override fun startPausing() {
         val client = client ?: return
         client.request("pause", JsonObject().apply { addProperty("threadId", THREAD_ID) })
@@ -648,6 +655,7 @@ class NewspeakDebugProcess(
     override fun stop() {
         ended = true
         Disposer.dispose(stepFiltersSubscription)
+        Disposer.dispose(sessionLifetime)
         Disposer.dispose(memoryView)
         handler.terminateThroughDebugger = null
         serverSocket.close()

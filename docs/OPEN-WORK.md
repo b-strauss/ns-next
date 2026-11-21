@@ -2461,8 +2461,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
   - **What the developer tool's stage 3 left** (2026-11-21, its
-    reviews), none of them a wrong decoration -- a body whose text does
-    not fit is shown stale, never decorated in the wrong place:
+    reviews), none of them a wrong decoration -- what the plugin cannot
+    know it leaves out, and a body whose text does not fit is shown
+    stale, never decorated in the wrong place:
     - *An edited module is described against the wrong text*: the
       runtime describes a body from its module's current text, while
       the host counts the ranges in the text it read at the start, so a
@@ -2485,11 +2486,48 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       without a word, since a pattern the run might refuse is worse
       than one left out ([developer-tool.md](design/developer-tool.md),
       "The plugin's half"; `devtool/WatchedMethods.kt`, `filters`).
-    - *Linked highlighting outlives a staleness flip*: an edit that
-      makes a method stale greys its icon at once but leaves the Code
-      tab's linked highlighting of it until the caret next moves
-      (decision 32; `devtool/editor/DecorationsService.kt`, `changed`,
-      `devtool/editor/LinkedHighlighting.kt`).
+    - *A narrower listings filter leaves a compile's decisions
+      pending*: a run that lists inlining plans is taken to conclude
+      every compile by its plan's record, but `--print-filter` -- or
+      `record_plan`'s early return -- may withhold the record of a
+      compile whose `inlined` and `declined` events the events filter
+      let through, so its decisions stay pending: the sends show no
+      inlining, never a wrong one, and `plannedInlining` keeps them for
+      the run's length, never pruned (`devtool/model/TraceRun.kt`,
+      `outcomeCanArrive`; `jit/mod.rs`, `record_plan`).
+    - *A block whose root died has no family*: its description gives
+      `family` null when its root's code is gone by the flush, so its
+      sites' cache transitions, which name the root, never reach its
+      sends' hints (`trace_events/descriptions.rs`;
+      `devtool/model/TraceRun.kt`, `sends`).
+    - *A project closed at a traced run's start leaves its file*: a
+      project disposed between the process's start and the
+      `invokeLater` that registers the run never deletes the run's trace
+      file, and a deletion queued at the IDE's shutdown may not run
+      (`devtool/TracedRuns.kt`, `start`, `deleteLater`).
+    - *The Methods tab counts optimized copies only*: "Code bytes" is
+      the largest optimized copy's, never baseline or twin code, and a
+      body the run has no description of has no row
+      (`devtool/ui/MethodsTab.kt`).
+    - *Show Frame Code resets the view at every step*: the follower
+      replaces the tab's text with `setText`, which puts its caret and
+      scroll back at the start at every stop, and `fileClosed` ends the
+      follower when one of two split editors of the tab closes
+      (`debugger/FrameCodeFollower.kt`).
+    - *An absolute module path drops its watched patterns*: a
+      `newspeak.json` module given by an absolute path is looked up with
+      `findFileByRelativePath`, which finds nothing, so its module's id
+      is unknown and the watched patterns naming it are left out of the
+      run's filters (`devtool/WatchedMethods.kt`, `programModules`).
+    - *A run whose every watched entry was dropped says nothing*: where
+      no entry is left for either kind, the run traces and lists
+      nothing and opens no tab, without a notice why
+      (`devtool/WatchedMethods.kt`, `filters`; `devtool/TracedRuns.kt`).
+    - *Nothing bounds a run's memory*: a `TraceRun` keeps every record
+      for the run's length and the tool window keeps every run until
+      its tab closes, and an open `CodeListingFile` holds its run's
+      `TraceRun` after the tab closed (`devtool/model/TraceRun.kt`,
+      `devtool/editor/CodeListingFile.kt`).
     - *The plugin's bytecode listing is flatter than the text one*: it
       has no method line and does not nest a block at its `MakeClosure`,
       and the trace file carries no base address, so a machine-code

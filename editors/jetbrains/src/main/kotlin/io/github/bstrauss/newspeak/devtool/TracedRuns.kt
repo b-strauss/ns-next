@@ -116,22 +116,27 @@ class TracedRuns internal constructor(
         val handler = startProcess(file)
         val application = ApplicationManager.getApplication()
         if (application.isDispatchThread) {
-            started(configuration, file, handler)
+            started(configuration, file, handler, filters)
         } else {
-            application.invokeLater({ started(configuration, file, handler) }, project.disposed)
+            application.invokeLater({ started(configuration, file, handler, filters) }, project.disposed)
         }
         return handler
     }
 
     /**
      * A traced run of [configuration] has started [handler], writing into
-     * [file]: its [TraceRun], named by the configuration and the time, a
-     * reader following the file into it to its end once the process
-     * terminates, and its tab, selected.
+     * [file] narrowed by [filters]: its [TraceRun], named by the
+     * configuration and the time, a reader following the file into it to its
+     * end once the process terminates, and its tab, selected.
      */
-    fun started(configuration: NewspeakRunConfiguration, file: Path, handler: ProcessHandler): TraceRun {
+    fun started(
+        configuration: NewspeakRunConfiguration,
+        file: Path,
+        handler: ProcessHandler,
+        filters: TraceFilters = TraceFilters.EVERYTHING,
+    ): TraceRun {
         val startedAt = Instant.now()
-        val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt)
+        val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt, filters)
         val disposable = Disposer.newDisposable(this, "traced run ${run.name}")
         val entry = Traced(run, file, disposable)
         val reader = TraceFileReader(file, run::add) { message ->

@@ -6149,14 +6149,19 @@ asks the agent for the selected frame's code, `nsNext/frameCode`
 editor tab of the developer tool's listings (`CodeListingFile`;
 [developer-tool.md](developer-tool.md), decision 31, "The plugin's
 half"): the frame's bytecode, marked where it stands, then the machine
-code it goes on in, or "This frame goes on in the interpreter."
+code it goes on in, or "This frame goes on in the interpreter." An
+agent that refuses is answered with a notification of the plugin's
+"Newspeak" group naming its message, and no tab opens
+(`testShowFrameCodeRefusedIsNotified`).
 `FrameCodeFollower` then keeps the tab on the selected frame: at every
 stop and every selection of another frame it asks again on the
 connection's thread and writes the answer on the event dispatch thread,
 only the latest request's, since several selections' answers arrive in
-no fixed order; it ends when the tab closes or the session stops, and
-is not made for a session that stopped while the first answer was on
-its way (`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`).
+no fixed order; it ends when the tab closes or the session stops, its
+lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
+disposed with the project at the latest), and is not made for a session
+that stopped while the first answer was on its way
+(`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`).
 
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of
