@@ -7,6 +7,7 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
+import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -317,7 +318,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
             options.traceCategories = mutableListOf("compile")
             options.printCode = true
         }
-        val filters = io.github.bstrauss.newspeak.devtool.TraceFilters(listOf("A>>b"), listOf("C>>d"), noEvents = false, noListings = false)
+        val filters = TraceFilters(listOf("A>>b"), listOf("C>>d"), noEvents = false, noListings = false)
         assertEquals(
             listOf(runtime.toString(), "run", "--trace=compile", "--trace-filter=A>>b", "--print-code", "--print-filter=C>>d", projectDirectory),
             newspeakCommandLine(runtime, run, filters = filters),
@@ -329,6 +330,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         )
         run.command = NewspeakCommand.BENCH
         assertEquals(listOf(runtime.toString(), "bench", "--iterations", "10", projectDirectory), newspeakCommandLine(runtime, run))
+        assertFalse(run.tracesAnything())
     }
 
     fun testAnOptionWithAControlInTheFreeFieldIsAnError() {
@@ -358,6 +360,22 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         assertTrue(tab.listingBoxes.values.all { box -> !box.isEnabled })
         tab.resetFrom(configuration())
         assertTrue(tab.categoryBoxes.values.all { box -> box.isEnabled })
+    }
+
+    fun testTheTabFollowsTheCommandOfTheFirstTab() {
+        val editor = NewspeakRunConfigurationEditor()
+        val tab = DeveloperToolTab()
+        Disposer.register(testRootDisposable, editor)
+        Disposer.register(testRootDisposable, tab)
+        editor.onCommandChanged(tab::showCommand)
+        editor.resetFrom(configuration())
+        tab.resetFrom(configuration())
+        val boxes = listOf(tab.allBox) + tab.categoryBoxes.values + tab.listingBoxes.values
+        assertTrue(boxes.all { box -> box.isEnabled })
+        editor.resetFrom(configuration().apply { command = NewspeakCommand.BENCH })
+        assertTrue(boxes.all { box -> !box.isEnabled })
+        editor.resetFrom(configuration())
+        assertTrue(boxes.all { box -> box.isEnabled })
     }
 
     fun testTheTabGivesBackWhatItWasShown() {

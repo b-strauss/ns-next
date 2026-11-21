@@ -128,14 +128,18 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         false
     }
 
-    /** Whether a run of this configuration asks ns-next for a trace or a listing. */
-    fun tracesAnything(): Boolean =
+    /** Whether a run of this configuration, never a benchmark, asks ns-next for a trace or a listing. */
+    fun tracesAnything(): Boolean = command == NewspeakCommand.RUN && (
         options.traceCategories.isNotEmpty() || options.printBytecode || options.printCode || options.printInlining
+        )
 
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
         SettingsEditorGroup<NewspeakRunConfiguration>().apply {
-            addEditor(NewspeakBundle.message("run.configuration.editor.tab.title"), NewspeakRunConfigurationEditor())
-            addEditor(NewspeakBundle.message("devtool.tab.title"), DeveloperToolTab())
+            val editor = NewspeakRunConfigurationEditor()
+            val tab = DeveloperToolTab()
+            editor.onCommandChanged(tab::showCommand)
+            addEditor(NewspeakBundle.message("run.configuration.editor.tab.title"), editor)
+            addEditor(NewspeakBundle.message("devtool.tab.title"), tab)
         }
 
     override fun checkConfiguration() {

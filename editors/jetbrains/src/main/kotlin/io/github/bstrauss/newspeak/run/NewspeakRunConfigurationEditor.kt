@@ -16,6 +16,7 @@ import com.intellij.ui.layout.ComponentPredicate
 import com.intellij.ui.layout.selectedValueIs
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
+import java.awt.event.ItemEvent
 import javax.swing.JComponent
 import javax.swing.event.DocumentEvent
 
@@ -86,6 +87,13 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
     }
 
     override fun createEditor(): JComponent = form
+
+    /** Calls [listener] whenever the command shown changes, as the user picks it or a reset sets it. */
+    fun onCommandChanged(listener: (NewspeakCommand) -> Unit) {
+        commandBox.addItemListener { event ->
+            if (event.stateChange == ItemEvent.SELECTED) (event.item as? NewspeakCommand)?.let(listener)
+        }
+    }
 
     override fun resetEditorFrom(configuration: NewspeakRunConfiguration) {
         programField.text = FileUtil.toSystemDependentName(configuration.program.orEmpty())

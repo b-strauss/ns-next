@@ -74,7 +74,12 @@ class DeveloperToolTab : SettingsEditor<NewspeakRunConfiguration>() {
         listingBoxes.getValue("bytecode").isSelected = options.printBytecode
         listingBoxes.getValue("code").isSelected = options.printCode
         listingBoxes.getValue("inlining").isSelected = options.printInlining
-        val enabled = configuration.command != NewspeakCommand.BENCH
+        showCommand(configuration.command)
+    }
+
+    /** Greys the controls for `bench`, which takes none of their options; follows the first tab's command as it changes. */
+    fun showCommand(command: NewspeakCommand) {
+        val enabled = command != NewspeakCommand.BENCH
         allBoxes().forEach { box -> box.isEnabled = enabled }
     }
 
