@@ -3,7 +3,8 @@
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
 > `semantic_tokens.rs`, `hover.rs`, `folding.rs`, `document_symbols.rs`, `hints/`,
 > `code_actions.rs`, the formatting answer in `server.rs`, the breakable
-> lines in `breakable.rs`; on
+> lines in `breakable.rs`, the method names and module identities in
+> `method_names.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
@@ -29,7 +30,14 @@
 > package), with line breakpoints on the lines the server's
 > `newspeak/breakableLines` answers, their block variants and pass
 > counts, and method and exception breakpoints ("Breakable lines";
-> [debugger.md](debugger.md), "The JetBrains plugin").
+> [debugger.md](debugger.md), "The JetBrains plugin"). Run and Debug
+> trace a program as its run configuration's "Developer Tool" tab and
+> the project's watched methods ask, the methods named by the server's
+> `newspeak/methodNames` ("Method names"), and the plugin shows the
+> trace in the "Newspeak JIT" tool window, as state icons in the gutter
+> and as inlay hints at the sends ("The project file and running
+> projects"; [developer-tool.md](developer-tool.md), "Stage 3: the
+> developer tool in the IDE").
 > Range formatting, formatting on type, go to definition, find usages and
 > further platforms are planned ("Planned later").
 
@@ -1251,6 +1259,30 @@ guard goes when the compiler takes a chain link by link
 ([OPEN-WORK.md](../OPEN-WORK.md), "A valid method whose body is one long
 chain of messages aborts `ns-next run`").
 
+### Method names
+
+The custom request `newspeak/methodNames` (`method_names.rs`) answers
+the methods of an open document, in source order, each named as every
+tool names a method,
+`<id>[/<Inner>(.<Inner>)*][ class]>><selector>`, with its declaration's
+`range` and its pattern's `selectionRange`, 0-based LSP positions in
+UTF-16 code units; its params are `{ "textDocument": { "uri" } }`. The
+id is the one the loader gives the module
+(`ns_runtime::modules::declared_identity`: the `:module:` id, else the
+root class's name), the version left out, since a name without one
+covers every version; a module the loader would refuse an identity
+answers no names. The JetBrains plugin watches a method by this name
+and decorates nothing from a parse of its own
+([developer-tool.md](developer-tool.md), decision 23). Beside it,
+`newspeak/moduleIdentity` answers a document's `{ "id", "version" }`,
+the version `null` for a module without one, and `null` for a module
+whose `:module:` the loader refuses; a document the client never opened
+is read from disk, since the plugin asks it of every module a program
+names before a traced run. Both answer from the editor's analysis of
+the current text (`tests/protocol.rs`,
+`method_names_answer_the_tool_names`,
+`module_identity_answers_the_loader_s_id_and_version`).
+
 ### Robustness
 
 An editor sends invalid text all the time. `ns-syntax`'s contract is that
@@ -1747,19 +1779,48 @@ newspeak.json: ns-next refuses --script with a .ns module"). A relative
 program file is the IDE project's, resolved against its base directory, both
 to run it and to recognise the configuration from the file. The arguments
 are one field, split as the platform splits program parameters
-(`ParametersListUtil`), and go after `--`. The **runtime options**
-(`runtimeOptions`) are another such field, options of ns-next itself --
-`--trace=compile --trace-filter=Demo>>...`, `--print-code` and the
-statistics flags -- each
-token passed as is (`--trace-filter` is repeatable, one pattern per
-occurrence, quoting keeps a pattern with a space whole) and placed after the
-subcommand and `--debug-connect`, before `--script`
-([developer-tool.md](developer-tool.md), decision 9). A program that is missing, names
+(`ParametersListUtil`), and go after `--`. The **further runtime
+options** (`runtimeOptions`, "Further runtime options" in the form) are
+another such field, options of ns-next itself -- `--timed`,
+`--lowering`, the statistics flags -- each token passed as is and
+placed after the subcommand, `--debug-connect` and the Developer Tool
+tab's options, before `--script`; an option the Developer Tool tab owns,
+`--trace…` or `--print-…`, typed there is refused by the
+configuration's check, which names it
+([developer-tool.md](developer-tool.md), decision 22). A program that is missing, names
 a file of neither kind, or is a text that is no valid path is refused before
 anything starts ("Choose the program: a project's newspeak.json or a .ns
 module"), and so are fewer than one iteration.
 ns-next's output is decoded as UTF-8, which it writes whatever the platform;
 the default, Windows' code page, would garble anything past ASCII.
+
+**The Developer Tool tab.** A configuration's second tab, "Developer
+Tool" (`devtool/DeveloperToolTab.kt`), chooses what a `run` traces: a
+checkbox for each of the seven trace categories, with "All", and one
+for each listing kind -- bytecode, machine code, inlining plans --, each
+saying on hover what it holds, greyed while the form's command is
+"Benchmark"; and the link "Manage watched methods…". A run of a
+configuration that checks any of them, under Run and Debug alike, is
+given `--trace=<categories>`, the print options and `--trace-file` with
+a temporary path, narrowed by the watched methods, and the plugin reads
+the file into the "Newspeak JIT" tool window and the editor's
+decorations ([developer-tool.md](developer-tool.md), "The plugin's
+half").
+
+**Watched methods.** The project keeps one list of watched methods in
+its workspace file, as it keeps its breakpoints: each a method or a
+pattern in the tools' syntax, a trailing `...` a prefix, with a switch
+for its events and one for its listings (`devtool/WatchedMethods.kt`).
+Watch Method, in the editor's context menu, the gutter's and as an
+intention, watches or unwatches the method at the caret or the line,
+which the server's `newspeak/methodNames` names ("Method names"); the id
+a project file gives the module with `as` replaces the server's. A
+traced run's `--trace-filter` and `--print-filter` are built from the
+list, every pattern naming no module of the run's program or the binary
+left out, since `ns-next run` refuses it -- the program's modules named
+by their `as` or by the server's `newspeak/moduleIdentity`; an empty
+list traces everything ([developer-tool.md](developer-tool.md),
+decision 23, "The plugin's half").
 
 **The play buttons.** `NewspeakRunLineMarkerContributor` puts a play button
 beside the top-level `main` and beside each key of the top-level `scripts`
@@ -2151,6 +2212,20 @@ The server's own tests are described under its section, above ("Testing").
   every class; against the real runtime, a temporary breakpoint in a loop
   stops once and is gone. A task of its own, `breakpointTypesTest`, with
   `debugProcessTest`'s inputs, which `check` depends on;
+- the developer tool, under `test`, on `BasePlatformTestCase`: the
+  Developer Tool tab's options on the command line and the free field's
+  refusal (`NewspeakRunConfigurationTest`), the watched methods
+  (`WatchedMethodsTest`), the trace file's reader and a run's model
+  (`TraceFileReaderTest`, `TraceRunTest`), the traced runs' tabs
+  (`TracedRunsTest`), the tool window's views (`TabsTest`, `CodeTabTest`)
+  and the editor's decorations (`DecorationsTest`); and a traced run end
+  to end against the real runtime (`TracedRunEndToEndTest`) -- Run on a
+  configuration with a category and a listing checked and a method
+  watched, the console without a trace line, the run's method compiled
+  and the program's editor showing its icon -- a task of its own,
+  `traceFileTest`, with `debugProcessTest`'s inputs, which `check`
+  depends on ([developer-tool.md](developer-tool.md), "Stage 3: the
+  developer tool in the IDE", "Tests");
 - the core library's store and breakpoints, under `test`, which start no
   binary: pruning (`CoreLibraryStoreTest`, plain JUnit over directories it
   writes) deletes a directory unused for 31 days, keeps one used 29 days

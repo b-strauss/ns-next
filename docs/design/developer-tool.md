@@ -7,7 +7,7 @@ why a loop stayed in the interpreter, why an optimized copy was retired,
 why a send went megamorphic -- is today answered only by a counter or a
 print added for the occasion.
 
-**Partial.** Stages 1 and 2 are built. Stage 1, tracing ("Stage 1:
+**Partial.** Stages 1 to 3 are built. Stage 1, tracing ("Stage 1:
 tracing"): `ns-next run --trace=<categories>` writes a line on standard
 error for every decision of the tiers and the caches, with its reasons.
 Stage 2, printing code ("Stage 2: printing code"): `--print-bytecode`,
@@ -15,11 +15,15 @@ Stage 2, printing code ("Stage 2: printing code"): `--print-bytecode`,
 the machine code it installs and the inlining plan of every optimizing
 compile, and the debugger answers a stopped frame's code
 (`nsNext/frameCode`, `debug_code`). Stage 3, the developer tool in the
-JetBrains plugin -- the trace and the listings switched on from the run
-configuration and the editor, read from a file of JSON lines and shown
-in a tool window, the gutter and inlay hints --, is designed here, its
-trace file built ("Stage 3: the developer tool in the IDE"); the shell
-is stage 4 ("Planned: the stages"). The profiler
+JetBrains plugin ("Stage 3: the developer tool in the IDE"): `ns-next
+run --trace-file=<path>` writes the trace and the listings as typed
+JSON lines, each body described once with its source positions; the
+plugin switches them on in the run configuration's "Developer Tool"
+tab and through a project-wide list of watched methods, reads the file
+live in Run and Debug, and shows it in the "Newspeak JIT" tool window
+-- Methods, Events, Code, Inlining --, as state icons in the gutter,
+inlay hints at the sends, editor tabs of the code and, at a stop, the
+frame's code. The shell is stage 4 ("Planned: the stages"). The profiler
 is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## What exists
@@ -41,8 +45,8 @@ is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
   and the zone compacted -- and every inline cache transition and
   vacating of every cache is a typed event with its reasons as enums
   (`ns_runtime::trace_events`), written as one line each by `ns-next run
-  --trace`, by `debug_start`'s `trace` and by the plugin's runtime
-  options.
+  --trace` and by `debug_start`'s `trace`, and as one record each into
+  the file of `--trace-file`, which the plugin reads.
 - `ns_runtime::tool_names` is the one grammar of the tools' names,
   `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`, and
   `tool_names::KnownModule::resolve` the one lookup of a module a name
@@ -57,10 +61,17 @@ is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
   what each call or jump out of the body reaches, and every optimizing
   compile's inlining plan with its outcome, written by `ns-next run
   --print-bytecode`, `--print-code` and `--print-inlining` between a
-  head line and `--- end`; and a stopped frame's bytecode and machine
-  code, each marked where the frame stands, through the debugger
-  (`Command::FrameCode`, the agent's `nsNext/frameCode`, the MCP
-  server's `debug_code`).
+  head line and `--- end`, or as records into `--trace-file`'s file; and
+  a stopped frame's bytecode and machine code, each marked where the
+  frame stands, through the debugger (`Command::FrameCode`, the agent's
+  `nsNext/frameCode`, the MCP server's `debug_code`, the plugin's "Show
+  Frame Code").
+- The IDE shows them beside the source ("Stage 3: the developer tool in
+  the IDE"): the plugin passes a run the trace categories, listings and
+  filters its configuration and the watched methods ask for, with a
+  trace file of its own, reads every record as it is written, and shows
+  each traced run in a tab of the "Newspeak JIT" tool window and in the
+  editor's gutter and inlay hints.
 - The debugger evaluates an expression as a block over a stopped frame
   ([debugger.md](debugger.md), "Evaluation"); nothing evaluates without
   one. `FrameKind::TopLevel` exists for a top-level activation, which only
@@ -185,15 +196,15 @@ first; HotSpot's `PrintCompilation` columns
 kind, not seven, and JSON lines, V8's `--log-*` kind, are for a tool the
 typed event already serves (decided with the user on 2026-11-18).
 
-**9. The lines reach the agent and the IDE as the process's standard
-error.** `--trace` is a flag of `run`, as the statistics are; the MCP
-server collects a child's standard error with its output already, so
-`debug_start` passes the flag on, and the plugin's run configuration
-takes runtime options for the same reason. The DAP agent is not
-involved: it still writes nothing to the program's streams, and no trace
-line is dropped by its bounded connection. A channel of their own over
-DAP stays possible, since the events are typed (decided with the user on
-2026-11-18).
+**9. The lines reach the command line and the agent as the process's
+standard error.** `--trace` is a flag of `run`, as the statistics are;
+the MCP server collects a child's standard error with its output
+already, so `debug_start` passes the flag on. The IDE reads the same
+events from a file of its own instead (decision 17). The DAP agent is
+not involved: it still writes nothing to the program's streams, and no
+trace line is dropped by its bounded connection. A channel of their own
+over DAP stays possible, since the events are typed (decided with the
+user on 2026-11-18).
 
 Decisions 10 to 16, stage 2's, were decided with the user on 2026-11-20.
 
@@ -239,8 +250,9 @@ it keeps every stretch of a callee found by its name.
 
 **12. Listings go to standard error, as the trace's lines do.** A
 listing follows the trace line of the event it belongs to, in one
-stream, and standard output stays the program's; the MCP server and the
-plugin receive it as they receive the trace (decision 9). V8's code
+stream, and standard output stays the program's; a host reading
+standard error receives it as it receives the trace (decision 9), and
+the IDE reads both from its file (decision 20). V8's code
 tracer writes to standard output or a file
 (`v8/src/diagnostics/code-tracer.h:31-36`), HotSpot's listings to its
 `tty`; neither keeps the program's output apart.
@@ -469,8 +481,9 @@ library's files, so that decisions 27 to 32 hold there too.
 `docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`).
 `ns-next run --trace=<categories>` writes one line on standard error for
 every decision of the tiers and the caches in the categories named, with
-its reasons; `debug_start` and the plugin's run configuration pass the
-same flags on.
+its reasons; `debug_start` passes the same flags on, and the plugin's
+run configuration passes them with a trace file ("Stage 3: the
+developer tool in the IDE").
 
 ### The runtime's half
 
@@ -683,10 +696,12 @@ breakpoint's name; each refusal names the pattern.
   the program; the lines arrive with the program's output in every
   answer ([debugger.md](debugger.md), "The MCP server"; decisions 7 and
   9).
-- **The plugin's run configuration** takes runtime options, ns-next's
-  own options placed after the subcommand and `--debug-connect` and
-  before `--script` ([editor-support.md](editor-support.md), "The
-  project file and running projects"; decision 9).
+- **The plugin's run configuration** passes `--trace` and
+  `--trace-filter` from its "Developer Tool" tab and the watched
+  methods, always with `--trace-file`, after the subcommand and
+  `--debug-connect` and before `--script` ("Stage 3: the developer tool
+  in the IDE", "The plugin's half"; [editor-support.md](editor-support.md),
+  "The project file and running projects").
 
 ### Tests
 
@@ -715,7 +730,7 @@ declaration order `trace_events.rs`'s unit tests. The line format is pinned by
 `crates/ns-cli/tests/cli.rs` (the folded line by
 `trace_inlining_folds_the_declines_of_no_body`), `debug_start`'s trace by
 `crates/ns-cli/tests/mcp.rs` (`a_trace_arrives_with_the_output`) and the
-runtime options by the plugin's `NewspeakRunConfigurationTest`; the
+plugin's options by its `NewspeakRunConfigurationTest`; the
 CLI's and the MCP server's tests strip every stress mode from the child
 and answer nothing on a target without a JIT.
 
@@ -979,8 +994,9 @@ top frame of a stop runs in the interpreter, so its machine code is
   and answers the bytecode listing, then the machine code's listing or
   `the frame goes on in the interpreter` ([debugger.md](debugger.md),
   "The MCP server").
-- **The plugin's run configuration** passes the print options as it
-  passes `--trace`, as runtime options.
+- **The plugin's run configuration** passes the print options and
+  `--print-filter` as it passes `--trace`, with `--trace-file` ("Stage
+  3: the developer tool in the IDE", "The plugin's half").
 
 ### Tests
 
@@ -1017,12 +1033,49 @@ a JIT.
 
 ## Stage 3: the developer tool in the IDE
 
-**Partial.** The runtime's half of the trace file is built: `ns-next run
---trace-file=<path>` writes the trace and the listings as JSON lines, a
-body described once with its source positions. The plugin's half --
-the "Developer Tool" tab, the watched methods, the reader, the tool
-window, the gutter icons, the inlay hints, the code's editor tabs and
-"Show Frame Code" -- is not built yet ("Planned: the stages").
+**Built** (2026-11-21;
+`docs/superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md`;
+decisions 17 to 33). The runtime numbers the bodies a trace names and,
+on request, describes each with its source positions; `ns-next run
+--trace-file=<path>` writes the trace and the listings into a file as
+typed JSON lines; and the JetBrains plugin switches them on from the run
+configuration and a project-wide list of watched methods, reads the file
+of every traced Run and Debug live, and shows it in the "Newspeak JIT"
+tool window, in the gutter and inlay hints of the editor, in editor tabs
+of the code, and at a stop as the frame's code.
+
+### The runtime's half
+
+Every body a delivery names carries a `BodyName` (`trace_events.rs`):
+its name as the debugger names a frame and its number, which tells apart
+the bodies one name covers -- every block of a method is `[] in
+<method>`, a class's three initializer bodies share a name. The numbers
+are minted at the flush by `BodyNames` (`trace_events/names.rs`), from
+1 in the order the trace first names the bodies, keyed by each body's
+`Rc` address with a `Weak` beside it, so that a body that died and the
+body that took its address get two numbers: a number is unique for the
+sink and never reused. 0 names a body outside the trace, as a stopped
+frame's code (`Command::FrameCode`) does, and never reaches a trace
+file. The text trace and the listings print the name alone.
+
+With `TraceSettings::describe_bodies` set -- only `--trace-file` sets
+it -- the flush hands the sink a `BodyDescription`
+(`trace_events/descriptions.rs`, `TraceSink::body`) before the first
+delivery that names its number: a block's family root, the body's
+module, a shipped module's path among the library's files, its source
+span and its checksum (`source_checksum`, FNV-1a 64 over the source's
+UTF-8 bytes with every `\r` left out), and each statement's
+instructions and each send's index, site, call and selector tokens,
+from the debugger's metadata (`debugger/metadata/`), compiled again
+from the module's current text and kept in its weak cache. A
+description is made from the body's `Rc<CompiledCode>` and its mixin,
+never a handle, and never in a leaf; nothing on the hot path changes,
+since a site still records only what it recorded. A sink's `flushed`
+is called at the end of every flush's deliveries. A bytecode listing
+carries its bodies' instructions apart (`ListedBody`,
+`ListedInstruction`; `bytecode::listed_instructions`, the walk the text
+listing's lines are made by too), so that a record lists them without
+parsing text.
 
 ### The trace file
 
@@ -1136,23 +1189,178 @@ The records:
 `event_record`, `listing_record` and `body_record` each match their
 input exhaustively, so that a new kind of event or listing, or a new
 field of a description or a listing, does not compile until it has its
-record. `trace_file.rs`'s unit tests hold every event of `trace.rs`'s
-`every_event` to a record with every field its line writes, every
-record to one line, a range to UTF-16 columns, a shipped body to the
-library and a `code` record's instructions to the text listing's;
-`tests/cli.rs` a run's file -- its header, every record parsed, every
-body number described before a record names it -- and the two
-refusals.
+record.
+
+The ranges are counted in the text the host read each module from
+(`ModuleTexts`), and the descriptions are made from the module's
+current text: a body of an edit installed during a traced run, and a
+body an edit superseded, are therefore described against a text their
+ranges and checksums do not fit, and the plugin shows them stale
+([OPEN-WORK.md](../OPEN-WORK.md), "What the developer tool's stage 3
+left"). A `code` record writes an out-of-line stretch's position as it
+writes one before any position, `null`.
+
+### The plugin's half
+
+The developer tool lives in the plugin's `devtool` package, its
+decorations in `devtool/editor/`, its views in `devtool/ui/`, the
+records and a run's model in `devtool/model/`; "Show Frame Code" is the
+debugger's (`debugger/`).
+
+**The "Developer Tool" tab** (`DeveloperToolTab.kt`, decision 21) of a
+Newspeak run configuration has a checkbox for each of the seven
+categories, with "All", one for each listing kind, each saying on hover
+in a sentence what it holds, and the link "Manage watched methods…";
+the configuration stores them (`traceCategories`, `printBytecode`,
+`printCode`, `printInlining`). They apply to `run`, and are greyed while
+the command the configuration's form shows is `bench`. The first tab's
+free field, "Further runtime options" (decision 22), keeps every other
+option of ns-next's own; an option the Developer Tool tab owns --
+`--trace…`, `--print-…` -- typed there is an error of the
+configuration's check, which names it. `newspeakCommandLine` places the
+tab's options after the subcommand and `--debug-connect` and before the
+free options: `--trace=<categories>` (`--trace=all` for all seven) with
+a `--trace-filter` per events pattern, a `--print-<kind>` per listing
+kind with a `--print-filter` per listings pattern, and `--trace-file`.
+
+**The watched methods** (`WatchedMethods.kt`, decision 23) are one list
+per project, kept in its workspace file as the breakpoints are: each
+entry a method or a pattern in the tools' syntax, a trailing `...` a
+prefix, with its switches "events" and "listings", both on when it is
+made. An entry is made in the editor -- Watch Method in the editor's
+context menu and the gutter's (`WatchMethodAction`), and as an
+intention (`WatchMethodIntention`) -- for the method whose declaration
+holds the caret or the line, named by the language server's
+`newspeak/methodNames` ([editor-support.md](editor-support.md), "Method
+names"), since the plugin parses no Newspeak; the id a project file
+gives the module with `as` replaces the analyzer's. "Manage watched
+methods…" shows the list as a table (`WatchedMethodsDialog`), which
+refuses an entry not of the trace filter's form (`WatchPatterns.kt`,
+the grammar `TraceFilter::parse` reads). A run's filters are built from
+the list as it stands at its start: everything for an empty list, and
+otherwise each kind narrowed to the entries that want it and name a
+module the run has -- one its project file names, by its `as` or else
+by the id and version `newspeak/moduleIdentity` answers, the single
+module run from its source, or a shipped one -- since `ns-next run`
+refuses a pattern naming no module of the program with exit status 2.
+A kind no entry is left for is not asked for at all, since a run
+without a pattern would trace every body.
+
+**Traced runs** (`TracedRuns.kt`, decisions 24 and 26). Run and Debug
+start their process through `NewspeakRunState.startProcess` alike; a
+run that traces or lists anything is handed a temporary file,
+`newspeak-trace/trace-<uuid>.jsonl` under the IDE's temporary
+directory, and gets a `TraceRun` named by its configuration and the
+time and a tab of the tool window, and is selected. Closing its tab
+drops the run, its reader and its file, the newest run left becoming
+the selected one, whose decorations the editor shows. The reader
+(`TraceFileReader`) follows the file on a pooled thread, looking for
+appended bytes every 50 ms, keeps an incomplete last line until its
+newline arrives, parses each record with the platform's Gson
+(`TraceRecords.kt`), and publishes them in batches of at most 5,000
+records through `invokeLater`, no record waiting more than 200 ms for
+its batch; once the process ends it reads to the end. A first line that
+is no header of `ns-next-trace`, a version other than 1, a malformed
+line and an unreadable file end the reading with a message in the run's
+tab. A `TraceRun` (`TraceRun.kt`), read and changed on the event
+dispatch thread only, keeps the records by body number and decides each
+body's state from its events in order -- interpreted, baseline, twin,
+optimized with its copies counted, deoptimized once its last copy is
+gone, abandoned until revived -- and each send's outcome: the inlining
+decision of the last optimizing compile whose copy was installed, held
+until the compile's outcome arrives unless the header says none can,
+and the state of its cache, `mono`, `poly <n>` with the receivers seen
+since it was last vacant, or `mega`, a block's sites by its family's
+root.
+
+**The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
+traced run (`RunPanel`) of four views. Methods lists every method the
+run described -- a block counted as its method's -- with its state,
+copies, deoptimizations, abandonments, the code bytes of its largest
+copy and the callees declined in it, sortable, a double click opening
+it. Events is the trace as a table, filtered by category and by a part
+of the method's name, grouped by method on request, a double click
+going to the event's place in the source, and with "Text" the same rows
+as the text trace's lines. Code shows the bytecode and machine code of
+the body at the caret of a source editor, the innermost whose range
+holds it, with a chooser of its copies -- its bytecode, then each
+install, baseline, twin and optimized per key -- over a read-only
+viewer of the listing in the text listing's format, built from the
+records; "Open in Editor" (decision 30) opens the copy shown in a
+read-only editor tab that stays (`CodeListingFile`), the tab already
+open on it if there is one. Source, bytecode and machine code are
+highlighted together (`LinkedHighlighting`): the caret's statement in
+the source and the listing's lines whose instructions or machine-code
+stretches belong to it, in either direction, one colour per statement
+from six keys of the colour settings' own. The plugin's bytecode
+listing has no method line and does not nest a block at its
+`MakeClosure`, as the text listing does. Inlining is a tree per
+optimizing compile, its scopes nested under the scope whose send
+inlined them, the arms and the declines under each, the outcome at the
+root, a click going to the send. A view opens a program body's file by
+its path and a shipped body's under the project's core library
+(decision 33).
+
+**The editor** (`DecorationsService`, decisions 27, 28, 32 and 33)
+decorates every open editor of a body's file, a program's or the core
+library's, from the selected run's records: an icon at each method's
+header (`StateGutterRenderer`) -- its state, badged when the method is
+watched, its tooltip the counts and the last deoptimization's reason, a
+click opening Unwatch, Show Code, Show Inlining and Open in Tool Window
+-- and a hint after each send the run says something of
+(`SendInlayRenderer`), `inlined` or `declined: <reason>` and the cache's
+state, the events' fields on hover; each block at its own range. A
+watched method the run has no body of shows an eye. Both icons and
+hints can be switched off in the plugin's settings
+(`DeveloperToolDecorationsSettings`). The decorations ride on a range
+marker per body and send, made once per document and run, so that they
+follow every edit; a method whose text in its markers no longer has its
+records' checksums is stale (decision 32): its hints go, its icon greys
+with "Changed since the run", the Code tab links nothing in it, and the
+rest of the file stays decorated.
+
+**Show Frame Code** (`debugger/ShowFrameCodeAction.kt`, decision 31),
+in the frames' context menu and the debugger's toolbar, asks the agent
+for the selected frame's code (`nsNext/frameCode`) and opens it in a
+read-only `CodeListingFile` tab, which `FrameCodeFollower` fills with
+the selected frame's code at every stop and every selection of another
+frame until the tab closes or the session ends
+([debugger.md](debugger.md), "The JetBrains plugin").
+
+### Tests
+
+`crates/ns-runtime/tests/trace.rs` and `trace_events/names.rs`'s unit
+tests pin the numbers -- unique, and never a dead body's for the body
+that took its address -- and the descriptions;
+`crates/ns-runtime/tests/printing.rs` the structured bytecode listing
+beside its text. `trace_file.rs`'s unit tests hold every event of
+`trace.rs`'s `every_event` to a record with every field its line
+writes, every record to one line, a range to UTF-16 columns, a shipped
+body to the library and a `code` record's instructions to the text
+listing's; `tests/cli.rs` a run's file -- its header, every record
+parsed, every body number described before a record names it -- and the
+two refusals. The analyzer's `tests/protocol.rs` pins
+`newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
+under `test`: `NewspeakRunConfigurationTest` the tab's options on the
+command line, its greying and the free field's refusal;
+`WatchedMethodsTest` the list, its storage, the patterns a run takes
+and its filters; `TraceFileReaderTest` and `TraceRunTest` the records,
+a partial line, a refused version, a large file read in bounded batches
+and the states; `TracedRunsTest` the tabs and the file's deletion;
+`TabsTest` the four views; `DecorationsTest` the icons, the hints, the
+eyes, staleness, the checksum over an emoji and over CRLF line ends,
+and a library file; `CodeTabTest` the caret's body, the chooser, the
+linked highlighting and the editor tab. `NewspeakDebugProcessTest`, in
+`debugProcessTest`, runs Show Frame Code against the real runtime. And
+`TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`
+(`runsLikeUnitTests`, `debugsWithTheRuntime`), runs a configuration
+with `compile` and machine code checked and one method watched through
+the platform's runner with the debug build of `ns-next`: the program's
+output reaches the console without a trace line, the selected run has
+the method compiled with its `code` record, and the program's editor
+shows the method's icon.
 
 ## Planned: the stages
-
-### Stage 3: the developer tool in the IDE
-
-Decisions 17 to 33. The runtime's half, `--trace-file` and its records
-with the bodies' descriptions, is built ("Stage 3: the developer tool in
-the IDE"). The plugin's half: the "Developer Tool" tab and the watched
-methods, the reader, the tool window, the gutter icons and inlay hints,
-the code's editor tabs and "Show Frame Code".
 
 ### Stage 4: the shell
 

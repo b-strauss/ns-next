@@ -43,28 +43,23 @@ plugin, and `ns-next mcp` lets an agent debug a program. It needs its
 questions decided and a plan of its own.
 
 The developer tool (the item "A developer tool like V8's `d8`" below)
-has its stages 1 and 2 built: `ns-next run --trace=<categories>` writes
+has its stages 1 to 3 built: `ns-next run --trace=<categories>` writes
 a line for every decision of the tiers and the caches with its reasons,
-each body named by the tools' form `id@version/Inner>>selector`, and
+each body named by the tools' form `id@version/Inner>>selector`;
 `--print-bytecode`, `--print-code` and `--print-inlining` print the
 bytecode a run makes, the machine code it installs and every optimizing
 compile's inlining plan, a stopped frame's code answered through
-`nsNext/frameCode` and `debug_code`
+`nsNext/frameCode` and `debug_code`; and in the JetBrains plugin a
+run's trace and listings, written by `--trace-file` as typed JSON lines
+with each body's source positions, are switched on in the run
+configuration's "Developer Tool" tab and through the project's watched
+methods, read live in Run and Debug, and shown in the "Newspeak JIT"
+tool window, as state icons in the gutter, as inlay hints at the sends,
+in editor tabs of the code and, at a stop, as the frame's code
 ([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
-"Stage 2: printing code"; [modules.md](design/modules.md), decision 8).
-Its stage 3, the developer tool in the JetBrains plugin, is next for
-it, designed with the user on 2026-11-21 in seventeen decisions
-([developer-tool.md](design/developer-tool.md), decisions 17 to 33,
-"Planned: the stages"): `ns-next run --trace-file=<path>` writes the
-trace and the listings as typed JSON lines instead of standard error,
-each body described once with its source positions and a checksum;
-the plugin switches them on in a "Developer Tool" tab of the run
-configuration and through a project-wide list of watched methods made
-in the editor, reads the file live in Run and Debug, and shows it in a
-tool window of four tabs -- Methods, Events, Code, Inlining --, as a
-state icon in the gutter, as inlay hints at the sends, in editor tabs
-of the code and, at a stop, as the frame's code. Its stage 4, the
-shell, follows: it needs a plan of its own, which decides its open
+"Stage 2: printing code", "Stage 3: the developer tool in the IDE";
+[modules.md](design/modules.md), decision 8). Its stage 4, the shell,
+is next for it: it needs a plan of its own, which decides its open
 questions -- how an input is compiled, how a workspace variable becomes
 a slot, whether results are named, how an interrupt stops an input,
 line editing without a new dependency
@@ -2431,7 +2426,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - Publication on the JetBrains Marketplace stays possible and is not done.
 - **Further `ns-next-analyzer` commands**, each looking without running: a
   heap dump and a deeper inspection of an image; what a method compiles
-  to, machine code included, is the item below.
+  to, machine code included, the developer tool shows
+  ([developer-tool.md](design/developer-tool.md), "Stage 2: printing
+  code", "Stage 3: the developer tool in the IDE").
 - **A profiler** (asked for by the user on 2026-11-15; not designed yet):
   the time a program spends per method and per send site. It matters because
   a slow program today shows where its time goes only to a native sampling
@@ -2440,44 +2437,81 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   measurements and unmeasured decisions" below were read so. Whether it
   samples or counts, what it costs a run, and how an agent and the IDE
   reach its report are open.
-- **A view of what a method compiles to** (asked for by the user on
-  2026-11-15): its bytecode, as `disasm` prints it, and its JIT code -- the
-  baseline machine code, the optimized copies per receiver application, the
-  inlining decisions with the reasons behind each -- reachable by an agent
-  and beside the source in the IDE, JITWatch's kind of view. It
-  matters because a slow body is explained by what the tiers made of it,
-  which today only a debugger on the process or a `dumpbin`/`objdump` of the
-  code zone shows, without names. The flags of `ns-next run` and the
-  request at a stop, with its MCP tool, are built, the developer tool's
-  stage 2 ([developer-tool.md](design/developer-tool.md), "Stage 2:
-  printing code"); what stays open here is the IDE's view beside the
-  source, the developer tool's stage 3
-  ([developer-tool.md](design/developer-tool.md), decisions 29 to 31;
-  [execution.md](design/execution.md), "The baseline JIT's foundation",
-  "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15;
   designed with the user on 2026-11-18 and, its stage 3, on 2026-11-21;
-  stages 1 and 2 built 2026-11-20): four stages, each reaching the agent
-  and the IDE as it is built. Stage 1, tracing, is built: typed events with their reasons
-  reported to a sink the host installs (`ns_runtime::trace_events`),
-  written by `ns-next run --trace=<categories>`, narrowed by
-  `--trace-filter`, passed on by `debug_start` and the plugin's runtime
-  options. Stage 2, printing code, is built: bytecode, baseline, twin
-  and optimized machine code at install and the inlining plan, written
-  by `--print-bytecode`, `--print-code` and `--print-inlining`, machine
-  code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and a
-  stopped frame's code through `nsNext/frameCode` and `debug_code`.
-  Open: stage 3, the developer tool in the JetBrains plugin, next,
-  designed with the user on 2026-11-21 (decisions 17 to 33): a file of
-  typed JSON lines, `--trace-file`, read live by the plugin and shown in
-  a tool window, the gutter, inlay hints and editor tabs; it matters
-  because the trace and the listings are today text on standard error,
-  which no editor can place beside the source. Then stage 4,
+  stages 1 and 2 built 2026-11-20, stage 3 2026-11-21): four stages,
+  each reaching the agent and the IDE as it is built. Stage 1, tracing,
+  is built: typed events with their reasons reported to a sink the host
+  installs (`ns_runtime::trace_events`), written by `ns-next run
+  --trace=<categories>`, narrowed by `--trace-filter`, passed on by
+  `debug_start`. Stage 2, printing code, is built: bytecode, baseline,
+  twin and optimized machine code at install and the inlining plan,
+  written by `--print-bytecode`, `--print-code` and `--print-inlining`,
+  machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and
+  a stopped frame's code through `nsNext/frameCode` and `debug_code`.
+  Stage 3, the developer tool in the JetBrains plugin, is built: the
+  trace and the listings as typed JSON lines in `--trace-file`'s file,
+  each body described with its source positions, switched on in the run
+  configuration's "Developer Tool" tab and by watched methods, read live
+  and shown in the "Newspeak JIT" tool window, the gutter, inlay hints,
+  editor tabs of the code and Show Frame Code. Open: stage 4,
   `ns-next shell`, evaluating against a workspace object as the
   Newspeak IDE does; it matters because an expression is still
   evaluated only at a stop. Its open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
+  - **What the developer tool's stage 3 left** (2026-11-21, its
+    reviews), none of them a wrong decoration -- a body whose text does
+    not fit is shown stale, never decorated in the wrong place:
+    - *An edited module is described against the wrong text*: the
+      runtime describes a body from its module's current text, while
+      the host counts the ranges in the text it read at the start, so a
+      body of an edit installed during a traced run, and a body an edit
+      superseded, get ranges and checksums that do not fit, and the
+      plugin shows them stale until the next run. A description could
+      carry the text's revision, or leave out the range of a body it
+      cannot place ([developer-tool.md](design/developer-tool.md), "The
+      trace file"; `trace_events/descriptions.rs`).
+    - *A first out-of-line stretch loses its line*: a `code` record
+      writes an out-of-line position as it writes "before any position",
+      `null`, so the plugin's listing cannot place the first stretch out
+      of line, whose line the text listing prints; a field of the format
+      would tell the two apart (`crates/ns-cli/src/trace_file.rs`;
+      [developer-tool.md](design/developer-tool.md), "The trace file").
+    - *The first traced run can leave a watched method out*: with no
+      language server client yet, `newspeak/moduleIdentity` has no
+      answer, and a watched pattern naming a program module that no
+      project file names with `as` is left out of the run's filters
+      without a word, since a pattern the run might refuse is worse
+      than one left out ([developer-tool.md](design/developer-tool.md),
+      "The plugin's half"; `devtool/WatchedMethods.kt`, `filters`).
+    - *Linked highlighting outlives a staleness flip*: an edit that
+      makes a method stale greys its icon at once but leaves the Code
+      tab's linked highlighting of it until the caret next moves
+      (decision 32; `devtool/editor/DecorationsService.kt`, `changed`,
+      `devtool/editor/LinkedHighlighting.kt`).
+    - *The plugin's bytecode listing is flatter than the text one*: it
+      has no method line and does not nest a block at its `MakeClosure`,
+      and the trace file carries no base address, so a machine-code
+      listing in the plugin has no `base=`
+      ([developer-tool.md](design/developer-tool.md), "The plugin's
+      half", decision 14).
+    - *The reader polls and does not pace a backlog*: it looks for
+      appended bytes every 50 ms for the run's whole length, and a
+      backlog -- a file written faster than read -- is published as
+      batches of 5,000 records back to back, each on the event dispatch
+      thread, with no pause between them
+      (`devtool/model/TraceFileReader.kt`;
+      [developer-tool.md](design/developer-tool.md), "The plugin's
+      half").
+    - *No test holds the Events tab's text to `trace.rs`*: the "Text"
+      view writes each event as the text trace's line, its field order
+      read from `trace.rs`, but only reading is checked for all 28
+      kinds of event; a test comparing the plugin's lines with
+      `trace.rs`'s `every_event` lines would hold the two together
+      (`devtool/ui/EventsTab.kt`, `TabsTest`;
+      [developer-tool.md](design/developer-tool.md), "The events and
+      their lines").
 - **The MCP server and the trace file** (noted 2026-11-21, with the
   developer tool's stage 3's design; not designed yet): `debug_start`
   passes `--trace` and the lines arrive with the program's output, and
@@ -3223,16 +3257,6 @@ classes and a class from source with no predecessor are not edited
   in about 7 s each and in a full rerun of that suite; nothing it runs had
   changed. Its margin under MOVES is too small for a loaded machine: the
   wait, or the work the test makes MOVES move, wants a look.
-- **The plugin offers runtime options for `bench` that include
-  `--trace`** (noted 2026-11-20): the run configuration's "Runtime
-  options" row stays enabled for the Benchmark command, where the
-  statistics flags are valid, but `ns-next bench` takes no `--trace` or
-  `--trace-filter`, so a configuration naming them fails only when it
-  runs, with clap's refusal. The form could say which options a command
-  takes, or the check refuse a trace option for Benchmark before
-  anything starts ([editor-support.md](design/editor-support.md), "The
-  project file and running projects";
-  [developer-tool.md](design/developer-tool.md), "The hosts").
 - **`ns-next load` walks the whole heap for the manifests an image kept**
   (noted 2026-11-19, unmeasured): to warn of an ambiguous `at:version:`
   that `main:args:` makes, as `run` does ([modules.md](design/modules.md),

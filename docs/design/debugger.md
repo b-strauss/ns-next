@@ -6141,6 +6141,23 @@ internal API: where only internal API offers a feature -- the platform's
 Mark Object labels, its fold of hidden frames -- the plugin builds its
 own.
 
+Show Frame Code (`ShowFrameCodeAction`), in the frames' context menu
+(`XDebugger.Frames.Tree.Popup`) and the debug tool window's toolbar,
+shown for a Newspeak session and enabled at a stop on one of its frames,
+asks the agent for the selected frame's code, `nsNext/frameCode`
+("Launching, the start and the end"), and opens it in a read-only
+editor tab of the developer tool's listings (`CodeListingFile`;
+[developer-tool.md](developer-tool.md), decision 31, "The plugin's
+half"): the frame's bytecode, marked where it stands, then the machine
+code it goes on in, or "This frame goes on in the interpreter."
+`FrameCodeFollower` then keeps the tab on the selected frame: at every
+stop and every selection of another frame it asks again on the
+connection's thread and writes the answer on the event dispatch thread,
+only the latest request's, since several selections' answers arrive in
+no fixed order; it ends when the tab closes or the session stops, and
+is not made for a session that stopped while the first answer was on
+its way (`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`).
+
 A test debugs programs with the real runtime through the platform's
 debugger (`NewspeakDebugProcessTest`), and one sets each kind of
 breakpoint over a scripted agent and stops at a temporary one with the
