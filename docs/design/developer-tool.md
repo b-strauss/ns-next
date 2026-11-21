@@ -1285,14 +1285,18 @@ run from its source, or a shipped one -- since `ns-next run` refuses a
 pattern naming no module of the program with exit status 2. The start
 asks the server off the event dispatch thread, under a modal progress
 where it is on it, and with no client yet starts one and waits for it
-to run, at most 10 s (`CLIENT_START_MILLISECONDS`), so that the first
-run of a session, before any editor started the server, keeps its
-patterns; a module whose identity no answer gives is left out, since a
+to run, once for the whole start, at most 10 s
+(`CLIENT_START_MILLISECONDS`), a server that stopped or failed ending
+the wait at once, and on a thread other than the event dispatch
+thread under a background progress, cancellable, where a wait is
+possible -- so that the first run of a session, before any editor
+started the server, keeps its patterns; a module whose identity no answer gives is left out, since a
 run refused is worse than a watch left out. A kind no entry is left
 for is not asked for at all, since a run without a pattern would trace
 every body; where that leaves a run that asks for events or listings
 nothing to trace, a balloon of the plugin's notification group says so
-and names the entries left out (`nothingTracedNotice`).
+and names the entries left out (`nothingTracedNotice`), which name no
+module the run knows of.
 
 **Traced runs** (`TracedRuns.kt`, decisions 24 and 26). Run and Debug
 start their process through `NewspeakRunState.startProcess` alike; a
@@ -1348,8 +1352,10 @@ decision of the last optimizing compile that planned it and whose
 installed copy still lives -- held until the compile's outcome arrives
 unless the header says none can, and dropped unshown where the next
 record but a description or a bytecode listing is no part of the
-compile, its outcome withheld by a filter, so that at most one
-compile's decisions wait; gone with the copy's retirement,
+compile, its outcome withheld by a filter, or the file ends, so that
+at most one compile's decisions wait; the hint's tooltip shows the
+event that made the decision shown, an installed copy's, never a
+refused, deferred or dropped compile's; gone with the copy's retirement,
 invalidation, freeing or the zone's replacement, and shown only where
 `deoptimize` and `code-zone` are traced --, and the state of its cache, `mono`, `poly <n>` with
 the receivers seen since it was last vacant, or `mega`, a block's

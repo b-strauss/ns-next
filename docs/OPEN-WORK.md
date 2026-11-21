@@ -2492,7 +2492,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
     - *No decoration test draws a deoptimized icon*: `TraceRunTest`
       holds the state, but no `DecorationsTest` shows a method's icon
       as deoptimized (`devtool/editor/StateGutterRenderer.kt`).
-    - *A run's records but its events are unbounded*: a `TraceRun`
+    - *Everything of a run but its events is unbounded*: a `TraceRun`
       keeps its last 200,000 events (`KEPT_EVENTS`), but every body's
       description, every listing and every plan for the run's length,
       and the tool window keeps every run until its tab closes

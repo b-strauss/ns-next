@@ -137,11 +137,16 @@ class TracedRuns internal constructor(
         val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt, filters)
         val disposable = Disposer.newDisposable(this, "traced run ${run.name}")
         val entry = Traced(run, file, disposable)
-        val reader = TraceFileReader(file, run::add) { message ->
-            entry.error = message
-            entry.panel?.showError(message)
-            changed()
-        }
+        val reader = TraceFileReader(
+            file,
+            run::add,
+            { message ->
+                entry.error = message
+                entry.panel?.showError(message)
+                changed()
+            },
+            run::ended,
+        )
         // Registered before the reader, so disposed after it: the file outlives what reads it.
         Disposer.register(disposable) { traceFiles.release(file) }
         Disposer.register(disposable, reader)

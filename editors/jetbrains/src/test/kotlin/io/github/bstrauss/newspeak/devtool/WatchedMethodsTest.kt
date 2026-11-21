@@ -215,6 +215,7 @@ class WatchedMethodsTest : BasePlatformTestCase() {
                 true
             },
             isRunning = { _ -> ++looks >= 3 },
+            isOver = { false },
             isCancelled = { false },
             pause = { _ -> },
         )
@@ -222,12 +223,34 @@ class WatchedMethodsTest : BasePlatformTestCase() {
         assertTrue(started)
         // A server that cannot start is not waited for, nor is one that never runs waited for past the bound.
         var now = 0L
-        assertNull(runningClient<String>({ null }, { false }, { true }, { false }, pause = { _ -> now += 1 }, clock = { now }))
+        assertNull(runningClient<String>({ null }, { false }, { true }, { false }, { false }, pause = { _ -> now += 1 }, clock = { now }))
         assertEquals(0L, now)
-        assertNull(runningClient({ "client" }, { true }, { false }, { false }, timeoutMilliseconds = 500, pause = { milliseconds -> now += milliseconds }, clock = { now }))
+        assertNull(runningClient({ "client" }, { true }, { false }, { false }, { false }, timeoutMilliseconds = 500, pause = { milliseconds -> now += milliseconds }, clock = { now }))
         assertTrue(now >= 500)
+        // A server that failed or stopped ends the wait at once, found so or failing while it is waited for.
+        now = 0L
+        assertNull(runningClient({ "client" }, { true }, { false }, { true }, { false }, pause = { milliseconds -> now += milliseconds }, clock = { now }))
+        assertEquals(0L, now)
+        var failed = false
+        assertNull(runningClient({ "client" }, { true }, { false }, { _ -> failed.also { failed = true } }, { false }, pause = { milliseconds -> now += milliseconds }, clock = { now }))
+        assertEquals(WatchedMethods.CLIENT_POLL_MILLISECONDS, now)
         // A running client is answered at once, never started again.
-        assertEquals("client", runningClient({ "client" }, { throw AssertionError("started again") }, { true }, { false }))
+        assertEquals("client", runningClient({ "client" }, { throw AssertionError("started again") }, { true }, { false }, { false }))
+    }
+
+    fun testARunStartWaitsForTheServerOnceForEveryModule() {
+        val watched = watchedMethods()
+        var waits = 0
+        watched.serverWaiter = {
+            waits++
+            null
+        }
+        val identities = watched.moduleIdentities()
+        val first = myFixture.addFileToProject("app/A.ns", "class A = () ()\n").virtualFile
+        val second = myFixture.addFileToProject("app/B.ns", "class B = () ()\n").virtualFile
+        assertNull(identities(first))
+        assertNull(identities(second))
+        assertEquals(1, waits)
     }
 
     fun testARunThatTracesNothingSaysWhichEntriesWereDropped() {

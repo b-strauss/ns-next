@@ -54,7 +54,7 @@ private const val VERSION = 1
  * [POLL_MILLISECONDS] up to [LONGEST_POLL_MILLISECONDS].
  *
  * Reads until it is disposed, or, once [finish] is called, to the file's
- * end.
+ * end, and then tells [onEnd], on the EDT, after the last batch.
  *
  * [dispatch] runs a task on the EDT, [pause] waits and [clock] answers the
  * time in milliseconds; tests hand in their own.
@@ -63,14 +63,16 @@ class TraceFileReader internal constructor(
     private val path: Path,
     private val onBatch: (List<TraceRecord>) -> Unit,
     private val onError: (String) -> Unit,
+    private val onEnd: () -> Unit,
     private val dispatch: (Runnable) -> Unit,
     private val pause: (Long) -> Unit,
     private val clock: () -> Long,
 ) : Disposable {
-    constructor(path: Path, onBatch: (List<TraceRecord>) -> Unit, onError: (String) -> Unit) : this(
+    constructor(path: Path, onBatch: (List<TraceRecord>) -> Unit, onError: (String) -> Unit, onEnd: () -> Unit = {}) : this(
         path,
         onBatch,
         onError,
+        onEnd,
         { task -> ApplicationManager.getApplication().invokeLater(task) },
         { milliseconds -> Thread.sleep(milliseconds) },
         System::currentTimeMillis,
@@ -129,6 +131,7 @@ class TraceFileReader internal constructor(
                     }
                 }
                 if (lines.pending.isNotEmpty()) publish(lines.drain())
+                handOver(onEnd)
             }
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -156,13 +159,16 @@ class TraceFileReader internal constructor(
     }
 
     /** Hands [batch] to the EDT once the last batch was applied; nothing once the reader is disposed. */
-    private fun publish(batch: List<TraceRecord>) {
+    private fun publish(batch: List<TraceRecord>) = handOver { onBatch(batch) }
+
+    /** Runs [task] on the EDT once what was handed over before it was applied; nothing once the reader is disposed. */
+    private fun handOver(task: () -> Unit) {
         while (!applying.tryAcquire(POLL_MILLISECONDS, TimeUnit.MILLISECONDS)) {
             if (disposed) return
         }
         dispatch {
             try {
-                if (!disposed) onBatch(batch)
+                if (!disposed) task()
             } finally {
                 applying.release()
             }

@@ -20,7 +20,10 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.options.SettingsEditorGroup
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.openapi.util.text.StringUtil
@@ -44,6 +47,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
 
 /** The ns-next subcommand a Newspeak run configuration starts. */
 enum class NewspeakCommand(val subcommand: String) {
@@ -230,23 +234,27 @@ class NewspeakRunState(
      * The watched methods as they stand at the start, a later change
      * applying to the next run, narrowed to the patterns this run's
      * program and the binary have a module for, which ns-next would
-     * refuse otherwise. Asking the server for the program's modules waits,
-     * so on the event dispatch thread it waits under a modal progress.
+     * refuse otherwise. Asking the server for the program's modules may
+     * wait for it to start, once for the whole start: on the event dispatch
+     * thread under a modal progress, and on another thread, where a wait is
+     * possible, under a background progress that says why and can be
+     * cancelled.
      */
     private fun watchedFilters(): TraceFilters {
         val watched = WatchedMethods.getInstance(configuration.project)
         if (watched.entries.isEmpty() || !configuration.tracesAnything()) return TraceFilters.EVERYTHING
         val programFile = programFilePath(configuration)?.let(LocalFileSystem.getInstance()::findFileByNioFile)
-        val read = { programModules(programFile, watched::moduleIdentity) }
-        val modules = if (ApplicationManager.getApplication().isDispatchThread) {
-            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+        val identities = watched.moduleIdentities()
+        val read = { programModules(programFile, identities) }
+        val modules = when {
+            ApplicationManager.getApplication().isDispatchThread -> ProgressManager.getInstance().runProcessWithProgressSynchronously(
                 ThrowableComputable<Map<String, Set<String>>, RuntimeException> { read() },
                 NewspeakBundle.message("devtool.watched.methods.reading"),
                 true,
                 configuration.project,
             )
-        } else {
-            read()
+            watched.mayWaitForServer() -> readUnderProgress(read) { programModules(programFile) { null } }
+            else -> read()
         }
         val filters = watched.filters(modules)
         nothingTracedNotice(configuration, filters, watched.droppedPatterns(modules))?.let { content ->
@@ -256,6 +264,37 @@ class NewspeakRunState(
                 .notify(configuration.project)
         }
         return filters
+    }
+
+    /**
+     * [read] under a background progress, cancellable, waited for here;
+     * [cancelled] where the progress was cancelled before it ran.
+     */
+    private fun readUnderProgress(
+        read: () -> Map<String, Set<String>>,
+        cancelled: () -> Map<String, Set<String>>,
+    ): Map<String, Set<String>> {
+        val result = CompletableFuture<Map<String, Set<String>>>()
+        object : Task.Backgroundable(configuration.project, NewspeakBundle.message("devtool.watched.methods.reading"), true) {
+            override fun run(indicator: ProgressIndicator) {
+                try {
+                    result.complete(read())
+                } catch (exception: Throwable) {
+                    // A cancelled read leaves the modules unknown, as a cancelled wait does; any other failure is the start's.
+                    if (exception is ProcessCanceledException) result.complete(cancelled()) else result.completeExceptionally(exception)
+                    throw exception
+                }
+            }
+
+            override fun onCancel() {
+                if (!result.isDone) result.complete(cancelled())
+            }
+        }.queue()
+        return try {
+            result.get()
+        } catch (exception: java.util.concurrent.ExecutionException) {
+            throw exception.cause ?: exception
+        }
     }
 }
 

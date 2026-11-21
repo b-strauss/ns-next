@@ -148,6 +148,24 @@ class TraceRunTest {
         assertEquals(SendOutcome(inlining = "inlined", cache = null), traceRun.sends(5)[7])
     }
 
+    @Test fun testASendsEventIsTheInstalledCopysDecision() {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]},{"at":7,"site":null,"call":null,"selector":[]}]}""",
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"at":3"""),
+                event(5, "optimize", "optimized", ""","key":"Demo","entered":null,"bytes":900"""),
+                // A later compile of the same copy declines the send, and is put off: its decision is no copy's.
+                event(5, "inlining", "declined", ""","key":"Demo","entered":null,"in-body":5,"callee":3,"reason":"over-weight","at":3"""),
+                event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":4,"at":7"""),
+                event(5, "optimize", "deferred", ""","key":"Demo","entered":null,"reason":"zone-full""""),
+            ),
+        )
+        assertEquals("inlined", traceRun.sends(5)[3]?.inlining)
+        assertEquals("inlined", traceRun.inliningEvent(5, 3)?.event)
+        assertNull("a deferred compile's decision", traceRun.inliningEvent(5, 7))
+    }
+
     @Test fun testACompileWhoseOutcomeIsWithheldIsDroppedAtTheNextRecord() {
         val traceRun = run()
         traceRun.add(
@@ -172,6 +190,11 @@ class TraceRunTest {
             ),
         )
         assertEquals(mapOf(7 to SendOutcome(inlining = "inlined", cache = null)), traceRun.sends(5))
+        assertEquals(0, traceRun.waitingDecisions)
+        // The run's end drops a compile still waiting.
+        traceRun.add(records(event(5, "inlining", "inlined", ""","key":"Demo","entered":null,"in-body":5,"callee":6,"at":3""")))
+        assertEquals(1, traceRun.waitingDecisions)
+        traceRun.ended()
         assertEquals(0, traceRun.waitingDecisions)
     }
 
@@ -370,7 +393,6 @@ class TraceRunTest {
         assertEquals(1, tally.declines)
         assertEquals(900, tally.largestOptimized)
         assertEquals("retired", tally.lastDeoptimization?.event)
-        assertEquals("declined", traceRun.lastInlining[3 to 2]?.event)
         assertEquals(MethodState.DEOPTIMIZED, traceRun.state(3))
     }
 

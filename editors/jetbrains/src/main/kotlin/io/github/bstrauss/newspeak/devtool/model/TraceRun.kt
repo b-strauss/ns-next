@@ -70,14 +70,13 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     private val describedBodies = HashMap<Int, Body>()
     private val recordedEvents = ArrayDeque<Event>()
     private val eventTallies = HashMap<Int, EventTally>()
-    private val inliningEvents = HashMap<Pair<Int, Int>, Event>()
     private val transitionEvents = HashMap<Pair<Int, Int>, Event>()
     private val bytecodeListings = HashMap<Int, Bytecode>()
     private val codeListings = HashMap<Int, MutableList<Code>>()
     private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
     private val plansInOrder = ArrayList<Inlining>()
     private val histories = HashMap<Int, BodyHistory>()
-    private val inliningAtSends = HashMap<SendKey, String>()
+    private val inliningAtSends = HashMap<SendKey, Decision>()
 
     /**
      * The plan's decisions of each installed optimized copy that still
@@ -85,7 +84,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
      * of the last of them that planned it, so that a copy retired,
      * invalidated, freed or lost with the zone takes its decisions with it.
      */
-    private val liveCopies = LinkedHashMap<CompileKey, List<Pair<SendKey, String>>>()
+    private val liveCopies = LinkedHashMap<CompileKey, List<Decision>>()
     private val caches = HashMap<SendKey, CacheHistory>()
 
     /**
@@ -103,7 +102,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
      * never heard. So at most one compile's decisions wait.
      */
     private var openCompile: CompileKey? = null
-    private var openDecisions = ArrayList<Pair<SendKey, String>>()
+    private var openDecisions = ArrayList<Decision>()
 
     /** How many decisions wait for their compile's outcome. */
     internal val waitingDecisions: Int get() = openDecisions.size
@@ -143,9 +142,6 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
 
     /** What the events said of each body, by the number of the body they are about. */
     val tallies: Map<Int, EventTally> get() = eventTallies
-
-    /** The last `inlined` or `declined` event at each send, by the number of the body its scope runs and the send's index there. */
-    val lastInlining: Map<Pair<Int, Int>, Event> get() = inliningEvents
 
     /** The last cache transition at each site, by its family's root and the site's number. */
     val lastTransition: Map<Pair<Int, Int>, Event> get() = transitionEvents
@@ -233,15 +229,23 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         // A block's sites are numbered in its method's family, whose root the transitions name.
         val root = described.family ?: body
         val outcomes = LinkedHashMap<Int, SendOutcome>()
-        // A decision whose copy's end -- a retirement, an invalidation, a free, the zone replaced -- could never arrive would stand for good: none is shown.
-        val inliningEnds = categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
         for (send in described.sends) {
-            val inlining = inliningAtSends[SendKey(body, send.at)]?.takeIf { inliningEnds }
+            val inlining = inliningAtSends[SendKey(body, send.at)]?.outcome?.takeIf { inliningEnds() }
             val cache = send.site?.let { site -> caches[SendKey(root, site)]?.shortForm() }
             if (inlining != null || cache != null) outcomes[send.at] = SendOutcome(inlining, cache)
         }
         return outcomes
     }
+
+    /**
+     * The `inlined` or `declined` event behind the inlining [sends] shows
+     * at the send [at] of [body]: a live installed copy's decision, never a
+     * refused, deferred or dropped compile's; null where [sends] shows none.
+     */
+    fun inliningEvent(body: Int, at: Int): Event? = inliningAtSends[SendKey(body, at)]?.event?.takeIf { inliningEnds() }
+
+    /** A decision whose copy's end -- a retirement, an invalidation, a free, the zone replaced -- could never arrive would stand for good: none is shown. */
+    private fun inliningEnds(): Boolean = categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
 
     /** Takes [batch], in the file's order, and tells the listeners once. */
     fun add(batch: List<TraceRecord>) {
@@ -273,6 +277,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         }
         for (listener in listeners.toList()) listener()
     }
+
+    /** The file was read to its end: a compile still waiting for its outcome never hears it, and its decisions are dropped. */
+    fun ended() = leaveOpenCompile()
 
     /** Calls [listener] after every batch taken, until [parent] is disposed. */
     fun onChanged(parent: Disposable, listener: () -> Unit) {
@@ -324,16 +331,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     /** Counts [event], the [order]th taken, into what the tabs and the tooltips read, which [events] may drop. */
     private fun tally(event: Event, order: Long) {
         val body = event.body
-        when (event.event) {
-            "inlined", "declined" -> {
-                val inBody = event.integer("in-body")
-                val at = event.integer("at")
-                if (inBody != null && at != null) inliningEvents[inBody to at] = event
-            }
-            "transition" -> {
-                val site = event.integer("site")
-                if (body != null && site != null) transitionEvents[body to site] = event
-            }
+        if (event.event == "transition") {
+            val site = event.integer("site")
+            if (body != null && site != null) transitionEvents[body to site] = event
         }
         if (body == null) return
         val tally = eventTallies.getOrPut(body) { EventTally() }
@@ -358,11 +358,12 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         val key = compileKey(body, event)
         if (!outcomeCanArrive) {
             // Nothing would conclude the compile: its decisions are its copy's at once.
-            liveCopies[key] = liveCopies[key].orEmpty() + (send to outcome)
-            inliningAtSends[send] = outcome
+            val decision = Decision(send, outcome, event)
+            liveCopies[key] = liveCopies[key].orEmpty() + decision
+            inliningAtSends[send] = decision
             return
         }
-        openDecisions.add(send to outcome)
+        openDecisions.add(Decision(send, outcome, event))
     }
 
     /** An inlining event of the compile [key]: the open compile's, or the first of a new one, which ends the open one unheard. */
@@ -389,14 +390,14 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         // A key's new copy replaces its old one and is the one installed last.
         liveCopies.remove(key)
         liveCopies[key] = decisions
-        for ((send, outcome) in decisions) inliningAtSends[send] = outcome
+        for (decision in decisions) inliningAtSends[decision.send] = decision
     }
 
     /** The copy [key] is gone: each send it planned keeps the decision of the last live copy that planned it too, or none. */
     private fun copyGone(key: CompileKey) {
         liveCopies.remove(key) ?: return
         inliningAtSends.clear()
-        for (decisions in liveCopies.values) for ((send, outcome) in decisions) inliningAtSends[send] = outcome
+        for (decisions in liveCopies.values) for (decision in decisions) inliningAtSends[decision.send] = decision
     }
 
     private fun inliningAt(event: Event): SendKey? {
@@ -411,6 +412,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         /** The `optimize` events that end a compile: its copy installed, refused or put off. */
         val OUTCOMES = setOf("optimized", "refused", "deferred")
     }
+
+    /** A plan's decision at [send]: its [outcome] as the hint writes it, and the [event] that made it. */
+    private class Decision(val send: SendKey, val outcome: String, val event: Event)
 
     /** A send by its body and index, or a cache site by its family's root and number. */
     private data class SendKey(val body: Int, val position: Int)

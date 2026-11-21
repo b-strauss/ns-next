@@ -135,6 +135,20 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(1216, compiled.integer("bytes"))
     }
 
+    fun testTheEndIsToldAfterTheLastBatch() {
+        val file = traceFile()
+        Files.writeString(file, HEADER + "\n")
+        val received = Received()
+        var recordsAtTheEnd = -1
+        val reader = TraceFileReader(file, { batch -> received.batches += batch }, { error -> received.errors += error }) {
+            recordsAtTheEnd = received.records.size
+        }
+        Disposer.register(testRootDisposable, reader)
+        reader.finish()
+        waitFor("the end is told") { recordsAtTheEnd >= 0 }
+        assertEquals(1, recordsAtTheEnd)
+    }
+
     fun testAnUnknownVersionIsRefused() {
         val file = traceFile()
         Files.writeString(
@@ -201,6 +215,7 @@ class TraceFileReaderTest : BasePlatformTestCase() {
             file,
             { batch -> received.batches += batch },
             { error -> received.errors += error },
+            {},
             { task -> queued.add(task) },
             { milliseconds -> Thread.sleep(milliseconds) },
             System::currentTimeMillis,
@@ -231,6 +246,7 @@ class TraceFileReaderTest : BasePlatformTestCase() {
             file,
             { batch -> received.batches += batch },
             { error -> received.errors += error },
+            {},
             { task -> ApplicationManager.getApplication().invokeLater(task) },
             { milliseconds ->
                 pauses.add(milliseconds)

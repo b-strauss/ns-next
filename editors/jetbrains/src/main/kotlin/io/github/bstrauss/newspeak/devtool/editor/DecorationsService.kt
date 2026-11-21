@@ -130,7 +130,6 @@ class DecorationsService internal constructor(
     private class Summary(run: TraceRun) {
         val deoptimizations = HashMap<Int, Int>()
         val lastDeoptimization = HashMap<Int, Event>()
-        val inliningAt: Map<Pair<Int, Int>, Event> = run.lastInlining
         val transitionAt: Map<Pair<Int, Int>, Event> = run.lastTransition
 
         init {
@@ -397,7 +396,8 @@ class DecorationsService internal constructor(
             if (!send.marker.isValid) continue
             val text = listOfNotNull(outcome.inlining, outcome.cache).joinToString(" · ")
             val events = listOfNotNull(
-                summary().inliningAt[body.body.number to send.send.at],
+                // The decision the hint shows, an installed copy's, never a refused or dropped compile's.
+                traced.inliningEvent(body.body.number, send.send.at),
                 send.send.site?.let { site -> summary().transitionAt[root to site] },
             )
             val tooltip = "<html>" + events.joinToString("<br>") { event -> StringUtil.escapeXmlEntities(eventLine(event)) } + "</html>"

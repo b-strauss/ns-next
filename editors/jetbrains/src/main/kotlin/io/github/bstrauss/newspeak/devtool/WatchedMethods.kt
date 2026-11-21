@@ -210,27 +210,42 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
     }
 
     /**
-     * The id and version the loader gives the module of [file], as the
-     * server answers them; null where no server starts in time, with no
-     * answer in time, or for a `:module:` the loader refuses. A run's
-     * start asks before any editor may have started the server, so with
-     * no client it starts one and waits for it, up to
-     * [CLIENT_START_MILLISECONDS]. Waits, so never on the event dispatch
-     * thread.
+     * The identities of one run's start: for each module file the id and
+     * version the loader gives it, as the server answers them; null where
+     * no server runs in time, with no answer in time, or for a `:module:`
+     * the loader refuses. A run's start asks before any editor may have
+     * started the server, so with no client the first question starts one
+     * and waits for it, once for the whole start, up to
+     * [CLIENT_START_MILLISECONDS], a server that stopped or failed ending
+     * the wait at once. Waits, so never on the event dispatch thread.
      */
-    fun moduleIdentity(file: VirtualFile): ModuleIdentity? = identifier(file)
+    fun moduleIdentities(): (VirtualFile) -> ModuleIdentity? {
+        identifier?.let { replaced -> return replaced }
+        val waiter = serverWaiter
+        val client by lazy { waiter() }
+        return { file -> client?.let { running -> askIdentity(running, file) } }
+    }
 
-    /** Asks the server for a file's module identity, as [fetcher] asks for its methods. Tests replace it. */
+    /** Finds, or starts and waits for, the server's running client; tests count its calls. */
     @Volatile
-    internal var identifier: (VirtualFile) -> ModuleIdentity? = ::askIdentity
+    internal var serverWaiter: () -> LspClient? = ::awaitServer
 
-    private fun askIdentity(file: VirtualFile): ModuleIdentity? {
-        val client = runningClient(
-            lookup = ::existingClient,
-            start = { NewspeakLspIntegrationProvider.registered()?.startClient(project) == true },
-            isRunning = { candidate -> candidate.state == LspServerState.Running },
-            isCancelled = { ProgressManager.getInstance().progressIndicator?.isCanceled == true },
-        ) ?: return null
+    private fun awaitServer(): LspClient? = runningClient(
+        lookup = ::existingClient,
+        start = { NewspeakLspIntegrationProvider.registered()?.startClient(project) == true },
+        isRunning = { candidate -> candidate.state == LspServerState.Running },
+        isOver = { candidate -> candidate.state == LspServerState.ShutdownNormally || candidate.state == LspServerState.ShutdownUnexpectedly },
+        isCancelled = { ProgressManager.getInstance().progressIndicator?.isCanceled == true },
+    )
+
+    /** Whether asking for identities may wait for the server to start: no running client yet. */
+    fun mayWaitForServer(): Boolean = identifier == null && existingClient()?.state != LspServerState.Running
+
+    /** Answers each module file's identity in place of the server. Tests set it. */
+    @Volatile
+    internal var identifier: ((VirtualFile) -> ModuleIdentity?)? = null
+
+    private fun askIdentity(client: LspClient, file: VirtualFile): ModuleIdentity? {
         val parameters = ModuleIdentityParameters(client.getDocumentIdentifier(file))
         val answer = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
             (server as NewspeakLanguageServer).moduleIdentity(parameters)
@@ -288,13 +303,15 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
  * one [start] starts -- which answers false where no server can be
  * started, as one not installed cannot -- waited for until [isRunning]
  * says it is, for at most [timeoutMilliseconds]; null where none runs in
- * time or [isCancelled] says the wait was cancelled. Never on the event
+ * time, the client [isOver] -- stopped or failed, which no wait mends --,
+ * or [isCancelled] says the wait was cancelled. Never on the event
  * dispatch thread. [pause] and [clock] are the tests'.
  */
 internal fun <Client : Any> runningClient(
     lookup: () -> Client?,
     start: () -> Boolean,
     isRunning: (Client) -> Boolean,
+    isOver: (Client) -> Boolean,
     isCancelled: () -> Boolean,
     timeoutMilliseconds: Long = WatchedMethods.CLIENT_START_MILLISECONDS,
     pause: (Long) -> Unit = { milliseconds -> Thread.sleep(milliseconds) },
@@ -302,12 +319,14 @@ internal fun <Client : Any> runningClient(
 ): Client? {
     val found = lookup()
     if (found != null && isRunning(found)) return found
+    if (found != null && isOver(found)) return null
     if (found == null && !start()) return null
     val deadline = clock() + timeoutMilliseconds
     while (clock() < deadline && !isCancelled()) {
         pause(WatchedMethods.CLIENT_POLL_MILLISECONDS)
-        val client = lookup()
-        if (client != null && isRunning(client)) return client
+        val client = lookup() ?: continue
+        if (isRunning(client)) return client
+        if (isOver(client)) return null
     }
     return null
 }
