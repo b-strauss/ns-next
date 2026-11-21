@@ -76,15 +76,20 @@ pub struct DescribedSend {
 }
 
 /// The FNV-1a 64 hash of `text` (offset basis `0xcbf29ce484222325`,
-/// prime `0x100000001b3`): a checksum of a body's source that a host on
-/// any platform computes alike, not a cryptographic one -- it detects an
-/// edit, not an adversary.
+/// prime `0x100000001b3`) with every `\r` byte left out: a checksum of a
+/// body's source that a host on any platform computes alike, not a
+/// cryptographic one -- it detects an edit, not an adversary. The `\r`s
+/// are left out because an editor holds a file's text with `\n` line
+/// ends whatever the file's are, so that a file checked out with CRLF, or
+/// with mixed line ends, still matches the text the editor shows.
 pub fn source_checksum(text: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
-    text.iter().fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-    })
+    text.iter()
+        .filter(|byte| **byte != b'\r')
+        .fold(OFFSET_BASIS, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+        })
 }
 
 /// The description of `code`, which `origin` names and the trace numbered
@@ -169,5 +174,13 @@ mod tests {
         assert_eq!(source_checksum(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(source_checksum(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(source_checksum(b"foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    /// A line end hashes alike whether it is `\n` or `\r\n`, as an editor shows both.
+    #[test]
+    fn the_checksum_leaves_out_carriage_returns() {
+        assert_eq!(source_checksum(b"a\r\nb"), source_checksum(b"a\nb"));
+        assert_eq!(source_checksum(b"\r"), source_checksum(b""));
+        assert_ne!(source_checksum(b"a\nb"), source_checksum(b"ab"));
     }
 }

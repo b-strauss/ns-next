@@ -2,6 +2,8 @@ package io.github.bstrauss.newspeak.devtool.editor
 
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -297,6 +299,66 @@ class DecorationsTest : BasePlatformTestCase() {
         assertFalse(icons(editor).single { (line, _) -> line == lineOf(SQUARE) }.second.watched)
         watchedMethods.unwatch("Demo>>smile")
         assertFalse(icons(editor).single { (line, _) -> line == lineOf(SMILE) }.second.watched)
+    }
+
+    fun testAFileWithCrlfLineEndsStaysDecorated() {
+        val path = directory.resolve("Demo.ns")
+        // The document holds the text with `\n`; the runtime hashed the file's bytes, `\r` left out.
+        val editor = open(path, DEMO.replace("\n", "\r\n"))
+        decorations()
+        val source = fileSource(path)
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        HEADER,
+                        bodyJson(2, "Demo>>main:args:", source, DEMO, MAIN, checksum = sourceChecksum(MAIN.replace("\n", "\r\n"))),
+                        event(2, "compile", "compiled"),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val main = icons(editor).single().second
+        assertEquals(MethodState.BASELINE, main.state)
+        assertFalse("a multi-line method of a CRLF file is the run's", main.stale)
+    }
+
+    fun testTheMarkersOutliveAClosedEditor() {
+        val editor = openDemo()
+        decorations()
+        tracedRuns.selected = demoRun()
+        val offset = DEMO.indexOf("x * x")
+        WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(offset, "1 +\n    ") }
+        // A line added: records read afresh would place every method below it a line too high.
+        // Saved, as a file closed after an edit usually is; the document is the one reopened.
+        FileDocumentManager.getInstance().saveDocument(editor.document)
+        val before = hints(editor)
+        val file = checkNotNull(editor.virtualFile)
+        FileEditorManager.getInstance(project).closeFile(file)
+        myFixture.configureFromExistingVirtualFile(file)
+        val reopened = myFixture.editor
+        assertNotSame(editor, reopened)
+        // The methods below the edit are placed by the markers that followed it, not by the records afresh.
+        assertEquals(before, hints(reopened))
+        val icons = icons(reopened)
+        val document = reopened.document
+        fun lineIn(part: String): Int = document.getLineNumber(document.text.indexOf(part))
+        assertEquals(listOf(lineIn("square: x"), lineIn(MAIN), lineIn(SMILE)), icons.map { (line, _) -> line })
+        assertEquals(listOf(true, false, false), icons.map { (_, renderer) -> renderer.stale })
+    }
+
+    fun testARangeOutsideTheTextIsNotDecorated() {
+        val editor = openDemo()
+        decorations()
+        val path = directory.resolve("Demo.ns")
+        val outside = """{"kind":"body","body":9,"name":"Demo>>gone","family":null,"module":{"id":"Demo","version":null},"source":${fileSource(path)},"range":[100,0,101,4],"checksum":"0000000000000000","statements":[],"sends":[{"at":0,"site":0,"call":[100,0,100,4],"selector":[[100,0,100,4]]}]}"""
+        val pastTheLine = """{"kind":"body","body":10,"name":"Demo>>wide","family":null,"module":{"id":"Demo","version":null},"source":${fileSource(path)},"range":[1,0,1,400],"checksum":"0000000000000000","statements":[],"sends":[]}"""
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(records(listOf(HEADER, outside, pastTheLine, bodyJson(1, "Demo>>square:", fileSource(path), DEMO, SQUARE), event(9, "compile", "compiled"))))
+        }
+        tracedRuns.selected = run
+        assertEquals(listOf(lineOf(SQUARE)), icons(editor).map { (line, _) -> line })
     }
 
     private companion object {

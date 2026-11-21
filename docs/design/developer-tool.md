@@ -1079,10 +1079,12 @@ The records:
   library's files (`platform/TimeFactory.ns`, as `ns-next
   shipped-sources` lays them out), `null` for a module read from no file
   (the embedded manifest). `range` is the body's source; `checksum` is
-  the FNV-1a 64 of that source's UTF-8 bytes (offset basis
-  `0xcbf29ce484222325`, prime `0x100000001b3`), sixteen lower-case hex
-  digits, by which a reader tells whether the text it holds is the text
-  the body was compiled from. `statements` are
+  the FNV-1a 64 of that source's UTF-8 bytes with every `\r` byte left
+  out (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`), sixteen
+  lower-case hex digits, by which a reader tells whether the text it
+  holds is the text the body was compiled from; the `\r`s are left out
+  because an editor holds a file with `\n` line ends whatever the file's
+  are, so that a file with CRLF or mixed line ends still matches. `statements` are
   `{"instructions":[from,to],"range":[…]}`, each statement's
   instructions and source in emission order, and `sends` are
   `{"at":index,"site":n|null,"call":[…],"selector":[[…],…]}`, each send

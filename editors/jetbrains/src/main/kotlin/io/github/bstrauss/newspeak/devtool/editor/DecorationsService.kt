@@ -25,10 +25,13 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
+import com.intellij.openapi.roots.AdditionalLibraryRootsListener
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.util.containers.ContainerUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
@@ -94,10 +97,20 @@ class DecorationsService internal constructor(
         val root: BodyMarker? get() = bodies.firstOrNull { marker -> marker.body.family == null }
     }
 
-    /** A document's markers for the decorated run: each method by its root's number, and every body number already looked at. */
-    private class DocumentMarkers {
+    /**
+     * A document's markers for the decorated [run]: each method by its
+     * root's number, and every body number placed or judged another file's.
+     * Kept in the document's user data for the whole run, so that an editor
+     * closed and opened again finds the markers that followed every edit.
+     */
+    private class DocumentMarkers(val run: TraceRun) {
         val methods = LinkedHashMap<Int, MethodMarkers>()
         val seen = HashSet<Int>()
+
+        /** Forgets the bodies judged another file's, whose file a new library directory may make this one. */
+        fun forgetOtherFiles() {
+            seen.retainAll(methods.values.flatMap { method -> method.bodies.map { body -> body.body.number } }.toSet())
+        }
 
         fun dispose() {
             for (method in methods.values) for (body in method.bodies) {
@@ -147,7 +160,8 @@ class DecorationsService internal constructor(
     private var run: TraceRun? = null
     private var runDisposable: Disposable? = null
     private var summary: Summary? = null
-    private val documents = HashMap<Document, DocumentMarkers>()
+    /** The documents holding markers of the decorated run, held weakly: the markers themselves are in each document's user data. */
+    private val documents: MutableSet<Document> = ContainerUtil.createWeakSet()
     private val editors = HashMap<Editor, EditorDecorations>()
 
     /** Whether the content component's tooltip is a hint's, which leaving the hint takes away. */
@@ -162,7 +176,8 @@ class DecorationsService internal constructor(
                 }
 
                 override fun editorReleased(event: EditorFactoryEvent) {
-                    release(event.editor)
+                    // The document keeps its markers: they follow its edits until the run is no longer decorated.
+                    if (event.editor.project === project) editors.remove(event.editor)
                 }
             },
             this,
@@ -182,6 +197,21 @@ class DecorationsService internal constructor(
                 }
             },
             this,
+        )
+        // A library directory that changed may hold the files of the library's bodies.
+        project.messageBus.connect(this).subscribe(
+            AdditionalLibraryRootsListener.TOPIC,
+            AdditionalLibraryRootsListener { _, _, _, libraryName ->
+                if (libraryName == NewspeakCoreLibrary.NAME) {
+                    ApplicationManager.getApplication().invokeLater(
+                        {
+                            for (document in documents) document.getUserData(MARKERS)?.forgetOtherFiles()
+                            decorateAll()
+                        },
+                        project.disposed,
+                    )
+                }
+            },
         )
         tracedRuns.addListener({ follow() }, this)
         watchedMethods.addListener({ decorateAll() }, this)
@@ -216,7 +246,10 @@ class DecorationsService internal constructor(
     private fun clear() {
         for ((editor, decorations) in editors) if (!editor.isDisposed) remove(decorations)
         editors.clear()
-        for (markers in documents.values) markers.dispose()
+        for (document in documents) {
+            document.getUserData(MARKERS)?.dispose()
+            document.putUserData(MARKERS, null)
+        }
         documents.clear()
         runDisposable?.let(Disposer::dispose)
         runDisposable = null
@@ -225,12 +258,6 @@ class DecorationsService internal constructor(
 
     private fun decorateAll() {
         for (editor in EditorFactory.getInstance().allEditors) if (editor.project === project) decorate(editor)
-    }
-
-    private fun release(editor: Editor) {
-        editors.remove(editor)
-        val document = editor.document
-        if (EditorFactory.getInstance().getEditors(document, project).none { other -> other !== editor }) documents.remove(document)?.dispose()
     }
 
     private fun remove(decorations: EditorDecorations) {
@@ -268,13 +295,23 @@ class DecorationsService internal constructor(
 
     /** The markers of [document]'s bodies in [traced], made for each body the first time the document is decorated with it. */
     private fun markersOf(document: Document, file: VirtualFile, traced: TraceRun): DocumentMarkers {
-        val markers = documents.getOrPut(document) { DocumentMarkers() }
+        val markers = document.getUserData(MARKERS)?.takeIf { kept -> kept.run === traced } ?: DocumentMarkers(traced).also { made ->
+            document.putUserData(MARKERS, made)
+            documents.add(document)
+        }
         val path = file.fileSystem.getNioPath(file) ?: return markers
         val touched = HashSet<MethodMarkers>()
         for (body in traced.bodies.values) {
-            if (!markers.seen.add(body.number)) continue
-            if (sourcePath(body)?.let { source -> sameFile(source, path) } != true) continue
+            if (body.number in markers.seen) continue
+            // A library body is looked at again once the library has a directory.
+            val source = sourcePath(body) ?: continue
+            if (!sameFile(source, path)) {
+                markers.seen.add(body.number)
+                continue
+            }
+            // A range outside the document's text is never placed: nothing guesses where the body went.
             val marker = body.range?.let { range -> marker(document, range) } ?: continue
+            markers.seen.add(body.number)
             val sends = body.sends.mapNotNull { send ->
                 val selector = send.selector.lastOrNull { token -> token != null } ?: send.call
                 selector?.let { range -> marker(document, range) }?.let { sendMarker -> SendMarker(send, sendMarker) }
@@ -317,7 +354,7 @@ class DecorationsService internal constructor(
 
     /** Re-checks the methods [event] touched; a method that became stale, or the run's again, redecorates its document's editors. */
     private fun changed(event: DocumentEvent) {
-        val markers = documents[event.document] ?: return
+        val markers = event.document.getUserData(MARKERS)?.takeIf { kept -> kept.run === run } ?: return
         val changeEnd = event.offset + event.newLength
         var flipped = false
         for (method in markers.methods.values) {
@@ -446,6 +483,8 @@ class DecorationsService internal constructor(
         fun getInstance(project: Project): DecorationsService = project.service()
 
         private const val NEWSPEAK_EXTENSION = "ns"
+
+        private val MARKERS = Key.create<DocumentMarkers>("newspeak.devtool.decorations")
     }
 }
 
@@ -460,11 +499,14 @@ class DecorationsStartup : ProjectActivity {
 
 /**
  * The checksum of a body's source as the runtime computes it: FNV-1a 64
- * over the UTF-8 bytes of [text], 16 lower-case hex digits (decision 18).
+ * over the UTF-8 bytes of [text] but every `\r`, 16 lower-case hex digits
+ * (decision 18) -- so that a file with CRLF line ends, which a document
+ * holds with `\n`, matches the record.
  */
 fun sourceChecksum(text: CharSequence): String {
     var hash = FNV_OFFSET_BASIS
     for (byte in text.toString().toByteArray(Charsets.UTF_8)) {
+        if (byte == CARRIAGE_RETURN) continue
         hash = (hash xor (byte.toULong() and BYTE_MASK)) * FNV_PRIME
     }
     return java.lang.Long.toHexString(hash.toLong()).padStart(CHECKSUM_DIGITS, '0')
@@ -474,3 +516,4 @@ private const val FNV_OFFSET_BASIS: ULong = 0xcbf29ce484222325uL
 private const val FNV_PRIME: ULong = 0x100000001b3uL
 private const val BYTE_MASK: ULong = 0xffuL
 private const val CHECKSUM_DIGITS = 16
+private const val CARRIAGE_RETURN = '\r'.code.toByte()

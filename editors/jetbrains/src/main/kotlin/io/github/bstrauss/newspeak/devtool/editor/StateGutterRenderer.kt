@@ -35,11 +35,7 @@ class StateGutterRenderer(
             stale -> STALE
             else -> ICONS.getValue(state)
         }
-        if (!watched) return base
-        return LayeredIcon(2).apply {
-            setIcon(base, 0)
-            setIcon(BADGE, 1, SwingConstants.SOUTH_EAST)
-        }
+        return if (watched) BADGED.getValue(base) else base
     }
 
     override fun getTooltipText(): String = tooltip
@@ -74,5 +70,13 @@ class StateGutterRenderer(
 
         /** The eye at half its size, in the state icon's corner. */
         val BADGE: Icon = IconUtil.scale(WATCHED, null, 0.5f)
+
+        /** Each state icon and the stale one with the badge, made once. */
+        val BADGED: Map<Icon, Icon> = (ICONS.values + STALE).associateWith { base ->
+            LayeredIcon(2).apply {
+                setIcon(base, 0)
+                setIcon(BADGE, 1, SwingConstants.SOUTH_EAST)
+            }
+        }
     }
 }
