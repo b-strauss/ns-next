@@ -15,6 +15,7 @@ import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.openapi.options.SettingsEditor
+import com.intellij.openapi.options.SettingsEditorGroup
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.io.FileUtil
@@ -22,6 +23,11 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.NewspeakDebuggeeProcessHandler
+import io.github.bstrauss.newspeak.devtool.DEVELOPER_TOOL_OPTION_PREFIXES
+import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
+import io.github.bstrauss.newspeak.devtool.LISTING_KINDS
+import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
+import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -46,16 +52,22 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     var script by string()
     var programArguments by string()
 
-    /** Options of ns-next itself, placed before the program: `--trace=…`, `--trace-filter=…`, `--print-code`. */
+    /** Options of ns-next itself, placed before the program, but for those the Developer Tool tab owns. */
     var runtimeOptions by string()
     var iterations by property(10)
+
+    /** The names of the trace categories a run asks for, of `TRACE_CATEGORIES`. */
+    var traceCategories by list<String>()
+    var printBytecode by property(false)
+    var printCode by property(false)
+    var printInlining by property(false)
 }
 
 /** Runs `ns-next run` or `ns-next bench` on a project or a module, with the runtime the plugin's settings name. */
 class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, name: String) :
     RunConfigurationBase<NewspeakRunConfigurationOptions>(project, factory, name) {
 
-    override fun getOptions(): NewspeakRunConfigurationOptions = super.getOptions() as NewspeakRunConfigurationOptions
+    public override fun getOptions(): NewspeakRunConfigurationOptions = super.getOptions() as NewspeakRunConfigurationOptions
 
     var program: String?
         get() = options.program
@@ -116,9 +128,24 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         false
     }
 
-    override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> = NewspeakRunConfigurationEditor()
+    /** Whether a run of this configuration asks ns-next for a trace or a listing. */
+    fun tracesAnything(): Boolean =
+        options.traceCategories.isNotEmpty() || options.printBytecode || options.printCode || options.printInlining
+
+    override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> =
+        SettingsEditorGroup<NewspeakRunConfiguration>().apply {
+            addEditor(NewspeakBundle.message("run.configuration.editor.tab.title"), NewspeakRunConfigurationEditor())
+            addEditor(NewspeakBundle.message("devtool.tab.title"), DeveloperToolTab())
+        }
 
     override fun checkConfiguration() {
+        // The tab owns these; the same option twice would trace twice, or be refused by ns-next at the start.
+        val owned = ParametersListUtil.parse(runtimeOptions.orEmpty()).firstOrNull { token ->
+            DEVELOPER_TOOL_OPTION_PREFIXES.any(token::startsWith)
+        }
+        if (owned != null) {
+            throw RuntimeConfigurationError(NewspeakBundle.message("run.configuration.error.developer.tool.option", owned.substringBefore('=')))
+        }
         val runtime = locateRuntime(NewspeakSettings.getInstance().state.runtimePath)
         if (runtime !is RuntimeLocation.Found) {
             throw RuntimeConfigurationError(runtimeProblem(runtime), ::openNewspeakSettings)
@@ -260,8 +287,14 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
 }
 
 /** The process a Newspeak run configuration starts: [newspeakCommandLine], in the program file's directory. */
-fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): GeneralCommandLine =
-    GeneralCommandLine(newspeakCommandLine(runtime, configuration, debugAddress))
+fun newspeakProcessCommandLine(
+    runtime: Path,
+    configuration: NewspeakRunConfiguration,
+    debugAddress: String? = null,
+    traceFile: Path? = null,
+    filters: TraceFilters = TraceFilters.EVERYTHING,
+): GeneralCommandLine =
+    GeneralCommandLine(newspeakCommandLine(runtime, configuration, debugAddress, traceFile, filters))
         .withWorkDirectory(workingDirectory(configuration)?.toFile())
         // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
         .withCharset(StandardCharsets.UTF_8)
@@ -271,12 +304,20 @@ fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfigur
  * is tested without starting anything. With [debugAddress], ns-next
  * connects to the debugger listening there (`--debug-connect`) rather than
  * listening itself, so that no port of the program is open to another
- * process.
+ * process. The Developer Tool tab's options follow, narrowed by [filters],
+ * with the record of the trace in [traceFile]; `bench` takes none of them.
  */
-fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, debugAddress: String? = null): List<String> = buildList {
+fun newspeakCommandLine(
+    runtime: Path,
+    configuration: NewspeakRunConfiguration,
+    debugAddress: String? = null,
+    traceFile: Path? = null,
+    filters: TraceFilters = TraceFilters.EVERYTHING,
+): List<String> = buildList {
     add(runtime.toString())
     add(configuration.command.subcommand)
     debugAddress?.let { address -> add("--debug-connect=$address") }
+    if (configuration.command == NewspeakCommand.RUN) addAll(developerToolOptions(configuration, traceFile, filters))
     // Each token as is: `--trace-filter` is repeatable, one pattern per occurrence.
     addAll(ParametersListUtil.parse(configuration.runtimeOptions.orEmpty()))
     // One token, so a name starting with `-` is not read as an option.
@@ -289,4 +330,29 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration, 
         add("--")
         addAll(arguments)
     }
+}
+
+/** The options of the Developer Tool tab; each filter follows only the kind it narrows, which ns-next refuses to filter otherwise. */
+private fun developerToolOptions(configuration: NewspeakRunConfiguration, traceFile: Path?, filters: TraceFilters): List<String> = buildList {
+    val options = configuration.options
+    val categories = TRACE_CATEGORIES.filter { name -> name in options.traceCategories }
+    val events = categories.isNotEmpty() && !filters.noEvents
+    val kinds = LISTING_KINDS.filter { kind ->
+        when (kind) {
+            "bytecode" -> options.printBytecode
+            "code" -> options.printCode
+            else -> options.printInlining
+        }
+    }
+    val listings = kinds.isNotEmpty() && !filters.noListings
+    if (events) {
+        add(if (categories.size == TRACE_CATEGORIES.size) "--trace=all" else "--trace=${categories.joinToString(",")}")
+        filters.events.forEach { pattern -> add("--trace-filter=$pattern") }
+    }
+    if (listings) {
+        kinds.forEach { kind -> add("--print-$kind") }
+        filters.listings.forEach { pattern -> add("--print-filter=$pattern") }
+    }
+    // ns-next refuses a trace file when nothing is traced or printed.
+    if ((events || listings) && traceFile != null) add("--trace-file=$traceFile")
 }

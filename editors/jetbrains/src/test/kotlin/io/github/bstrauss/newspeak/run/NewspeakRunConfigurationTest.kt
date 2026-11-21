@@ -4,6 +4,9 @@ import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.io.NioFiles
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
+import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -263,5 +266,128 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         editor.applyTo(applied)
         assertEquals("/work/app/Hello.ns", applied.program)
         assertNull("ns-next refuses --script with a .ns file", applied.script)
+    }
+
+    fun testCheckedCategoriesBecomeOneTraceOption() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            script = "timed"
+            options.traceCategories = mutableListOf("inlining", "compile")
+        }
+        assertEquals(
+            listOf(runtime.toString(), "run", "--trace=compile,inlining", "--script=timed", projectDirectory),
+            newspeakCommandLine(runtime, run),
+        )
+    }
+
+    fun testAllSevenAreAll() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            options.traceCategories = TRACE_CATEGORIES.toMutableList()
+        }
+        assertEquals(listOf(runtime.toString(), "run", "--trace=all", projectDirectory), newspeakCommandLine(runtime, run))
+    }
+
+    fun testListingKindsBecomeTheirOptions() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            options.printCode = true
+        }
+        assertEquals(listOf(runtime.toString(), "run", "--print-code", projectDirectory), newspeakCommandLine(runtime, run))
+        assertTrue(run.tracesAnything())
+        assertFalse(configuration().tracesAnything())
+    }
+
+    fun testATraceFileIsPassedWithItsPath() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            options.traceCategories = mutableListOf("caches")
+        }
+        val file = Path.of("/tmp/trace.jsonl")
+        assertEquals(
+            listOf(runtime.toString(), "run", "--debug-connect=a:1", "--trace=caches", "--trace-file=$file", projectDirectory),
+            newspeakCommandLine(runtime, run, "a:1", file),
+        )
+        assertFalse(newspeakCommandLine(runtime, run).any { token -> token.startsWith("--trace-file") })
+    }
+
+    fun testTheFiltersFollowTheirKindAndBenchTakesNone() {
+        val run = configuration().apply {
+            program = "/work/app/newspeak.json"
+            options.traceCategories = mutableListOf("compile")
+            options.printCode = true
+        }
+        val filters = io.github.bstrauss.newspeak.devtool.TraceFilters(listOf("A>>b"), listOf("C>>d"), noEvents = false, noListings = false)
+        assertEquals(
+            listOf(runtime.toString(), "run", "--trace=compile", "--trace-filter=A>>b", "--print-code", "--print-filter=C>>d", projectDirectory),
+            newspeakCommandLine(runtime, run, filters = filters),
+        )
+        val withoutEvents = filters.copy(noEvents = true)
+        assertEquals(
+            listOf(runtime.toString(), "run", "--print-code", "--print-filter=C>>d", projectDirectory),
+            newspeakCommandLine(runtime, run, filters = withoutEvents),
+        )
+        run.command = NewspeakCommand.BENCH
+        assertEquals(listOf(runtime.toString(), "bench", "--iterations", "10", projectDirectory), newspeakCommandLine(runtime, run))
+    }
+
+    fun testAnOptionWithAControlInTheFreeFieldIsAnError() {
+        val directory = temporaryDirectory()
+        NewspeakSettings.getInstance().state.runtimePath = Files.createFile(directory.resolve("ns-next")).toString()
+        val program = Files.writeString(directory.resolve("newspeak.json"), "{}").toString()
+        for (option in listOf("--trace=compile", "--print-code", "--trace-filter=Demo>>...", "--trace-file=x.jsonl")) {
+            val run = configuration().apply {
+                this.program = program
+                runtimeOptions = "--timed $option"
+            }
+            val error = Assert.assertThrows(RuntimeConfigurationError::class.java) { run.checkConfiguration() }
+            assertTrue(error.localizedMessage, error.localizedMessage.contains(option.substringBefore('=')))
+        }
+        configuration().apply {
+            this.program = program
+            runtimeOptions = "--timed"
+        }.checkConfiguration()
+    }
+
+    fun testBenchGreysTheTab() {
+        val tab = DeveloperToolTab()
+        Disposer.register(testRootDisposable, tab)
+        val bench = configuration().apply { command = NewspeakCommand.BENCH }
+        tab.resetFrom(bench)
+        assertTrue(tab.categoryBoxes.values.all { box -> !box.isEnabled })
+        assertTrue(tab.listingBoxes.values.all { box -> !box.isEnabled })
+        tab.resetFrom(configuration())
+        assertTrue(tab.categoryBoxes.values.all { box -> box.isEnabled })
+    }
+
+    fun testTheTabGivesBackWhatItWasShown() {
+        val shown = configuration().apply {
+            options.traceCategories = mutableListOf("osr", "caches")
+            options.printBytecode = true
+            options.printInlining = true
+        }
+        val tab = DeveloperToolTab()
+        Disposer.register(testRootDisposable, tab)
+        tab.resetFrom(shown)
+        assertFalse(tab.allBox.isSelected)
+        val applied = configuration()
+        tab.applyTo(applied)
+        assertEquals(listOf("osr", "caches"), applied.options.traceCategories)
+        assertTrue(applied.options.printBytecode)
+        assertFalse(applied.options.printCode)
+        assertTrue(applied.options.printInlining)
+    }
+
+    fun testEveryCheckboxHasItsSentence() {
+        val tab = DeveloperToolTab()
+        Disposer.register(testRootDisposable, tab)
+        for ((name, box) in tab.categoryBoxes) {
+            assertEquals(NewspeakBundle.message("devtool.category.$name.tooltip"), box.toolTipText)
+            assertFalse(box.toolTipText.isNullOrBlank())
+        }
+        for ((kind, box) in tab.listingBoxes) {
+            assertEquals(NewspeakBundle.message("devtool.listing.$kind.tooltip"), box.toolTipText)
+            assertFalse(box.toolTipText.isNullOrBlank())
+        }
     }
 }
