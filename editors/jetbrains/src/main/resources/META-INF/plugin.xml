@@ -74,6 +74,10 @@
                   fieldName="INSTANCE"
                   language="Newspeak"
                   extensions="ns"/>
+        <!-- The developer tool's read-only listings, plain text, which no file on disk is. -->
+        <fileType name="Newspeak Code Listing"
+                  implementationClass="io.github.bstrauss.newspeak.devtool.editor.CodeListingFileType"
+                  fieldName="INSTANCE"/>
         <lang.parserDefinition language="Newspeak"
                                implementationClass="io.github.bstrauss.newspeak.parser.NewspeakParserDefinition"/>
         <lang.syntaxHighlighterFactory language="Newspeak"
@@ -81,6 +85,9 @@
         <platform.backend.documentation.inlineDocumentationProvider
                 implementation="io.github.bstrauss.newspeak.editor.NewspeakInlineDocumentationProvider"/>
         <colorSettingsPage implementation="io.github.bstrauss.newspeak.highlighting.NewspeakColorSettingsPage"/>
+        <!-- The linked statements' colours of the developer tool's Code tab, keys of their own. -->
+        <additionalTextAttributes scheme="Default" file="colorSchemes/NewspeakDefault.xml"/>
+        <additionalTextAttributes scheme="Darcula" file="colorSchemes/NewspeakDarcula.xml"/>
         <lang.braceMatcher language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakBraceMatcher"/>
         <lang.commenter language="Newspeak"

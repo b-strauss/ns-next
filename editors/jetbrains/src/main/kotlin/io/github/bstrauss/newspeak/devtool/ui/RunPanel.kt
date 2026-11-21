@@ -25,12 +25,13 @@ class RunPanel(project: Project, val run: TraceRun) : JPanel(BorderLayout()), Di
 
     private val methods = MethodsTab(project, run, this)
     private val inlining = InliningTab(project, run, this)
+    private val code = CodeTab(project, run, this)
 
     /** The views, in decision 29's order, which [View] follows. */
     val views = JBTabbedPane().apply {
         addTab(NewspeakBundle.message("devtool.view.methods"), methods)
         addTab(NewspeakBundle.message("devtool.view.events"), EventsTab(project, run, this@RunPanel))
-        addTab(NewspeakBundle.message("devtool.view.code"), JPanel())
+        addTab(NewspeakBundle.message("devtool.view.code"), code)
         addTab(NewspeakBundle.message("devtool.view.inlining"), inlining)
     }
 
@@ -43,7 +44,8 @@ class RunPanel(project: Project, val run: TraceRun) : JPanel(BorderLayout()), Di
         when (view) {
             View.METHODS -> methods.select(body)
             View.INLINING -> inlining.select(body)
-            View.EVENTS, View.CODE -> Unit
+            View.CODE -> code.show(body)
+            View.EVENTS -> Unit
         }
     }
 

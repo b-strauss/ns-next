@@ -1,0 +1,267 @@
+package io.github.bstrauss.newspeak.devtool.ui
+
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.LogicalPosition
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
+import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
+import io.github.bstrauss.newspeak.devtool.editor.linkedColor
+import io.github.bstrauss.newspeak.devtool.model.TraceRecord
+import io.github.bstrauss.newspeak.devtool.model.TraceRun
+import java.nio.file.Files
+import java.nio.file.Path
+import java.time.Instant
+
+class CodeTabTest : BasePlatformTestCase() {
+    private lateinit var source: Path
+
+    override fun setUp() {
+        super.setUp()
+        source = Files.createTempDirectory("newspeak-code-tab").resolve("Demo.ns")
+        Files.writeString(source, DEMO)
+    }
+
+    /** `[startLine, startColumn, endLine, endColumn]` of [part] in [DEMO], searched from the start of [within]. */
+    private fun range(part: String, within: String = part): String {
+        val start = DEMO.indexOf(part, DEMO.indexOf(within))
+        check(start >= 0) { part }
+        fun position(offset: Int): String {
+            val line = DEMO.substring(0, offset).count { character -> character == '\n' }
+            return "$line,${offset - (DEMO.lastIndexOf('\n', offset - 1) + 1)}"
+        }
+        return "[${position(start)},${position(start + part.length)}]"
+    }
+
+    private fun body(number: Int, name: String, within: String, family: Int?, statements: String): String {
+        val file = source.toString().replace("\\", "\\\\")
+        return """{"kind":"body","body":$number,"name":"$name","family":${family ?: "null"},"module":{"id":"Demo","version":null},"source":{"file":"$file"},"range":${range(within)},"checksum":"0000000000000000","statements":[$statements],"sends":[]}"""
+    }
+
+    private fun tracedRun(): TraceRun {
+        val lines = listOf(
+            """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""",
+            body(
+                1, "Demo>>run:", RUN, null,
+                """{"instructions":[0,3],"range":${range(FIRST)}},{"instructions":[3,6],"range":${range(SECOND)}}""",
+            ),
+            body(2, "[] in Demo>>run:", BLOCK, 1, """{"instructions":[0,2],"range":${range(BLOCK_STATEMENT, BLOCK)}}"""),
+            """{"kind":"bytecode","body":1,"bodies":[""" +
+                """{"body":1,"instructions":[""" +
+                """{"index":0,"statement":0,"text":"LoadLiteral r3, 1"},{"index":1,"statement":0,"text":"SendPublic r4 <- r0 #+ (r3) @0"},""" +
+                """{"index":2,"statement":0,"text":"StoreLocal r2 <- r4"},{"index":3,"statement":1,"text":"MakeClosure r5, [] -> copying r2"},""" +
+                """{"index":4,"statement":1,"text":"SendPublic r6 <- r5 #value () @1"},{"index":5,"statement":1,"text":"Return r6"}]},""" +
+                """{"body":2,"instructions":[{"index":0,"statement":0,"text":"SendPublic r1 <- r0 #* (r2) @0"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
+            """{"kind":"code","body":1,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":40,"instructions":[""" +
+                """{"offset":0,"text":"push rbp","scope":null,"at":null,"annotation":null},""" +
+                """{"offset":1,"text":"mov rax,1","scope":0,"at":0,"annotation":null},""" +
+                """{"offset":5,"text":"call rcx","scope":0,"at":1,"annotation":"cell site 0"},""" +
+                """{"offset":7,"text":"call rdx","scope":0,"at":4,"annotation":"cell site 1"},""" +
+                """{"offset":9,"text":"jmp rbx","scope":null,"at":null,"annotation":"exit send @4"}],""" +
+                """"data":[{"offset":0,"word":"budget word"}],"scopes":[{"scope":0,"body":1,"parent":null}],"mark":null}""",
+            """{"kind":"code","body":1,"tier":"optimized","key":"Demo","entered":null,"architecture":"x64","bytes":24,"instructions":[""" +
+                """{"offset":0,"text":"add rax,2","scope":0,"at":1,"annotation":null},""" +
+                """{"offset":4,"text":"imul rax,rcx","scope":1,"at":0,"annotation":null},""" +
+                """{"offset":8,"text":"ret","scope":0,"at":5,"annotation":null}],""" +
+                """"data":[],"scopes":[{"scope":0,"body":1,"parent":null},{"scope":1,"body":2,"parent":[0,4]}],"mark":null}""",
+        )
+        return TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(lines.map { line -> checkNotNull(TraceRecord.parse(line)) }) }
+    }
+
+    private fun tab(run: TraceRun) = CodeTab(project, run, testRootDisposable, libraryDirectory = { null }, active = { true })
+
+    private fun openSource(): Editor {
+        myFixture.configureFromExistingVirtualFile(checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source)))
+        return myFixture.editor
+    }
+
+    private fun Editor.caretAt(part: String, within: String = part) {
+        caretModel.moveToOffset(DEMO.indexOf(part, DEMO.indexOf(within)) + 1)
+    }
+
+    /** The lines of [editor] the linked highlighting colours, each with its colour. */
+    private fun highlightedLines(editor: Editor): List<Pair<String, Int>> =
+        editor.markupModel.allHighlighters
+            .filter { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+            .sortedBy { highlighter -> highlighter.startOffset }
+            .map { highlighter ->
+                val line = editor.document.getLineNumber(highlighter.startOffset)
+                val text = editor.document.getText(TextRange(editor.document.getLineStartOffset(line), editor.document.getLineEndOffset(line)))
+                text to LINKED_STATEMENT_COLORS.indexOf(highlighter.textAttributesKey)
+            }
+
+    private fun choose(tab: CodeTab, label: String) {
+        tab.chooser.selectedIndex = (0 until tab.chooser.itemCount).first { index -> tab.chooser.getItemAt(index).label == label }
+    }
+
+    fun testTheTabFollowsTheCaret() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        assertEquals(1, tab.shownBody)
+        assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- bytecode {Demo>>run:}\n"))
+        editor.caretAt(BLOCK_STATEMENT, BLOCK)
+        assertEquals("the innermost body is the block's", 2, tab.shownBody)
+        // A block's bytecode is its method's listing; it has no machine code of its own.
+        assertEquals(listOf("bytecode"), (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label })
+        editor.caretAt("class Demo")
+        assertEquals("outside every body the tab stays", 2, tab.shownBody)
+    }
+
+    fun testTheChooserListsEveryCopy() {
+        val tab = tab(tracedRun())
+        tab.show(1)
+        assertEquals(
+            listOf("bytecode", "baseline", "optimized key=Demo"),
+            (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label },
+        )
+        assertEquals(
+            """
+            --- bytecode {Demo>>run:}
+               0   stmt 0  LoadLiteral r3, 1
+               1   stmt 0  SendPublic r4 <- r0 #+ (r3) @0
+               2   stmt 0  StoreLocal r2 <- r4
+               3   stmt 1  MakeClosure r5, [] -> copying r2
+               4   stmt 1  SendPublic r6 <- r5 #value () @1
+               5   stmt 1  Return r6
+            block {[] in Demo>>run:}
+               0   stmt 0  SendPublic r1 <- r0 #* (r2) @0
+               1   stmt 0  Return r1
+            --- end
+
+            """.trimIndent(),
+            tab.viewer.document.text,
+        )
+        choose(tab, "baseline")
+        assertEquals(
+            """
+            --- code {Demo>>run:} baseline x64 bytes=40
+                +0x0000  push rbp
+              @0  stmt 0  LoadLiteral r3, 1
+                +0x0001  mov rax,1
+              @1  stmt 0  SendPublic r4 <- r0 #+ (r3) @0
+                +0x0005  call rcx  ; cell site 0
+              @4  stmt 1  SendPublic r6 <- r5 #value () @1
+                +0x0007  call rdx  ; cell site 1
+              out of line
+                +0x0009  jmp rbx  ; exit send @4
+            data:
+                data+0x0000  budget word
+            --- end
+
+            """.trimIndent(),
+            tab.viewer.document.text,
+        )
+        choose(tab, "optimized key=Demo")
+        assertEquals(
+            """
+            --- code {Demo>>run:} optimized x64 key={Demo} bytes=24
+            scopes:
+              s0 {Demo>>run:}
+                s1 {[] in Demo>>run:} at s0@4
+              s0 {Demo>>run:} @1  stmt 0  SendPublic r4 <- r0 #+ (r3) @0
+                +0x0000  add rax,2
+              s1 {[] in Demo>>run:} @0  stmt 0  SendPublic r1 <- r0 #* (r2) @0
+                +0x0004  imul rax,rcx
+              s0 {Demo>>run:} @5  stmt 1  Return r6
+                +0x0008  ret
+            --- end
+
+            """.trimIndent(),
+            tab.viewer.document.text,
+        )
+    }
+
+    fun testAStatementHighlightsItsBytecodeAndItsMachineCode() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        // In the method's statement, outside the block it makes.
+        editor.caretAt("value", SECOND)
+        assertEquals(1, tab.shownBody)
+        assertEquals(
+            listOf(
+                "   3   stmt 1  MakeClosure r5, [] -> copying r2" to 1,
+                "   4   stmt 1  SendPublic r6 <- r5 #value () @1" to 1,
+                "   5   stmt 1  Return r6" to 1,
+            ),
+            highlightedLines(tab.viewer),
+        )
+        // The source's statement takes the same colour.
+        val statement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+        assertEquals(linkedColor(1), statement.textAttributesKey)
+        assertEquals(SECOND, editor.document.getText(statement.textRange))
+        choose(tab, "baseline")
+        assertEquals(
+            listOf("  @4  stmt 1  SendPublic r6 <- r5 #value () @1" to 1, "    +0x0007  call rdx  ; cell site 1" to 1),
+            highlightedLines(tab.viewer),
+        )
+        // Within the block, the optimized copy's lines of the inlined block's scope.
+        editor.caretAt(BLOCK_STATEMENT, BLOCK)
+        tab.show(1)
+        choose(tab, "optimized key=Demo")
+        assertEquals(
+            listOf("  s1 {[] in Demo>>run:} @0  stmt 0  SendPublic r1 <- r0 #* (r2) @0" to 0, "    +0x0004  imul rax,rcx" to 0),
+            highlightedLines(tab.viewer),
+        )
+    }
+
+    fun testACaretInTheListingHighlightsItsStatement() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        tab.show(1)
+        val viewer = tab.viewer
+        viewer.caretModel.moveToLogicalPosition(LogicalPosition(1, 0))
+        val statement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+        assertEquals(FIRST, editor.document.getText(statement.textRange))
+        assertEquals(linkedColor(0), statement.textAttributesKey)
+        assertEquals(3, highlightedLines(viewer).size)
+        // A block's line in its method's listing names the block's statement.
+        viewer.caretModel.moveToLogicalPosition(LogicalPosition(8, 0))
+        val blockStatement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+        assertEquals(BLOCK_STATEMENT, editor.document.getText(blockStatement.textRange))
+        // A line that stands for no instruction highlights nothing.
+        viewer.caretModel.moveToLogicalPosition(LogicalPosition(0, 0))
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+    }
+
+    fun testOpenInEditorOpensAFixedReadOnlyTab() {
+        val tab = tab(tracedRun())
+        tab.show(1)
+        choose(tab, "optimized key=Demo")
+        val shown = checkNotNull(tab.listing)
+        val file = tab.openInEditor(shown)
+        assertEquals("Demo>>run: optimized key=Demo", file.name)
+        val manager = FileEditorManager.getInstance(project)
+        assertTrue(manager.isFileOpen(file))
+        assertFalse(file.isWritable)
+        val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
+        assertFalse(document.isWritable)
+        assertEquals(shown.text, document.text)
+        // The tab stays while the tool window's view moves on.
+        choose(tab, "bytecode")
+        assertTrue(manager.isFileOpen(file))
+        assertEquals(shown.text, document.text)
+        // Its lines are linked as the tool window's are.
+        val listingEditor = checkNotNull(manager.getSelectedEditor(file) as? TextEditor).editor
+        val sourceEditor = openSource()
+        sourceEditor.caretAt(FIRST)
+        assertEquals(listOf("  s0 {Demo>>run:} @1  stmt 0  SendPublic r4 <- r0 #+ (r3) @0" to 0, "    +0x0000  add rax,2" to 0), highlightedLines(listingEditor))
+        // A listing of text alone, the debugger's frame code, links nothing.
+        val text = CodeListingFile("frame", "--- code {Demo>>run:} baseline x64 bytes=1\n--- end\n")
+        assertEquals("frame", text.name)
+        assertFalse(text.isWritable)
+    }
+
+    private companion object {
+        const val FIRST = "y:: x + 1"
+        const val SECOND = "^[y * 2] value"
+        const val BLOCK = "[y * 2]"
+        const val BLOCK_STATEMENT = "y * 2"
+        const val RUN = "run: x = (\n    | y |\n    y:: x + 1.\n    ^[y * 2] value\n  )"
+        val DEMO = "class Demo = () (\n  $RUN\n)\n"
+    }
+}
