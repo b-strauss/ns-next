@@ -32,6 +32,7 @@ import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
 import io.github.bstrauss.newspeak.devtool.LISTING_KINDS
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.devtool.TraceFilters
+import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.programModules
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
@@ -210,12 +211,16 @@ class NewspeakRunState(
      */
     var debugSecret: String? = null
 
+    /** Under Run and Debug alike: the debug runner starts its process through this state too. */
     override fun startProcess(): ProcessHandler {
-        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, filters = watchedFilters())
-        debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
-        val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
-        ProcessTerminatedListener.attach(handler)
-        return handler
+        val filters = watchedFilters()
+        return TracedRuns.getInstance(configuration.project).start(configuration, filters) { traceFile ->
+            val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, traceFile, filters)
+            debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
+            val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
+            ProcessTerminatedListener.attach(handler)
+            handler
+        }
     }
 
     /**
@@ -367,27 +372,44 @@ fun newspeakCommandLine(
     }
 }
 
-/** The options of the Developer Tool tab; each filter follows only the kind it narrows, which ns-next refuses to filter otherwise. */
-private fun developerToolOptions(configuration: NewspeakRunConfiguration, traceFile: Path?, filters: TraceFilters): List<String> = buildList {
+/**
+ * Whether a run of [configuration] narrowed by [filters] traces or lists
+ * anything, and so writes a trace file: ns-next refuses one otherwise.
+ */
+fun writesTrace(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    configuration.command == NewspeakCommand.RUN && (tracesEvents(configuration, filters) || printsListings(configuration, filters))
+
+private fun tracedCategories(configuration: NewspeakRunConfiguration): List<String> =
+    TRACE_CATEGORIES.filter { name -> name in configuration.options.traceCategories }
+
+private fun listedKinds(configuration: NewspeakRunConfiguration): List<String> {
     val options = configuration.options
-    val categories = TRACE_CATEGORIES.filter { name -> name in options.traceCategories }
-    val events = categories.isNotEmpty() && !filters.noEvents
-    val kinds = LISTING_KINDS.filter { kind ->
+    return LISTING_KINDS.filter { kind ->
         when (kind) {
             "bytecode" -> options.printBytecode
             "code" -> options.printCode
             else -> options.printInlining
         }
     }
-    val listings = kinds.isNotEmpty() && !filters.noListings
-    if (events) {
+}
+
+private fun tracesEvents(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    tracedCategories(configuration).isNotEmpty() && !filters.noEvents
+
+private fun printsListings(configuration: NewspeakRunConfiguration, filters: TraceFilters): Boolean =
+    listedKinds(configuration).isNotEmpty() && !filters.noListings
+
+/** The options of the Developer Tool tab; each filter follows only the kind it narrows, which ns-next refuses to filter otherwise. */
+private fun developerToolOptions(configuration: NewspeakRunConfiguration, traceFile: Path?, filters: TraceFilters): List<String> = buildList {
+    val categories = tracedCategories(configuration)
+    if (tracesEvents(configuration, filters)) {
         add(if (categories.size == TRACE_CATEGORIES.size) "--trace=all" else "--trace=${categories.joinToString(",")}")
         filters.events.forEach { pattern -> add("--trace-filter=$pattern") }
     }
-    if (listings) {
-        kinds.forEach { kind -> add("--print-$kind") }
+    if (printsListings(configuration, filters)) {
+        listedKinds(configuration).forEach { kind -> add("--print-$kind") }
         filters.listings.forEach { pattern -> add("--print-filter=$pattern") }
     }
     // ns-next refuses a trace file when nothing is traced or printed.
-    if ((events || listings) && traceFile != null) add("--trace-file=$traceFile")
+    if (traceFile != null && writesTrace(configuration, filters)) add("--trace-file=$traceFile")
 }

@@ -1,0 +1,121 @@
+package io.github.bstrauss.newspeak.devtool
+
+import com.intellij.execution.process.NopProcessHandler
+import com.intellij.execution.process.ProcessHandler
+import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.content.ContentFactory
+import com.intellij.ui.content.ContentManager
+import io.github.bstrauss.newspeak.devtool.ui.RunPanel
+import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
+import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
+import java.nio.file.Files
+import java.nio.file.Path
+
+class TracedRunsTest : BasePlatformTestCase() {
+    private lateinit var contents: ContentManager
+
+    /** Runs of their own, never the project's service, which outlives a test, over [contents] for the tool window's. */
+    private lateinit var tracedRuns: TracedRuns
+
+    override fun setUp() {
+        super.setUp()
+        contents = ContentFactory.getInstance().createContentManager(true, project)
+        Disposer.register(testRootDisposable, contents)
+        tracedRuns = TracedRuns(project) { contents }
+        Disposer.register(testRootDisposable, tracedRuns)
+    }
+
+    private fun configuration(name: String, traced: Boolean = true): NewspeakRunConfiguration =
+        (NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration).apply {
+            setName(name)
+            program = "/work/app/Hello.ns"
+            if (traced) options.traceCategories = mutableListOf("compile")
+        }
+
+    /** Starts a run of [configuration] as `startProcess` does, with a process of the test's own; answers the file it was handed. */
+    private fun start(configuration: NewspeakRunConfiguration, handler: ProcessHandler = NopProcessHandler()): Path? {
+        var handed: Path? = null
+        tracedRuns.start(configuration, TraceFilters.EVERYTHING) { traceFile ->
+            handed = traceFile
+            handler
+        }
+        return handed
+    }
+
+    private fun waitUntil(condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (!condition()) {
+            assertTrue("timed out", System.currentTimeMillis() < deadline)
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(20)
+        }
+    }
+
+    fun testAStartedRunGetsItsTabAndIsSelected() {
+        val file = checkNotNull(start(configuration("Hello")))
+        assertTrue(file.startsWith(Path.of(PathManager.getTempPath(), "newspeak-trace")))
+        val run = tracedRuns.runs.single()
+        assertTrue(run.name, run.name.matches(Regex("""Hello \d\d:\d\d:\d\d""")))
+        assertSame(run, tracedRuns.selected)
+        val content = contents.contents.single()
+        assertEquals(run.name, content.displayName)
+        assertTrue(content.isCloseable)
+        assertSame(run, (content.component as RunPanel).run)
+        assertSame(content, contents.selectedContent)
+    }
+
+    fun testTheRunReadsItsFileToTheEndOnceTheProcessTerminates() {
+        val handler = NopProcessHandler()
+        val file = checkNotNull(start(configuration("Hello"), handler))
+        val run = tracedRuns.selected!!
+        handler.startNotify()
+        Files.writeString(file, """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""" + "\n")
+        handler.destroyProcess()
+        waitUntil { run.architecture == "x64" }
+    }
+
+    fun testClosingTheTabDeletesTheFile() {
+        val file = checkNotNull(start(configuration("Hello")))
+        Files.writeString(file, """{"kind":"header","format":"ns-next-trace","version":1,"architecture":null}""" + "\n")
+        var told = 0
+        tracedRuns.addListener({ told++ }, testRootDisposable)
+        contents.removeContent(contents.contents.single(), true)
+        assertEmpty(tracedRuns.runs)
+        assertNull(tracedRuns.selected)
+        assertTrue(told > 0)
+        waitUntil { !Files.exists(file) }
+    }
+
+    fun testTheNewestRunIsSelected() {
+        start(configuration("First"))
+        start(configuration("Second"))
+        val (first, second) = tracedRuns.runs
+        assertSame(second, tracedRuns.selected)
+        assertEquals(second.name, contents.selectedContent?.displayName)
+        // Selecting a tab selects its run, and closing the selected one selects the newest left.
+        contents.setSelectedContent(contents.contents.first())
+        assertSame(first, tracedRuns.selected)
+        start(configuration("Third"))
+        tracedRuns.close(tracedRuns.selected!!)
+        assertEquals(listOf(first, second), tracedRuns.runs)
+        assertSame(second, tracedRuns.selected)
+        assertEquals(2, contents.contentCount)
+    }
+
+    fun testARunWithoutTracingStartsNothing() {
+        assertNull(start(configuration("Hello", traced = false)))
+        // Watched methods that want no event of a run that lists nothing leave nothing to trace either.
+        var handed: Path? = Path.of("unset")
+        tracedRuns.start(configuration("Hello"), TraceFilters(emptyList(), emptyList(), noEvents = true, noListings = false)) { traceFile ->
+            handed = traceFile
+            NopProcessHandler()
+        }
+        assertNull(handed)
+        assertEmpty(tracedRuns.runs)
+        assertNull(tracedRuns.selected)
+        assertEquals(0, contents.contentCount)
+    }
+}
