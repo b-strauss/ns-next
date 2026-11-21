@@ -41,6 +41,9 @@ pub struct Analysis {
     pub symbols: Vec<Symbol>,
     /// Every method named in the tools' syntax (`method_names.rs`).
     pub method_names: Vec<crate::method_names::MethodName>,
+    /// The module's id and version, as the loader gives them
+    /// (`method_names.rs`); `None` where it refuses them.
+    pub module_identity: Option<crate::method_names::ModuleIdentity>,
     pub hints: Vec<crate::hints::Hint>,
 }
 
@@ -84,6 +87,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                 folds: Vec::new(),
                 symbols: Vec::new(),
                 method_names: Vec::new(),
+                module_identity: None,
                 hints: Vec::new(),
             }
         }
@@ -124,7 +128,9 @@ fn analyze_unguarded(text: &str, path: Option<&Path>) -> Analysis {
     }
     let folds = folding::folds(&resolution.module, &comments, text);
     let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
-    let method_names = crate::method_names::method_names(&resolution.module, text);
+    let module_identity = crate::method_names::module_identity(&resolution.module, text);
+    let method_names =
+        crate::method_names::method_names(&resolution.module, module_identity.as_ref());
     // Only a source that parses without error gets hints: their fixes are
     // made against the tree `parse` answers.
     let hints = crate::hints::hints_of(text);
@@ -148,6 +154,7 @@ fn analyze_unguarded(text: &str, path: Option<&Path>) -> Analysis {
         folds,
         symbols,
         method_names,
+        module_identity,
         hints,
     }
 }

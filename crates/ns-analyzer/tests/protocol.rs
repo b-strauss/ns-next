@@ -1422,3 +1422,51 @@ fn method_names_answer_the_tool_names() {
     );
     shut_down(&client, server_thread);
 }
+
+/// A module's id and version as the loader gives them; `null` for a
+/// `:module:` the loader refuses.
+#[test]
+fn module_identity_answers_the_loader_s_id_and_version() {
+    let (client, server_thread) = initialized_server();
+    let identity = |id: i32, uri: &str, text: &str| {
+        open_document(&client, uri, text);
+        request(
+            &client,
+            id,
+            "newspeak/moduleIdentity",
+            json!({ "textDocument": { "uri": uri } }),
+        )
+    };
+    assert_eq!(
+        identity(
+            2,
+            "file:///C:/work/Demo.ns",
+            indoc! {"
+                (* :module: com.acme.Demo@1.2.0 *)
+                class Demo = () ()
+            "}
+        ),
+        json!({ "id": "com.acme.Demo", "version": "1.2.0" })
+    );
+    assert_eq!(
+        identity(
+            3,
+            "file:///C:/work/Plain.ns",
+            "class Plain = () ()
+"
+        ),
+        json!({ "id": "Plain", "version": null })
+    );
+    assert_eq!(
+        identity(
+            4,
+            "file:///C:/work/Wrong.ns",
+            indoc! {"
+                (* :module: com.acme.Other *)
+                class Wrong = () ()
+            "}
+        ),
+        Value::Null
+    );
+    shut_down(&client, server_thread);
+}

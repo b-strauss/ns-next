@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.devtool
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.ui.TableUtil
 import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.table.TableView
@@ -46,8 +47,15 @@ class WatchedMethodsDialog(private val project: Project) : DialogWrapper(project
 
     override fun getPreferredFocusedComponent(): JComponent = table
 
-    override fun doOKAction() {
+    /** A pattern `ns-next run` would refuse as not of the form, which would end every traced run with status 2. */
+    override fun doValidate(): ValidationInfo? {
         // A pattern still being typed counts.
+        TableUtil.stopEditing(table)
+        val malformed = firstMalformedPattern(model.items) ?: return null
+        return ValidationInfo(NewspeakBundle.message("devtool.watched.methods.malformed", malformed), table)
+    }
+
+    override fun doOKAction() {
         TableUtil.stopEditing(table)
         WatchedMethods.getInstance(project).replaceEntries(model.items)
         super.doOKAction()
@@ -87,3 +95,7 @@ class WatchedMethodsDialog(private val project: Project) : DialogWrapper(project
         const val SWITCH_COLUMN_PADDING = 24
     }
 }
+
+/** The first pattern of [entries] not of the trace filter's form, an empty one left out as OK leaves it out; null when there is none. */
+fun firstMalformedPattern(entries: List<WatchedMethods.Entry>): String? =
+    entries.map { entry -> entry.pattern.trim() }.firstOrNull { pattern -> pattern.isNotEmpty() && patternModule(pattern) == null }

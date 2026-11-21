@@ -29,7 +29,21 @@ interface NewspeakLanguageServer : LanguageServer {
      */
     @JsonRequest("newspeak/methodNames")
     fun methodNames(parameters: MethodNamesParameters): CompletableFuture<List<MethodNamesEntry>>
+
+    /**
+     * A document's module id and version as the loader gives them; null
+     * for a `:module:` the loader refuses. A document never opened is read
+     * from disk.
+     */
+    @JsonRequest("newspeak/moduleIdentity")
+    fun moduleIdentity(parameters: ModuleIdentityParameters): CompletableFuture<ModuleIdentityAnswer?>
 }
+
+/** The module identity request's parameters: the document asked about. */
+class ModuleIdentityParameters(val textDocument: TextDocumentIdentifier)
+
+/** The module's id and its version, null for a module without one; read by Gson. */
+class ModuleIdentityAnswer(val id: String? = null, val version: String? = null)
 
 /** The method names request's parameters: the document asked about. */
 class MethodNamesParameters(val textDocument: TextDocumentIdentifier)

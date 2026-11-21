@@ -15,6 +15,7 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
@@ -25,6 +26,7 @@ import com.intellij.util.xmlb.annotations.Tag
 import com.intellij.util.xmlb.annotations.XCollection
 import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
 import io.github.bstrauss.newspeak.lsp.MethodNamesParameters
+import io.github.bstrauss.newspeak.lsp.ModuleIdentityParameters
 import io.github.bstrauss.newspeak.lsp.NewspeakLanguageServer
 import io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider
 import io.github.bstrauss.newspeak.run.NewspeakRunConfiguration
@@ -99,15 +101,22 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
 
     /**
      * The filters a traced run is given: everything for an empty list, and
-     * otherwise each kind narrowed to the entries that want it; a kind no
-     * entry wants is not asked for at all, since a run without a pattern
-     * would trace every body.
+     * otherwise each kind narrowed to the entries that want it and that the
+     * run takes -- of the form, and, given the [modules] of the run's
+     * program and the binary, each id with its versions, naming one of
+     * them ([runTakes]) -- since `ns-next run` refuses any other with exit
+     * status 2. A kind left without a pattern is not asked for at all,
+     * since a run without a pattern would trace every body. Without
+     * [modules] only the form is checked.
      */
-    fun filters(): TraceFilters {
+    fun filters(modules: Map<String, Set<String>>? = null): TraceFilters {
         val current = entries
         if (current.isEmpty()) return TraceFilters.EVERYTHING
-        val events = current.filter(Entry::events).map(Entry::pattern)
-        val listings = current.filter(Entry::listings).map(Entry::pattern)
+        val taken = current.filter { entry ->
+            if (modules == null) patternModule(entry.pattern) != null else runTakes(entry.pattern, modules)
+        }
+        val events = taken.filter(Entry::events).map(Entry::pattern)
+        val listings = taken.filter(Entry::listings).map(Entry::pattern)
         return TraceFilters(events, listings, noEvents = events.isEmpty(), noListings = listings.isEmpty())
     }
 
@@ -160,15 +169,34 @@ class WatchedMethods(private val project: Project) : PersistentStateComponent<Wa
         replaceEntries(state.entries)
     }
 
-    /** Null when there is no client yet or no answer in time; with no client it starts one, as `DocumentSymbolCache` does. */
-    private fun askServer(file: VirtualFile): List<MethodName>? {
+    /**
+     * The id and version the loader gives the module of [file], as the
+     * server answers them; null with no client yet, no answer in time, or
+     * a `:module:` the loader refuses. Waits, so never on the event
+     * dispatch thread.
+     */
+    fun moduleIdentity(file: VirtualFile): ModuleIdentity? {
+        val client = client() ?: return null
+        val parameters = ModuleIdentityParameters(client.getDocumentIdentifier(file))
+        val answer = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
+            (server as NewspeakLanguageServer).moduleIdentity(parameters)
+        } ?: return null
+        val id = answer.id ?: return null
+        return ModuleIdentity(id, answer.version)
+    }
+
+    /** The server's client; with none it starts one, as `DocumentSymbolCache` does, and answers null. */
+    private fun client(): LspClient? {
         val client = LspClientManager.getInstance(project)
             .getClients(NewspeakLspIntegrationProvider::class.java)
             .firstOrNull()
-        if (client == null) {
-            NewspeakLspIntegrationProvider.registered()?.startClient(project)
-            return null
-        }
+        if (client == null) NewspeakLspIntegrationProvider.registered()?.startClient(project)
+        return client
+    }
+
+    /** Null when there is no client yet or no answer in time; with no client it starts one, as `DocumentSymbolCache` does. */
+    private fun askServer(file: VirtualFile): List<MethodName>? {
+        val client = client() ?: return null
         val document = ReadAction.computeBlocking<Document?, RuntimeException> {
             FileDocumentManager.getInstance().getDocument(file)
         } ?: return null
@@ -219,23 +247,21 @@ private fun textRange(document: Document, start: Position, end: Position): TextR
 }
 
 /**
- * Whether [pattern] covers the method [name], as the runtime's filter
- * reads it: the same method, a pattern without a version covering every
- * version of its id and a name without one every pattern's; or, for a
- * trailing `...`, a name that begins with the rest, the name's version
- * left out where the prefix names none.
+ * Whether [pattern] covers the method [name]. One rule for both kinds of
+ * pattern: a pattern without a version covers every version of its id, a
+ * name's version left out before it is compared; a pattern with one
+ * covers that version only, never a name without a version -- as the
+ * runtime's filter matches a body (`ModuleName::covers`). A pattern is
+ * then the same name, or for a trailing `...` a beginning of it. Only
+ * the editor asks this, of names it shows; a run's filter is the
+ * runtime's own.
  */
 internal fun covers(pattern: String, name: String): Boolean {
-    if (pattern.endsWith(WatchedMethods.PREFIX_MARK)) {
-        val prefix = pattern.removeSuffix(WatchedMethods.PREFIX_MARK)
-        if (name.startsWith(prefix)) return true
-        val idEnd = idEnd(prefix)
-        return '@' !in prefix.substring(0, idEnd) && withoutVersion(name).startsWith(prefix)
-    }
-    val (patternId, patternVersion, patternRest) = parts(pattern)
-    val (nameId, nameVersion, nameRest) = parts(name)
-    return patternId == nameId && patternRest == nameRest &&
-        (patternVersion == null || nameVersion == null || patternVersion == nameVersion)
+    val prefix = pattern.endsWith(WatchedMethods.PREFIX_MARK)
+    val stem = pattern.removeSuffix(WatchedMethods.PREFIX_MARK)
+    val versioned = '@' in stem.substring(0, idEnd(stem))
+    val compared = if (versioned) name else withoutVersion(name)
+    return if (prefix) compared.startsWith(stem) else compared == stem
 }
 
 /**
@@ -297,25 +323,69 @@ private class Listed(val alias: String?)
 
 /** How [projectFile] lists [module]; null where it does not, or cannot be read as a project file. */
 private fun listedAlias(projectFile: VirtualFile, module: VirtualFile): Listed? {
+    val directory = projectFile.parent ?: return null
+    val entry = projectModuleEntries(projectFile)?.firstOrNull { entry -> directory.findFileByRelativePath(entry.path) == module } ?: return null
+    return Listed(entry.alias)
+}
+
+/** A module a project file names: its [path], `/`-separated and relative to the file's directory, and its `as`. */
+internal data class ProjectModuleEntry(val path: String, val alias: String?)
+
+/**
+ * The modules [projectFile] names -- `main`'s first, then each of
+ * `modules` -- as written; null where it cannot be read as a project
+ * file, as one being typed cannot, ns-next refusing it at the start.
+ */
+internal fun projectModuleEntries(projectFile: VirtualFile): List<ProjectModuleEntry>? {
     val root = try {
         JsonParser.parseString(VfsUtilCore.loadText(projectFile)) as? JsonObject
     } catch (_: Exception) {
-        // A project file being typed is no project file yet; the analyzer's id stands.
         null
     } ?: return null
-    val modules = root.get("modules")?.takeIf { element -> element.isJsonArray }?.asJsonArray ?: return null
-    val directory = projectFile.parent ?: return null
+    val entries = mutableListOf<ProjectModuleEntry>()
+    root.get("main")?.takeIf { element -> element.isJsonPrimitive }?.asString?.let { main -> entries += ProjectModuleEntry(FileUtil.toSystemIndependentName(main), null) }
+    val modules = root.get("modules")?.takeIf { element -> element.isJsonArray }?.asJsonArray ?: return entries
     for (entry in modules) {
-        val (path, alias) = when {
-            entry.isJsonPrimitive && entry.asJsonPrimitive.isString -> entry.asString to null
+        when {
+            entry.isJsonPrimitive && entry.asJsonPrimitive.isString -> entries += ProjectModuleEntry(FileUtil.toSystemIndependentName(entry.asString), null)
             entry.isJsonObject -> {
                 val fields = entry.asJsonObject
                 val path = fields.get("path")?.takeIf { element -> element.isJsonPrimitive }?.asString ?: continue
-                path to fields.get("as")?.takeIf { element -> element.isJsonPrimitive }?.asString
+                entries += ProjectModuleEntry(FileUtil.toSystemIndependentName(path),fields.get("as")?.takeIf { element -> element.isJsonPrimitive }?.asString)
             }
-            else -> continue
         }
-        if (directory.findFileByRelativePath(path.replace('\\', '/')) == module) return Listed(alias)
     }
-    return null
+    return entries
+}
+
+/** A module's id and version as the loader gives them, the analyzer's `newspeak/moduleIdentity`. */
+data class ModuleIdentity(val id: String, val version: String?)
+
+/**
+ * The modules a run of [programFile] -- a project's `newspeak.json` or one
+ * module's source -- and the binary have, each id with its versions: each
+ * module the project file names by the id its `as` gives, else the one
+ * [identityOf] answers, and every shipped module. A module whose identity
+ * is not known is left out, so a pattern naming it is not passed: a run
+ * refused is worse than a watch left out.
+ */
+fun programModules(programFile: VirtualFile?, identityOf: (VirtualFile) -> ModuleIdentity?): Map<String, Set<String>> {
+    val modules = SHIPPED_MODULE_IDS.associateWithTo(LinkedHashMap<String, MutableSet<String>>()) { mutableSetOf() }
+    fun add(id: String, version: String?) {
+        val versions = modules.getOrPut(id) { mutableSetOf() }
+        version?.let(versions::add)
+    }
+    if (programFile == null) return modules
+    if (programFile.name == PROJECT_FILE_NAME) {
+        val directory = programFile.parent ?: return modules
+        for (entry in projectModuleEntries(programFile).orEmpty()) {
+            val file = directory.findFileByRelativePath(entry.path)
+            val identity = file?.let(identityOf)
+            val id = entry.alias ?: identity?.id ?: continue
+            add(id, identity?.version)
+        }
+    } else {
+        identityOf(programFile)?.let { identity -> add(identity.id, identity.version) }
+    }
+    return modules
 }

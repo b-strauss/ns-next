@@ -149,6 +149,7 @@ fn answer(
         HoverRequest::METHOD => hover_of(documents, request),
         breakable::METHOD => breakable_lines_of(documents, breakable, request),
         method_names::METHOD => method_names_of(documents, request),
+        method_names::IDENTITY_METHOD => module_identity_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -279,24 +280,7 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
 /// at a gutter's line of any file it shows. A URI that names no readable
 /// file has no methods.
 fn method_names_of(documents: &HashMap<String, Document>, request: Request) -> Response {
-    let identifier: Result<TextDocumentIdentifier, _> = serde_json::from_value(
-        request
-            .params
-            .get("textDocument")
-            .cloned()
-            .unwrap_or_default(),
-    );
-    let identifier = match identifier {
-        Ok(identifier) => identifier,
-        Err(error) => {
-            return Response::new_err(
-                request.id,
-                ErrorCode::InvalidParams as i32,
-                format!("malformed {} request: {error}", method_names::METHOD),
-            );
-        }
-    };
-    let encode = |document: &Document| -> Vec<serde_json::Value> {
+    let encode = |document: &Document| -> serde_json::Value {
         let range = |span: Span| {
             Range::new(
                 document.line_index.position(&document.text, span.start),
@@ -316,13 +300,68 @@ fn method_names_of(documents: &HashMap<String, Document>, request: Request) -> R
             })
             .collect()
     };
-    let names = match documents.get(identifier.uri.as_str()) {
-        Some(document) => encode(document),
-        None => document_on_disk(&identifier.uri)
-            .map(|document| encode(&document))
-            .unwrap_or_default(),
+    answer_of_document(
+        documents,
+        request,
+        method_names::METHOD,
+        encode,
+        serde_json::json!([]),
+    )
+}
+
+/// A document's module id and version as the loader gives them
+/// (`method_names.rs`): `{"id", "version"}`, the version `null` for a
+/// module without one, and `null` for a module whose `:module:` the
+/// loader refuses or a URI that names no readable file. A document never
+/// opened is read from disk: the plugin asks of every module a program
+/// names, open or not.
+fn module_identity_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let encode = |document: &Document| -> serde_json::Value {
+        document.analysis.module_identity.as_ref().map_or(
+            serde_json::Value::Null,
+            |identity| serde_json::json!({ "id": identity.id, "version": identity.version }),
+        )
     };
-    Response::new_ok(request.id, names)
+    answer_of_document(
+        documents,
+        request,
+        method_names::IDENTITY_METHOD,
+        encode,
+        serde_json::Value::Null,
+    )
+}
+
+/// The answer `encode` makes of the document a request's `textDocument`
+/// names: an open one's, else the file on disk's, else `absent`.
+fn answer_of_document(
+    documents: &HashMap<String, Document>,
+    request: Request,
+    method: &str,
+    encode: impl Fn(&Document) -> serde_json::Value,
+    absent: serde_json::Value,
+) -> Response {
+    let identifier: Result<TextDocumentIdentifier, _> = serde_json::from_value(
+        request
+            .params
+            .get("textDocument")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let identifier = match identifier {
+        Ok(identifier) => identifier,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                format!("malformed {method} request: {error}"),
+            );
+        }
+    };
+    let answer = match documents.get(identifier.uri.as_str()) {
+        Some(document) => encode(document),
+        None => document_on_disk(&identifier.uri).map_or(absent, |document| encode(&document)),
+    };
+    Response::new_ok(request.id, answer)
 }
 
 /// The file `uri` names, read and analysed as `didOpen` would have it, or

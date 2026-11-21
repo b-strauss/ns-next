@@ -14,11 +14,15 @@ import com.intellij.execution.process.KillableColoredProcessHandler
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessTerminatedListener
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.options.SettingsEditorGroup
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.NewspeakBundle
@@ -29,6 +33,7 @@ import io.github.bstrauss.newspeak.devtool.LISTING_KINDS
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
+import io.github.bstrauss.newspeak.devtool.programModules
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -206,13 +211,36 @@ class NewspeakRunState(
     var debugSecret: String? = null
 
     override fun startProcess(): ProcessHandler {
-        // The watched methods as they stand at the start: a later change applies to the next run.
-        val filters = WatchedMethods.getInstance(configuration.project).filters()
-        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, filters = filters)
+        val commandLine = newspeakProcessCommandLine(runtime, configuration, debugAddress, filters = watchedFilters())
         debugSecret?.let { secret -> commandLine.withEnvironment(DEBUG_SECRET_VARIABLE, secret) }
         val handler = if (debugAddress == null) KillableColoredProcessHandler(commandLine) else NewspeakDebuggeeProcessHandler(commandLine)
         ProcessTerminatedListener.attach(handler)
         return handler
+    }
+
+    /**
+     * The watched methods as they stand at the start, a later change
+     * applying to the next run, narrowed to the patterns this run's
+     * program and the binary have a module for, which ns-next would
+     * refuse otherwise. Asking the server for the program's modules waits,
+     * so on the event dispatch thread it waits under a modal progress.
+     */
+    private fun watchedFilters(): TraceFilters {
+        val watched = WatchedMethods.getInstance(configuration.project)
+        if (watched.entries.isEmpty() || !configuration.tracesAnything()) return TraceFilters.EVERYTHING
+        val programFile = programFilePath(configuration)?.let(LocalFileSystem.getInstance()::findFileByNioFile)
+        val read = { programModules(programFile, watched::moduleIdentity) }
+        val modules = if (ApplicationManager.getApplication().isDispatchThread) {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                ThrowableComputable<Map<String, Set<String>>, RuntimeException> { read() },
+                NewspeakBundle.message("devtool.watched.methods.reading"),
+                true,
+                configuration.project,
+            )
+        } else {
+            read()
+        }
+        return watched.filters(modules)
     }
 }
 
