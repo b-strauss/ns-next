@@ -1490,23 +1490,32 @@ editor that shows its body -- the selected editor of each window, a
 background tab showing nothing -- to the statement, bringing the body's
 file forward, or opening it, behind the viewer and with its caret where
 it is where no editor shows it, by the rule a view opens a file by, so
-that a body without a range in its file is opened nowhere; each only
-where the lines are not shown already. It scrolls and never moves a
-caret. What its opening of a file sets off is not followed, so that
-neither direction sets the other off, at whatever time the platform
-finishes: the one selection change the opening makes, and, until the
+that a body without a range in its file is opened nowhere, and a file
+found only after the toggle went off or the tab closed is not opened;
+each only where the lines are not shown already, and only once the
+editor's viewport shows -- a hidden tool window lays the viewer out
+with no extent. It scrolls and never moves a caret. Turning the toggle
+on brings the viewer to the source's caret at once. What its opening
+of a file sets off is not followed, so that neither direction sets the
+other off, at whatever time the platform finishes: everything within
+the opening's call; the one selection change the opening makes, which
+the platform publishes from a coroutine, after the input that caused
+it, and none where the selection did not change; and, until the
 opening is over, every caret move in any editor of the file but one
-made by the user's click or key. The opening is over once, for a file
-not open before, the platform has told that it opened the file, which
-it does after restoring the editors' saved state
-(`EditorComposite.applyFileEditorsInEdt`), and the editors the file has
-then are loaded; it is dropped when the file is closed or its editors
-are released first. The tab then follows the editors as any again, a
-debugger's step included, and scrolls them once their viewport shows,
-queued in the editor's own modality so that it comes after the
-platform's own scroll to the restored caret; the wait ends with the
-tab, the toggle going off and the editor's release, and a queued scroll
-runs no more once the tab is gone or the toggle off. Turning the toggle off ends every opening at once. The plugin's
+made by the user's click or key. The opening is over once the platform
+has told that it opened each composite the call made, in this window
+or another, which it does after restoring their editors' saved state
+(`EditorComposite.applyFileEditorsInEdt`), and the file's editors are
+loaded; a call that made none, which brought a tab forward, restores
+nothing. It is dropped when nothing opened, when the file is closed or
+when its editors are released first. The tab then follows the editors
+as any again, a debugger's step included, and scrolls them to the
+statement the viewer's caret names by then, queued in the editor's own
+modality so that it comes after the platform's own scroll to the
+restored caret; the wait ends with the tab, the toggle going off and
+the editor's release, and a queued scroll runs no more once the tab is
+gone or the toggle off. Turning the toggle off ends every opening at
+once. The plugin's
 listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
@@ -1560,8 +1569,9 @@ between the longest common start and end of the old and the new, so
 that a step leaves the view where the text is unchanged, then putting
 each editor's caret at the marked line and scrolling it into view only
 where it is not shown, that one line coloured whole in every editor of
-the tab as the debugger's execution point is in a source editor, until
-a text marks none or the follower ends, its lifetime the
+the tab as the debugger's execution point is in a source editor, while
+the program stands at a stop, until a text marks none or the follower
+ends, its lifetime the
 session's (`NewspeakDebugProcess.sessionLifetime`); a refusal is shown
 as a notification of the plugin's group with the agent's words
 ([debugger.md](debugger.md), "The JetBrains plugin").
@@ -1637,18 +1647,25 @@ again, the listings, a block nested where the record names its
 `MakeClosure`, the linked highlighting,
 kept through another editor's caret and gone with an edit, scrolling
 with the editor in either direction, off by default and remembered,
-a background tab brought forward and scrolled, a file opened for it
-scrolled once loaded and told opened, after the platform's scroll to
-the restored caret, followed while its opening lasts in the user's
-input alone, in every editor of it, and in everything after, a file
-closed meanwhile followed when opened again, everything followed again
-and nothing scrolled once the toggle is off or the tab gone, a line of no statement scrolling nothing,
-and the editor tab; `FrameCodeFollowerTest` the frame's code written as a
+a background tab brought forward and scrolled, the user's clicks and
+keys followed as production makes them, a file opened for it scrolled
+once loaded and told opened, after the platform's scroll to the
+restored caret and to the viewer's statement of then, followed while
+its opening lasts in the user's input alone, in every editor of it,
+and in everything after, a file closed meanwhile followed when opened
+again, a file found after the toggle went off not opened, a viewer not
+shown scrolled once it shows, the toggle turned on scrolling at once,
+everything followed again and nothing scrolled once the toggle is off
+or the tab gone, a line of no statement scrolling nothing, and the
+editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, that line alone coloured as the
 execution point in every editor of the tab, only the tab's last editor
-ending the follower, and a deferred step expiring with its lifetime. `NewspeakDebugProcessTest`, in
+ending the follower, and a deferred step expiring with its lifetime.
+`NewspeakDebugProcessTest`, in
 `debugProcessTest`, runs Show Frame Code against the real runtime, the
-marked line coloured and the colour gone at the session's end, and
+marked line coloured and the colour gone at the session's end, the
+colour gone while the program runs and back at the next stop against a
+fake agent, and
 its refusal against a fake agent. And
 `TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`
 (`runsLikeUnitTests`, `debugsWithTheRuntime`), runs a configuration

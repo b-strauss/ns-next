@@ -15,6 +15,7 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -36,6 +37,7 @@ import java.nio.file.Path
 import java.awt.Container
 import java.awt.Rectangle
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.ListCellRenderer
@@ -141,7 +143,7 @@ class CodeTabTest : BasePlatformTestCase() {
         return CodeTab(
             project, run, parent, tracedRuns, decorations, { null }, { userInput },
             { _, action -> if (loadingDeferred) whenLoadedActions += action else action.run() },
-            if (openedDeferred) { _, action -> whenOpenedActions += action } else null,
+            { _, action -> if (openedDeferred) whenOpenedActions += action else action.run() },
         ) { editor -> editor.scrollingModel.visibleArea.height > 0 }
     }
 
@@ -865,6 +867,139 @@ class CodeTabTest : BasePlatformTestCase() {
         }
     }
 
+    /** Opens a second Newspeak file in front of Demo.ns, which stays open in a background tab. */
+    private fun openUnrelatedInFront(): VirtualFile {
+        val otherPath = source.resolveSibling("Unrelated.ns")
+        Files.writeString(otherPath, "class Unrelated = () ()\n")
+        val other = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(otherPath))
+        FileEditorManager.getInstance(project).openFile(other, true)
+        return other
+    }
+
+    /**
+     * The user's path as production takes it: every caret move made by a
+     * click or a key. The selection the opening makes, which the fixture
+     * delivers within the user's click, is the opening's still; the
+     * source's caret is followed as ever.
+     */
+    fun testAUsersClickInTheViewerBringsABackgroundTabForwardAndTheSourceStillLeads() {
+        userInput = true
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val file = checkNotNull(editor.virtualFile)
+        openUnrelatedInFront()
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        val manager = FileEditorManager.getInstance(project)
+        assertTrue(file in manager.selectedFiles)
+        assertEquals("the opening's selection is not followed", 2 to 0, tab.highlighting.selected)
+        assertEquals(1, tab.shownBody)
+        editor.caretAt(OTHER_STATEMENT)
+        assertEquals("the user's caret in the source is followed", 3, tab.shownBody)
+    }
+
+    fun testAUsersClickInTheViewerOpensTheSourceWithoutJitter() {
+        userInput = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(0, opened.caretModel.offset)
+        assertEquals(2 to 0, tab.highlighting.selected)
+        assertEquals(1, tab.shownBody)
+    }
+
+    fun testAFinishedOpeningScrollsToTheViewersStatementOfThen() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        showLines(opened, 1)
+        // The viewer's caret moves on to the method's first statement while the file still loads.
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(2, 0))
+        assertEquals(1 to 0, tab.highlighting.selected)
+        endLoading()
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        val firstLine = opened.document.getLineNumber(DEMO.indexOf(FIRST))
+        assertTrue("the source shows the viewer's statement", shows(opened, firstLine, firstLine))
+        assertFalse(showsTheBlockStatementOnly(opened))
+    }
+
+    fun testAFileFoundAfterTheToggleWentOffIsNotOpened() {
+        // A file made after the file system listed its directory, which it then does not hold until a refresh.
+        val directory = Files.createTempDirectory("newspeak-code-tab-unseen")
+        checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory)).children
+        source = directory.resolve("Demo.ns")
+        Files.writeString(source, DEMO)
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        tab.show(1)
+        // The file system does not hold the file yet: it is looked up on a pooled thread.
+        assertNull(LocalFileSystem.getInstance().findFileByNioFile(source))
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        tab.syncWithEditor = false
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (LocalFileSystem.getInstance().findFileByNioFile(source) == null) {
+            check(System.nanoTime() < deadline) { "the file was never found" }
+            // The refresh applies what it found on the event dispatch thread.
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(0, FileEditorManager.getInstance(project).openFiles.size)
+    }
+
+    fun testABroughtForwardFileThatIsSelectedAlreadyLeavesNoSelectionSwallowed() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val document = editor.document
+        // The method other is deleted: its body is placed nowhere, so the selected file is "brought forward".
+        WriteCommandAction.runWriteCommandAction(project) {
+            val start = document.text.indexOf(OTHER)
+            document.deleteString(start, start + OTHER.length)
+        }
+        tab.show(3)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(2, 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(3, tab.shownBody)
+        // The user goes to another file and back: coming back to Demo.ns is followed.
+        openUnrelatedInFront()
+        FileEditorManager.getInstance(project).openFile(checkNotNull(editor.virtualFile), true)
+        assertEquals(1, tab.shownBody)
+    }
+
+    fun testAViewerNotShownIsScrolledOnceItShows() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        tab.viewer.scrollingModel.disableAnimation()
+        // The tool window is hidden: the viewer has no extent when the source's caret moves.
+        editor.caretAt("value", SECOND)
+        val linked = linkedViewerLines(tab)
+        assertEquals(0, tab.viewer.scrollingModel.verticalScrollOffset)
+        tab.viewer.component.setBounds(0, 0, VIEW_WIDTH, tab.viewer.lineHeight * 2)
+        layOut(tab.viewer.component)
+        val height = tab.viewer.lineHeight * 2
+        tab.viewer.component.setBounds(0, 0, VIEW_WIDTH, height + tab.viewer.component.height - tab.viewer.scrollingModel.visibleArea.height)
+        layOut(tab.viewer.component)
+        assertEquals(tab.viewer.logicalPositionToXY(LogicalPosition(linked.first(), 0)).y, tab.viewer.scrollingModel.verticalScrollOffset)
+    }
+
+    fun testTurningTheToggleOnBringsTheViewerToTheSourceAtOnce() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt("value", SECOND)
+        showLines(tab.viewer, 2)
+        val linked = linkedViewerLines(tab)
+        assertEquals(0, tab.viewer.scrollingModel.verticalScrollOffset)
+        tab.syncWithEditor = true
+        assertEquals(tab.viewer.logicalPositionToXY(LogicalPosition(linked.first(), 0)).y, tab.viewer.scrollingModel.verticalScrollOffset)
+    }
+
     fun testAViewerCaretBringsTheSourceInABackgroundTabForward() {
         val tab = tab(tracedRun())
         tab.syncWithEditor = true
@@ -950,6 +1085,8 @@ class CodeTabTest : BasePlatformTestCase() {
 
     private companion object {
         const val SYNC_PROPERTY = "newspeak.devtool.code.scrollWithEditor"
+        const val WAIT_SECONDS = 30L
+        const val POLL_MILLISECONDS = 20L
         const val VIEW_WIDTH = 800
 
         const val PADDING = "ComboBox.padding"

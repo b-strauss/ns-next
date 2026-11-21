@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.debugger
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
@@ -939,6 +940,54 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
             Thread.sleep(POLL_MILLISECONDS)
         }
         assertTrue(runInEdtAndGet { FileEditorManager.getInstance(project).isFileOpen(tab) })
+    }
+
+    /** The frame-code tab colours no line while the program runs, and colours the marked one again at the next stop. */
+    fun testTheFrameCodeLineIsUncolouredWhileTheProgramRuns() {
+        val faked = fakeSession()
+        val listing = "--- bytecode {Demo>>run}\n   0   stmt 0  LoadLiteral r1, 1\n   1-> stmt 0  Return r1\n--- end\n"
+        val agent = identifiedAgent(faked) { command, _ ->
+            when (command) {
+                "stackTrace" -> JsonParser.parseString(SHIPPED_STACK).asJsonObject
+                "source" -> JsonObject().apply { addProperty("content", KERNEL_TEXT) }
+                "nsNext/frameCode" -> JsonObject().apply {
+                    addProperty("body", "Demo>>run")
+                    addProperty("bytecode", listing)
+                    add("machineCode", JsonNull.INSTANCE)
+                }
+                else -> JsonObject()
+            }
+        }
+        agent.configured.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        val session = faked.debugging.session
+        framesOf(session)
+        val action = ShowFrameCodeAction()
+        val context = SimpleDataContext.builder().add(CommonDataKeys.PROJECT, project).add(XDebugSession.DATA_KEY, session).build()
+        onEdt { action.actionPerformed(TestActionEvent.createTestEvent(action, context)) }
+        fun executionLines(): List<Int> = runInEdtAndGet {
+            val tab = FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().singleOrNull()
+                ?: return@runInEdtAndGet emptyList()
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(tab))
+            DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+                .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+                .map { highlighter -> document.getLineNumber(highlighter.startOffset) }
+        }
+        fun awaitLines(what: String, expected: List<Int>) {
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+            while (executionLines() != expected) {
+                if (System.nanoTime() > deadline) throw AssertionError("$what: ${executionLines()}")
+                Thread.sleep(POLL_MILLISECONDS)
+            }
+        }
+        val marked = listOf(checkNotNull(FrameCodeFollower.markedLine(FrameCodeFollower.text(FrameCode("Demo>>run", listing, null)))))
+        awaitLines("the stop's line coloured", marked)
+        onEdt { session.resume() }
+        awaitLines("no line coloured while the program runs", emptyList())
+        agent.event("stopped", JsonObject().apply { addProperty("reason", "pause") })
+        faked.debugging.nextPause()
+        awaitLines("the next stop's line coloured again", marked)
     }
 
     /** A refused frame code is told in a notification with the agent's words, and opens no tab. */

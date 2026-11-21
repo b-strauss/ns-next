@@ -66,6 +66,17 @@ class FrameCodeFollower private constructor(
             object : XDebugSessionListener {
                 override fun sessionPaused() = refresh()
 
+                // A running program stands at no execution point: the colour goes, and comes back with the next stop's write.
+                // An answer asked for before the resume is written no more.
+                override fun sessionResumed() {
+                    requested.incrementAndGet()
+                    ApplicationManager.getApplication().invokeLater(
+                        { if (!ended) highlightMarkedLine(session.project, file, null) },
+                        ModalityState.any(),
+                        released,
+                    )
+                }
+
                 override fun stackFrameChanged() = refresh()
 
                 override fun sessionStopped() = end()
@@ -183,12 +194,8 @@ class FrameCodeFollower private constructor(
         internal fun highlightMarkedLine(project: Project, file: CodeListingFile, line: Int?) {
             val document = FileDocumentManager.getInstance().getDocument(file) ?: return
             val current = file.getUserData(MARKED_LINE_HIGHLIGHTER)
-            // An edit inside the line may have stretched the highlighter over several: it is kept only while it covers that one line.
-            if (current != null && current.isValid && line != null &&
-                document.getLineNumber(current.startOffset) == line && document.getLineNumber(current.endOffset) == line
-            ) {
-                return
-            }
+            // A line highlighter follows its line through every edit, so one on the marked line is kept.
+            if (current != null && current.isValid && line != null && document.getLineNumber(current.startOffset) == line) return
             clearMarkedLine(project, file)
             if (line == null || line >= document.lineCount) return
             val markup = DocumentMarkupModel.forDocument(document, project, true)

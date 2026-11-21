@@ -75,6 +75,7 @@ class FrameCodeFollowerTest : BasePlatformTestCase() {
         assertEquals(emptyList<Int>(), executionLines(document))
     }
 
+    /** A pin of the platform's line highlighter, which follows its line through an edit inside it: the colour stays one line. */
     fun testAnEditInsideTheMarkedLineLeavesOneLineColoured() {
         val file = CodeListingFile(FrameCodeFollower.TITLE, listing(mark = 2))
         FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file), true)

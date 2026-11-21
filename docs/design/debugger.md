@@ -6166,9 +6166,10 @@ each editor's caret then at the marked line, so that a step never
 scrolls the tab to its start, and that line alone coloured whole, in
 every editor of the tab, as the scheme colours the debugger's execution
 point in a source editor (`DebuggerColors.EXECUTIONPOINT_ATTRIBUTES`),
-the colour gone where a text marks no line and when the follower's
-lifetime ends, however it ends (`FrameCodeFollowerTest`,
-`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`); it ends when the
+the colour gone while the program runs, where a text marks no line
+and when the follower's lifetime ends, however it ends
+(`FrameCodeFollowerTest`, `testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`,
+`testTheFrameCodeLineIsUncolouredWhileTheProgramRuns`); it ends when the
 tab's last editor closes -- not one split of it -- or the session stops, its
 lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
 disposed with the project at the latest), and is not made for a session
