@@ -68,10 +68,11 @@ data class Send(val at: Int, val site: Int?, val call: SourceRange?, val selecto
  * A body's description, before the first record that names [number]: for
  * a block, its [family]'s root, which the cache transitions of the block's
  * sites name, null for a root; its module, its source -- a program's [file] or the core library's
- * [library] path, neither for a module read from no file -- its [range],
- * null where the runtime held no text of the module, and the [checksum] of
- * that text, by which a reader tells whether the text it holds is the one
- * the body was compiled from.
+ * [library] path, neither for a module read from no file -- its [range]
+ * in the text it was compiled from, null where no text that holds the body
+ * as it was compiled could be had, a body an edit compiled and a later one
+ * replaced among them, and the [checksum] of its source, by which a reader
+ * tells whether the text it holds is the one the body was compiled from.
  */
 data class Body(
     val number: Int,

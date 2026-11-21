@@ -2486,16 +2486,23 @@ const AN_EDITED_MAKER: &str = indoc! {"
         builder install.
         1 to: 1000 do: [:index |
           sum:: sum + (closure value: index) + (subject maker value: index)].
-        ^sum.
+        ^sum + (self later: 1000).
+      )
+
+      later: count = (
+        | total ::= 0. |
+        1 to: count do: [:index | total:: total + (index max: 3)].
+        ^total.
       )
     ) : ()
 "};
 
 /// A body is described in the text it was compiled from, whatever edit
-/// was installed before its description: the body an edit compiled is
-/// placed in the module's text as the edit left it, and a body the edit
-/// superseded, which that text no longer holds, is placed in no text,
-/// with the checksum of its own source.
+/// was installed before its description: the body an edit compiled in
+/// the module's text as the edit left it, which the description hands;
+/// a body the edit superseded, which that text no longer holds, and a body
+/// below the edit, which it moved, in the program's text, by their own
+/// spans and checksums, the current text not handed.
 #[test]
 fn an_edited_module_describes_each_body_in_its_own_text() {
     let received = received_made_by(
@@ -2532,6 +2539,32 @@ fn an_edited_module_describes_each_body_in_its_own_text() {
     assert!(own.contains("index max: 1"), "{own}");
     assert_eq!(superseded.checksum, source_checksum(own.as_bytes()));
     assert!(superseded.statements.is_empty() && superseded.sends.is_empty());
+    // First described after the install, which added lines above it.
+    let later = description_of(&received, "Demo>>later:");
+    assert!(later.text.is_none(), "{later:?}");
+    let slice = |span: ns_syntax::Span| &AN_EDITED_MAKER[span.start as usize..span.end as usize];
+    let own = slice(later.source);
+    assert!(own.starts_with("later: count = ("), "{own}");
+    assert_eq!(later.checksum, source_checksum(own.as_bytes()));
+    assert!(
+        later
+            .sends
+            .iter()
+            .any(|send| slice(send.call).starts_with("1 to: count do:")
+                && send
+                    .selector
+                    .iter()
+                    .map(|token| slice(*token))
+                    .eq(["to:", "do:"])),
+        "the loop's send in the program's text: {later:?}"
+    );
+    assert!(
+        later
+            .statements
+            .iter()
+            .any(|statement| slice(statement.span) == "^total"),
+        "{later:?}"
+    );
 }
 
 /// A shipped body is described with its path among the library's files.

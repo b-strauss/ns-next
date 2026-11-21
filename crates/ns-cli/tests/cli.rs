@@ -1222,7 +1222,9 @@ fn trace_file_holds_header_bodies_and_events() {
 }
 
 /// A program that replaces `maker` with a version a line shorter, preceded
-/// by an added method, while a closure the old version made runs on.
+/// by an added method, while a closure the old version made runs on, and
+/// then first runs `later:`, which the edit moved down in the module's
+/// text and left as the file has it.
 const AN_EDITED_MAKER: &str = indoc! {"
     class Demo = Object new () (
       class Subject = Object new () (
@@ -1246,7 +1248,13 @@ const AN_EDITED_MAKER: &str = indoc! {"
         builder install.
         1 to: 1000 do: [:index |
           sum:: sum + (closure value: index) + (subject maker value: index)].
-        platform transcript show: sum printString; newLine.
+        platform transcript show: (sum + (later: 1000)) printString; newLine.
+      )
+
+      later: count = (
+        | total ::= 0. |
+        1 to: count do: [:index | total:: total + (index max: 3)].
+        ^total.
       )
     )
 "};
@@ -1263,11 +1271,23 @@ fn checksum_of(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// A body an edit compiled during the traced run is described in the
-/// module's text as the edit left it -- its range one line, as its new
-/// source is, and its checksum that source's -- and the body the edit
-/// superseded, which that text no longer holds, with no range at all, so
-/// that a reader places neither in the file's text where it does not fit.
+/// Where `part` starts in `AN_EDITED_MAKER`, as a range's line and
+/// column count it.
+fn edited_maker_position(part: &str) -> (usize, usize) {
+    let offset = AN_EDITED_MAKER.find(part).unwrap();
+    let before = &AN_EDITED_MAKER[..offset];
+    let line = before.matches('\n').count();
+    let column = offset - before.rfind('\n').map_or(0, |end| end + 1);
+    (line, column)
+}
+
+/// Every body is described in the text it was compiled from, whatever
+/// edit was installed during the traced run: the body the edit compiled
+/// in the module's text as the edit left it -- its range one line, as its
+/// new source is, and its checksum that source's -- and the body the edit
+/// superseded and a body the edit moved down, both compiled from the file,
+/// at their lines in the file, so that a reader places each where its
+/// text stands.
 #[test]
 fn an_edited_body_is_described_in_its_own_text() {
     let directory = ScratchDirectory::new("trace-file-edit");
@@ -1283,35 +1303,56 @@ fn an_edited_body_is_described_in_its_own_text() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "1001001\n");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1501504\n");
     let text = std::fs::read_to_string(&file).unwrap();
-    let makers: Vec<serde_json::Value> = text
+    let bodies: Vec<serde_json::Value> = text
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .filter(|record| record["kind"] == "body" && record["name"] == "Demo/Subject>>maker")
+        .filter(|record| record["kind"] == "body")
         .collect();
+    let makers: Vec<&serde_json::Value> = bodies
+        .iter()
+        .filter(|record| record["name"] == "Demo/Subject>>maker")
+        .collect();
+    let new_source = "public maker = ( ^[:index | index max: 2] )";
     let placed = makers
         .iter()
-        .find(|maker| !maker["range"].is_null())
+        .find(|maker| maker["checksum"] == checksum_of(new_source))
         .unwrap_or_else(|| panic!("the edit's maker described: {text}"));
     let range = &placed["range"];
+    assert!(range.is_array(), "{placed}");
     assert_eq!(range[0], range[2], "one line: {placed}");
-    let new_source = "public maker = ( ^[:index | index max: 2] )";
-    let candidates = [new_source, new_source.trim_start_matches("public ")];
-    assert!(
-        candidates
-            .iter()
-            .any(|candidate| placed["checksum"] == checksum_of(candidate)),
+    assert_eq!(
+        range[3].as_u64().unwrap() - range[1].as_u64().unwrap(),
+        new_source.len() as u64,
         "{placed}"
     );
+    let old_source = "public maker = (\n      ^[:index |\n        index max: 1].\n    )";
     let superseded = makers
         .iter()
-        .find(|maker| maker["range"].is_null())
+        .find(|maker| maker["checksum"] == checksum_of(old_source))
         .unwrap_or_else(|| panic!("the superseded maker described: {text}"));
+    let (line, column) = edited_maker_position("public maker");
     assert_eq!(
-        superseded["statements"],
-        serde_json::json!([]),
+        superseded["range"],
+        serde_json::json!([line, column, line + 3, 5]),
         "{superseded}"
+    );
+    let later = bodies
+        .iter()
+        .find(|record| record["name"] == "Demo>>later:")
+        .unwrap_or_else(|| panic!("`later:` described: {text}"));
+    let (line, column) = edited_maker_position("later: count");
+    assert_eq!(later["range"][0], line, "the file's line: {later}");
+    assert_eq!(later["range"][1], column, "{later}");
+    let (loop_line, loop_column) = edited_maker_position("1 to: count");
+    assert!(
+        later["sends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|send| send["call"][0] == loop_line && send["call"][1] == loop_column),
+        "the loop's send at its line in the file: {later}"
     );
 }
 

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ns_runtime::ModuleName;
+use ns_runtime::trace_events::descriptions::source_checksum;
 use ns_runtime::trace_events::{
     ArmKind, BodyDescription, BodyName, BytecodeListing, CodeListing, InliningListing,
     InliningOutcome, ListedScope, Listing, Position,
@@ -54,26 +55,82 @@ fn architecture() -> Option<&'static str> {
 /// asked for again only by the bodies described from it before.
 const KEPT_LINE_INDEXES: usize = 8;
 
-/// The files of the program's modules, by which a `body` record names its
-/// source, and the line indexes of the module texts the descriptions
-/// count their spans in, each made once for a text the runtime shares.
+/// A program's module the trace may describe a body of: the file it was
+/// read from and its text as read, with that text's line index once a
+/// body is placed in it.
+struct ProgramSource {
+    module: ModuleName,
+    path: Option<PathBuf>,
+    text: Option<String>,
+    lines: Option<LineIndex>,
+}
+
+/// The program's modules, by whose files a `body` record names its source
+/// and in whose texts as read the bodies they hold are placed, and the
+/// line indexes of the runtime's module texts a description hands.
 pub(crate) struct ModuleSources {
-    program: Vec<(ModuleName, Option<PathBuf>)>,
-    /// The texts most recently counted in, the latest last, each told
-    /// apart by its allocation: the runtime hands every description made
-    /// from one text the same `Rc`.
+    program: Vec<ProgramSource>,
+    /// The runtime's texts most recently counted in, the latest last:
+    /// the runtime hands every description made from one text the same
+    /// `Rc`, and a text it makes again after an install, alike, finds its
+    /// index by its contents.
     lines: Vec<(Rc<str>, LineIndex)>,
 }
 
 impl ModuleSources {
-    /// The files of `modules`, as `program::debug_modules` gives them.
+    /// The files and texts of `modules`, as `program::debug_modules` gives
+    /// them.
     pub(crate) fn new(modules: Vec<ProgramModule>) -> ModuleSources {
         ModuleSources {
             program: modules
                 .into_iter()
-                .map(|module| (module.module, module.path))
+                .map(|module| ProgramSource {
+                    module: module.module,
+                    path: module.path,
+                    text: module.text,
+                    lines: None,
+                })
                 .collect(),
             lines: Vec::new(),
+        }
+    }
+
+    /// The text `description`'s body is placed in, with its line index:
+    /// the program file's text as read where it holds the body's own
+    /// source at its span -- the body's version was read in it, or an
+    /// edit left the body where it stands -- since that is the text a
+    /// reader shows; else the runtime's current text where the
+    /// description hands it; else none.
+    fn placing<'sources>(
+        &'sources mut self,
+        description: &'sources BodyDescription,
+    ) -> Option<(&'sources str, &'sources LineIndex)> {
+        let source = description.source;
+        let holds = |text: &str| {
+            text.as_bytes()
+                .get(source.start as usize..source.end as usize)
+                .is_some_and(|bytes| source_checksum(bytes) == description.checksum)
+        };
+        let held = description
+            .shipped_path
+            .is_none()
+            .then(|| {
+                self.program.iter().position(|program| {
+                    program.module == description.module
+                        && program.text.as_deref().is_some_and(holds)
+                })
+            })
+            .flatten();
+        match held {
+            Some(index) => {
+                let ProgramSource { text, lines, .. } = &mut self.program[index];
+                let text = text.as_deref()?;
+                Some((text, lines.get_or_insert_with(|| LineIndex::new(text))))
+            }
+            None => {
+                let text = description.text.as_ref()?;
+                Some((text, self.lines_of(text)))
+            }
         }
     }
 
@@ -86,10 +143,12 @@ impl ModuleSources {
         match self
             .program
             .iter()
-            .find(|(module, _)| *module == description.module)
+            .find(|program| program.module == description.module)
         {
-            Some((_, Some(path))) => json!({ "file": path.display().to_string() }),
-            Some((_, None)) | None => Value::Null,
+            Some(ProgramSource {
+                path: Some(path), ..
+            }) => json!({ "file": path.display().to_string() }),
+            Some(_) | None => Value::Null,
         }
     }
 
@@ -98,7 +157,7 @@ impl ModuleSources {
         match self
             .lines
             .iter()
-            .position(|(known, _)| Rc::ptr_eq(known, text))
+            .position(|(known, _)| Rc::ptr_eq(known, text) || **known == **text)
         {
             Some(index) => {
                 let kept = self.lines.remove(index);
@@ -134,23 +193,23 @@ fn module_record(module: &ModuleName) -> Value {
 /// The `body` record of `description`: the body's number and name, a
 /// block's family root, its module, where its source is, its range there,
 /// its checksum and its statements and sends, every range counted in the
-/// text the description hands with it -- the module's text the runtime
-/// placed the body in, whatever an edit made of the file -- and each
-/// `null` where it hands none.
+/// text that holds the body as it was compiled (`ModuleSources::placing`)
+/// and each `null` where none does.
 pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSources) -> Value {
     let BodyDescription {
         body,
         family,
         module,
         shipped_path: _,
-        text,
+        // Read by `placing`.
+        text: _,
         source,
         checksum,
         statements,
         sends,
     } = description;
     let source_record = sources.source_of(description);
-    let lines = text.as_ref().map(|text| (text, sources.lines_of(text)));
+    let lines = sources.placing(description);
     let range = |span: Span| match &lines {
         Some((text, lines)) => {
             let start = lines.position(text, span.start);
@@ -926,10 +985,9 @@ mod tests {
         }
     }
 
-    /// The ranges count in the text a description hands with it, the
-    /// module's text as the runtime placed the body in it, never in the
-    /// text the host read the file in: an edit installed during the run
-    /// moves a body the file does not.
+    /// Where the file's text does not hold the body at its span -- a body
+    /// an edit installed during the run compiled -- the ranges count in the
+    /// runtime's text the description hands with it.
     #[test]
     fn ranges_count_in_the_text_the_body_was_placed_in() {
         let read = "Demo = (\n  run = ( )\n)";
@@ -947,8 +1005,41 @@ mod tests {
         assert_eq!(after["source"], json!({ "file": "/work/Demo.ns" }));
     }
 
-    /// A body the runtime placed in no text has every range `null`, and
-    /// keeps its checksum, so that a reader decorates nothing of it.
+    /// The file's text as read places a body it holds at its span, its
+    /// own source's checksum telling, before the runtime's text: a body
+    /// compiled from the file stands there, whatever an edit made of the
+    /// module's text around it, and the file is the text a reader shows.
+    #[test]
+    fn the_file_places_a_body_it_holds() {
+        let file = "Demo = (\n  run = ( )\n)";
+        let start = file.find("run").unwrap();
+        let checksum = source_checksum(&file.as_bytes()[start..start + 3]);
+        let mut sources = ModuleSources::new(vec![ProgramModule {
+            module: ModuleName::named("Demo"),
+            path: Some(PathBuf::from("/work/Demo.ns")),
+            identity: None,
+            text: Some(file.to_string()),
+        }]);
+        // The runtime's text, moved by an edit: `run` stands elsewhere.
+        let edited = "Demo = (\n  helper = ( )\n\n  run = ( )\n)";
+        let description = BodyDescription {
+            text: Some(Rc::from(edited)),
+            checksum,
+            ..run_in(file, 1)
+        };
+        let record = body_record(&description, &mut sources);
+        assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
+        // The same body with no runtime text is placed by the file alone.
+        let unhanded = BodyDescription {
+            text: None,
+            ..description
+        };
+        let record = body_record(&unhanded, &mut sources);
+        assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
+    }
+
+    /// A body no text holds has every range `null`, and keeps its
+    /// checksum, so that a reader decorates nothing of it.
     #[test]
     fn a_body_placed_in_no_text_has_no_ranges() {
         let text = "Demo = (\n  run = ( )\n)";

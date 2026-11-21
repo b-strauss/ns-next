@@ -90,7 +90,8 @@ struct Named {
 #[derive(Clone)]
 struct FamilyRoot {
     code: Weak<CompiledCode>,
-    name: String,
+    /// Shared by every block of the family, one allocation per root.
+    name: Rc<str>,
 }
 
 /// A body numbered and not yet described, with what its description is
@@ -187,7 +188,7 @@ impl BodyNames {
         let key = Weak::as_ptr(&root.code) as usize;
         let fresh = || Named {
             body: Weak::clone(&root.code),
-            name: root.name.clone(),
+            name: root.name.to_string(),
             number: None,
             origin: None,
             root: None,
@@ -372,7 +373,7 @@ impl BodyNames {
             let block_name = format!("[] in {name}");
             let family = FamilyRoot {
                 code: Rc::downgrade(&root),
-                name: name.clone(),
+                name: Rc::from(name.as_str()),
             };
             if self.insert(&root, name.clone(), side, &member, None) {
                 named.push(NamedRoot {
@@ -853,7 +854,7 @@ mod tests {
         Named {
             root: Some(FamilyRoot {
                 code: Rc::downgrade(root),
-                name: "Demo>>run".to_string(),
+                name: Rc::from("Demo>>run"),
             }),
             ..entry(Rc::downgrade(block), "[] in Demo>>run")
         }
