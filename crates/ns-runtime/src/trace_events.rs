@@ -1488,6 +1488,7 @@ fn with_descriptions(
         taken = numbered;
         described.push(delivery);
     }
+    mutator.debug_metadata.end_placements();
     described
 }
 

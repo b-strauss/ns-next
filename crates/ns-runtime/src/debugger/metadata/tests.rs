@@ -1482,6 +1482,35 @@ crate::for_each_lowering! {
     }
 }
 
+crate::for_each_lowering! {
+    /// The families of one level placed in one flush share the level's
+    /// compile from the module's current text, which the flush's end lets
+    /// go of, since its pairs hold every running body of the level.
+    fn the_placements_of_one_level_share_its_compile(lowering) {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public top = ( ^[:each | each + 1] )
+              public other = ( ^2 )
+            ) : ()
+        "};
+        let (mut interpreter, outer) = loaded_under(source, lowering);
+        interpreter.enter(|mutator| {
+            let outer_mixin = applied_mixin(mutator, &outer);
+            for selector in ["top", "other"] {
+                let code = method_code(&outer_mixin, selector);
+                let placement =
+                    Cache::own_placement(mutator, &code, &method_origin(&outer_mixin, selector))
+                        .expect("the method placed");
+                assert!(placement.metadata.is_some(), "{selector} has its metadata");
+                assert!(placement.current.is_some(), "{selector} stands in the current text");
+            }
+            assert_eq!(mutator.debug_metadata.shared_levels(), 1, "one compile for both");
+            mutator.debug_metadata.end_placements();
+            assert_eq!(mutator.debug_metadata.shared_levels(), 0);
+        });
+    }
+}
+
 #[test]
 fn a_body_with_an_unwind_marker_compiles_again_alike() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {

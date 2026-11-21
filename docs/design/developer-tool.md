@@ -1088,12 +1088,18 @@ otherwise: a body with a span outside its root's source has none. The
 current text is handed where its declaration of the member holds the
 root's own source, with where the body stands in it: at its own span,
 or where an edit above the member moved it. Each family's placement is
-kept in the debugger's metadata cache, which every install clears. The
+kept in the debugger's metadata cache, which every install clears and
+which drops its dead entries once it holds twice what lived at the last
+drop; the families of one level described in one flush share the
+level's compile from the current text, which the flush's end lets go of,
+since its pairs hold every running body of the level. The
 host places the body in the text it read the module's file in where
 that holds the body's source at its span, by the checksum -- a body
 compiled from the file, whether an edit left it alone, moved it or
 superseded it -- and otherwise in the current text the description
-hands, every span moved with the body's source, so that a body an edit
+hands, every span moved with the body's source and one outside that
+source placed in neither, since only the source is known to stand
+there, so that a body an edit
 compiled is placed in the edited text, and one a later edit moved where
 it stands now. A version without a text of its own, a builtin's or an
 image's without source, and a factory's body are described as the

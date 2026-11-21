@@ -212,21 +212,19 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
     } = description;
     let source_record = sources.source_of(description);
     let lines = sources.placing(description);
-    // A span moves with the body's source to where the text holds it: the
-    // same bytes, so a span within them lands on the same text; a span
-    // outside them, which the runtime never hands moved, stays unplaced.
+    // A span moves with the body's source to where the text holds it. Only
+    // the body's source is known to stand there, by its checksum, so a span
+    // outside it -- in either text -- stays unplaced rather than land on
+    // text that may differ.
     let range = |span: Span| match &lines {
         Some((text, lines, start)) => {
-            let (begin, end) = if *start == source.start {
-                (span.start, span.end)
-            } else if span.start >= source.start && span.end <= source.end {
-                (
-                    span.start - source.start + start,
-                    span.end - source.start + start,
-                )
-            } else {
+            if span.start < source.start || span.end > source.end {
                 return Value::Null;
-            };
+            }
+            let (begin, end) = (
+                span.start - source.start + start,
+                span.end - source.start + start,
+            );
             let begin = lines.position(text, begin);
             let end = lines.position(text, end);
             json!([begin.line, begin.column, end.line, end.column])
@@ -1227,6 +1225,41 @@ mod tests {
         };
         let record = body_record(&unhanded, &mut sources);
         assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
+    }
+
+    /// A span outside the body's source is placed in neither text, since
+    /// only the body's source is known to stand where the text holds it.
+    #[test]
+    fn a_span_outside_the_source_is_never_placed() {
+        let file = "Demo = (
+  run = ( )
+)";
+        let start = file.find("run").unwrap();
+        let checksum = source_checksum(&file.as_bytes()[start..start + 3]);
+        let mut sources = ModuleSources::new(vec![ProgramModule {
+            module: ModuleName::named("Demo"),
+            path: Some(PathBuf::from("/work/Demo.ns")),
+            identity: None,
+            text: Some(file.to_string()),
+        }]);
+        let outside = |description: BodyDescription| BodyDescription {
+            statements: vec![DescribedStatement {
+                instructions: 0..1,
+                span: Span::new(0, 4),
+            }],
+            ..description
+        };
+        let in_file = outside(BodyDescription {
+            checksum,
+            ..run_in(file, 1)
+        });
+        let record = body_record(&in_file, &mut sources);
+        assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
+        assert!(record["statements"][0]["range"].is_null(), "{record}");
+        let in_current = outside(run_in(file, 2));
+        let record = body_record(&in_current, &mut demo_sources());
+        assert!(record["range"].is_array(), "{record}");
+        assert!(record["statements"][0]["range"].is_null(), "{record}");
     }
 
     /// A body no text holds has every range `null`, and keeps its
