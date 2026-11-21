@@ -52,10 +52,22 @@ compile's inlining plan, a stopped frame's code answered through
 `nsNext/frameCode` and `debug_code`
 ([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
 "Stage 2: printing code"; [modules.md](design/modules.md), decision 8).
-Its stage 3, the shell, is next for it: it needs a plan of its own,
-which decides its open questions -- how an input is compiled, how a
-workspace variable becomes a slot, whether results are named, how an
-interrupt stops an input, line editing without a new dependency
+Its stage 3, the developer tool in the JetBrains plugin, is next for
+it, designed with the user on 2026-11-21 in seventeen decisions
+([developer-tool.md](design/developer-tool.md), decisions 17 to 33,
+"Planned: the stages"): `ns-next run --trace-file=<path>` writes the
+trace and the listings as typed JSON lines instead of standard error,
+each body described once with its source positions and a checksum;
+the plugin switches them on in a "Developer Tool" tab of the run
+configuration and through a project-wide list of watched methods made
+in the editor, reads the file live in Run and Debug, and shows it in a
+tool window of four tabs -- Methods, Events, Code, Inlining --, as a
+state icon in the gutter, as inlay hints at the sends, in editor tabs
+of the code and, at a stop, as the frame's code. Its stage 4, the
+shell, follows: it needs a plan of its own, which decides its open
+questions -- how an input is compiled, how a workspace variable becomes
+a slot, whether results are named, how an interrupt stops an input,
+line editing without a new dependency
 ([developer-tool.md](design/developer-tool.md), "Open questions").
 
 **Road step 9, an optimizing JIT with type feedback, inlining and
@@ -2439,12 +2451,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   request at a stop, with its MCP tool, are built, the developer tool's
   stage 2 ([developer-tool.md](design/developer-tool.md), "Stage 2:
   printing code"); what stays open here is the IDE's view beside the
-  source, a client of the same request ([execution.md](design/execution.md), "The
-  baseline JIT's foundation", "Inlining").
+  source, the developer tool's stage 3
+  ([developer-tool.md](design/developer-tool.md), decisions 29 to 31;
+  [execution.md](design/execution.md), "The baseline JIT's foundation",
+  "Inlining").
 - **A developer tool like V8's `d8`** (asked for by the user on 2026-11-15;
-  designed with the user on 2026-11-18; stages 1 and 2 built
-  2026-11-20): three stages, each reaching the agent and the IDE as it
-  is built. Stage 1, tracing, is built: typed events with their reasons
+  designed with the user on 2026-11-18 and, its stage 3, on 2026-11-21;
+  stages 1 and 2 built 2026-11-20): four stages, each reaching the agent
+  and the IDE as it is built. Stage 1, tracing, is built: typed events with their reasons
   reported to a sink the host installs (`ns_runtime::trace_events`),
   written by `ns-next run --trace=<categories>`, narrowed by
   `--trace-filter`, passed on by `debug_start` and the plugin's runtime
@@ -2453,11 +2467,28 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   by `--print-bytecode`, `--print-code` and `--print-inlining`, machine
   code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and a
   stopped frame's code through `nsNext/frameCode` and `debug_code`.
-  Open: stage 3, `ns-next shell`, evaluating against a workspace object
-  as the Newspeak IDE does, next; it matters because an expression is
-  still evaluated only at a stop. Its open questions are decided in its
-  plan ([developer-tool.md](design/developer-tool.md), "The decisions",
+  Open: stage 3, the developer tool in the JetBrains plugin, next,
+  designed with the user on 2026-11-21 (decisions 17 to 33): a file of
+  typed JSON lines, `--trace-file`, read live by the plugin and shown in
+  a tool window, the gutter, inlay hints and editor tabs; it matters
+  because the trace and the listings are today text on standard error,
+  which no editor can place beside the source. Then stage 4,
+  `ns-next shell`, evaluating against a workspace object as the
+  Newspeak IDE does; it matters because an expression is still
+  evaluated only at a stop. Its open questions are decided in its plan
+  ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
+- **The MCP server and the trace file** (noted 2026-11-21, with the
+  developer tool's stage 3's design; not designed yet): `debug_start`
+  passes `--trace` and the lines arrive with the program's output, and
+  no MCP tool reaches `--print-bytecode`, `--print-code` or
+  `--print-inlining`, whose listings would swell an answer. The file of
+  decision 17 could serve an agent too -- a `debug_start` that writes
+  one, and tools that answer from it a method's events, listings and
+  inlining plan, bounded, as the tool window's tabs do. It matters
+  because an agent with MCP alone sees no optimized code and no plan
+  ([developer-tool.md](design/developer-tool.md), decisions 17 to 19;
+  [debugger.md](design/debugger.md), "The MCP server").
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,

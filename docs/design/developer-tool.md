@@ -14,8 +14,11 @@ Stage 2, printing code ("Stage 2: printing code"): `--print-bytecode`,
 `--print-code` and `--print-inlining` print the bytecode a run makes,
 the machine code it installs and the inlining plan of every optimizing
 compile, and the debugger answers a stopped frame's code
-(`nsNext/frameCode`, `debug_code`). The shell is designed here and
-built as stage 3, which is next ("Planned: the stages"). The profiler
+(`nsNext/frameCode`, `debug_code`). Stage 3, the developer tool in the
+JetBrains plugin -- the trace and the listings switched on from the run
+configuration and the editor, read from a file of JSON lines and shown
+in a tool window, the gutter and inlay hints --, is designed here and
+next; the shell is stage 4 ("Planned: the stages"). The profiler
 is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## What exists
@@ -69,7 +72,9 @@ Decided with the user on 2026-11-18.
 **1. One design, three stages: tracing, then printing code, then the
 shell.** Tracing first, because it turns the reasons above into types,
 which printing the inlining plan needs as well; the shell is the largest
-and the most independent piece.
+and the most independent piece. The developer tool in the IDE came
+between printing code and the shell as stage 3 (decisions 17 to 33),
+the shell becoming stage 4 (decided with the user on 2026-11-21).
 
 **2. The runtime reports typed events to a sink the host installs; the
 host formats them.** `ns-runtime` stays free of output formats, as it is
@@ -292,6 +297,170 @@ keeps its own `declined` line for every callee that is a body, the
 decline a body explains. The inlining plan is the compile's whole plan,
 and lists every decline as a line of its own, each at its scope's send
 (decided with the user on 2026-11-20).
+
+Decisions 17 to 33, stage 3's, the developer tool in the IDE, were
+decided with the user on 2026-11-21. The prior art they rest on is the
+JetBrains plugins that bring HotSpot's compilation log into the editor
+-- `yole/jitwatch-intellij` and `JetBrains/jitwatch4i` --, JITWatch
+itself, Microsoft's Deopt Explorer for V8's log, V8's log and
+Turbolizer, IntelliJ's coverage, and the bytecode and disassembly views
+of IntelliJ, Rider and CLion.
+
+**17. The IDE reads a file of JSON lines, `--trace-file=<path>`.**
+`ns-next run --trace-file=<path>` writes every event and every listing
+as one JSON object a line into the file, at each flush, instead of the
+lines on standard error. The file is the one path that serves Run and
+Debug alike, drops nothing -- decision 9's guarantee stands -- and keeps
+the trace apart from the program's own standard error, which a program
+could otherwise imitate. Every one of the prior art's tools reads such a
+file: HotSpot's `-XX:LogFile` (`jdk/src/hotspot/share/utilities/ostream.cpp:706-789`),
+V8's `--logfile`, each line flushed under a lock
+(`v8/src/logging/log-file.cc:109`, `:251`), which jitwatch-intellij
+passes as `-XX:LogFile=<temporary path>` and Deopt Explorer opens, and
+the coverage file IntelliJ loads after a run. A channel over DAP would
+serve Debug alone, and its bounded connection
+(`crates/ns-cli/src/debug/connection.rs:128-175`) would have to drop
+events or stall the program; the boot's listings arrive before any
+client is connected.
+
+**18. The runtime supplies the source positions.** Each body is
+described once in the file -- its module's id, version and source path,
+its range, a checksum of its source text, and a table from bytecode
+index to source range for its statements and sends, from the debugger's
+metadata (`debugger/metadata/`), which the DAP agent already turns into
+lines and columns -- and every event, listing and position refers to
+it. Only the runtime knows which source a bytecode index came from:
+the plugin has no compiler, and a body's name does not identify it,
+since every block of a method is `[] in <method>` and a class's three
+initializer bodies share one name. V8 writes `code-source-info` with
+offsets and an inlining table (`v8/src/logging/log.cc:1385-1490`),
+Turbolizer's positions are `{scriptOffset, inliningId}`
+(`v8/src/codegen/source-position.cc:118-127`); HotSpot logs a method and
+a bytecode index only, which JITWatch maps through the class file's
+line table -- a table this runtime keeps in its metadata instead.
+
+**19. The file is typed records, bodies by number.** The first line is
+a `header` with the format's name, `ns-next-trace`, and its version; a
+`body` record gives a body its number in the file at its first mention,
+with decision 18's description; `event` records carry the category, the
+event's name and its fields, in the text trace's kebab-case vocabulary;
+`bytecode` lists a body's instructions each with its index, statement
+and text; `code` the machine code `ns-cli` decodes, each instruction
+with its offset, text, scope and bytecode index, and the annotations;
+`inlining` the plan as a tree. The format is described in this document
+and held by tests; the plugin refuses a version it does not know, with
+a message. V8's log names each code once by its address and then refers
+to it, HotSpot's log each method once by its id
+(`jdk/src/hotspot/share/compiler/compileLog.cpp:88-170`); the plugin, on
+the JVM, decodes no machine code itself.
+
+**20. `--trace-file` replaces standard error.** With it, standard error
+holds the program's own lines only, and the console shows the program;
+the tool window shows the trace, with a view in the text trace's line
+format.
+
+**21. The run configuration has a tab of its own, "Developer Tool".**
+Seven checkboxes for the categories with "all", three for the listing
+kinds, and a link to the watched methods (decision 23); each checkbox
+says in a sentence on hover what its information holds. They apply to
+`run`; for `bench`, which takes no trace, they are greyed. The plugins
+for HotSpot's log add a tab of their own the same way
+(`jitwatch-intellij`'s "JITWatch" tab, a `RunConfigurationExtension`).
+
+**22. The free field for runtime options stays.** Options without a
+control of their own -- `--timed`, `--lowering` and whatever comes --
+stay reachable without a new plugin; an option that has a control,
+typed into the field, is an error the run configuration's editor
+reports. IntelliJ's Java and Kotlin configurations keep their "VM
+options" beside their switches.
+
+**23. One project-wide list of watched methods, each entry with its
+switches "events" and "listings".** An entry is a method or a pattern
+in the tools' syntax, a trailing `...` a prefix; both switches are on
+when an entry is made; the plugin builds `--trace-filter` and
+`--print-filter` from the list, and an empty list means everything, as
+on the command line. The list is the user's and the project's, kept in
+the workspace as breakpoints are, made in the editor and managed in a
+dialog; the run configuration says only what a run produces. HotSpot's
+`-XX:CompileCommand` names a method with what to do for it; IntelliJ's
+breakpoints are such a list of entries with properties.
+
+**24. Run and Debug start it.** A run whose configuration checks a
+category or a listing kind passes `--trace-file` with a temporary path
+and the filters, and the plugin reads the results; there is no executor
+of its own. Debug keeps the combination the tool is most worth with: a
+stop, the trace up to it and the frame's code. jitwatch-intellij and
+JITWatch4i switch their log on in the configuration in the same way;
+coverage's executor of its own cannot be debugged.
+
+**25. The plugin reads the file live.** A reader follows the records as
+they are appended, and the tool window and the editor are updated in
+batches; at a stop everything up to it has arrived, since the runtime
+flushes at the safepoint and a stop is one. A program that never ends
+shows its trace too.
+
+**26. One tab per traced run.** The tool window keeps a tab for each
+traced run, named by its configuration and time, as the consoles do;
+the editor shows the selected tab's decorations, the newest by default,
+and closing a tab drops its data and its file. Two runs can be compared;
+IntelliJ's coverage keeps its runs as suites the same way.
+
+**27. The editor shows a state icon in the gutter and inlay hints at
+the sends.** The icon at a method's header says how it ran --
+interpreted, baseline, twin, optimized with its copies, deoptimized or
+abandoned --, its tooltip the counts and reasons, and a click opens the
+tool window at the method, as jitwatch-intellij's marker does; the hint
+after a send's selector says what became of it -- inlined, declined and
+why -- and its inline cache's state -- `mono`, `poly n`, `mega` -- with
+the details on hover, as Deopt Explorer decorates its inline caches and
+deoptimizations. Both can be switched off as other inlay hints can. No
+underlining, which competes with errors and warnings and says less, and
+no code vision line, which repeats the icon.
+
+**28. One icon, only where it says something.** No method carries a
+permanent icon: a method is watched through the editor's context menu,
+an intention (Alt+Enter) or the gutter's menu, and shows an eye; after a
+run its state icon takes the eye's place, a badge saying it is watched;
+the icon's menu unwatches, shows the code, shows the inlining and opens
+the tool window. With an empty list every traced method shows its state
+icon. The shipped modules' sources, the library "Newspeak Core Library",
+are decorated as a program's are.
+
+**29. The tool window has four tabs: Methods, Events, Code and
+Inlining.** Methods is a sortable overview of every traced method --
+state, copies, deoptimizations, abandonments, code size, declined
+callees --, the way into a run without a filter, as JITWatch's "Tops"
+and jitwatch-intellij's table of failed inlinings are; Events the trace
+as a table, filtered by category and body, grouped by method, a double
+click going to its place in the source, and a switch to the text
+trace's lines; Code the bytecode and machine code of the method at the
+caret, a chooser for its copies -- baseline, twin, optimized per
+receiver --, source, bytecode and machine code highlighted together
+through decision 18's positions, as JITWatch's TriView and Compiler
+Explorer do; Inlining each optimizing compile's plan as a tree of its
+scopes, arms and declines with their reasons and its outcome, a click
+going to the send.
+
+**30. The code is shown in the tool window and in editor tabs.** The
+tool window's view follows the caret, to explore, as Rider's IL Viewer,
+IntelliJ's bytecode views and JITWatch4i's panels do; "Open in editor"
+puts the copy it shows into a read-only editor tab that stays, to
+compare.
+
+**31. The debugger shows a frame's code through an action.** "Show
+Frame Code", in the frames' context menu and the debugger's toolbar,
+asks `nsNext/frameCode` and opens decision 30's editor tab, which then
+follows the selected frame and every step, as CLion's disassembly does.
+
+**32. A method edited since the run is marked stale.** The decorations
+ride on the document's range markers; a method whose text no longer has
+its body's checksum (decision 18) loses its hints, and its icon turns
+grey, saying it changed since the run; the rest of the file stays
+decorated. IntelliJ's coverage marks its data stale the same way.
+
+**33. The core library is traced and decorated as a program is.** The
+shipped modules' bodies are described with their sources as the
+library's files, so that decisions 27 to 32 hold there too.
 
 ## Stage 1: tracing
 
@@ -835,7 +1004,16 @@ a JIT.
 
 ## Planned: the stages
 
-### Stage 3: the shell
+### Stage 3: the developer tool in the IDE
+
+Decisions 17 to 33. The runtime's half: `--trace-file` and its records
+(`ns-cli`, beside `trace.rs` and `listing.rs`), the bodies' descriptions
+with their positions and checksums (the runtime, from the debugger's
+metadata, at the flush). The plugin's half: the "Developer Tool" tab and
+the watched methods, the reader, the tool window, the gutter icons and
+inlay hints, the code's editor tabs and "Show Frame Code".
+
+### Stage 4: the shell
 
 - `ns-next shell [program]`: reads inputs from standard input, an input
   continuing while the parser finds it incomplete; prints each value's
@@ -850,7 +1028,7 @@ a JIT.
 
 Each is decided in its stage's plan.
 
-- **Stage 3:** how an input is compiled -- a method on the workspace's
+- **Stage 4:** how an input is compiled -- a method on the workspace's
   mixin, as the Newspeak IDE does, or a block over a top-level activation
   (`FrameKind::TopLevel`) -- and how a new workspace variable becomes a
   slot (an atomic edit through `interpreter/edit.rs` and `install.rs`, or
