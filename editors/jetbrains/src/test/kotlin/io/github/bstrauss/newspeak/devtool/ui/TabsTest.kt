@@ -121,6 +121,20 @@ class TabsTest : BasePlatformTestCase() {
         )
     }
 
+    /** A run's views are made before its records arrive: the plans and the grouped events that arrive later are shown, a row each. */
+    fun testTheTreesShowWhatArrivesAfterThem() {
+        val run = trace.run()
+        val inlining = InliningTab(project, run, testRootDisposable, immediateReads())
+        val events = EventsTab(project, run, testRootDisposable)
+        events.groupByMethod.isSelected = true
+        val lines = checkNotNull(javaClass.getResource("/devtool/trace.jsonl")).readText().lines().filter { line -> line.isNotEmpty() }
+        run.add(records(lines))
+        assertTrue(run.plans.isNotEmpty())
+        assertEquals("a row for each plan", run.plans.size, inlining.tree.rowCount)
+        assertEquals("a row for each method", events.treeModel.getChildCount(events.treeModel.root), events.tree.rowCount)
+        assertTrue(events.tree.rowCount > 0)
+    }
+
     fun testInliningTreeNestsScopesUnderTheirParents() {
         val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())
         val roots = (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }

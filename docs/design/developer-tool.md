@@ -1719,7 +1719,8 @@ alone, but neither a pinned one, one the setting started pinned, a
 running one, another configuration's nor the other executor's;
 `TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
-missing categories, the inlining tree kept across a batch, a plan read
+missing categories, the plans and the grouped events that arrive after
+their tab was made shown a row each, the inlining tree kept across a batch, a plan read
 as it is first expanded, on a pooled thread, kept across a collapse,
 saying it reads only once a read takes long, saying why in words where
 its file is gone and read again after a failed read, the Events
@@ -1775,7 +1776,9 @@ output reaches the console without a trace line, the selected run has
 the method compiled with its `code` record, read back from the file the
 runtime wrote at the place the reader counted, under the Run executor,
 and the program's editor shows the method's icon; and a traced Debug of
-it is told to the runs as Debug's.
+it is told to the runs as Debug's; and a run with `compile`, `optimize`,
+`deoptimize`, `code-zone`, machine code and plans, as a user starts one,
+shows a row in the Inlining tab for each plan the runtime wrote.
 
 ## Planned: the stages
 

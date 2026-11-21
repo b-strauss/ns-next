@@ -101,6 +101,7 @@ class InliningTab(
         val plans = run.plans
         for (index in fed until plans.size) treeModel.insertNodeInto(planRoot(plans[index]), root, root.childCount)
         fed = plans.size
+        showRootsChildren(tree, root)
     }
 
     private fun planRoot(plan: PlanEntry): PlanRoot {

@@ -155,7 +155,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
     /** The events under their methods, a node a method, in the order of its first event. */
     private val treeRoot = DefaultMutableTreeNode()
     val treeModel = DefaultTreeModel(treeRoot)
-    private val tree = Tree(treeModel).apply { isRootVisible = false }
+    val tree = Tree(treeModel).apply { isRootVisible = false }
 
     /** Says how many of the run's earliest events it no longer keeps; hidden while it keeps every one. */
     val droppedLabel = JBLabel().apply {
@@ -322,6 +322,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
                 treeModel.insertNodeInto(DefaultMutableTreeNode(row), group, group.childCount)
             }
             treeFed = rows.size
+            showRootsChildren(tree, treeRoot)
         }
     }
 
