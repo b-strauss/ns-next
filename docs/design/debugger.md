@@ -5917,10 +5917,11 @@ time:
   Cursor names a library file the same way. The pass count
   (`NewspeakLineBreakpointProperties`, edited in the breakpoint's
   properties) is sent as the `hitCondition`, in the agent's forms ("Hit
-  counts and temporary breakpoints"); the type makes the properties a
-  breakpoint restored from the workspace loads its saved ones into
-  (`createProperties`), so that the pass count and a block variant's
-  column outlive the IDE's restart (`testARestoredLineBreakpointKeepsItsProperties`). The handler marks each breakpoint
+  counts and temporary breakpoints"). The type answers
+  `createProperties`, into which the platform loads the saved
+  properties of a breakpoint it restores from the workspace, so that the
+  pass count and a block variant's column outlive the IDE's restart
+  (`testARestoredLineBreakpointKeepsItsProperties`). The handler marks each breakpoint
   verified, or, where the agent set it at another line, verified with the
   line it stops at (`updateBreakpointPresentation`) -- the breakpoint
   stays where the user put it -- or invalid with the agent's message, as
@@ -6165,8 +6166,9 @@ each editor's caret then at the marked line, so that a step never
 scrolls the tab to its start, and that line alone coloured whole, in
 every editor of the tab, as the scheme colours the debugger's execution
 point in a source editor (`DebuggerColors.EXECUTIONPOINT_ATTRIBUTES`),
-the colour gone where a text marks no line and when the follower ends
-(`FrameCodeFollowerTest`); it ends when the
+the colour gone where a text marks no line and when the follower's
+lifetime ends, however it ends (`FrameCodeFollowerTest`,
+`testShowFrameCodeOpensTheFramesCodeAndFollowsSteps`); it ends when the
 tab's last editor closes -- not one split of it -- or the session stops, its
 lifetime a child of the session's (`NewspeakDebugProcess.sessionLifetime`,
 disposed with the project at the latest), and is not made for a session

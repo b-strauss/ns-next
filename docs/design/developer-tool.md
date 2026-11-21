@@ -1486,12 +1486,17 @@ turns it on and remembered per project (`CodeTab.syncWithEditor`),
 makes the link scroll too: a source caret on a statement the shown
 listing links scrolls the viewer to the listing's lines of it, and a
 viewer caret on a line linked to a statement scrolls every source
-editor that shows its body to the statement, opening the body's file
-behind the viewer where no editor shows it, by the rule a view opens a
-file by, so that a body without a range in its file is opened nowhere;
-each only where the lines are not shown already. It scrolls and never
-moves a caret, and the selection and the caret of a file it opens are
-not followed, so that neither direction sets the other off. The plugin's
+editor that shows its body -- the selected editor of each window, a
+background tab showing nothing -- to the statement, bringing the body's
+file forward, or opening it, behind the viewer and with its caret where
+it is where no editor shows it, by the rule a view opens a file by, so
+that a body without a range in its file is opened nowhere; each only
+where the lines are not shown already. It scrolls and never moves a
+caret. An editor it brought forward is marked until the user's first
+input in it: a caret move or a selection of it that comes from no
+click or key -- the platform restoring the editor's state, whenever its
+loading ends -- is not followed, so that neither direction sets the
+other off, at whatever time the platform finishes. The plugin's
 listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
@@ -1622,12 +1627,14 @@ again, the listings, a block nested where the record names its
 `MakeClosure`, the linked highlighting,
 kept through another editor's caret and gone with an edit, scrolling
 with the editor in either direction, off by default and remembered,
-a file opened for it followed by nothing, and the
-editor tab; `FrameCodeFollowerTest` the frame's code written as a
+a background tab brought forward, a file opened for it followed in
+nothing but the user's input, a line of no statement scrolling nothing,
+and the editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, that line alone coloured as the
 execution point in every editor of the tab, only the tab's last editor
 ending the follower, and a deferred step expiring with its lifetime. `NewspeakDebugProcessTest`, in
-`debugProcessTest`, runs Show Frame Code against the real runtime, and
+`debugProcessTest`, runs Show Frame Code against the real runtime, the
+marked line coloured and the colour gone at the session's end, and
 its refusal against a fake agent. And
 `TracedRunEndToEndTest`, in a Gradle task of its own, `traceFileTest`
 (`runsLikeUnitTests`, `debugsWithTheRuntime`), runs a configuration

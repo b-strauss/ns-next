@@ -25,8 +25,10 @@ import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.impl.DocumentMarkupModel
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.xdebugger.ui.DebuggerColors
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.ui.TestDialogManager
@@ -918,9 +920,25 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
         debugging.nextPause()
         val after = shown("a moved mark") { listing -> listing.contains("Restarting>>compute:") && mark(listing) != before }
         assertTrue(after, mark(after)!! > before)
+        // The marked line is coloured as the execution point, the one line.
+        val tab = runInEdtAndGet { FileEditorManager.getInstance(project).openFiles.filterIsInstance<CodeListingFile>().single() }
+        fun executionLines(): List<Int> = runInEdtAndGet {
+            val document = checkNotNull(FileDocumentManager.getInstance().getDocument(tab))
+            DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+                .filter { highlighter -> highlighter.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+                .map { highlighter -> document.getLineNumber(highlighter.startOffset) }
+        }
+        assertEquals(listOf(FrameCodeFollower.markedLine(after)), executionLines())
 
         onEdt { session.resume() }
         debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        // The follower's end takes the colour away; the tab stays open with its last text.
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)
+        while (executionLines().isNotEmpty()) {
+            if (System.nanoTime() > deadline) throw AssertionError("the execution point's colour stays after the session's end")
+            Thread.sleep(POLL_MILLISECONDS)
+        }
+        assertTrue(runInEdtAndGet { FileEditorManager.getInstance(project).isFileOpen(tab) })
     }
 
     /** A refused frame code is told in a notification with the agent's words, and opens no tab. */

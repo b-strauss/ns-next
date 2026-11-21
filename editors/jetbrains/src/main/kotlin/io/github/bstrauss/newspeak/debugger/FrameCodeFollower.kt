@@ -54,6 +54,14 @@ class FrameCodeFollower private constructor(
     private val released = expiresWith(lifetime)
 
     init {
+        // However the lifetime ends -- the follower's end, or the session's lifetime before its listeners
+        // hear of the stop -- and after every write queued before it, which the end has made do nothing:
+        // a tab kept open after the session shows its last text, no longer an execution point.
+        val project = session.project
+        Disposer.register(lifetime) {
+            ended = true
+            ApplicationManager.getApplication().invokeLater({ clearMarkedLine(project, file) }, ModalityState.any(), project.disposed)
+        }
         session.addSessionListener(
             object : XDebugSessionListener {
                 override fun sessionPaused() = refresh()
@@ -103,10 +111,6 @@ class FrameCodeFollower private constructor(
         ended = true
         if (process.frameCodeFollower === this) process.frameCodeFollower = null
         Disposer.dispose(lifetime)
-        // After every write queued before the end, which the end has made do nothing; a tab
-        // kept open after the session shows its last text, no longer an execution point.
-        val project = session.project
-        ApplicationManager.getApplication().invokeLater({ clearMarkedLine(project, file) }, ModalityState.any(), project.disposed)
     }
 
     companion object {
@@ -179,7 +183,12 @@ class FrameCodeFollower private constructor(
         internal fun highlightMarkedLine(project: Project, file: CodeListingFile, line: Int?) {
             val document = FileDocumentManager.getInstance().getDocument(file) ?: return
             val current = file.getUserData(MARKED_LINE_HIGHLIGHTER)
-            if (current != null && current.isValid && line != null && document.getLineNumber(current.startOffset) == line) return
+            // An edit inside the line may have stretched the highlighter over several: it is kept only while it covers that one line.
+            if (current != null && current.isValid && line != null &&
+                document.getLineNumber(current.startOffset) == line && document.getLineNumber(current.endOffset) == line
+            ) {
+                return
+            }
             clearMarkedLine(project, file)
             if (line == null || line >= document.lineCount) return
             val markup = DocumentMarkupModel.forDocument(document, project, true)

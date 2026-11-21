@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.IdeEventQueue
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
@@ -22,6 +23,7 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.components.JBLabel
@@ -44,6 +46,7 @@ import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.event.InputEvent
 import java.awt.Font
 import java.nio.file.Path
 import javax.swing.ComboBoxModel
@@ -91,6 +94,7 @@ class CodeTab(
     private val tracedRuns: TracedRuns = TracedRuns.getInstance(project),
     private val decorations: DecorationsService = DecorationsService.getInstance(project),
     private val libraryDirectory: () -> Path? = { project.service<NewspeakCoreLibrary>().directory },
+    private val byUser: () -> Boolean = { IdeEventQueue.getInstance().trueCurrentEvent is InputEvent },
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
 
@@ -155,12 +159,8 @@ class CodeTab(
         get() = PropertiesComponent.getInstance(project).getBoolean(SYNC_PROPERTY, false)
         set(value) = PropertiesComponent.getInstance(project).setValue(SYNC_PROPERTY, value, false)
 
-    /**
-     * The source file the tab is opening for a viewer's caret, whose
-     * selection, and the caret its editor comes with, name nothing the user
-     * chose: they are not followed.
-     */
-    private var openedForSync: VirtualFile? = null
+    /** Set while [openForSync] opens a file, whose selection and caret then change without the user. */
+    private var openingForSync = false
 
     /** How many times the tab built a listing and wrote it into its viewer; tests read it. */
     internal var listingsShown = 0
@@ -180,7 +180,10 @@ class CodeTab(
         chooser.addActionListener { if (!offering) showChosen() }
         EditorFactory.getInstance().eventMulticaster.addCaretListener(
             object : CaretListener {
-                override fun caretPositionChanged(event: CaretEvent) = caretMoved(event.editor)
+                override fun caretPositionChanged(event: CaretEvent) {
+                    if (fromSyncOpening(event.editor)) return
+                    caretMoved(event.editor)
+                }
             },
             parent,
         )
@@ -188,7 +191,7 @@ class CodeTab(
             FileEditorManagerListener.FILE_EDITOR_MANAGER,
             object : FileEditorManagerListener {
                 override fun selectionChanged(event: FileEditorManagerEvent) {
-                    if (event.newFile != null && event.newFile == openedForSync) return
+                    if (openingForSync || (event.newEditor as? TextEditor)?.editor?.let(::fromSyncOpening) == true) return
                     followSelectedEditor()
                 }
             },
@@ -311,7 +314,6 @@ class CodeTab(
         // Only a Newspeak file's caret names a statement: another editor's -- a console scrolling with the program's output -- leaves the link as it is.
         val file = FileDocumentManager.getInstance().getFile(document)
         if (file?.extension != NEWSPEAK_EXTENSION) return
-        if (file == openedForSync) return
         val caret = editor.caretModel.offset
         // Bodies nest, so the innermost holding the caret starts last, and of those ends first.
         val placed = decorations.placedBodies(document, run)
@@ -338,9 +340,28 @@ class CodeTab(
     }
 
     /**
-     * Scrolls every source editor that shows [body] to its [statement],
-     * their carets where they are; opens the body's file, without taking
-     * the focus from the viewer, where no editor shows it, and a body the
+     * Whether a caret move or a selection of [editor] comes from the tab's
+     * own opening of its file, and so names nothing the user chose: the
+     * editor was brought forward for a viewer's caret, and what moves its
+     * caret or selects it now is no input of the user's -- the platform
+     * restoring the editor's state, whenever its loading ends. The user's
+     * first input there, a click or a key, ends that, and is followed.
+     */
+    private fun fromSyncOpening(editor: Editor): Boolean {
+        // Within the opening call, before its new editor can be marked, everything is the opening's.
+        if (openingForSync) return true
+        if (editor.getUserData(OPENED_FOR_SYNC) != true) return false
+        if (!byUser()) return true
+        editor.putUserData(OPENED_FOR_SYNC, null)
+        return false
+    }
+
+    /**
+     * Scrolls every source editor that shows [body] -- the selected one of
+     * each editor window, a background tab showing nothing -- to its
+     * [statement], their carets where they are; brings the body's file
+     * forward, or opens it, without taking the focus from the viewer and
+     * without moving its caret, where no editor shows it, and a body the
      * run's records place in no file -- one without a range, or placed in
      * a text that is not the file's ([navigate]'s rule) -- nowhere. A
      * method changed since the run is scrolled to nowhere, as it is
@@ -349,8 +370,8 @@ class CodeTab(
     private fun scrollSource(body: Int, statement: Int) {
         val described = run.bodies[body] ?: return
         val range = described.statements.getOrNull(statement)?.range ?: return
-        val shown = EditorFactory.getInstance().allEditors
-            .filter { editor -> !editor.isDisposed && editor.project === project && listingOf(editor.document) == null }
+        val shown = FileEditorManager.getInstance(project).selectedEditors.filterIsInstance<TextEditor>().map(TextEditor::getEditor)
+            .filter { editor -> !editor.isDisposed && listingOf(editor.document) == null }
             .mapNotNull { editor ->
                 decorations.placedBodies(editor.document, run).firstOrNull { placed -> placed.body.number == body }?.let { placed -> editor to placed }
             }
@@ -365,17 +386,23 @@ class CodeTab(
         withSourceFile(project, path) { file -> openForSync(file, body, range) }
     }
 
-    /** Opens [file] behind the viewer, and scrolls it to [range] of [body] once its editor is loaded. */
+    /**
+     * Opens [file] behind the viewer, or brings its tab forward, and
+     * scrolls it to [range] of [body] once its editor is loaded; what the
+     * opening sets off in the editor is not followed ([fromSyncOpening]).
+     */
     private fun openForSync(file: VirtualFile, body: Int, range: SourceRange) {
         val manager = FileEditorManager.getInstance(project)
-        openedForSync = file
-        val editors = try {
-            manager.openFile(file, false)
+        // Marked before the opening, which may select the editor and restore its caret at once.
+        for (open in manager.getEditors(file).filterIsInstance<TextEditor>()) open.editor.putUserData(OPENED_FOR_SYNC, true)
+        openingForSync = true
+        val opened = try {
+            manager.openFile(file, false).filterIsInstance<TextEditor>().map(TextEditor::getEditor)
         } finally {
-            // What the opening queued for later is still its own.
-            ApplicationManager.getApplication().invokeLater({ if (openedForSync == file) openedForSync = null }, project.disposed)
+            openingForSync = false
         }
-        for (editor in editors.filterIsInstance<TextEditor>().map(TextEditor::getEditor)) {
+        for (editor in opened) {
+            editor.putUserData(OPENED_FOR_SYNC, true)
             manager.runWhenLoaded(editor) {
                 if (editor.isDisposed) return@runWhenLoaded
                 val placed = decorations.placedBodies(editor.document, run).firstOrNull { candidate -> candidate.body.number == body }
@@ -400,6 +427,9 @@ class CodeTab(
 
     private companion object {
         const val BYTECODE = "bytecode"
+
+        /** Marks an editor the tab brought forward until the user's first input in it ([fromSyncOpening]). */
+        val OPENED_FOR_SYNC = Key.create<Boolean>("newspeak.devtool.code.openedForSync")
 
         /** The project's property that remembers [syncWithEditor]. */
         const val SYNC_PROPERTY = "newspeak.devtool.code.scrollWithEditor"

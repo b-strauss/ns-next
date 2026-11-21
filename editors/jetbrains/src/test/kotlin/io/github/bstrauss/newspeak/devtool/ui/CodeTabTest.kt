@@ -8,7 +8,10 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.fileEditor.impl.text.TextEditorProvider
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -116,9 +119,12 @@ class CodeTabTest : BasePlatformTestCase() {
         return lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
     }
 
+    /** Whether the event being dispatched counts as the user's input, as a click or a key would. */
+    private var userInput = false
+
     private fun tab(run: TraceRun): CodeTab {
         tracedRuns.selected = run
-        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations)
+        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput })
     }
 
     private fun openSource(): Editor {
@@ -623,7 +629,7 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(shows(editor, statementLine, statementLine))
         assertFalse("the first line scrolled out", shows(editor, 0, 0))
         assertEquals("the source's caret stays", caret, editor.caretModel.offset)
-        // Neither direction sets off the other: the tab shows the method still, and the block's statement is linked.
+        // The scroll moves no caret, so the source's caret sets nothing off: the tab shows the method still, and the block's statement is linked.
         assertEquals(1, tab.shownBody)
         assertEquals(2 to 0, tab.highlighting.selected)
         assertEquals(blockLine(tab), tab.viewer.caretModel.logicalPosition.line)
@@ -645,9 +651,58 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(shown, tab.listingsShown)
         assertEquals(1, tab.shownBody)
         assertEquals(2 to 0, tab.highlighting.selected)
-        // A user's caret in the opened file is followed again.
+        // Whenever the editor's loading ends, the state it restores -- a caret
+        // elsewhere, its selection -- is no input of the user's and is not followed.
+        opened.caretAt("value", SECOND)
+        project.messageBus.syncPublisher(FileEditorManagerListener.FILE_EDITOR_MANAGER)
+            .selectionChanged(FileEditorManagerEvent(manager, null, null, null, file, manager.getSelectedEditor(file), TextEditorProvider.getInstance()))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertEquals(1, tab.shownBody)
+        assertEquals(2 to 0, tab.highlighting.selected)
+        // The user's first click or key there is followed, and so is everything after it.
+        userInput = true
         opened.caretAt(OTHER_STATEMENT)
         assertEquals(3, tab.shownBody)
+        userInput = false
+        opened.caretAt(FIRST)
+        assertEquals(1, tab.shownBody)
+    }
+
+    fun testAViewerCaretBringsTheSourceInABackgroundTabForward() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        val caret = editor.caretModel.offset
+        val otherPath = source.resolveSibling("Unrelated.ns")
+        Files.writeString(otherPath, "class Unrelated = () ()\n")
+        val other = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(otherPath))
+        val manager = FileEditorManager.getInstance(project)
+        manager.openFile(other, true)
+        val file = checkNotNull(editor.virtualFile)
+        assertFalse(file in manager.selectedFiles)
+        tab.show(1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue("the tab is brought forward", file in manager.selectedFiles)
+        assertEquals("its caret is not moved", caret, checkNotNull(manager.getSelectedEditor(file) as? TextEditor).editor.caretModel.offset)
+        assertEquals(1, tab.shownBody)
+        assertEquals(2 to 0, tab.highlighting.selected)
+    }
+
+    fun testAViewerLineOfNoStatementLeavesTheSourceAsItIs() {
+        val tab = tab(tracedRun())
+        tab.syncWithEditor = true
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        showLines(editor, 1)
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(blockLine(tab), 0))
+        assertTrue(editor.scrollingModel.verticalScrollOffset > 0)
+        editor.scrollingModel.scrollVertically(0)
+        // The listing's head names no statement: the source stays where it is.
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(0, 0))
+        assertNull(tab.highlighting.selected)
+        assertEquals(0, editor.scrollingModel.verticalScrollOffset)
     }
 
     fun testABodyPlacedInNoFileOpensNothing() {

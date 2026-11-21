@@ -75,6 +75,22 @@ class FrameCodeFollowerTest : BasePlatformTestCase() {
         assertEquals(emptyList<Int>(), executionLines(document))
     }
 
+    fun testAnEditInsideTheMarkedLineLeavesOneLineColoured() {
+        val file = CodeListingFile(FrameCodeFollower.TITLE, listing(mark = 2))
+        FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, file), true)
+        val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
+        FrameCodeFollower.write(project, file, listing(mark = 2))
+        // The change lies inside the marked line and brings a line of its own, the mark staying at the same line.
+        val marked = "   2-> stmt 2  "
+        val stretched = listing(mark = 2).replace("${marked}LoadLiteral", "${marked}Send r9\n   2b  stmt 2  LoadLiteral")
+        FrameCodeFollower.write(project, file, stretched)
+        assertEquals(3, FrameCodeFollower.markedLine(stretched))
+        val highlighter = DocumentMarkupModel.forDocument(document, project, true).allHighlighters
+            .single { candidate -> candidate.textAttributesKey == DebuggerColors.EXECUTIONPOINT_ATTRIBUTES }
+        assertEquals(3, document.getLineNumber(highlighter.startOffset))
+        assertEquals("one line, not the line the edit added", 3, document.getLineNumber(highlighter.endOffset))
+    }
+
     /** The lines of [document] coloured as the execution point, in every editor of it. */
     private fun executionLines(document: Document): List<Int> =
         DocumentMarkupModel.forDocument(document, project, true).allHighlighters
