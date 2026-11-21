@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.debugger
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -16,7 +17,7 @@ import com.intellij.xdebugger.XDebuggerManager
  * frame and every step (`FrameCodeFollower`). Shown for a Newspeak
  * session, enabled at a stop on one of its frames.
  */
-class ShowFrameCodeAction : AnAction(), DumbAware {
+class ShowFrameCodeAction : AnAction(AllIcons.Debugger.Frame), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(event: AnActionEvent) {
@@ -31,7 +32,7 @@ class ShowFrameCodeAction : AnAction(), DumbAware {
         val frame = session.currentStackFrame as? NewspeakStackFrame ?: return
         process.frameCode(frame).whenComplete { code, failure ->
             if (failure != null) return@whenComplete
-            ApplicationManager.getApplication().invokeLater({ FrameCodeFollower.open(session, process, code) }, ModalityState.nonModal())
+            ApplicationManager.getApplication().invokeLater({ if (!session.isStopped) FrameCodeFollower.open(session, process, code) }, ModalityState.nonModal())
         }
     }
 

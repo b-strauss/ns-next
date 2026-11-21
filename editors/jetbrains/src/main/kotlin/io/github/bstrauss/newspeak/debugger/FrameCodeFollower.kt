@@ -94,8 +94,8 @@ class FrameCodeFollower private constructor(
     }
 
     companion object {
-        /** The tab's name for the frame of body [body]. */
-        fun title(body: String): String = "$body (frame)"
+        /** The tab's name, one for every frame it follows, so that it never names another body than its text shows. */
+        const val TITLE = "Frame Code"
 
         /** The tab's text: the bytecode, then the machine code or the line that says there is none. */
         fun text(code: FrameCode): String =
@@ -110,9 +110,17 @@ class FrameCodeFollower private constructor(
                 existing.refresh()
                 return
             }
-            val file = CodeListingFile(title(code.body), text(code))
-            process.frameCodeFollower = FrameCodeFollower(session, process, file)
+            val file = CodeListingFile(TITLE, text(code))
+            val follower = FrameCodeFollower(session, process, file)
+            // A session that stopped while the answer was in flight never says so again.
+            if (session.isStopped) {
+                follower.end()
+                return
+            }
+            process.frameCodeFollower = follower
             manager.openFile(file, true)
+            // A step between the answer and the tab's opening is shown too.
+            follower.refresh()
         }
     }
 }
