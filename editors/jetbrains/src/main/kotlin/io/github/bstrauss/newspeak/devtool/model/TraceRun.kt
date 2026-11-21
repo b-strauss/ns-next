@@ -9,7 +9,7 @@ enum class MethodState { INTERPRETED, BASELINE, TWIN, OPTIMIZED, DEOPTIMIZED, AB
 
 /**
  * What became of a send: [inlining] `inlined` or `declined: <reason>` by the
- * last optimizing compile that planned it, and [cache] its inline cache's
+ * last optimizing compile that planned it and installed its copy, and [cache] its inline cache's
  * state -- `mono`, `poly <n>` with the receivers it has seen since it was
  * last vacant, `mega` -- each null where the trace says nothing of it.
  */
@@ -30,12 +30,17 @@ class TraceRun(val name: String, val started: Instant) {
     private val bytecodeListings = HashMap<Int, Bytecode>()
     private val codeListings = HashMap<Int, MutableList<Code>>()
     private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
-
-    /** The root of each block's family, from the bytecode listings, which list a method's blocks after it. */
-    private val familyRoots = HashMap<Int, Int>()
     private val histories = HashMap<Int, BodyHistory>()
     private val inliningAtSends = HashMap<SendKey, String>()
     private val caches = HashMap<SendKey, CacheHistory>()
+
+    /**
+     * The plan's decisions of each optimizing compile whose outcome has not
+     * arrived yet: a compile's `inlined` and `declined` events precede its
+     * `optimized`, `refused` or `deferred` event, and only an installed
+     * copy's plan says what became of a send.
+     */
+    private val plannedInlining = HashMap<CompileKey, MutableList<Pair<SendKey, String>>>()
     private val listeners = ArrayList<() -> Unit>()
 
     /** The architecture the run's machine code is instructions of, from the header; null without a JIT or before it arrived. */
@@ -67,7 +72,7 @@ class TraceRun(val name: String, val started: Instant) {
     fun sends(body: Int): Map<Int, SendOutcome> {
         val described = describedBodies[body] ?: return emptyMap()
         // A block's sites are numbered in its method's family, whose root the transitions name.
-        val root = familyRoots[body] ?: body
+        val root = described.family ?: body
         val outcomes = LinkedHashMap<Int, SendOutcome>()
         for (send in described.sends) {
             val inlining = inliningAtSends[SendKey(body, send.at)]
@@ -85,12 +90,13 @@ class TraceRun(val name: String, val started: Instant) {
                 is Header -> architecture = record.architecture
                 is Body -> describedBodies[record.number] = record
                 is Event -> take(record)
-                is Bytecode -> {
-                    bytecodeListings[record.body] = record
-                    for (listed in record.bodies) if (listed.body != record.body) familyRoots[listed.body] = record.body
-                }
+                is Bytecode -> bytecodeListings[record.body] = record
                 is Code -> codeListings.getOrPut(record.body) { ArrayList() }.add(record)
-                is Inlining -> inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
+                is Inlining -> {
+                    inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
+                    // The plan's own outcome, for a trace without the `optimize` category.
+                    concludePlan(CompileKey(record.body, record.key, record.entered), installed = record.installed != null)
+                }
             }
         }
         for (listener in listeners.toList()) listener()
@@ -106,14 +112,39 @@ class TraceRun(val name: String, val started: Instant) {
         recordedEvents.add(event)
         val body = event.body
         when (event.event) {
-            "inlined" -> inliningAt(event)?.let { key -> inliningAtSends[key] = "inlined" }
-            "declined" -> inliningAt(event)?.let { key -> inliningAtSends[key] = "declined: ${event.text("reason")}" }
+            "inlined" -> plan(event, "inlined")
+            "declined" -> plan(event, "declined: ${event.text("reason")}")
             "transition" -> {
                 val site = event.integer("site")
                 if (body != null && site != null) caches.getOrPut(SendKey(body, site)) { CacheHistory() }.take(event)
             }
-            else -> if (body != null) histories.getOrPut(body) { BodyHistory() }.take(event)
+            // Every site vacated at once: none keeps the state or the receivers it had.
+            "vacated" -> caches.clear()
+            // The zone dropped every body's machine code, copies included.
+            "replaced" -> for (history in histories.values) history.lose()
+            else -> if (body != null) {
+                histories.getOrPut(body) { BodyHistory() }.take(event)
+                when (event.event) {
+                    "optimized" -> concludePlan(compileKey(body, event), installed = true)
+                    "refused", "deferred" -> if (event.category == "optimize") concludePlan(compileKey(body, event), installed = false)
+                }
+            }
         }
+    }
+
+    private fun compileKey(body: Int, event: Event) = CompileKey(body, event.text("key"), event.text("entered"))
+
+    /** Keeps [event]'s decision at its send until its compile's outcome says whether the copy was installed. */
+    private fun plan(event: Event, outcome: String) {
+        val body = event.body ?: return
+        val send = inliningAt(event) ?: return
+        plannedInlining.getOrPut(compileKey(body, event)) { ArrayList() }.add(send to outcome)
+    }
+
+    /** The compile [key] ended: its decisions apply to the sends if its copy was [installed], and are dropped otherwise. */
+    private fun concludePlan(key: CompileKey, installed: Boolean) {
+        val decisions = plannedInlining.remove(key) ?: return
+        if (installed) for ((send, outcome) in decisions) inliningAtSends[send] = outcome
     }
 
     private fun inliningAt(event: Event): SendKey? {
@@ -124,6 +155,9 @@ class TraceRun(val name: String, val started: Instant) {
 
     /** A send by its body and index, or a cache site by its family's root and number. */
     private data class SendKey(val body: Int, val position: Int)
+
+    /** An optimizing compile: its body and the copy's key and entered application. */
+    private data class CompileKey(val body: Int, val key: String?, val entered: String?)
 
     /** A body's tiers as its events tell them. */
     private class BodyHistory {
@@ -144,13 +178,24 @@ class TraceRun(val name: String, val started: Instant) {
                     tier = MethodState.OPTIMIZED
                 }
                 "retired", "invalidated" -> uncount()
-                "freed" -> if (event.text("tier") == "optimized") uncount()
+                "freed" -> when (event.text("tier")) {
+                    "optimized" -> uncount()
+                    // Its baseline code gone, the body runs interpreted until it is compiled again.
+                    else -> if (copies == 0) tier = MethodState.INTERPRETED
+                }
                 "abandoned" -> abandoned = true
+                // Revived, it counts its entries again, interpreted until compiled.
                 "revived" -> {
                     abandoned = false
-                    if (copies == 0) tier = MethodState.BASELINE
+                    if (copies == 0) tier = MethodState.INTERPRETED
                 }
             }
+        }
+
+        /** Every machine code of the body dropped at once. */
+        fun lose() {
+            copies = 0
+            tier = MethodState.INTERPRETED
         }
 
         /** A copy gone; the last one leaves the body deoptimized. */

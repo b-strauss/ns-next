@@ -55,8 +55,9 @@ data class Statement(val instructions: IntRange, val range: SourceRange?)
 data class Send(val at: Int, val site: Int?, val call: SourceRange?, val selector: List<SourceRange?>)
 
 /**
- * A body's description, before the first record that names [number]: its
- * module, its source -- a program's [file] or the core library's
+ * A body's description, before the first record that names [number]: for
+ * a block, its [family]'s root, which the cache transitions of the block's
+ * sites name, null for a root; its module, its source -- a program's [file] or the core library's
  * [library] path, neither for a module read from no file -- its [range],
  * null where the runtime held no text of the module, and the [checksum] of
  * that text, by which a reader tells whether the text it holds is the one
@@ -65,6 +66,7 @@ data class Send(val at: Int, val site: Int?, val call: SourceRange?, val selecto
 data class Body(
     val number: Int,
     val name: String,
+    val family: Int?,
     val moduleId: String,
     val moduleVersion: String?,
     val file: String?,
@@ -160,6 +162,7 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
         Body(
             number = record.requiredInteger("body"),
             name = record.requiredText("name"),
+            family = record.optionalInteger("family"),
             moduleId = module.requiredText("id"),
             moduleVersion = module.optionalText("version"),
             file = source?.optionalText("file"),

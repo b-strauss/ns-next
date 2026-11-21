@@ -27,6 +27,10 @@ use crate::interpreter::core_library::{shipped_module_text, shipped_source_files
 pub struct BodyDescription {
     /// The body, as every event and listing names it.
     pub body: BodyName,
+    /// A block's family root, the body whose code created it at any
+    /// depth, whose number the `caches` category's transitions name for
+    /// the block's sites; `None` for a root.
+    pub family: Option<BodyName>,
     /// The module the body is declared in.
     pub module: ModuleName,
     /// The path of a shipped module's source among the library's files
@@ -84,13 +88,14 @@ pub fn source_checksum(text: &[u8]) -> u64 {
 }
 
 /// The description of `code`, which `origin` names and the trace numbered
-/// `body`; `None` for a body of a mixin no heap registered, or whose
+/// `body`, a block of `family`'s where it is given; `None` for a body of a mixin no heap registered, or whose
 /// module has no text that holds its source.
 pub(crate) fn describe(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
     origin: &BodyOrigin,
     body: BodyName,
+    family: Option<BodyName>,
 ) -> Option<BodyDescription> {
     let (root, _) = declaration_path(mutator, &origin.mixin)?;
     let module = ModuleName::of_root(&root);
@@ -144,6 +149,7 @@ pub(crate) fn describe(
     };
     Some(BodyDescription {
         body,
+        family,
         module,
         shipped_path,
         source,

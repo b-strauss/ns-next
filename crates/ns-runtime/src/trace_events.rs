@@ -1480,7 +1480,7 @@ fn with_descriptions(
         for body in minted.by_ref().take(numbered - taken) {
             if let Some(origin) = &body.origin
                 && let Some(description) =
-                    descriptions::describe(mutator, &body.code, origin, body.body)
+                    descriptions::describe(mutator, &body.code, origin, body.body, body.family)
             {
                 described.push(Delivery::Body(Box::new(description)));
             }

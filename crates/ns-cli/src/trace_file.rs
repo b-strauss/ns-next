@@ -159,13 +159,14 @@ fn module_record(module: &ModuleName) -> Value {
     json!({ "id": module.id, "version": module.version })
 }
 
-/// The `body` record of `description`: the body's number and name, its
-/// module, where its source is, its range there, its checksum and its
+/// The `body` record of `description`: the body's number and name, a
+/// block's family root, its module, where its source is, its range there, its checksum and its
 /// statements and sends, every range counted in `texts`' text of its
 /// module; each range `null` where `texts` holds no such text.
 pub(crate) fn body_record(description: &BodyDescription, texts: &mut ModuleTexts) -> Value {
     let BodyDescription {
         body,
+        family,
         module,
         shipped_path: _,
         source,
@@ -201,6 +202,7 @@ pub(crate) fn body_record(description: &BodyDescription, texts: &mut ModuleTexts
         "kind": "body",
         "body": number(body),
         "name": body.name,
+        "family": family.as_ref().map(number),
         "module": module_record(module),
         "source": source_record,
         "range": range_record,
@@ -769,6 +771,7 @@ mod tests {
                 number: 3,
                 name: "Demo>>run".to_string(),
             },
+            family: None,
             module: ModuleName::named("Demo"),
             shipped_path: None,
             source: Span::new(start("run"), start(" )\n)") + 2),
@@ -798,6 +801,32 @@ mod tests {
         assert_eq!(record["module"], json!({ "id": "Demo", "version": null }));
         assert_eq!(record["name"], "Demo>>run");
         assert_eq!(record["body"], 3);
+        assert!(record["family"].is_null(), "{record}");
+    }
+
+    /// A block's record names its family's root, whose number the cache
+    /// transitions of the block's sites carry.
+    #[test]
+    fn a_block_names_its_family() {
+        let description = BodyDescription {
+            body: BodyName {
+                number: 4,
+                name: "[] in Demo>>run".to_string(),
+            },
+            family: Some(BodyName {
+                number: 3,
+                name: "Demo>>run".to_string(),
+            }),
+            module: ModuleName::named("Demo"),
+            shipped_path: None,
+            source: Span::new(0, 4),
+            checksum: 1,
+            statements: Vec::new(),
+            sends: Vec::new(),
+        };
+        let record = body_record(&description, &mut demo_texts("Demo"));
+        assert_eq!(record["family"], 3, "{record}");
+        assert_eq!(record["body"], 4, "{record}");
     }
 
     #[test]
@@ -807,6 +836,7 @@ mod tests {
                 number: 1,
                 name: "newspeak.core.TimeFactory>>new".to_string(),
             },
+            family: None,
             module: ModuleName::named("newspeak.core.TimeFactory"),
             shipped_path: Some("platform/TimeFactory.ns".to_string()),
             source: Span::new(0, 4),

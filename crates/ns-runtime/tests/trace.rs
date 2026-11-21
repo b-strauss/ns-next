@@ -2364,6 +2364,39 @@ fn a_description_precedes_the_first_mention() {
     assert!(named > 0, "an event names a body");
 }
 
+/// A block's description names its family's root, which the cache
+/// transitions of the block's sites name, and which is described before
+/// it; a root's names none.
+#[test]
+fn a_block_is_described_with_its_family() {
+    let received = received(
+        TWO_BLOCKS,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let run = description_of(&received, "Demo>>run");
+    assert_eq!(run.family, None);
+    let blocks: Vec<&BodyDescription> = received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) if description.body.name == "[] in Demo>>run" => {
+                Some(description)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(blocks.len(), 2, "both blocks described");
+    for block in &blocks {
+        assert_eq!(block.family.as_ref(), Some(&run.body), "{block:?}");
+    }
+    let position = |number: u32| {
+        received.iter().position(
+            |item| matches!(item, Received::Body(description) if description.body.number == number),
+        )
+    };
+    assert!(position(run.body.number) < position(blocks[0].body.number));
+}
+
 /// A program's body is described with its module, its source, its
 /// checksum, its statements and its sends, every span in bytes of the
 /// module's text.

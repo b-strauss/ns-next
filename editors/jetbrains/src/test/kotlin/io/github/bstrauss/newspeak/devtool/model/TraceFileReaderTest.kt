@@ -45,6 +45,7 @@ class TraceFileReaderTest : BasePlatformTestCase() {
 
         val block = records.filterIsInstance<Body>().single { body -> body.number == 5 }
         assertEquals("[] in Demo>>main:args:", block.name)
+        assertEquals(4, block.family)
         assertEquals("Demo", block.moduleId)
         assertNull(block.moduleVersion)
         assertEquals("/work/Demo.ns", block.file)
@@ -56,6 +57,7 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(listOf(Statement(instructions = 0 until 19, range = SourceRange(28, 31, 28, 116))), block.statements)
         val library = records.filterIsInstance<Body>().single { body -> body.number == 17 }
         assertEquals("Kernel.ns", library.library)
+        assertNull(library.family)
         assertNull(library.file)
 
         val inlined = records.filterIsInstance<Event>().first { event -> event.event == "inlined" }

@@ -1060,9 +1060,13 @@ The records:
   does not know them refuses, and the architecture the file's `code`
   records are instructions of, `"x64"` or `"aarch64"`, `null` for a
   binary without a JIT.
-- `{"kind":"body","body":N,"name":…,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
+- `{"kind":"body","body":N,"name":…,"family":N|null,"module":{"id":…,"version":…|null},"source":…,"range":[…],"checksum":…,"statements":[…],"sends":[…]}`,
   before the first record that names `N`: the body's name as the text
-  trace writes it (`Demo>>main:args:`, `[] in Demo>>run`), its module,
+  trace writes it (`Demo>>main:args:`, `[] in Demo>>run`); for a block,
+  `family`, the number of its family's root -- the method, factory,
+  initializer or superclass clause whose code created it, at any depth
+  --, which is described before it and which the cache transitions of
+  the block's sites name, `null` for a root; its module,
   and its source: `{"file":"<absolute path>"}` for a program's module,
   `{"library":"<path>"}` for a shipped one, its path among the core
   library's files (`platform/TimeFactory.ns`, as `ns-next

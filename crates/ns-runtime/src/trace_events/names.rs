@@ -74,6 +74,10 @@ struct Named {
     /// The side and member the body belongs to, the side held weakly as
     /// the body is; `None` for a body no mixin holds.
     origin: Option<(Weak<Mixin>, Member)>,
+    /// A block's family root -- the method, factory, initializer or
+    /// superclass clause whose body created it, at any depth -- held
+    /// weakly; `None` for a root and a body no mixin holds.
+    root: Option<Weak<CompiledCode>>,
 }
 
 /// A body numbered and not yet described, with what its description is
@@ -83,6 +87,9 @@ pub(crate) struct Minted {
     pub(crate) body: BodyName,
     /// `None` for a body no mixin holds: nothing describes it.
     pub(crate) origin: Option<BodyOrigin>,
+    /// A block's family root, numbered before the block, so that its
+    /// description goes first; `None` for a root.
+    pub(crate) family: Option<BodyName>,
 }
 
 /// The fewest entries the index holds before it drops dead ones.
@@ -111,6 +118,18 @@ impl BodyNames {
     /// it before: what every delivery names a body by.
     pub(crate) fn name(&mut self, mutator: &Mutator<'_>, code: &Rc<CompiledCode>) -> BodyName {
         self.text(mutator, code);
+        // A block described names its family's root, which the cache
+        // transitions of its sites name: numbered first, so that the root
+        // is described before the block names it. Not otherwise, so that a
+        // trace without descriptions numbers what it delivers alone.
+        let family = match self.names.get(&address(code)) {
+            Some(named) if self.describing && named.number.is_none() => named
+                .root
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .map(|root| self.name(mutator, &root)),
+            _ => None,
+        };
         let Some(named) = self.names.get_mut(&address(code)) else {
             unreachable!("internal: `text` made the body's entry");
         };
@@ -134,6 +153,7 @@ impl BodyNames {
                             name: named.name.clone(),
                         },
                         origin,
+                        family,
                     });
                 }
                 number
@@ -167,6 +187,7 @@ impl BodyNames {
                 name: UNNAMED.to_string(),
                 number: None,
                 origin: None,
+                root: None,
             },
         );
         UNNAMED.to_string()
@@ -293,17 +314,17 @@ impl BodyNames {
         }
         for (root, name, member) in roots {
             let block_name = format!("[] in {name}");
-            if self.insert(&root, name.clone(), side, &member) {
+            if self.insert(&root, name.clone(), side, &member, None) {
                 named.push(NamedRoot {
                     code: Rc::clone(&root),
                     name,
                 });
             }
             // A worklist: an image's body chooses how deep its blocks nest.
-            let mut pending: Vec<Rc<CompiledCode>> = vec![root];
+            let mut pending: Vec<Rc<CompiledCode>> = vec![Rc::clone(&root)];
             while let Some(code) = pending.pop() {
                 for block in code.body().created_blocks() {
-                    if self.insert(block.code, block_name.clone(), side, &member) {
+                    if self.insert(block.code, block_name.clone(), side, &member, Some(&root)) {
                         pending.push(Rc::clone(block.code));
                     }
                 }
@@ -311,14 +332,16 @@ impl BodyNames {
         }
     }
 
-    /// Names `code` `name`, a body of `side`'s `member`, unless it is
-    /// named already; answers whether it was not.
+    /// Names `code` `name`, a body of `side`'s `member` -- a block of
+    /// `root`'s family where `root` is given -- unless it is named already;
+    /// answers whether it was not.
     fn insert(
         &mut self,
         code: &Rc<CompiledCode>,
         name: String,
         side: &Rc<Mixin>,
         member: &Member,
+        root: Option<&Rc<CompiledCode>>,
     ) -> bool {
         if self.cached(code).is_some() {
             return false;
@@ -330,6 +353,7 @@ impl BodyNames {
                 name,
                 number: None,
                 origin: Some((Rc::downgrade(side), member.clone())),
+                root: root.map(Rc::downgrade),
             },
         );
         true
@@ -512,6 +536,7 @@ mod tests {
             name: name.to_string(),
             number: None,
             origin: None,
+            root: None,
         }
     }
 
