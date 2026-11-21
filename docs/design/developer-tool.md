@@ -1101,7 +1101,9 @@ The records:
   statement columns.
 - `{"kind":"code","body":N,"tier":"baseline"|"twin"|"optimized","key":…|null,"entered":…|null,"architecture":…,"bytes":n,"instructions":[…],"data":[…],"scopes":[…],"mark":offset|null}`,
   an install's machine code, decoded by `ns-cli` as the text listing
-  decodes it (`listing::decoded`): each instruction
+  decodes it (`listing::annotated`, the one walk that places the
+  positions and the annotations on the instructions for both): each
+  instruction
   `{"offset":o,"text":…,"scope":s|null,"at":pc|null,"annotation":…|null}`,
   its offset in the body, its text, the scope and program counter of the
   stretch it stands in (`null` before the first position and out of

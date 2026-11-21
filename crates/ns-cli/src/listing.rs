@@ -200,18 +200,20 @@ fn write_code(text: &mut String, code: &CodeListing) {
         text.push_str("scopes:\n");
         write_scope_tree(text, &code.scopes);
     }
-    let mut positions = code.positions.iter().peekable();
-    let mut annotations = code.annotations.iter().peekable();
     let mut last_position = None;
-    for instruction in decoded(code) {
-        while let Some((_, position)) =
-            positions.next_if(|(offset, _)| *offset <= instruction.offset)
-        {
+    for AnnotatedInstruction {
+        instruction,
+        reached,
+        annotations,
+        ..
+    } in annotated(code)
+    {
+        for position in reached {
             // A stretch is named where its scope or program counter
             // changes; an instruction that emits no code leaves its
             // position beside the next one's, both named.
             if last_position != Some(position) {
-                write_position(text, code, *position, optimized);
+                write_position(text, code, position, optimized);
                 last_position = Some(position);
             }
         }
@@ -228,22 +230,11 @@ fn write_code(text: &mut String, code: &CodeListing) {
             body_offset(instruction.offset),
             instruction.text
         );
-        let end = instruction.offset.saturating_add(instruction.length);
-        while let Some((_, annotation)) = annotations.next_if(|(offset, _)| *offset < end) {
+        for annotation in annotations {
             let _ = write!(text, "  ; {}", annotation_text(annotation));
         }
         text.push('\n');
     }
-    // Neither names an offset past the last instruction: the code's
-    // positions and annotations lie within it.
-    debug_assert!(
-        positions.next().is_none(),
-        "a position past the last instruction"
-    );
-    debug_assert!(
-        annotations.next().is_none(),
-        "an annotation past the last instruction"
-    );
     if let Some((data_start, _)) = code.words.first() {
         text.push_str("data:\n");
         for (offset, word) in &code.words {
@@ -255,6 +246,63 @@ fn write_code(text: &mut String, code: &CodeListing) {
             );
         }
     }
+}
+
+/// An instruction of a code listing with what the listing says of it.
+pub(crate) struct AnnotatedInstruction<'code> {
+    pub(crate) instruction: Decoded,
+    /// The positions that start at or before the instruction and after
+    /// the one before it, in order: more than one where instructions
+    /// emitted no code.
+    pub(crate) reached: Vec<Position>,
+    /// The position in force at the instruction: the last one reached at
+    /// it or before; `None` before the first.
+    pub(crate) position: Option<Position>,
+    /// What each call or jump out of the instruction reaches, in order.
+    pub(crate) annotations: Vec<&'code Annotation>,
+}
+
+/// `code`'s instructions decoded, each with the positions and the
+/// annotations that fall to it: the one walk by which the text listing
+/// and the trace file both place them, so that the two never disagree.
+pub(crate) fn annotated(code: &CodeListing) -> Vec<AnnotatedInstruction<'_>> {
+    let mut positions = code.positions.iter().peekable();
+    let mut annotations = code.annotations.iter().peekable();
+    let mut position = None;
+    let walked = decoded(code)
+        .into_iter()
+        .map(|instruction| {
+            let mut reached = Vec::new();
+            while let Some((_, next)) =
+                positions.next_if(|(offset, _)| *offset <= instruction.offset)
+            {
+                reached.push(*next);
+                position = Some(*next);
+            }
+            let end = instruction.offset.saturating_add(instruction.length);
+            let mut falling = Vec::new();
+            while let Some((_, annotation)) = annotations.next_if(|(offset, _)| *offset < end) {
+                falling.push(annotation);
+            }
+            AnnotatedInstruction {
+                instruction,
+                reached,
+                position,
+                annotations: falling,
+            }
+        })
+        .collect();
+    // Neither names an offset past the last instruction: the code's
+    // positions and annotations lie within it.
+    debug_assert!(
+        positions.next().is_none(),
+        "a position past the last instruction"
+    );
+    debug_assert!(
+        annotations.next().is_none(),
+        "an annotation past the last instruction"
+    );
+    walked
 }
 
 /// The line that names the stretch of code from `position` on: its scope
@@ -326,7 +374,7 @@ pub(crate) fn word_text(word: DataWord) -> String {
 /// The instructions of `code`'s bytes before its data words, decoded by
 /// the decoder of the target this binary runs on; in hex for any other
 /// target, which a run never lists.
-pub(crate) fn decoded(code: &CodeListing) -> Vec<Decoded> {
+fn decoded(code: &CodeListing) -> Vec<Decoded> {
     let end = usize::try_from(code.code_end)
         .unwrap_or(usize::MAX)
         .min(code.bytes.len());

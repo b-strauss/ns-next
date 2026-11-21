@@ -21,7 +21,7 @@ use ns_tooling::lines::LineIndex;
 use serde_json::{Map, Value, json};
 
 use crate::debug::ProgramModule;
-use crate::listing;
+use crate::listing::{self, AnnotatedInstruction};
 
 /// The format's name, which the header gives so that a reader refuses a
 /// file that is no trace.
@@ -502,22 +502,21 @@ fn code_record(code: &CodeListing) -> Value {
         bytes,
         code_end: _,
         words,
-        positions,
-        annotations,
+        // Placed on the instructions by `listing::annotated`.
+        positions: _,
+        annotations: _,
         scopes,
         mark,
     } = code;
-    let mut positions = positions.iter().peekable();
-    let mut annotations = annotations.iter().peekable();
-    let mut position = None;
-    let instructions: Vec<Value> = listing::decoded(code)
+    let instructions: Vec<Value> = listing::annotated(code)
         .into_iter()
-        .map(|instruction| {
-            while let Some((_, next)) =
-                positions.next_if(|(offset, _)| *offset <= instruction.offset)
-            {
-                position = Some(*next);
-            }
+        .map(|annotated| {
+            let AnnotatedInstruction {
+                instruction,
+                reached: _,
+                position,
+                annotations,
+            } = annotated;
             let (scope, program_counter) = match position {
                 Some(Position::Instruction {
                     scope,
@@ -525,14 +524,15 @@ fn code_record(code: &CodeListing) -> Value {
                 }) => (Some(scope), Some(program_counter)),
                 Some(Position::OutOfLine) | None => (None, None),
             };
-            let end = instruction.offset.saturating_add(instruction.length);
-            let mut reached = Vec::new();
-            while let Some((_, annotation)) = annotations.next_if(|(offset, _)| *offset < end) {
-                reached.push(listing::annotation_text(annotation));
-            }
             // Two annotations on one instruction, which the text listing
             // writes one after the other, are joined as it separates them.
-            let annotation = (!reached.is_empty()).then(|| reached.join("; "));
+            let annotation = (!annotations.is_empty()).then(|| {
+                annotations
+                    .into_iter()
+                    .map(listing::annotation_text)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            });
             json!({
                 "offset": instruction.offset,
                 "text": instruction.text,
