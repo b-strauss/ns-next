@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.devtool.model
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.util.Disposer
+import com.google.gson.JsonObject
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.covers
 import java.time.Instant
@@ -12,7 +13,8 @@ enum class MethodState { INTERPRETED, BASELINE, TWIN, OPTIMIZED, DEOPTIMIZED, AB
 /**
  * What became of a send: [inlining] `inlined` or `declined: <reason>` by the
  * last optimizing compile that planned it and whose installed copy still
- * lives, and [cache] its inline cache's
+ * lives, in a run whose header does not leave `deoptimize` out, and
+ * [cache] its inline cache's
  * state -- `mono`, `poly <n>` with the receivers it has seen since it was
  * last vacant, `mega` -- each null where the trace says nothing of it.
  */
@@ -90,38 +92,50 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     val plans: List<Inlining> get() = plansInOrder
 
     /**
-     * [body]'s state after its events in their order; for one without any,
-     * the tier its machine code was listed in; and otherwise
+     * [body]'s state after its events in their order -- its listed machine
+     * code counted among them where no event announced it but a
+     * deoptimization would be heard of --, and otherwise
      * [MethodState.INTERPRETED] only where a compile would have been heard
      * of -- `compile` traced and the body's own events passing the run's
      * filter. Null where the trace knows nothing of how it ran: a body named
-     * only as a callee, a scope, a cache's family or by a bytecode listing.
+     * only as a callee, a scope, a cache's family or by a bytecode listing,
+     * and one whose code was listed in a run that would never hear its copy
+     * retired.
      */
-    fun state(body: Int): MethodState? {
-        histories[body]?.let { history -> return history.state }
-        codeListings[body]?.let { codes ->
-            return if (codes.any { code -> code.tier == "optimized" }) MethodState.OPTIMIZED else tierState(codes.last().tier)
-        }
-        return MethodState.INTERPRETED.takeIf { compilesHeardOf(body) }
-    }
+    fun state(body: Int): MethodState? = histories[body]?.state ?: MethodState.INTERPRETED.takeIf { heardOf(body, "compile") }
 
-    /** How many optimized copies of [body] are installed: as its events count them, or else as its listings do. */
-    fun copies(body: Int): Int = histories[body]?.copies ?: codeListings[body]?.count { code -> code.tier == "optimized" } ?: 0
+    /** How many optimized copies of [body] are installed, as its events -- and its listings, where they count -- say. */
+    fun copies(body: Int): Int = histories[body]?.copies ?: 0
 
-    /** Whether a `compile` event of [body] would have reached the run: its category traced and the body's name passing the events filter. */
-    private fun compilesHeardOf(body: Int): Boolean {
+    /**
+     * Whether an event of [category] about [body] would have reached the
+     * run: the category traced -- a header that does not say is taken to
+     * trace every one -- and the body's name passing the events filter.
+     */
+    private fun heardOf(body: Int, category: String): Boolean {
         if (filters.noEvents) return false
-        // A header that does not say is taken to trace every category.
-        if (categories?.contains("compile") == false) return false
+        if (categories?.contains(category) == false) return false
         if (filters.events.isEmpty()) return true
         val name = describedBodies[body]?.name ?: return false
         return filters.events.any { pattern -> covers(pattern, name) }
     }
 
-    private fun tierState(tier: String): MethodState = when (tier) {
-        "optimized" -> MethodState.OPTIMIZED
-        "twin" -> MethodState.TWIN
-        else -> MethodState.BASELINE
+    /**
+     * Counts [code]'s install in its body's history where no event
+     * announced it -- `compile` or `optimize` not heard of for the body --
+     * and only where its end can be heard, a retirement or invalidation in
+     * `deoptimize`: an install nothing would ever take back would stand
+     * for good.
+     */
+    private fun countListed(code: Code) {
+        val announcing = if (code.tier == "optimized") "optimize" else "compile"
+        if (heardOf(code.body, announcing) || !heardOf(code.body, "deoptimize")) return
+        val event = when (code.tier) {
+            "optimized" -> "optimized"
+            "twin" -> "compiled-twin"
+            else -> "compiled"
+        }
+        histories.getOrPut(code.body) { BodyHistory() }.take(Event("compile", code.body, event, JsonObject()))
     }
 
     /** What became of each send of [body] the trace says anything of, by the send's bytecode index. */
@@ -130,8 +144,10 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
         // A block's sites are numbered in its method's family, whose root the transitions name.
         val root = described.family ?: body
         val outcomes = LinkedHashMap<Int, SendOutcome>()
+        // A decision whose copy's retirement could never arrive would stand for good: none is shown.
+        val inliningEnds = categories?.contains("deoptimize") != false
         for (send in described.sends) {
-            val inlining = inliningAtSends[SendKey(body, send.at)]
+            val inlining = inliningAtSends[SendKey(body, send.at)]?.takeIf { inliningEnds }
             val cache = send.site?.let { site -> caches[SendKey(root, site)]?.shortForm() }
             if (inlining != null || cache != null) outcomes[send.at] = SendOutcome(inlining, cache)
         }
@@ -153,7 +169,10 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                 is Body -> describedBodies[record.number] = record
                 is Event -> take(record)
                 is Bytecode -> bytecodeListings[record.body] = record
-                is Code -> codeListings.getOrPut(record.body) { ArrayList() }.add(record)
+                is Code -> {
+                    codeListings.getOrPut(record.body) { ArrayList() }.add(record)
+                    countListed(record)
+                }
                 is Inlining -> {
                     inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
                     plansInOrder.add(record)

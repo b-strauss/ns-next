@@ -162,9 +162,9 @@ class TraceRunTest {
 
     @Test fun testAPlanNoOutcomeCanConcludeIsTakenAtOnce() {
         val inlined = mapOf(3 to SendOutcome(inlining = "inlined", cache = null))
-        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining"]""", """["code"]""").sends(5))
-        assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize"]""", "[]").sends(5))
-        assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining"]""", """["inlining"]""").sends(5))
+        assertEquals("neither `optimize` nor the plans traced", inlined, planned("""["inlining","deoptimize"]""", """["code"]""").sends(5))
+        assertEquals("`optimize` traced", emptyMap<Int, SendOutcome>(), planned("""["inlining","optimize","deoptimize"]""", "[]").sends(5))
+        assertEquals("the plans listed", emptyMap<Int, SendOutcome>(), planned("""["inlining","deoptimize"]""", """["inlining"]""").sends(5))
         // A header that does not say is taken to trace an outcome.
         val unsaid = run()
         unsaid.add(
@@ -239,7 +239,7 @@ class TraceRunTest {
         assertNull("no compile traced", cachesOnly.state(5))
         // A listing of its machine code says its tier all the same.
         cachesOnly.add(records("""{"kind":"code","body":6,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":64,"instructions":[],"data":[],"scopes":[],"mark":null}"""))
-        assertEquals(MethodState.BASELINE, cachesOnly.state(6))
+        assertNull("a listing whose end no event would tell", cachesOnly.state(6))
 
         val compiles = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["compile","inlining"],"listings":[]}"""
         assertEquals("compiles traced for every body", MethodState.INTERPRETED, described(compiles).state(6))
@@ -249,6 +249,39 @@ class TraceRunTest {
         filtered.add(records(event(5, "inlining", "inlined", ""","key":null,"entered":null,"in-body":5,"callee":6,"at":3""")))
         assertNull("a callee filtered out", filtered.state(6))
         assertEquals(MethodState.INTERPRETED, described(compiles, TraceFilters(listOf("Demo>>..."), emptyList(), noEvents = false, noListings = true)).state(6))
+    }
+
+    private fun optimizedListing(key: String) =
+        """{"kind":"code","body":5,"tier":"optimized","key":"$key","entered":null,"architecture":"x64","bytes":64,"instructions":[],"data":[],"scopes":[],"mark":null}"""
+
+    @Test fun testAListingCountsOnlyWhereItsEndCanBeHeard() {
+        val listingsOnly = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":[],"listings":["code"]}""")
+        listingsOnly.add(records(optimizedListing("Demo")))
+        assertNull("no retirement could ever take the copy back", listingsOnly.state(5))
+        assertEquals(0, listingsOnly.copies(5))
+
+        val deoptimizations = described("""{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["deoptimize"],"listings":["code"]}""")
+        deoptimizations.add(records(optimizedListing("Demo"), optimizedListing("Demo/Box")))
+        assertEquals(MethodState.OPTIMIZED, deoptimizations.state(5))
+        assertEquals(2, deoptimizations.copies(5))
+        deoptimizations.add(records(event(5, "deoptimize", "retired", ""","key":"Demo","entered":null,"reason":"exits","version":null""")))
+        assertEquals(1, deoptimizations.copies(5))
+        deoptimizations.add(records(event(5, "deoptimize", "invalidated", ""","key":"Demo/Box","entered":null,"cause":"edit"""")))
+        assertEquals(MethodState.DEOPTIMIZED, deoptimizations.state(5))
+    }
+
+    @Test fun testNoInliningIsShownWhereNoRetirementCanArrive() {
+        val traceRun = run()
+        traceRun.add(
+            records(
+                """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64","categories":["optimize","inlining"],"listings":[]}""",
+                """{"kind":"body","body":5,"name":"Demo>>run","family":null,"module":{"id":"Demo","version":null},"source":null,"range":null,"checksum":"0000000000000001","statements":[],"sends":[{"at":3,"site":null,"call":null,"selector":[]}]}""",
+                event(5, "inlining", "inlined", ""","key":null,"entered":null,"in-body":5,"callee":3,"at":3"""),
+                event(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":900"""),
+            ),
+        )
+        assertEquals(emptyMap<Int, SendOutcome>(), traceRun.sends(5))
+        assertEquals("the state still says it ran optimized", MethodState.OPTIMIZED, traceRun.state(5))
     }
 
     @Test fun testABodyWithoutADescriptionIsAccepted() {

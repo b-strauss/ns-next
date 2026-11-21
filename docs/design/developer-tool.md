@@ -1269,18 +1269,22 @@ read and changed on the event dispatch thread only, keeps the records
 by body number, the header's categories and the filters the run was
 started with, and decides each body's state from its events in order
 -- interpreted, baseline, twin, optimized with its copies counted,
-deoptimized once its last copy is gone, abandoned until revived --,
-for a body without events from the tier of its listed machine code,
-and otherwise interpreted only where a compile would have been heard
-of, `compile` traced and the body's name passing the events filter;
-any other body has no state, since a body is described whenever any
-delivery names it -- a callee, a scope, a cache's family, a bytecode
-listing -- in a run that may say nothing of how it ran. And each send's
-outcome: the inlining decision of the last optimizing compile that
-planned it and whose installed copy still lives -- held until the
-compile's outcome arrives unless the header says none can, and gone
-with the copy's retirement, invalidation, freeing or the zone's
-replacement --, and the state of its cache, `mono`, `poly <n>` with
+deoptimized once its last copy is gone, abandoned until revived --, a
+`code` record no event announced counted as its install only where the
+body's deoptimizations would be heard of, `deoptimize` traced and the
+body's name passing the events filter, since an install nothing could
+take back would stand for good; and otherwise interpreted only where a
+compile would have been heard of, `compile` traced and the name passing
+the filter. Any other body has no state, since a body is described
+whenever any delivery names it -- a callee, a scope, a cache's family,
+a bytecode listing -- in a run that may say nothing of how it ran. And
+each send's outcome: the inlining decision of the last optimizing
+compile that planned it and whose installed copy still lives -- held
+until the compile's outcome arrives unless the header says none can,
+gone with the copy's retirement, invalidation, freeing or the zone's
+replacement, and shown only where the header does not leave
+`deoptimize` out, since a retirement could not arrive otherwise --, and
+the state of its cache, `mono`, `poly <n>` with
 the receivers seen since it was last vacant, or `mega`, a block's
 sites by its family's root.
 
@@ -1368,7 +1372,9 @@ command line, its greying and the free field's refusal;
 and its filters; `TraceFileReaderTest` and `TraceRunTest` the records,
 a partial line, a refused version, a malformed line after records, a
 large file read in bounded batches, the states, a state only where the
-trace knows it, and a send's inlining going with its copy; `TracedRunsTest` the tabs and the file's deletion;
+trace knows it, a listing counted only where its end can be heard, and
+a send's inlining going with its copy and shown only where its
+retirement can arrive; `TracedRunsTest` the tabs and the file's deletion;
 `TabsTest` the four views, the inlining tree kept across a batch;
 `DecorationsTest` the icons, none for a method a caches-only run or a
 filtered-out callee says nothing of, the hints, the eyes, staleness,

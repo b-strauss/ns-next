@@ -2523,6 +2523,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       no entry is left for either kind, the run traces and lists
       nothing and opens no tab, without a notice why
       (`devtool/WatchedMethods.kt`, `filters`; `devtool/TracedRuns.kt`).
+    - *A method without a state has no gutter menu*: the menu of Show
+      Code, Show Inlining and Open in Tool Window hangs from the state
+      icon, so a method the run says nothing of how it ran -- every
+      method of a run that lists bytecode alone -- reaches none of them
+      from the gutter, only from the tool window
+      (`devtool/editor/DecorationsService.kt`, `stateIcon`).
+    - *No decoration test draws a deoptimized icon*: `TraceRunTest`
+      holds the state, but no `DecorationsTest` shows a method's icon
+      as deoptimized (`devtool/editor/StateGutterRenderer.kt`).
     - *Nothing bounds a run's memory*: a `TraceRun` keeps every record
       for the run's length and the tool window keeps every run until
       its tab closes, and an open `CodeListingFile` holds its run's
