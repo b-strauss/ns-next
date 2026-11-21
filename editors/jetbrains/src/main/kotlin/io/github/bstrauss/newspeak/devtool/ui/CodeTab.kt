@@ -26,6 +26,7 @@ import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Condition
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.VirtualFile
@@ -60,7 +61,7 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.UIManager
-import javax.swing.event.ChangeEvent
+import javax.swing.JViewport
 import javax.swing.event.ChangeListener
 
 /** Whether [editor]'s viewport is shown with an extent: the platform's own test before it scrolls a restored editor. */
@@ -214,7 +215,11 @@ class CodeTab(
     private var wasActive = tracedRuns.selected === run
 
     init {
-        Disposer.register(parent) { EditorFactory.getInstance().releaseEditor(viewer) }
+        Disposer.register(parent) {
+            disposed = true
+            pendingScrolls.toList().forEach(PendingScroll::cancel)
+            EditorFactory.getInstance().releaseEditor(viewer)
+        }
         bar.add(title)
         bar.add(chooser)
         bar.add(openButton)
@@ -259,6 +264,7 @@ class CodeTab(
             object : EditorFactoryListener {
                 // An editor released before its loading ended is waited for no more; an opening left with none is dropped.
                 override fun editorReleased(event: EditorFactoryEvent) {
+                    pendingScrolls.filter { pending -> pending.editor === event.editor }.forEach(PendingScroll::cancel)
                     for (opening in syncOpenings.toList()) {
                         val editors = opening.editors ?: continue
                         if (!editors.remove(event.editor)) continue
@@ -537,28 +543,61 @@ class CodeTab(
      * [scroll]: queued after the platform's action, it runs after it, and
      * queued from its own listener, it runs after every listener of that
      * change -- whichever of the two listeners was added first, which
-     * matters since a viewport calls the last added first.
+     * matters since a viewport calls the last added first. Both are queued
+     * through the same queue (`Dispatchers.EDT` and `invokeLater` both reach
+     * `LaterInvocator.invokeLater`), and the platform's scroll does not
+     * suspend between its dispatch and the scroll. The wait ends with the
+     * tab, the toggle going off and the editor's release, and a queued
+     * scroll expires with the first two.
      */
     private fun afterPlatformScroll(editor: Editor, scroll: () -> Unit) {
-        val queue = { ApplicationManager.getApplication().invokeLater({ if (!editor.isDisposed) scroll() }, ModalityState.any(), project.disposed) }
+        // The editor's own modality is never less strict than the platform's dispatch for it, so the
+        // queue, which runs what it may in the order queued, holds the tab's back while it holds the platform's.
+        val queue = {
+            ApplicationManager.getApplication().invokeLater(
+                { if (!editor.isDisposed) scroll() },
+                ModalityState.stateForComponent(editor.component),
+                scrollExpired,
+            )
+        }
         val viewport = (editor as? EditorEx)?.scrollPane?.viewport
         if (viewport == null || viewportReady(editor)) {
             queue()
             return
         }
-        viewport.addChangeListener(
-            object : ChangeListener {
-                override fun stateChanged(event: ChangeEvent) {
-                    if (!viewportReady(editor)) return
-                    viewport.removeChangeListener(this)
-                    queue()
-                }
-            },
-        )
+        val pending = PendingScroll(editor, viewport)
+        pending.listener = ChangeListener {
+            if (viewportReady(editor)) {
+                pending.cancel()
+                queue()
+            }
+        }
+        pendingScrolls += pending
+        viewport.addChangeListener(pending.listener)
     }
+
+    /** A scroll waiting for its editor's viewport to show: its listener, removed when it shows or the wait ends. */
+    private inner class PendingScroll(val editor: Editor, val viewport: JViewport) {
+        var listener: ChangeListener? = null
+
+        fun cancel() {
+            listener?.let(viewport::removeChangeListener)
+            pendingScrolls -= this
+        }
+    }
+
+    /** The scrolls waiting for a viewport; the tab's end, the toggle going off and the editor's release end them. */
+    private val pendingScrolls = ArrayList<PendingScroll>()
+
+    /** Set once the tab is disposed. */
+    private var disposed = false
+
+    /** A queued scroll runs no more once the tab is gone or the toggle is off. */
+    private val scrollExpired = Condition<Any?> { disposed || project.isDisposed || !syncWithEditor }
 
     /** Ends every opening without scrolling: nothing the openings set off is filtered any more. */
     private fun endSyncOpenings() {
+        pendingScrolls.toList().forEach(PendingScroll::cancel)
         syncOpenings.clear()
         openedWaiters.clear()
         selectionToken = null

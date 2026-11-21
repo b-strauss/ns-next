@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.ide.ui.laf.darcula.ui.DarculaComboBoxUI
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -135,10 +136,10 @@ class CodeTabTest : BasePlatformTestCase() {
         actions.forEach(Runnable::run)
     }
 
-    private fun tab(run: TraceRun): CodeTab {
+    private fun tab(run: TraceRun, parent: Disposable = testRootDisposable): CodeTab {
         tracedRuns.selected = run
         return CodeTab(
-            project, run, testRootDisposable, tracedRuns, decorations, { null }, { userInput },
+            project, run, parent, tracedRuns, decorations, { null }, { userInput },
             { _, action -> if (loadingDeferred) whenLoadedActions += action else action.run() },
             if (openedDeferred) { _, action -> whenOpenedActions += action } else null,
         ) { editor -> editor.scrollingModel.visibleArea.height > 0 }
@@ -786,6 +787,48 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(restoredScroll)
         PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
         assertTrue("the tab's scroll comes after the platform's", showsTheBlockStatementOnly(opened))
+    }
+
+    fun testAScrollWaitingForItsViewportEndsWithTheToggle() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        val viewport = (opened as EditorEx).scrollPane.viewport
+        val listeners = viewport.changeListeners.size
+        endLoading()
+        assertEquals("the tab waits for the viewport", listeners + 1, viewport.changeListeners.size)
+        tab.syncWithEditor = false
+        assertEquals("the wait ends with the toggle", listeners, viewport.changeListeners.size)
+        showLines(opened, 1)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertFalse(showsTheBlockStatementOnly(opened))
+    }
+
+    fun testAScrollWaitingForItsViewportEndsWithTheTab() {
+        loadingDeferred = true
+        val lifetime = Disposer.newDisposable(testRootDisposable, "the Code tab")
+        val tab = tab(tracedRun(), lifetime)
+        val opened = openThroughTheViewer(tab)
+        val viewport = (opened as EditorEx).scrollPane.viewport
+        val listeners = viewport.changeListeners.size
+        endLoading()
+        Disposer.dispose(lifetime)
+        assertEquals("the wait ends with the tab", listeners, viewport.changeListeners.size)
+        showLines(opened, 1)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertFalse(showsTheBlockStatementOnly(opened))
+    }
+
+    fun testAQueuedScrollExpiresWithTheToggle() {
+        loadingDeferred = true
+        val tab = tab(tracedRun())
+        val opened = openThroughTheViewer(tab)
+        showLines(opened, 1)
+        // The viewport shows: the scroll is queued at the opening's end, and the toggle goes off before it runs.
+        endLoading()
+        tab.syncWithEditor = false
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertFalse(showsTheBlockStatementOnly(opened))
     }
 
     fun testAFileClosedBeforeItsOpeningIsOverIsFollowedWhenOpenedAgain() {

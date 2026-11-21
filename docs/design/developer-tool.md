@@ -1503,8 +1503,10 @@ it does after restoring the editors' saved state
 then are loaded; it is dropped when the file is closed or its editors
 are released first. The tab then follows the editors as any again, a
 debugger's step included, and scrolls them once their viewport shows,
-queued so that it comes after the platform's own scroll to the
-restored caret. Turning the toggle off ends every opening at once. The plugin's
+queued in the editor's own modality so that it comes after the
+platform's own scroll to the restored caret; the wait ends with the
+tab, the toggle going off and the editor's release, and a queued scroll
+runs no more once the tab is gone or the toggle off. Turning the toggle off ends every opening at once. The plugin's
 listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
@@ -1640,7 +1642,7 @@ scrolled once loaded and told opened, after the platform's scroll to
 the restored caret, followed while its opening lasts in the user's
 input alone, in every editor of it, and in everything after, a file
 closed meanwhile followed when opened again, everything followed again
-once the toggle is off, a line of no statement scrolling nothing,
+and nothing scrolled once the toggle is off or the tab gone, a line of no statement scrolling nothing,
 and the editor tab; `FrameCodeFollowerTest` the frame's code written as a
 change that shows the marked line, that line alone coloured as the
 execution point in every editor of the tab, only the tab's last editor
