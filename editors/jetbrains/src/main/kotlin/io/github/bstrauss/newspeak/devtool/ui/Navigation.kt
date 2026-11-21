@@ -51,3 +51,16 @@ fun navigate(
     val file = sourceFile(described, libraryDirectory) ?: return
     OpenFileDescriptor(project, file, range.startLine, range.startColumn).navigate(true)
 }
+
+/** [body]'s name as the text trace writes it between braces; `#<number>` for a body the file did not describe. */
+fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: "#$body"
+
+/**
+ * The method [body] belongs to: a block's root, from its description's
+ * family. A body the file did not describe, and a block whose root it
+ * did not describe either, stands for itself.
+ */
+fun rootOf(run: TraceRun, body: Int): Int {
+    val family = run.bodies[body]?.family ?: return body
+    return if (run.bodies.containsKey(family)) family else body
+}

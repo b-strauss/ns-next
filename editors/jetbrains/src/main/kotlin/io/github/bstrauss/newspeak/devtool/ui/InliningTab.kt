@@ -51,40 +51,40 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
         node.body?.let { body -> navigate(project, run, body, node.at) }
     }
 
-    private fun bodyName(body: Int): String = run.bodies[body]?.name ?: "#$body"
-
     private fun refresh() {
         val root = DefaultMutableTreeNode()
         for ((_, plans) in run.inlining.toSortedMap()) for (plan in plans) root.add(planNode(plan))
         treeModel.setRoot(root)
     }
 
-
     private fun planNode(plan: Inlining): DefaultMutableTreeNode {
         val outcome = when {
             plan.installed != null -> NewspeakBundle.message("devtool.inlining.installed", plan.installed.toString())
             else -> NewspeakBundle.message("devtool.inlining.refused", plan.refused ?: "")
         }
-        val root = DefaultMutableTreeNode(InliningNode("${bodyName(plan.body)} -- $outcome", plan.body, null))
+        val root = DefaultMutableTreeNode(InliningNode("${bodyName(run, plan.body)} -- $outcome", plan.body, null))
+        val bodies = plan.scopes.associate { scope -> scope.scope to scope.body }
         val nodes = HashMap<Int, DefaultMutableTreeNode>()
         for (scope in plan.scopes) {
-            nodes[scope.scope] = DefaultMutableTreeNode(InliningNode(bodyName(scope.body), scope.body, null))
+            // A click goes to the send that inlined the scope, in its parent's body; the root scope has none, so its own body.
+            val target = scope.parent?.let { parent -> InliningNode(bodyName(run, scope.body), bodies[parent.scope], parent.at) }
+            nodes[scope.scope] = DefaultMutableTreeNode(target ?: InliningNode(bodyName(run, scope.body), scope.body, null))
         }
         // A scope under the scope whose send inlined it; one with no known parent hangs from the plan's root.
         for (scope in plan.scopes) {
             val node = nodes.getValue(scope.scope)
             (scope.parent?.let { parent -> nodes[parent.scope] } ?: root).add(node)
         }
-        val bodies = plan.scopes.associate { scope -> scope.scope to scope.body }
+
         for (arm in plan.arms) {
             val owner = nodes[arm.scope] ?: continue
-            val how = arm.inlinedScope?.let { scope -> NewspeakBundle.message("devtool.inlining.arm.inlined", bodies[scope]?.let(::bodyName) ?: "#$scope") }
+            val how = arm.inlinedScope?.let { scope -> NewspeakBundle.message("devtool.inlining.arm.inlined", bodies[scope]?.let { body -> bodyName(run, body) } ?: "#$scope") }
                 ?: NewspeakBundle.message("devtool.inlining.arm.always", arm.always ?: "")
             owner.add(DefaultMutableTreeNode(InliningNode("@${arm.at} ${arm.receiver}: $how", bodies[arm.scope], arm.at)))
         }
         for (decline in plan.declined) {
             val owner = nodes[decline.scope] ?: continue
-            val callee = decline.callee?.let(::bodyName) ?: NewspeakBundle.message("devtool.inlining.no.body")
+            val callee = decline.callee?.let { body -> bodyName(run, body) } ?: NewspeakBundle.message("devtool.inlining.no.body")
             owner.add(DefaultMutableTreeNode(InliningNode("@${decline.at} declined $callee ${decline.reason}", bodies[decline.scope], decline.at)))
         }
         return root

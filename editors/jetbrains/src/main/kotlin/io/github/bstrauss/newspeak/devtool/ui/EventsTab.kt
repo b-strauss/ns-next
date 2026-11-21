@@ -45,9 +45,6 @@ private val FIELD_ORDER = listOf(
     "reason", "version", "freeing", "bodies-freed", "exits", "by", "selector", "site", "receiver", "at",
 )
 
-/** [body]'s name as the text trace writes it between braces; `#<number>` for a body the file did not describe. */
-private fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: "#$body"
-
 /** An event's word as the text trace writes it: a cache transition's is the transition itself, `<before>-><after>`. */
 fun eventWord(event: Event): String =
     if (event.event == "transition") "${event.text("before")}->${event.text("after")}" else event.event
@@ -104,7 +101,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
     val categoryBoxes: Map<String, JBCheckBox> = TRACE_CATEGORIES.associateWith { name ->
         JBCheckBox(NewspeakBundle.message("devtool.category.$name"), true).apply {
             toolTipText = NewspeakBundle.message("devtool.category.$name.tooltip")
-            addItemListener { refresh() }
+            addItemListener { refilter() }
         }
     }
 
@@ -113,11 +110,11 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         emptyText.text = NewspeakBundle.message("devtool.events.filter.body")
         document.addDocumentListener(
             object : DocumentListener {
-                override fun insertUpdate(event: DocumentEvent) = refresh()
+                override fun insertUpdate(event: DocumentEvent) = refilter()
 
-                override fun removeUpdate(event: DocumentEvent) = refresh()
+                override fun removeUpdate(event: DocumentEvent) = refilter()
 
-                override fun changedUpdate(event: DocumentEvent) = refresh()
+                override fun changedUpdate(event: DocumentEvent) = refilter()
             },
         )
     }
@@ -142,14 +139,20 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
             column("devtool.events.column.event") { row -> eventWord(row.event) },
             column("devtool.events.column.fields") { row -> row.fields.trim() },
         ),
-        emptyList(),
+        ArrayList<EventRow>(),
     )
 
     val table = TableView(model)
 
     /** The events under their methods, a node a method, in the order of its first event. */
-    val treeModel = DefaultTreeModel(DefaultMutableTreeNode())
+    private val treeRoot = DefaultMutableTreeNode()
+    val treeModel = DefaultTreeModel(treeRoot)
     private val tree = Tree(treeModel).apply { isRootVisible = false }
+
+    private var taken = 0
+    private var textFed = 0
+    private var treeFed = 0
+    private val groups = HashMap<String, DefaultMutableTreeNode>()
 
     /** The text view's lines. */
     val text = JBTextArea().apply { isEditable = false }
@@ -184,8 +187,8 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
                 }
             },
         )
-        refresh()
-        run.onChanged(parent) { refresh() }
+        takeNew()
+        run.onChanged(parent) { takeNew() }
     }
 
     /** The rows that pass the filters. */
@@ -199,6 +202,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
     }
 
     private fun showView() {
+        feedViews()
         (views.layout as CardLayout).show(
             views,
             when {
@@ -209,23 +213,58 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         )
     }
 
-    private fun refresh() {
+    /** Every filter changed: the rows are made afresh, and the views that are not shown are made when they are. */
+    private fun refilter() {
+        taken = 0
+        textFed = 0
+        treeFed = 0
+        model.items = ArrayList()
+        text.text = ""
+        treeRoot.removeAllChildren()
+        groups.clear()
+        treeModel.reload()
+        takeNew()
+    }
+
+    /** A batch arrived: the events after the last taken are appended, which leaves the table's selection and scroll and the tree's expansion where they are. */
+    private fun takeNew() {
         val shown = categoryBoxes.filterValues { box -> box.isSelected }.keys
         val needle = bodyFilter.text.trim()
-        val rows = run.events.withIndex().filter { (_, event) ->
-            event.category in shown && (needle.isEmpty() || event.body?.let { body -> needle in bodyName(run, body) } == true)
-        }.map { (order, event) ->
-            EventRow(order, event, event.body?.let { body -> bodyName(run, body) }.orEmpty(), eventFields(run, event))
+        val events = run.events
+        val added = ArrayList<EventRow>()
+        for (order in taken until events.size) {
+            val event = events[order]
+            if (event.category !in shown) continue
+            if (needle.isNotEmpty() && event.body?.let { body -> needle in bodyName(run, body) } != true) continue
+            added.add(EventRow(order, event, event.body?.let { body -> bodyName(run, body) }.orEmpty(), eventFields(run, event)))
         }
-        model.items = rows
-        text.text = rows.joinToString("\n") { row -> traceLine(run, row.event) }
-        val root = DefaultMutableTreeNode()
-        val groups = LinkedHashMap<String, DefaultMutableTreeNode>()
-        for (row in rows) {
-            groups.getOrPut(row.body) { DefaultMutableTreeNode(row.body).also(root::add) }.add(DefaultMutableTreeNode(row))
-        }
-        treeModel.setRoot(root)
+        taken = events.size
+        if (added.isNotEmpty()) model.addRows(added)
+        feedViews()
     }
+
+    /** Brings the shown view of the text or the tree up to the rows, which the other is brought to when it is shown. */
+    private fun feedViews() {
+        val rows = model.items
+        if (textView.isSelected) {
+            for (index in textFed until rows.size) {
+                if (index > 0) text.append("\n")
+                text.append(traceLine(run, rows[index].event))
+            }
+            textFed = rows.size
+        } else if (groupByMethod.isSelected) {
+            for (index in treeFed until rows.size) {
+                val row = rows[index]
+                val name = row.event.body?.let { body -> bodyName(run, rootOf(run, body)) }.orEmpty()
+                val group = groups.getOrPut(name) {
+                    DefaultMutableTreeNode(name).also { node -> treeModel.insertNodeInto(node, treeRoot, treeRoot.childCount) }
+                }
+                treeModel.insertNodeInto(DefaultMutableTreeNode(row), group, group.childCount)
+            }
+            treeFed = rows.size
+        }
+    }
+
 
     private companion object {
         const val TABLE = "table"

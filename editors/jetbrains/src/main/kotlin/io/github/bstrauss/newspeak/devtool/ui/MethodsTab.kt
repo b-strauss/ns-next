@@ -28,7 +28,7 @@ data class MethodRow(
 
 /**
  * The Methods tab (`docs/design/developer-tool.md`, decision 29): every
- * method the run described -- a block is its method's, so its name with
+ * method the run described -- a block is its method's, so its events count under its root and its name with
  * `[] in` is left out -- with its state, how many optimized copies it has,
  * how often it deoptimized and was abandoned, its largest copy's code and the
  * callees the optimizer declined in it; sortable by every column, a double
@@ -85,13 +85,17 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
         val declined = HashMap<Int, Int>()
         val installed = HashMap<Int, Int>()
         for (event in run.events) {
-            val body = event.body ?: continue
+            val body = event.body?.let { number -> rootOf(run, number) } ?: continue
             if (event.category == "deoptimize") deopts.merge(body, 1, Int::plus)
             if (event.event == "abandoned") abandons.merge(body, 1, Int::plus)
             if (event.event == "declined") declined.merge(body, 1, Int::plus)
             if (event.event == "optimized") event.integer("bytes")?.let { bytes -> installed.merge(body, bytes, ::maxOf) }
         }
-        return run.bodies.values.filter { body -> !body.name.startsWith("[] in") }.map { body ->
+        for ((number, codes) in run.code) {
+            val root = rootOf(run, number)
+            installed.merge(root, codes.filter { code -> code.tier == "optimized" }.maxOfOrNull { code -> code.bytes } ?: 0, ::maxOf)
+        }
+        return run.bodies.values.filter { body -> rootOf(run, body.number) == body.number }.map { body ->
             MethodRow(
                 body.number,
                 body.name,
@@ -99,7 +103,7 @@ class MethodsTab(private val project: Project, private val run: TraceRun, parent
                 run.copies(body.number),
                 deopts[body.number] ?: 0,
                 abandons[body.number] ?: 0,
-                maxOf(run.code[body.number].orEmpty().maxOfOrNull { code -> code.bytes } ?: 0, installed[body.number] ?: 0),
+                installed[body.number] ?: 0,
                 declined[body.number] ?: 0,
             )
         }.sortedBy { row -> row.body }

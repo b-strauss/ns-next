@@ -63,6 +63,7 @@ class TabsTest : BasePlatformTestCase() {
         val declined = """{"kind":"event","category":"inlining","body":100,"event":"declined","in-body":100,"callee":101,"reason":"over-weight","at":7,"key":null,"entered":null}"""
         val run = fixtureRun(*bodies.toTypedArray(), declined)
         val tab = EventsTab(project, run, testRootDisposable)
+        tab.textView.isSelected = true
         val lines = tab.text.text.lines()
         assertEquals("[inlining] {Demo>>run} declined in-body={Demo>>run} callee={Demo>>helper} reason=over-weight at=7", lines.last())
         assertTrue(
@@ -112,5 +113,54 @@ class TabsTest : BasePlatformTestCase() {
         FileEditorManager.getInstance(project).closeFile(checkNotNull(editor.virtualFile))
         navigate(project, run, 99, null, libraryDirectory = directory)
         assertNull(FileEditorManager.getInstance(project).selectedTextEditor)
+    }
+
+    private fun eventLine(body: Int, category: String, event: String, fields: String = ""): String =
+        """{"kind":"event","category":"$category","body":$body,"event":"$event"$fields}"""
+
+    fun testMethodsCountABlockUnderItsMethod() {
+        val run = fixtureRun(eventLine(5, "inlining", "declined", ""","in-body":5,"callee":3,"reason":"over-weight","at":7"""))
+        val tab = MethodsTab(project, run, testRootDisposable)
+        assertTrue("a block has no row of its own", tab.model.items.none { row -> row.body == 5 })
+        val main = tab.model.items.single { row -> row.name == "Demo>>main:args:" }
+        // The state and the copies are the root's own; the block's bytes and declines are added to it.
+        assertEquals(MethodState.INTERPRETED, main.state)
+        assertEquals(0, main.copies)
+        assertEquals(3601, main.codeBytes)
+        assertEquals(1, main.declined)
+    }
+
+    fun testEventsGroupABlockUnderItsMethodAndGrowWithTheRun() {
+        val run = fixtureRun()
+        val tab = EventsTab(project, run, testRootDisposable)
+        tab.groupByMethod.isSelected = true
+        val root = tab.treeModel.root as DefaultMutableTreeNode
+        val groups = root.children().toList().map { node -> node.toString() }
+        assertTrue(groups.toString(), "Demo>>main:args:" in groups && "[] in Demo>>main:args:" !in groups)
+        val before = tab.visibleRows.size
+        tab.table.setRowSelectionInterval(3, 3)
+        val selected = tab.table.selectedObject
+        val treeCount = (0 until root.childCount).sumOf { index -> root.getChildAt(index).childCount }
+        run.add(records(listOf(eventLine(2, "compile", "abandoned", ""","exits":3"""))))
+        assertEquals(before + 1, tab.table.rowCount)
+        assertSame("the selection survives a batch", selected, tab.table.selectedObject)
+        assertEquals(treeCount + 1, (0 until root.childCount).sumOf { index -> root.getChildAt(index).childCount })
+        // The text is made only when it is shown, and kept up to date while it is.
+        assertEquals("", tab.text.text)
+        tab.textView.isSelected = true
+        assertEquals(before + 1, tab.text.text.lines().size)
+        run.add(records(listOf(eventLine(2, "compile", "revived", ""","by":"decay""""))))
+        assertEquals(before + 2, tab.text.text.lines().size)
+    }
+
+    fun testAScopeOpensTheSendThatInlinedIt() {
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable)
+        val plan = (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
+            .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
+        val rootScope = plan.children().toList().map { node -> node as DefaultMutableTreeNode }.single()
+        val square = rootScope.children().toList().map { node -> node as DefaultMutableTreeNode }.first { node -> node.toString() == "Demo>>square:" }
+        val node = square.userObject as InliningNode
+        assertEquals(5, node.body)
+        assertEquals(3, node.at)
     }
 }
