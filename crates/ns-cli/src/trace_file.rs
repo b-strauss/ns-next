@@ -95,16 +95,16 @@ impl ModuleSources {
         }
     }
 
-    /// The text `description`'s body is placed in, with its line index:
-    /// the program file's text as read where it holds the body's own
-    /// source at its span -- the body's version was read in it, or an
-    /// edit left the body where it stands -- since that is the text a
-    /// reader shows; else the runtime's current text where the
-    /// description hands it; else none.
+    /// The text `description`'s body is placed in, with its line index and
+    /// where the body's source starts in it: the program file's text as
+    /// read where it holds the body's own source at its span -- the body's
+    /// version was read in it, whatever an edit did around it -- since that
+    /// is the text a reader shows; else the runtime's current text, where
+    /// the description says it holds that source; else none.
     fn placing<'sources>(
         &'sources mut self,
         description: &'sources BodyDescription,
-    ) -> Option<(&'sources str, &'sources LineIndex)> {
+    ) -> Option<(&'sources str, &'sources LineIndex, u32)> {
         let source = description.source;
         let holds = |text: &str| {
             text.as_bytes()
@@ -125,11 +125,13 @@ impl ModuleSources {
             Some(index) => {
                 let ProgramSource { text, lines, .. } = &mut self.program[index];
                 let text = text.as_deref()?;
-                Some((text, lines.get_or_insert_with(|| LineIndex::new(text))))
+                let lines = lines.get_or_insert_with(|| LineIndex::new(text));
+                Some((text, lines, source.start))
             }
             None => {
-                let text = description.text.as_ref()?;
-                Some((text, self.lines_of(text)))
+                let current = description.current.as_ref()?;
+                let start = current.source.start;
+                Some((&current.text, self.lines_of(&current.text), start))
             }
         }
     }
@@ -202,7 +204,7 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
         module,
         shipped_path: _,
         // Read by `placing`.
-        text: _,
+        current: _,
         source,
         checksum,
         statements,
@@ -210,11 +212,24 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
     } = description;
     let source_record = sources.source_of(description);
     let lines = sources.placing(description);
+    // A span moves with the body's source to where the text holds it: the
+    // same bytes, so a span within them lands on the same text; a span
+    // outside them, which the runtime never hands moved, stays unplaced.
     let range = |span: Span| match &lines {
-        Some((text, lines)) => {
-            let start = lines.position(text, span.start);
-            let end = lines.position(text, span.end);
-            json!([start.line, start.column, end.line, end.column])
+        Some((text, lines, start)) => {
+            let (begin, end) = if *start == source.start {
+                (span.start, span.end)
+            } else if span.start >= source.start && span.end <= source.end {
+                (
+                    span.start - source.start + start,
+                    span.end - source.start + start,
+                )
+            } else {
+                return Value::Null;
+            };
+            let begin = lines.position(text, begin);
+            let end = lines.position(text, end);
+            json!([begin.line, begin.column, end.line, end.column])
         }
         None => Value::Null,
     };
@@ -769,7 +784,8 @@ mod tests {
     use super::*;
     use crate::trace::tests::{every_event, split_outside_braces};
     use ns_runtime::trace_events::{
-        Annotation, Architecture, CodeTier, DataWord, DescribedSend, DescribedStatement,
+        Annotation, Architecture, CodeTier, CurrentText, DataWord, DescribedSend,
+        DescribedStatement,
     };
 
     /// The fields whose values name a body, by the line's names.
@@ -881,7 +897,7 @@ mod tests {
             family: None,
             module: ModuleName::named("Demo"),
             shipped_path: None,
-            text: Some(Rc::from(text)),
+            current: current_at(text, Span::new(start("run"), start(" )\n)") + 2)),
             source: Span::new(start("run"), start(" )\n)") + 2),
             checksum: 0x0123_4567_89ab_cdef,
             statements: vec![DescribedStatement {
@@ -927,7 +943,7 @@ mod tests {
             }),
             module: ModuleName::named("Demo"),
             shipped_path: None,
-            text: Some(Rc::from("Demo")),
+            current: current_at("Demo", Span::new(0, 4)),
             source: Span::new(0, 4),
             checksum: 1,
             statements: Vec::new(),
@@ -948,7 +964,7 @@ mod tests {
             family: None,
             module: ModuleName::named("newspeak.core.TimeFactory"),
             shipped_path: Some("platform/TimeFactory.ns".to_string()),
-            text: Some(Rc::from("Time")),
+            current: current_at("Time", Span::new(0, 4)),
             source: Span::new(0, 4),
             checksum: 1,
             statements: Vec::new(),
@@ -963,6 +979,14 @@ mod tests {
         assert_eq!(record["checksum"], "0000000000000001");
     }
 
+    /// The runtime's current text `text`, holding the body at `source`.
+    fn current_at(text: &str, source: Span) -> Option<CurrentText> {
+        Some(CurrentText {
+            text: Rc::from(text),
+            source,
+        })
+    }
+
     /// A description of `Demo>>run` whose source is `run` in `text`.
     fn run_in(text: &str, number: u32) -> BodyDescription {
         let start = u32::try_from(text.find("run").unwrap()).unwrap();
@@ -974,7 +998,7 @@ mod tests {
             family: None,
             module: ModuleName::named("Demo"),
             shipped_path: None,
-            text: Some(Rc::from(text)),
+            current: current_at(text, Span::new(start, start + 3)),
             source: Span::new(start, start + 3),
             checksum: 1,
             statements: vec![DescribedStatement {
@@ -1005,6 +1029,32 @@ mod tests {
         assert_eq!(after["source"], json!({ "file": "/work/Demo.ns" }));
     }
 
+    /// A body whose own text neither the file nor the runtime holds -- one
+    /// edit compiled it, a later one moved it -- is placed where the
+    /// runtime's current text holds its source, every span within it
+    /// moving with it.
+    #[test]
+    fn a_moved_body_is_placed_where_the_current_text_holds_it() {
+        let edited = "Demo = (\n  helper = ( )\n\n  run = ( )\n)";
+        let standing = u32::try_from(edited.find("run").unwrap()).unwrap();
+        let description = BodyDescription {
+            source: Span::new(40, 43),
+            current: current_at(edited, Span::new(standing, standing + 3)),
+            statements: vec![DescribedStatement {
+                instructions: 0..1,
+                span: Span::new(41, 43),
+            }],
+            ..run_in(edited, 1)
+        };
+        let record = body_record(&description, &mut demo_sources());
+        assert_eq!(record["range"], json!([3, 2, 3, 5]), "{record}");
+        assert_eq!(
+            record["statements"][0]["range"],
+            json!([3, 3, 3, 5]),
+            "{record}"
+        );
+    }
+
     /// The file's text as read places a body it holds at its span, its
     /// own source's checksum telling, before the runtime's text: a body
     /// compiled from the file stands there, whatever an edit made of the
@@ -1023,7 +1073,7 @@ mod tests {
         // The runtime's text, moved by an edit: `run` stands elsewhere.
         let edited = "Demo = (\n  helper = ( )\n\n  run = ( )\n)";
         let description = BodyDescription {
-            text: Some(Rc::from(edited)),
+            current: current_at(edited, Span::new(13, 16)),
             checksum,
             ..run_in(file, 1)
         };
@@ -1031,7 +1081,7 @@ mod tests {
         assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
         // The same body with no runtime text is placed by the file alone.
         let unhanded = BodyDescription {
-            text: None,
+            current: None,
             ..description
         };
         let record = body_record(&unhanded, &mut sources);
@@ -1044,7 +1094,7 @@ mod tests {
     fn a_body_placed_in_no_text_has_no_ranges() {
         let text = "Demo = (\n  run = ( )\n)";
         let description = BodyDescription {
-            text: None,
+            current: None,
             ..run_in(text, 1)
         };
         let record = body_record(&description, &mut demo_sources());

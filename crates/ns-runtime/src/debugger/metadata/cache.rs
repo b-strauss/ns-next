@@ -3,10 +3,14 @@
 //! On the `Mutator`, so that the pause stress mode, which runs with no
 //! debugger attached, reads through it too.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
-use super::again::{BodyOrigin, Member, PairedBodies, compile_level};
+use ns_syntax::Span;
+
+use super::again::{
+    BodyOrigin, Member, PairedBodies, compile_level, compile_level_in, member_code,
+};
 use super::{BodyMetadata, address};
 use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
@@ -25,6 +29,27 @@ pub(crate) struct Cache {
     /// A shipped module's text is the binary's, shared already
     /// (`shipped_module_text`).
     texts: HashMap<MixinId, Rc<str>>,
+    /// Where each body a trace described stands as it was compiled
+    /// (`own_placement`), keyed by the body's address, held weakly as
+    /// `bodies` is.
+    placements: HashMap<usize, PlacementEntry>,
+}
+
+/// Where a body stands as it was compiled: its metadata with every span in
+/// the text its version was read in, and where the module's current text
+/// holds the body's own source, if it does -- an edit that left the body
+/// alone moves it there, by as much as the text before its member grew.
+pub(crate) struct OwnPlacement {
+    /// `None` where the body compiled again from its own source pairs
+    /// with none.
+    pub(crate) metadata: Option<Rc<BodyMetadata>>,
+    /// The module's current text and the body's source in it.
+    pub(crate) current: Option<(Rc<str>, Span)>,
+}
+
+struct PlacementEntry {
+    code: Weak<CompiledCode>,
+    placement: Rc<OwnPlacement>,
 }
 
 /// One body's entry, its metadata beside the module's text the metadata
@@ -143,6 +168,124 @@ impl Cache {
     pub(crate) fn clear(&mut self) {
         self.bodies.clear();
         self.texts.clear();
+        self.placements.clear();
+    }
+
+    /// Where `code`, which `origin` names, stands as it was compiled
+    /// (`OwnPlacement`), its family's computed on a miss; `None` for a
+    /// factory's body, which has no source, a version without a text of
+    /// its own, and a body whose module no longer holds the member.
+    ///
+    /// Every span counts in the text the body's version was read in,
+    /// which the runtime does not keep whole: the family root's own source
+    /// is laid where the member stands in the module's current text -- the
+    /// current text itself where it holds that source there -- and the
+    /// level compiled again from that text, so that the metadata is
+    /// collected from the body's own source, laid out as it was compiled,
+    /// and moved from where it stands in that text to the root's own span.
+    /// A span outside the root's source would count in text laid out
+    /// otherwise, so a body with one has no metadata.
+    pub(crate) fn own_placement(
+        mutator: &mut Mutator<'_>,
+        code: &Rc<CompiledCode>,
+        origin: &BodyOrigin,
+    ) -> Option<Rc<OwnPlacement>> {
+        if let Some(entry) = mutator.debug_metadata.placements.get(&address(code))
+            && entry
+                .code
+                .upgrade()
+                .is_some_and(|alive| Rc::ptr_eq(&alive, code))
+        {
+            return Some(Rc::clone(&entry.placement));
+        }
+        mutator
+            .debug_metadata
+            .placements
+            .retain(|_, entry| entry.code.strong_count() > 0);
+        let root = member_code(&origin.mixin, &origin.member)?;
+        let own_root = origin.mixin.text.as_ref()?.slice(root.source)?.to_string();
+        let own_length = u32::try_from(own_root.len()).ok()?;
+        let family = family_of(&root);
+        let mut found: HashMap<usize, Rc<BodyMetadata>> = HashMap::new();
+        let mut current = None;
+        for lowering in lowerings(mutator.lowering) {
+            let Some((level, fresh)) = compile_level_in(mutator, &origin.mixin, lowering, None)
+            else {
+                break;
+            };
+            let fresh_side = if origin.mixin.is_class_side() {
+                fresh.class_side.as_deref()
+            } else {
+                Some(&fresh)
+            };
+            let Some(standing) = fresh_side
+                .and_then(|side| member_code(side, &origin.member))
+                .map(|fresh_root| fresh_root.source)
+            else {
+                break;
+            };
+            let text = Rc::clone(&level.text);
+            let holds =
+                text.get(standing.start as usize..standing.end as usize) == Some(own_root.as_str());
+            current = holds.then(|| (Rc::clone(&text), standing));
+            let pairs = if holds {
+                level.pairs
+            } else {
+                let patched = format!(
+                    "{}{own_root}{}",
+                    text.get(..standing.start as usize)?,
+                    text.get(standing.end as usize..)?
+                );
+                match compile_level_in(mutator, &origin.mixin, lowering, Some(patched)) {
+                    Some((patched, _)) => patched.pairs,
+                    None => continue,
+                }
+            };
+            let region = Span::new(standing.start, standing.start + own_length);
+            let mut complete = true;
+            for (body, metadata) in pairs {
+                if !family.contains(&address(&body)) {
+                    continue;
+                }
+                let moved =
+                    metadata.and_then(|metadata| moved_into(&metadata, region, root.source));
+                complete &= moved.is_some();
+                if let Some(moved) = moved {
+                    found
+                        .entry(address(&body))
+                        .or_insert_with(|| Rc::new(moved));
+                }
+            }
+            if complete {
+                break;
+            }
+        }
+        let mut pending = vec![Rc::clone(&root)];
+        while let Some(body) = pending.pop() {
+            pending.extend(
+                body.body()
+                    .created_blocks()
+                    .map(|block| Rc::clone(block.code)),
+            );
+            let current = current.as_ref().and_then(|(text, standing)| {
+                Some((
+                    Rc::clone(text),
+                    moved_span(body.source, root.source, standing.start)?,
+                ))
+            });
+            mutator.debug_metadata.placements.insert(
+                address(&body),
+                PlacementEntry {
+                    code: Rc::downgrade(&body),
+                    placement: Rc::new(OwnPlacement {
+                        metadata: found.get(&address(&body)).cloned(),
+                        current,
+                    }),
+                },
+            );
+        }
+        let entry = mutator.debug_metadata.placements.get(&address(code))?;
+        Some(Rc::clone(&entry.placement))
     }
 
     /// The text of the program module whose root is `root`, as the cache
@@ -184,6 +327,79 @@ impl Cache {
     }
 }
 
+/// The addresses of `root` and every block it creates, at any depth: a
+/// worklist, since an image's body chooses how deep its blocks nest.
+fn family_of(root: &Rc<CompiledCode>) -> HashSet<usize> {
+    let mut family = HashSet::new();
+    let mut pending = vec![Rc::clone(root)];
+    while let Some(body) = pending.pop() {
+        if family.insert(address(&body)) {
+            pending.extend(
+                body.body()
+                    .created_blocks()
+                    .map(|block| Rc::clone(block.code)),
+            );
+        }
+    }
+    family
+}
+
+/// `span`, which lies within `from`, moved to the same place in a copy of
+/// `from`'s bytes that starts at `start`; `None` for a span outside `from`,
+/// whose text the copy does not repeat.
+pub(crate) fn moved_span(span: Span, from: Span, start: u32) -> Option<Span> {
+    if span.start < from.start || span.end > from.end {
+        return None;
+    }
+    Some(Span::new(
+        span.start - from.start + start,
+        span.end - from.start + start,
+    ))
+}
+
+/// `metadata`, compiled where `region` holds the family root's own source,
+/// with its statements' and sends' spans moved to `own`, the root's own
+/// span; `None` where one of them lies outside `region`.
+fn moved_into(metadata: &BodyMetadata, region: Span, own: Span) -> Option<BodyMetadata> {
+    let moved = |span: Span| moved_span(span, region, own.start);
+    let statements = metadata
+        .statements
+        .iter()
+        .map(|statement| {
+            Some(super::StatementEntry {
+                span: moved(statement.span)?,
+                ..statement.clone()
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let sends = metadata
+        .sends
+        .iter()
+        .map(|send| {
+            Some(super::SendEntry {
+                call: moved(send.call)?,
+                selector: send
+                    .selector
+                    .iter()
+                    .map(|token| moved(*token))
+                    .collect::<Option<Vec<_>>>()?
+                    .into(),
+                receiver: match send.receiver {
+                    Some(receiver) => Some(moved(receiver)?),
+                    None => None,
+                },
+                ..send.clone()
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(BodyMetadata {
+        source: moved(metadata.source).unwrap_or(own),
+        statements: statements.into(),
+        sends: sends.into(),
+        ..metadata.clone()
+    })
+}
+
 /// The lowerings a level is compiled again under, in order: the
 /// interpreter's, then the other, for an image's code, which either may
 /// have compiled (decision 5).
@@ -193,4 +409,24 @@ fn lowerings(first: Lowering) -> [Lowering; 2] {
         Lowering::Reference => Lowering::Optimized,
     };
     [first, other]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A span moves with the bytes it lies in to where a copy of them
+    /// starts; a span outside them, whose text the copy does not repeat,
+    /// does not move at all.
+    #[test]
+    fn a_span_moves_only_within_its_bytes() {
+        let from = Span::new(40, 60);
+        assert_eq!(
+            moved_span(Span::new(45, 50), from, 10),
+            Some(Span::new(15, 20))
+        );
+        assert_eq!(moved_span(from, from, 10), Some(Span::new(10, 30)));
+        assert_eq!(moved_span(Span::new(5, 8), from, 10), None);
+        assert_eq!(moved_span(Span::new(55, 61), from, 10), None);
+    }
 }

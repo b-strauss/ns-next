@@ -32,7 +32,7 @@ use crate::jit::CustomizationKey;
 use crate::mixin::DispatchId;
 use crate::symbol::Symbol;
 
-pub use descriptions::{BodyDescription, DescribedSend, DescribedStatement};
+pub use descriptions::{BodyDescription, CurrentText, DescribedSend, DescribedStatement};
 pub use filter::TraceFilter;
 pub(crate) use listings::PendingListing;
 pub use listings::{

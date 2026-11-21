@@ -1064,30 +1064,40 @@ it -- the flush hands the sink a `BodyDescription`
 delivery that names its number: a block's family root, the body's
 module, a shipped module's path among the library's files, its source
 span and its checksum (`source_checksum`, FNV-1a 64 over the source's
-UTF-8 bytes with every `\r` left out), the module's current text where
-that text holds the body there, and each statement's instructions and
-each send's index, site, call and selector tokens, from the debugger's
-metadata (`debugger/metadata/`), compiled again from the module's
-current text and kept in its weak cache. Every span counts in the text
-the body's version was read in -- the module's text as loaded, or as
-the install that made the version left it -- since that is the text the
-body was compiled from: an edit installed before or during the run
-changes the module's text around the bodies it leaves alone, and the
-runtime keeps no text but the current one whole. So the source span is
-the body's own (`CompiledCode::source`) and the checksum its own
-source's, sliced from its version's text; the current text is handed
-only where it holds that source at that span. The metadata's spans,
-which count in the current text, are moved from where the body
-compiled again stands there (`BodyMetadata::source`) to the body's own
-span, where the current text holds the body's own source at the
-former, and left out otherwise. The host places the body in the text it
-read the module's file in where that holds the body's source at its
-span, by the checksum -- a body compiled from the file, whether an edit
-left it alone, moved it or superseded it -- and otherwise in the
-current text the description hands, so that a body an edit compiled is
-placed in the edited text. A version without a text of its own, a
-builtin's or an image's without source, is described as its module's
-current text holds its span. A block's family root is
+UTF-8 bytes with every `\r` left out), the module's current text with
+where it holds the body's source, if it does (`CurrentText`), and each
+statement's instructions and each send's index, site, call and selector
+tokens, from the debugger's metadata (`debugger/metadata/`). Every span
+counts in the text the body's version was read in -- the module's text
+as loaded, or as the install that made the version left it -- since
+that is the text the body was compiled from: an edit installed before
+or during the run changes the module's text around the bodies it leaves
+alone, and the runtime keeps no text but the current one whole. So the
+source span is the body's own (`CompiledCode::source`) and the checksum
+its own source's, sliced from its version's text. The metadata is
+compiled again from the body's own source, laid out as it was compiled
+(`Cache::own_placement`): the family root's own source is laid where
+the current text's declaration of the same member stands -- the
+current text itself where it holds that source there -- the level
+compiled again from that text, paired as the debugger pairs it, and
+every span moved from where the root's source stands in that text to
+the root's own span, the same bytes, so that a body whose counterpart
+differs only in its layout -- a comment edited inside it -- keeps its
+statements and sends, and none is ever moved across text laid out
+otherwise: a body with a span outside its root's source has none. The
+current text is handed where its declaration of the member holds the
+root's own source, with where the body stands in it: at its own span,
+or where an edit above the member moved it. Each family's placement is
+kept in the debugger's metadata cache, which every install clears. The
+host places the body in the text it read the module's file in where
+that holds the body's source at its span, by the checksum -- a body
+compiled from the file, whether an edit left it alone, moved it or
+superseded it -- and otherwise in the current text the description
+hands, every span moved with the body's source, so that a body an edit
+compiled is placed in the edited text, and one a later edit moved where
+it stands now. A version without a text of its own, a builtin's or an
+image's without source, and a factory's body are described as the
+module's current text holds their span. A block's family root is
 named even when its code is gone by the flush -- a collection reclaimed
 the version that held it while an event of the block waited -- by the
 number the root was given while it lived or one given then, which every
@@ -1175,14 +1185,14 @@ The records:
   instruction's index, its site as the `caches` category numbers it
   (`null` for a send no cache serves), the call from its receiver to its
   last argument and each token of its selector; both empty for a body
-  whose metadata the runtime could not compile again alike, or whose
-  source the current text holds elsewhere than as compiled. Every range
-  is counted in the text the body was compiled from: the program file's
-  text as read where it holds the body's source at its span, else the
-  runtime's current text where that does; every range is `null` where
-  neither does -- a body an edit compiled and a later edit moved or
-  replaced --, whose `checksum` is still that of its own source, so that
-  a reader decorates nothing of it rather than decorate the wrong place.
+  whose metadata the runtime could not compile again alike from its own
+  source. Every range is counted in a text that holds the body's source
+  as it was compiled: the program file's text as read where it holds it
+  at the body's span, else the runtime's current text where its
+  declaration of the body's member holds it; every range is `null` where
+  neither does -- a body an edit compiled and a later edit replaced --,
+  whose `checksum` is still that of its own source, so that a reader
+  decorates nothing of it rather than decorate the wrong place.
   Three kinds of
   body take a number and no `body` record -- one no mixin holds, one
   whose source no text holds, and a block's family root whose code was
@@ -1441,7 +1451,9 @@ as a notification of the plugin's group with the agent's words
 tests pin the numbers -- unique, and never a dead body's for the body
 that took its address, a block's family named after its root's code is
 gone -- and the descriptions, an edited module's bodies each in its own
-text;
+text, a body whose counterpart differs only in a comment with its
+statements and sends, and a body a later edit moved where it stands
+now;
 `crates/ns-runtime/tests/printing.rs` the structured bytecode listing
 beside its text. `trace_file.rs`'s unit tests hold every event of
 `trace.rs`'s `every_event` to a record with every field its line
@@ -1452,7 +1464,9 @@ instructions to the text listing's, an out-of-line stretch told from
 no position; `tests/cli.rs` a run's file -- its header, every record
 parsed, every body number described before a record names it, an edit
 installed during the run and the bodies it superseded or moved each
-described in the text it was compiled from -- and the two
+described in the text it was compiled from, a recommented body's
+statements at their file lines and a body a later edit moved where it
+stands -- and the two
 refusals. The analyzer's `tests/protocol.rs` pins
 `newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the

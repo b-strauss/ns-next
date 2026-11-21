@@ -1274,11 +1274,160 @@ fn checksum_of(text: &str) -> String {
 /// Where `part` starts in `AN_EDITED_MAKER`, as a range's line and
 /// column count it.
 fn edited_maker_position(part: &str) -> (usize, usize) {
-    let offset = AN_EDITED_MAKER.find(part).unwrap();
-    let before = &AN_EDITED_MAKER[..offset];
+    position_in(AN_EDITED_MAKER, part)
+}
+
+/// Where `part` starts in `text`, as a range's line and column count it.
+fn position_in(text: &str, part: &str) -> (usize, usize) {
+    let offset = text.find(part).unwrap();
+    let before = &text[..offset];
     let line = before.matches('\n').count();
     let column = offset - before.rfind('\n').map_or(0, |end| end + 1);
     (line, column)
+}
+
+/// The `body` records of a traced run of `source`, which prints
+/// `stdout`, with `--trace=compile,caches`.
+fn described_bodies(name: &str, source: &str, stdout: &str) -> Vec<serde_json::Value> {
+    let directory = ScratchDirectory::new(name);
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, source).unwrap();
+    let file = directory.join("trace.jsonl");
+    let output = plain_run(&program)
+        .args([
+            "--trace=compile,caches".to_string(),
+            format!("--trace-file={}", file.display()),
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), stdout);
+    std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|record| record["kind"] == "body")
+        .collect()
+}
+
+/// A program whose `maker` an edit replaces with one that differs only
+/// in its comment, while a closure the old version made runs on.
+const A_RECOMMENTED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Subject = Object new () (
+        public maker = (
+          (* the first *)
+          ^[:index | index max: 1].
+        )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods addFromSource: 'public maker = (
+          (* the second, which is longer *)
+          ^[:index | index max: 1] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        platform transcript show: sum printString; newLine.
+      )
+    )
+"};
+
+/// The body an edit that changed only a comment superseded keeps its
+/// statements and sends, at their lines in the file.
+#[test]
+fn a_recommented_body_keeps_its_statements_in_the_file() {
+    let bodies = described_bodies("trace-file-recomment", A_RECOMMENTED_MAKER, "1001000\n");
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "public maker");
+    let old = bodies
+        .iter()
+        .find(|record| record["name"] == "Demo/Subject>>maker" && record["range"][0] == line)
+        .unwrap_or_else(|| panic!("the superseded maker at its file line: {bodies:?}"));
+    assert_eq!(old["range"][1], column, "{old}");
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "^[:index | index max: 1].");
+    assert!(
+        old["statements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|statement| statement["range"][0] == line && statement["range"][1] == column),
+        "its statement at its file line: {old}"
+    );
+    let (line, column) = position_in(A_RECOMMENTED_MAKER, "index max: 1].\n");
+    assert!(
+        bodies.iter().any(|record| {
+            record["name"] == "[] in Demo/Subject>>maker"
+                && record["sends"].as_array().unwrap().iter().any(|send| {
+                    send["call"] == serde_json::json!([line, column, line, column + 12])
+                })
+        }),
+        "its block's send at its file line: {bodies:?}"
+    );
+}
+
+/// A program whose `maker` one edit compiles and an edit of the class
+/// above moves down before it first runs.
+const A_MOVED_MAKER: &str = indoc! {"
+    class Demo = Object new () (
+      class Earlier = Object new () (
+        public first = ( ^1 )
+      )
+
+      class Subject = Object new () (
+        public maker = ( ^[:index | index max: 1] )
+      )
+
+      public main: platform args: arguments = (
+        |
+          ClassMirror = platform mirrors ClassMirror.
+          subject = Subject new.
+          sum ::= 0.
+        |
+        self install: Subject with: 'public maker = ( ^[:index | index max: 2] )' using: ClassMirror.
+        self install: Earlier with: 'public second = (
+          ^2 )' using: ClassMirror.
+        1 to: 1000 do: [:index | sum:: sum + (subject maker value: index)].
+        platform transcript show: sum printString; newLine.
+      )
+
+      install: class with: source using: ClassMirror = (
+        | builder = (ClassMirror reflecting: class) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: source.
+        builder install.
+      )
+    )
+"};
+
+/// A body one edit compiled and a later edit moved, whose text the file
+/// never held, is placed where the module's current text holds it, its
+/// statements and its block's send with it, each within its line.
+#[test]
+fn a_moved_body_is_placed_where_its_source_stands() {
+    let bodies = described_bodies("trace-file-moved", A_MOVED_MAKER, "500501\n");
+    let source = "public maker = ( ^[:index | index max: 2] )";
+    let maker = bodies
+        .iter()
+        .find(|record| {
+            record["name"] == "Demo/Subject>>maker" && record["checksum"] == checksum_of(source)
+        })
+        .unwrap_or_else(|| panic!("the first edit's maker described: {bodies:?}"));
+    let range = &maker["range"];
+    assert!(range.is_array(), "{maker}");
+    assert_eq!(range[0], range[2], "one line: {maker}");
+    let start = range[1].as_u64().unwrap();
+    assert_eq!(range[3].as_u64().unwrap() - start, source.len() as u64);
+    let statement = &maker["statements"][0]["range"];
+    assert_eq!(statement[0], range[0], "{maker}");
+    let offset = source.find("^[").unwrap() as u64;
+    assert_eq!(statement[1].as_u64().unwrap(), start + offset, "{maker}");
 }
 
 /// Every body is described in the text it was compiled from, whatever

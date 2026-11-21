@@ -2497,12 +2497,40 @@ const AN_EDITED_MAKER: &str = indoc! {"
     ) : ()
 "};
 
+/// The descriptions of the bodies named `name` in `received`, in order.
+fn descriptions_of<'received>(
+    received: &'received [Received],
+    name: &str,
+) -> Vec<&'received BodyDescription> {
+    received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) if description.body.name == name => Some(description),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `span`, a span of `description`'s own text, in the module's current
+/// text the description hands, where it holds the body's source.
+fn in_current(description: &BodyDescription, span: ns_syntax::Span) -> &str {
+    let current = description
+        .current
+        .as_ref()
+        .expect("the current text handed");
+    let start = span.start - description.source.start + current.source.start;
+    let end = span.end - description.source.start + current.source.start;
+    &current.text[start as usize..end as usize]
+}
+
 /// A body is described in the text it was compiled from, whatever edit
-/// was installed before its description: the body an edit compiled in
-/// the module's text as the edit left it, which the description hands;
-/// a body the edit superseded, which that text no longer holds, and a body
-/// below the edit, which it moved, in the program's text, by their own
-/// spans and checksums, the current text not handed.
+/// was installed before its description, with its statements and sends:
+/// the body an edit compiled in the module's text as the edit left it,
+/// which the description hands; a body the edit superseded, which that
+/// text no longer holds, in the program's text, by its own spans,
+/// compiled again from its own source; and a body below the edit, which
+/// it moved, in the program's text too, the current text handed with
+/// where it holds the body now.
 #[test]
 fn an_edited_module_describes_each_body_in_its_own_text() {
     let received = received_made_by(
@@ -2511,41 +2539,47 @@ fn an_edited_module_describes_each_body_in_its_own_text() {
         &[TraceCategory::Compile, TraceCategory::Caches],
         true,
     );
-    let makers: Vec<&BodyDescription> = received
-        .iter()
-        .filter_map(|item| match item {
-            Received::Body(description) if description.body.name == "Demo/Subject>>maker" => {
-                Some(description)
-            }
-            _ => None,
-        })
-        .collect();
+    let makers = descriptions_of(&received, "Demo/Subject>>maker");
     let placed = makers
         .iter()
-        .find(|maker| maker.text.is_some())
+        .find(|maker| maker.current.is_some())
         .expect("the edit's maker described");
-    let text = placed.text.as_deref().unwrap();
-    let source = &text[placed.source.start as usize..placed.source.end as usize];
+    let current = placed.current.as_ref().unwrap();
+    assert_eq!(
+        current.source, placed.source,
+        "the edit's own text is current"
+    );
+    let source = in_current(placed, placed.source);
     assert!(source.contains("index max: 2"), "{source}");
     assert_eq!(placed.checksum, source_checksum(source.as_bytes()));
-    assert!(text.contains("public helper = ( ^0 )"), "{text}");
+    assert!(current.text.contains("public helper = ( ^0 )"));
     assert!(!placed.statements.is_empty(), "the statements described");
+    let slice = |span: ns_syntax::Span| &AN_EDITED_MAKER[span.start as usize..span.end as usize];
     let superseded = makers
         .iter()
-        .find(|maker| maker.text.is_none())
+        .find(|maker| maker.current.is_none())
         .expect("the superseded maker described");
-    // Its own source, as the program's text held it.
-    let own = &AN_EDITED_MAKER[superseded.source.start as usize..superseded.source.end as usize];
+    let own = slice(superseded.source);
     assert!(own.contains("index max: 1"), "{own}");
     assert_eq!(superseded.checksum, source_checksum(own.as_bytes()));
-    assert!(superseded.statements.is_empty() && superseded.sends.is_empty());
+    assert!(
+        superseded
+            .statements
+            .iter()
+            .any(|statement| slice(statement.span).starts_with("^[:index | index max: 1]")),
+        "compiled again from its own source: {superseded:?}"
+    );
     // First described after the install, which added lines above it.
     let later = description_of(&received, "Demo>>later:");
-    assert!(later.text.is_none(), "{later:?}");
-    let slice = |span: ns_syntax::Span| &AN_EDITED_MAKER[span.start as usize..span.end as usize];
     let own = slice(later.source);
     assert!(own.starts_with("later: count = ("), "{own}");
     assert_eq!(later.checksum, source_checksum(own.as_bytes()));
+    assert_ne!(
+        later.current.as_ref().map(|current| current.source),
+        Some(later.source),
+        "the edit moved it"
+    );
+    assert_eq!(in_current(later, later.source), own);
     assert!(
         later
             .sends
@@ -2564,6 +2598,167 @@ fn an_edited_module_describes_each_body_in_its_own_text() {
             .iter()
             .any(|statement| slice(statement.span) == "^total"),
         "{later:?}"
+    );
+}
+
+/// A method an edit replaces with one that differs only in its comment,
+/// while a closure the old version made runs on.
+const A_RECOMMENTED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Subject = Object new () (
+        public maker = (
+          (* the first *)
+          ^[:index | index max: 1].
+        )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          closure = subject maker.
+          builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+          sum ::= 0.
+        |
+        builder instanceSide methods addFromSource: 'public maker = (
+          (* the second, which is longer *)
+          ^[:index | index max: 1] )'.
+        builder install.
+        1 to: 1000 do: [:index |
+          sum:: sum + (closure value: index) + (subject maker value: index)].
+        ^sum.
+      )
+    ) : ()
+"};
+
+/// A body whose current counterpart compiles alike but is laid out
+/// otherwise -- a comment edited inside it -- is described with its
+/// statements and sends counted in its own source, compiled again from
+/// it, never moved across the text laid out differently.
+#[test]
+fn a_body_whose_counterpart_differs_in_layout_keeps_its_metadata() {
+    let received = received_made_by(
+        A_RECOMMENTED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let slice =
+        |span: ns_syntax::Span| &A_RECOMMENTED_MAKER[span.start as usize..span.end as usize];
+    let old = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_none())
+        .expect("the superseded maker described");
+    assert!(slice(old.source).contains("the first"), "{old:?}");
+    assert!(
+        old.statements
+            .iter()
+            .any(|statement| slice(statement.span) == "^[:index | index max: 1]"),
+        "{old:?}"
+    );
+    let old_block = descriptions_of(&received, "[] in Demo/Subject>>maker")
+        .into_iter()
+        .find(|block| block.current.is_none())
+        .expect("the superseded maker's block described");
+    assert!(
+        old_block
+            .sends
+            .iter()
+            .any(|send| slice(send.call) == "index max: 1"
+                && send.selector.iter().map(|token| slice(*token)).eq(["max:"])),
+        "{old_block:?}"
+    );
+    let new = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_some())
+        .expect("the edit's maker described");
+    assert!(in_current(new, new.source).contains("the second"));
+    assert!(
+        new.statements
+            .iter()
+            .any(|statement| in_current(new, statement.span) == "^[:index | index max: 1]"),
+        "{new:?}"
+    );
+}
+
+/// A method one edit compiles, which a later edit of a class above it
+/// moves down in the module's text before it first runs.
+const A_MOVED_MAKER: &str = indoc! {"
+    class Demo usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Earlier = Object new () (
+        public first = ( ^1 )
+      )
+
+      class Subject = Object new () (
+        public maker = ( ^[:index | index max: 1] )
+      )
+
+      public run = (
+        |
+          subject = Subject new.
+          sum ::= 0.
+        |
+        self install: Subject with: 'public maker = ( ^[:index | index max: 2] )'.
+        self install: Earlier with: 'public second = (
+          ^2 )'.
+        1 to: 1000 do: [:index | sum:: sum + (subject maker value: index)].
+        ^sum.
+      )
+
+      install: class with: source = (
+        | builder = (ClassMirror reflecting: class) mixin declaration asBuilder. |
+        builder instanceSide methods addFromSource: source.
+        builder install.
+      )
+    ) : ()
+"};
+
+/// A body one edit compiled and a later edit moved -- its own text held
+/// nowhere, its source the same -- is handed the module's current text
+/// with where its member's declaration there holds its source, its
+/// statements and sends with it.
+#[test]
+fn a_body_a_later_edit_moved_is_placed_where_its_source_stands() {
+    let received = received_made_by(
+        A_MOVED_MAKER,
+        Factory::UsingPlatform,
+        &[TraceCategory::Compile, TraceCategory::Caches],
+        true,
+    );
+    let maker = descriptions_of(&received, "Demo/Subject>>maker")
+        .into_iter()
+        .find(|maker| maker.current.is_some())
+        .expect("the first edit's maker described");
+    let current = maker.current.as_ref().unwrap();
+    assert_ne!(current.source, maker.source, "the second edit moved it");
+    assert!(current.text.contains("public second = ("));
+    let source = in_current(maker, maker.source);
+    assert_eq!(source, "public maker = ( ^[:index | index max: 2] )");
+    assert_eq!(maker.checksum, source_checksum(source.as_bytes()));
+    assert!(
+        maker
+            .statements
+            .iter()
+            .any(|statement| in_current(maker, statement.span) == "^[:index | index max: 2]"),
+        "{maker:?}"
+    );
+    let block = descriptions_of(&received, "[] in Demo/Subject>>maker")
+        .into_iter()
+        .find(|block| block.current.is_some())
+        .expect("its block described");
+    assert!(
+        block
+            .sends
+            .iter()
+            .any(|send| in_current(block, send.call) == "index max: 2"),
+        "{block:?}"
     );
 }
 

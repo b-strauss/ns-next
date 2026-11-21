@@ -46,12 +46,11 @@ pub struct BodyDescription {
     /// `platform/TimeFactory.ns`); `None` for a program's module, whose
     /// file the host knows.
     pub shipped_path: Option<String>,
-    /// The module's current text, shared with every other description
-    /// made from it, where it holds the body's own source at `source`;
-    /// `None` where an edit changed the text around the body or replaced
-    /// it, and the host places the body only in a text of its own that
-    /// holds it there.
-    pub text: Option<Rc<str>>,
+    /// The module's current text and where it holds the body's own source,
+    /// where it does: at `source`, or where an edit above the body's
+    /// member moved it; `None` where an edit replaced the member, and the
+    /// host places the body only in a text of its own that holds it.
+    pub current: Option<CurrentText>,
     /// The body's source, in bytes of the text its version was read in.
     pub source: Span,
     /// `source_checksum` of the body's own source: what tells a host
@@ -59,13 +58,23 @@ pub struct BodyDescription {
     /// compiled.
     pub checksum: u64,
     /// Every statement start of the body, in emission order, each span in
-    /// bytes of the text `source` counts in; empty where the body compiled
-    /// again does not compile alike, has no text, or its source in the
-    /// current text is not its own.
+    /// bytes of the text `source` counts in and within the family root's
+    /// own source; empty where the body compiled again from its own source
+    /// does not compile alike, or has no text.
     pub statements: Vec<DescribedStatement>,
     /// Every send of the body, by ascending index; empty where
     /// `statements` is.
     pub sends: Vec<DescribedSend>,
+}
+
+/// The module's current text, shared with every other description made
+/// from it, and the body's source in it: the same bytes as the body's own
+/// source, so that a span within the family root's own source moves there
+/// by as much as `source` lies from the description's.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentText {
+    pub text: Rc<str>,
+    pub source: Span,
 }
 
 /// The instructions one statement compiled to, and the statement's
@@ -119,7 +128,13 @@ impl std::fmt::Debug for BodyDescription {
             .field("family", &self.family)
             .field("module", &self.module)
             .field("shipped_path", &self.shipped_path)
-            .field("text_length", &self.text.as_ref().map(|text| text.len()))
+            .field(
+                "current",
+                &self
+                    .current
+                    .as_ref()
+                    .map(|current| (current.text.len(), current.source)),
+            )
             .field("source", &self.source)
             .field("checksum", &format_args!("{:016x}", self.checksum))
             .field("statements", &self.statements)
@@ -134,15 +149,14 @@ impl std::fmt::Debug for BodyDescription {
 ///
 /// A body is described by its own source -- its version's text sliced by
 /// its own span, which counts in the text the version was read in -- and
-/// handed the module's current text only where that text holds the same
-/// source at the same span. Its statements and sends come from its
-/// metadata, compiled again from the current text, and are moved from
-/// where the body compiled again stands there to the body's own span,
-/// where the current text holds the body's own source at the former;
-/// otherwise they are left out, as they would be counted in a text the
-/// body was not compiled from. A version without a text of its own -- a
-/// builtin's, an image's without source -- is described as its module's
-/// current text holds its span, as nothing else says where it stands.
+/// by its metadata compiled again from that source as it was laid out
+/// (`Cache::own_placement`), and handed the module's current text with
+/// where that holds the same source: at the body's own span, or where the
+/// current text's declaration of the same member holds the family root's
+/// own source, which an edit above it moved. A version without a text of
+/// its own -- a builtin's, an image's without source -- and a factory's
+/// body are described as the module's current text holds their span, as
+/// nothing else says where they stand.
 pub(crate) fn describe(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
@@ -161,90 +175,73 @@ pub(crate) fn describe(
             .map(|file| file.path.to_string())
     });
     let shipped_path = shipped_path.flatten();
-    let metadata = Cache::metadata_with_text(mutator, code, origin);
-    let current = match &metadata {
-        Some((_, text)) => Some(Rc::clone(text)),
-        None if root.shipped => Some(shipped_module_text(root.name.as_str())),
-        None => mutator.heap.known_mixin_id(&root).and_then(|id| {
-            let text = mutator.heap.module_source(id)?;
-            Some(mutator.debug_metadata.module_text(id, text))
-        }),
-    };
     let source = code.source;
-    let own: String = match origin.mixin.text.as_ref() {
-        Some(text) => text.slice(source)?.to_string(),
-        None => current.as_deref()?.get(range_of(source))?.to_string(),
+    let placement = Cache::own_placement(mutator, code, origin);
+    let mut current_text = || -> Option<Rc<str>> {
+        if root.shipped {
+            return Some(shipped_module_text(root.name.as_str()));
+        }
+        let id = mutator.heap.known_mixin_id(&root)?;
+        let text = mutator.heap.module_source(id)?;
+        Some(mutator.debug_metadata.module_text(id, text))
     };
-    let text = current.filter(|text| text.get(range_of(source)) == Some(own.as_str()));
-    let (statements, sends) = metadata
-        .and_then(|(metadata, current)| {
-            // The body compiled again stands at its own source in the
-            // current text, which an edit above it moved.
-            let again = metadata.source;
-            if current.get(range_of(again)) != Some(own.as_str()) {
-                return None;
-            }
-            let moved = |span: Span| moved(span, again, source);
-            let statements = metadata
+    let (own, current) = match origin.mixin.text.as_ref() {
+        Some(text) => {
+            let own = text.slice(source)?.to_string();
+            let current = match &placement {
+                Some(placement) => placement.current.clone(),
+                None => current_text()
+                    .filter(|text| text.get(range_of(source)) == Some(own.as_str()))
+                    .map(|text| (text, source)),
+            };
+            (own, current)
+        }
+        None => {
+            let text = current_text()?;
+            let own = text.get(range_of(source))?.to_string();
+            (own, Some((text, source)))
+        }
+    };
+    let (statements, sends) = match placement
+        .as_ref()
+        .and_then(|placement| placement.metadata.as_ref())
+    {
+        Some(metadata) => (
+            metadata
                 .statements
                 .iter()
-                .map(|statement| {
-                    Some(DescribedStatement {
-                        instructions: statement.instructions.clone(),
-                        span: moved(statement.span)?,
-                    })
+                .map(|statement| DescribedStatement {
+                    instructions: statement.instructions.clone(),
+                    span: statement.span,
                 })
-                .collect::<Option<Vec<_>>>()?;
-            let sends = metadata
+                .collect(),
+            metadata
                 .sends
                 .iter()
-                .map(|send| {
-                    Some(DescribedSend {
-                        index: send.index,
-                        site: send
-                            .call_site
-                            .filter(|site| *site != CallSite::UNCACHED)
-                            .map(|site| site.number),
-                        call: moved(send.call)?,
-                        selector: send
-                            .selector
-                            .iter()
-                            .map(|token| moved(*token))
-                            .collect::<Option<Vec<_>>>()?,
-                    })
+                .map(|send| DescribedSend {
+                    index: send.index,
+                    site: send
+                        .call_site
+                        .filter(|site| *site != CallSite::UNCACHED)
+                        .map(|site| site.number),
+                    call: send.call,
+                    selector: send.selector.to_vec(),
                 })
-                .collect::<Option<Vec<_>>>()?;
-            Some((statements, sends))
-        })
-        .unwrap_or_default();
+                .collect(),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
     Some(BodyDescription {
         body,
         family,
         module,
         shipped_path,
-        text,
+        current: current.map(|(text, source)| CurrentText { text, source }),
         source,
         checksum: source_checksum(own.as_bytes()),
         statements,
         sends,
     })
-}
-
-/// `span`, a span of the text `again` counts in, moved by as much as
-/// `own` lies from `again`: the same source in the text `own` counts in.
-/// Only a span within `again` moves, since only its bytes are known alike
-/// in both texts; `None` for any other where the two differ.
-fn moved(span: Span, again: Span, own: Span) -> Option<Span> {
-    if again.start == own.start {
-        return Some(span);
-    }
-    if span.start < again.start || span.end > again.end {
-        return None;
-    }
-    Some(Span::new(
-        span.start - again.start + own.start,
-        span.end - again.start + own.start,
-    ))
 }
 
 /// `span` as a range of byte offsets.
@@ -276,7 +273,10 @@ mod tests {
             family: None,
             module: ModuleName::named("Demo"),
             shipped_path: None,
-            text: Some(Rc::from("class Demo = Object new () ( run = ( ) )")),
+            current: Some(CurrentText {
+                text: Rc::from("class Demo = Object new () ( run = ( ) )"),
+                source: Span::new(29, 37),
+            }),
             source: Span::new(29, 37),
             checksum: 1,
             statements: Vec::new(),
@@ -284,23 +284,11 @@ mod tests {
         };
         let debugged = format!("{description:?}");
         assert!(!debugged.contains("class Demo"), "{debugged}");
-        assert!(debugged.contains("text_length: Some(40)"), "{debugged}");
-        assert!(debugged.contains("Demo>>run"), "{debugged}");
-    }
-
-    /// The spans of a body compiled again move with its source to where
-    /// the body's own stands; a span outside it moves only where the two
-    /// stand alike.
-    #[test]
-    fn spans_move_with_the_source() {
-        let again = Span::new(40, 60);
-        let own = Span::new(10, 30);
-        assert_eq!(
-            moved(Span::new(45, 50), again, own),
-            Some(Span::new(15, 20))
+        assert!(
+            debugged.contains("current: Some((40, Span { start: 29, end: 37 }))"),
+            "{debugged}"
         );
-        assert_eq!(moved(Span::new(5, 8), again, own), None);
-        assert_eq!(moved(Span::new(5, 8), own, own), Some(Span::new(5, 8)));
+        assert!(debugged.contains("Demo>>run"), "{debugged}");
     }
 
     /// A line end hashes alike whether it is `\n` or `\r\n`, as an editor shows both.
