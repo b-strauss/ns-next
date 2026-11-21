@@ -179,7 +179,7 @@ class TracedRuns internal constructor(
 
     private fun addTab(manager: ContentManager, entry: Traced) {
         listenTo(manager)
-        val panel = RunPanel(entry.run)
+        val panel = RunPanel(project, entry.run).also { created -> Disposer.register(entry.disposable, created) }
         entry.error?.let(panel::showError)
         val content = ContentFactory.getInstance().createContent(panel, entry.run.name, false)
         content.isCloseable = true
