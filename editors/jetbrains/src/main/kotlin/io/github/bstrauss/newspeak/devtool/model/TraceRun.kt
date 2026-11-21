@@ -3,8 +3,10 @@ package io.github.bstrauss.newspeak.devtool.model
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.util.Disposer
 import com.google.gson.JsonObject
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.covers
+import java.nio.file.Path
 import java.time.Instant
 
 /** How a method ran, as its gutter icon says (`docs/design/developer-tool.md`, decision 27). */
@@ -68,7 +70,16 @@ class EventTally {
  * One traced run, [name]d by its configuration and [started] at a time
  * (decision 26), narrowed by the [filters] it was started with: the records
  * [TraceFileReader] read, and what the editor and the tool window draw from
- * them. Read and changed on the EDT only.
+ * them. Read and changed on the EDT only, but for [readCode] and
+ * [readPlan].
+ *
+ * Of a listing of machine code and an inlining plan it keeps only the
+ * entry ([CodeEntry], [PlanEntry]: decision 34) -- the fields the views
+ * decide by and where the record stands in the run's [file] --, never the
+ * instructions, data words, scopes, arms or declines: a long run lists
+ * gigabytes of them, and the file holds them all. A view reads the record
+ * back when it shows it. The bytecode listings, one per body, are kept
+ * whole, since the machine code's listing names its stretches by them.
  *
  * A body number may come without a [Body]: a body no mixin holds, one
  * whose source no text holds, and a block's family root whose code was
@@ -76,7 +87,13 @@ class EventTally {
  * only a description lists them; a body described may still have no
  * range, where no text the plugin holds places it.
  */
-class TraceRun(val name: String, val started: Instant, private val filters: TraceFilters = TraceFilters.EVERYTHING) {
+class TraceRun(
+    val name: String,
+    val started: Instant,
+    private val filters: TraceFilters = TraceFilters.EVERYTHING,
+    /** The trace file the run's records were read from, where its listings and plans are read back; null for a run of no file, whose every read fails. */
+    val file: Path? = null,
+) {
     private val describedBodies = HashMap<Int, Body>()
     private val familyNames = HashMap<Int, String>()
     private val recordedEvents = ArrayDeque<Event>()
@@ -84,9 +101,9 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     private val transitionEvents = HashMap<Pair<Int, Int>, Event>()
     private val bytecodeListings = HashMap<Int, Bytecode>()
     private val listedBodies = HashSet<Int>()
-    private val codeListings = HashMap<Int, MutableList<Code>>()
-    private val inliningPlans = HashMap<Int, MutableList<Inlining>>()
-    private val plansInOrder = ArrayList<Inlining>()
+    private val codeListings = HashMap<Int, MutableList<CodeEntry>>()
+    private val inliningPlans = HashMap<Int, MutableList<PlanEntry>>()
+    private val plansInOrder = ArrayList<PlanEntry>()
     private val histories = HashMap<Int, BodyHistory>()
     private val inliningAtSends = HashMap<SendKey, Decision>()
 
@@ -170,14 +187,37 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     /** Each body's bytecode, by its root's number. */
     val bytecode: Map<Int, Bytecode> get() = bytecodeListings
 
-    /** Each body's installs of machine code, in their order. */
-    val code: Map<Int, List<Code>> get() = codeListings
+    /** Each body's installs of machine code, in their order, each read whole by [readCode]. */
+    val code: Map<Int, List<CodeEntry>> get() = codeListings
 
-    /** Each body's optimizing compiles' plans, in their order. */
-    val inlining: Map<Int, List<Inlining>> get() = inliningPlans
+    /** Each body's optimizing compiles' plans, in their order, each read whole by [readPlan]. */
+    val inlining: Map<Int, List<PlanEntry>> get() = inliningPlans
 
     /** Every optimizing compile's plan, in the file's order. */
-    val plans: List<Inlining> get() = plansInOrder
+    val plans: List<PlanEntry> get() = plansInOrder
+
+    /**
+     * [entry]'s listing, read from [file]; on any thread, since it reads
+     * nothing of the run but its file -- a view calls it off the EDT.
+     *
+     * @throws UnreadableRecordException where the file no longer gives it.
+     */
+    fun readCode(entry: CodeEntry): Code = read(entry.place) as? Code ?: throw notThere()
+
+    /**
+     * [entry]'s plan, read from [file]; on any thread, as [readCode].
+     *
+     * @throws UnreadableRecordException where the file no longer gives it.
+     */
+    fun readPlan(entry: PlanEntry): Inlining = read(entry.place) as? Inlining ?: throw notThere()
+
+    private fun read(place: RecordPlace): TraceRecord {
+        val path = file ?: throw UnreadableRecordException(NewspeakBundle.message("devtool.record.no.file"))
+        return readRecord(path, place)
+    }
+
+    private fun notThere() =
+        UnreadableRecordException(NewspeakBundle.message("devtool.record.unreadable", file.toString(), NewspeakBundle.message("devtool.record.kind")))
 
     /** Whether the run lists code of [body]: its bytecode, alone or in its method's listing, an install's machine code or an inlining plan of it. */
     fun isListed(body: Int): Boolean = body in listedBodies
@@ -260,7 +300,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
      * announced it -- `compile` or `optimize` not heard of for the body --;
      * [state] shows the tier only where its end can be heard.
      */
-    private fun countListed(code: Code) {
+    private fun countListed(code: CodeEntry) {
         val announcing = if (code.tier == "optimized") "optimize" else "compile"
         if (heardOf(code.body, announcing)) return
         val event = when (code.tier) {
@@ -300,7 +340,7 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
     private fun inliningEnds(): Boolean =
         outcomeCanArrive && categories?.let { traced -> "deoptimize" in traced && "code-zone" in traced } != false
 
-    /** Takes [batch], in the file's order, and tells the listeners once. */
+    /** Takes [batch], in the file's order -- a listing of machine code and a plan as their entries, as [TraceRecord.indexed] reads them -- and tells the listeners once. */
     fun add(batch: List<TraceRecord>) {
         if (batch.isEmpty()) return
         for (record in batch) {
@@ -322,19 +362,21 @@ class TraceRun(val name: String, val started: Instant, private val filters: Trac
                     listedBodies.add(record.body)
                     for (listed in record.bodies) listedBodies.add(listed.body)
                 }
-                is Code -> {
+                is CodeEntry -> {
                     leaveOpenCompile()
                     listedBodies.add(record.body)
                     codeListings.getOrPut(record.body) { ArrayList() }.add(record)
                     countListed(record)
                 }
-                is Inlining -> {
+                is PlanEntry -> {
                     listedBodies.add(record.body)
                     inliningPlans.getOrPut(record.body) { ArrayList() }.add(record)
                     plansInOrder.add(record)
                     // The plan's own outcome, for a trace without the `optimize` category.
                     concludePlan(CompileKey(record.body, record.key, record.entered), installed = record.installed != null)
                 }
+                // A batch is what the reader publishes, which holds a listing and a plan as their entries.
+                is Code, is Inlining -> throw IllegalArgumentException("a run takes a listing of machine code and a plan as their entries")
             }
         }
         for (listener in listeners.toList()) listener()

@@ -36,8 +36,10 @@ private val TIME_OF_DAY: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:
  * the run's [TraceRun], shown as a tab of the "Newspeak JIT" tool window.
  * The newest run is [selected], whose decorations the editor shows; closing
  * its tab drops the run and its reader, and its file once its process has
- * ended, and closing the project drops them all. Read and changed on the
- * EDT only.
+ * ended, and closing the project drops them all. A new run of a
+ * configuration replaces the tab of its last run that has ended and is
+ * not pinned, as the Run tool window reuses its tabs (decision 35). Read
+ * and changed on the EDT only.
  *
  * [contentManager] answers the tool window's contents, null where the
  * project has none, and [traceFiles] makes and lets go the runs' files;
@@ -56,8 +58,18 @@ class TracedRuns internal constructor(
 
     private var disposed = false
 
-    /** One run: its file, what releases its reader and file, and its tab, if the tool window has one. */
-    private class Traced(val run: TraceRun, val file: Path, val disposable: Disposable) {
+    /**
+     * One run: the name of the configuration it ran, its process, its file,
+     * what releases its reader and file, and its tab, if the tool window
+     * has one.
+     */
+    private class Traced(
+        val configurationName: String,
+        val handler: ProcessHandler,
+        val run: TraceRun,
+        val file: Path,
+        val disposable: Disposable,
+    ) {
         var content: Content? = null
         var panel: RunPanel? = null
         var error: String? = null
@@ -126,7 +138,8 @@ class TracedRuns internal constructor(
      * A traced run of [configuration] has started [handler], writing into
      * [file] narrowed by [filters]: its [TraceRun], named by the
      * configuration and the time, a reader following the file into it to its
-     * end once the process terminates, and its tab, selected.
+     * end once the process terminates, and its tab, selected, which takes
+     * the place of the tab it replaces ([replaceable]).
      */
     fun started(
         configuration: NewspeakRunConfiguration,
@@ -135,9 +148,9 @@ class TracedRuns internal constructor(
         filters: TraceFilters = TraceFilters.EVERYTHING,
     ): TraceRun {
         val startedAt = Instant.now()
-        val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt, filters)
+        val run = TraceRun("${configuration.name} ${TIME_OF_DAY.format(startedAt.atZone(ZoneId.systemDefault()))}", startedAt, filters, file)
         val disposable = Disposer.newDisposable(this, "traced run ${run.name}")
-        val entry = Traced(run, file, disposable)
+        val entry = Traced(configuration.name, handler, run, file, disposable)
         val reader = TraceFileReader(
             file,
             run::add,
@@ -161,11 +174,32 @@ class TracedRuns internal constructor(
         )
         // A process that ended before the run was registered has written everything it will.
         if (handler.isProcessTerminated) reader.finish()
+        val manager = contentManager()
+        val replaced = replaceable(configuration.name, manager)
+        val place = replaced?.content?.let { content -> manager?.getIndexOfContent(content) }?.takeIf { index -> index >= 0 }
+        replaced?.let { previous -> close(previous.run) }
         traced.add(entry)
         // The window is not shown: it shares the bottom with Run and Debug, whose console it would hide.
-        contentManager()?.let { manager -> addTab(manager, entry) }
+        manager?.let { contents -> addTab(contents, entry, place) }
         selected = run
         return run
+    }
+
+    /**
+     * The run a new run of the configuration named [configurationName]
+     * replaces, as the Run tool window chooses the tab it reuses
+     * (`RunContentManagerImpl`'s `getContentFromManager`): a run of the
+     * same configuration, by its name, whose process has ended and whose
+     * tab is not pinned, the selected tab first, then the oldest; null where
+     * none is. A run whose process goes on is never replaced, nor another
+     * configuration's.
+     */
+    private fun replaceable(configurationName: String, manager: ContentManager?): Traced? {
+        val candidates = traced.filter { entry ->
+            entry.configurationName == configurationName && entry.handler.isProcessTerminated && entry.content?.isPinned != true
+        }
+        val selectedContent = manager?.selectedContent
+        return candidates.firstOrNull { entry -> entry.content != null && entry.content === selectedContent } ?: candidates.firstOrNull()
     }
 
     /**
@@ -214,15 +248,18 @@ class TracedRuns internal constructor(
         listeners.clear()
     }
 
-    private fun addTab(manager: ContentManager, entry: Traced) {
+    /** Adds [entry]'s tab to [manager], at [place] where it replaces one, last otherwise. */
+    private fun addTab(manager: ContentManager, entry: Traced, place: Int?) {
         listenTo(manager)
         val panel = RunPanel(project, entry.run).also { created -> Disposer.register(entry.disposable, created) }
         entry.error?.let(panel::showError)
         val content = ContentFactory.getInstance().createContent(panel, entry.run.name, false)
         content.isCloseable = true
+        // The tab's menu offers Pin Tab, by which a run is kept from being replaced, as a Run tab's is.
+        content.isPinnable = true
         entry.panel = panel
         entry.content = content
-        manager.addContent(content)
+        if (place != null && place <= manager.contentCount) manager.addContent(content, place) else manager.addContent(content)
     }
 
     private fun listenTo(manager: ContentManager) {

@@ -36,8 +36,63 @@ sealed interface TraceRecord {
                 throw MalformedRecordException(exception.message ?: exception.javaClass.simpleName)
             }
         }
+
+        /**
+         * The record [line] holds as a run keeps it, the line standing at
+         * [place] in its file: a `code` record as its [CodeEntry] and an
+         * `inlining` record as its [PlanEntry], each read whole -- so that a
+         * malformed one ends the reading where it stands, as any other
+         * record does -- and kept as the fields the views decide by; every
+         * other record as [parse] answers it.
+         *
+         * @throws MalformedRecordException as [parse] does.
+         */
+        fun indexed(line: String, place: RecordPlace): TraceRecord? = when (val record = parse(line)) {
+            is Code -> CodeEntry(record.body, record.tier, record.key, record.entered, record.base, record.bytes, place)
+            is Inlining -> PlanEntry(record.body, record.key, record.entered, record.installed, record.refused, place)
+            else -> record
+        }
     }
 }
+
+/**
+ * Where a record stands in its trace file: the [offset] of its line's
+ * first byte and the line's [length] in bytes, without its newline.
+ */
+data class RecordPlace(val offset: Long, val length: Int)
+
+/**
+ * An install's machine code as a run keeps it (`docs/design/developer-tool.md`,
+ * decision 34): what the Methods tab, the Code tab's chooser and the
+ * state icons decide by -- its body, [tier], [key], [entered]
+ * application, [base] and size in [bytes] -- and the [place] of its
+ * [Code] record in the file, which a view reads when it shows the listing.
+ */
+data class CodeEntry(
+    val body: Int,
+    val tier: String,
+    val key: String?,
+    val entered: String?,
+    val base: Long?,
+    val bytes: Int,
+    val place: RecordPlace,
+) : TraceRecord
+
+/**
+ * An optimizing compile's plan as a run keeps it (decision 34): its
+ * body, the copy's [key] and [entered] application and its outcome --
+ * the bytes [installed] or the reason it was [refused] --, which the
+ * Inlining tab's root names and the sends' decisions are concluded by,
+ * and the [place] of its [Inlining] record in the file.
+ */
+data class PlanEntry(
+    val body: Int,
+    val key: String?,
+    val entered: String?,
+    val installed: Int?,
+    val refused: String?,
+    val place: RecordPlace,
+) : TraceRecord
 
 /** A line that is no record of its kind, [message] saying why. */
 class MalformedRecordException(message: String) : Exception(message)

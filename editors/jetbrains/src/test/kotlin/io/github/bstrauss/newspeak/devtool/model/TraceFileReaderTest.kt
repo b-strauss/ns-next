@@ -15,6 +15,7 @@ import java.util.Collections
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.time.Instant
 
 class TraceFileReaderTest : BasePlatformTestCase() {
     /** What a reader published, in order, on the EDT. */
@@ -94,11 +95,16 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(listOf(4, 5), bytecode.bodies.map { listed -> listed.body })
         assertEquals(BytecodeInstruction(index = 0, statement = null, text = "MakeVector r17, size 1"), bytecode.bodies.first().instructions.first())
 
-        val code = records.filterIsInstance<Code>().first()
+        // A listing and a plan arrive as their entries, and are read back whole at their places.
+        val entry = records.filterIsInstance<CodeEntry>().first()
+        assertEquals(5, entry.body)
+        assertEquals("baseline", entry.tier)
+        assertNull(entry.key)
+        assertNull(entry.entered)
+        assertEquals(2_147_549_184L, entry.base)
+        assertEquals(5312, entry.bytes)
+        val code = readRecord(file, entry.place) as Code
         assertEquals(5, code.body)
-        assertEquals("baseline", code.tier)
-        assertNull(code.key)
-        assertNull(code.entered)
         assertEquals("x64", code.architecture)
         assertEquals(2_147_549_184L, code.base)
         assertEquals(5312, code.bytes)
@@ -107,7 +113,11 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(listOf(Scope(scope = 0, body = 5, parent = null)), code.scopes)
         assertNull(code.mark)
 
-        val inlining = records.filterIsInstance<Inlining>().single()
+        val plan = records.filterIsInstance<PlanEntry>().single()
+        assertEquals(5, plan.body)
+        assertEquals(3601, plan.installed)
+        assertNull(plan.refused)
+        val inlining = readRecord(file, plan.place) as Inlining
         assertEquals(5, inlining.body)
         assertEquals(Scope(scope = 1, body = 3, parent = ScopeParent(scope = 0, at = 3)), inlining.scopes[1])
         assertEquals(Arm(scope = 0, at = 3, receiver = "Demo", inlinedScope = 1, always = null), inlining.arms[0])
@@ -115,6 +125,112 @@ class TraceFileReaderTest : BasePlatformTestCase() {
         assertEquals(Decline(scope = 0, at = 2, callee = null, reason = "not-expressed"), inlining.declined.first())
         assertEquals(3601, inlining.installed)
         assertNull(inlining.refused)
+    }
+
+    /**
+     * The places are counted in bytes across reads: characters of two,
+     * three and four bytes before and inside the listings, a line longer
+     * than a read, and a listing whose end arrives only with a later write.
+     */
+    fun testAListingsPlaceIsItsLinesBytes() {
+        val file = traceFile()
+        val wide = "äé€𝄞"
+        val first = codeLine(1, "mov $wide", 20_000)
+        val second = codeLine(2, "add $wide", 3)
+        val body = """{"kind":"body","body":1,"name":"Demo>>$wide","module":{"id":"Demo","version":null},"range":null,"checksum":"0000000000000000","statements":[],"sends":[]}"""
+        val plan = """{"kind":"inlining","body":1,"key":"$wide","entered":null,"scopes":[],"arms":[],"declined":[],"outcome":{"refused":"zone-full"}}"""
+        val written = listOf(HEADER, body, first, plan).joinToString("\n", postfix = "\n") + second.substring(0, 50)
+        Files.writeString(file, written)
+        val received = Received()
+        val reader = reader(file, received)
+        waitFor("the records before the partial line arrive") { received.records.size == 4 }
+        Files.writeString(file, second.substring(50) + "\n", StandardOpenOption.APPEND)
+        reader.finish()
+        waitFor("the last listing arrives") { received.records.size == 5 }
+        val entries = received.records.filterIsInstance<CodeEntry>()
+        assertEquals(listOf(first, second), entries.map { entry -> readLine(file, entry.place) })
+        assertEquals(20_000, (readRecord(file, entries[0].place) as Code).instructions.size)
+        assertEquals("add $wide", (readRecord(file, entries[1].place) as Code).instructions.last().text)
+        assertEquals(plan, readLine(file, received.records.filterIsInstance<PlanEntry>().single().place))
+    }
+
+    fun testAListingNoLongerInItsFileIsReportedAndNothingThrows() {
+        val file = traceFile()
+        Files.writeString(file, listOf(HEADER, codeLine(1, "ret", 1)).joinToString("\n", postfix = "\n"))
+        val received = Received()
+        reader(file, received).finish()
+        waitFor("the listing arrives") { received.records.size == 2 }
+        val place = received.records.filterIsInstance<CodeEntry>().single().place
+        Files.writeString(file, HEADER + "\n")
+        val shortened = unreadable(file, place)
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", file.toString(), NewspeakBundle.message("devtool.record.short")), shortened.message)
+        Files.delete(file)
+        val gone = unreadable(file, place)
+        assertTrue(checkNotNull(gone.message), checkNotNull(gone.message).startsWith(NewspeakBundle.message("devtool.record.unreadable", file.toString(), "")))
+    }
+
+    /**
+     * A run read from a file of many listings and plans keeps none of their
+     * text: what it keeps of each is its entry, whose every field is a
+     * number, a short name or the record's place, and the listing is read
+     * back from the file whole.
+     */
+    fun testARunKeepsNoListingText() {
+        val file = traceFile()
+        val marker = "listing-text-" + "x".repeat(200)
+        val installs = 1_000
+        val lines = ArrayList<String>()
+        lines += HEADER
+        for (index in 0 until installs) {
+            lines += codeLine(1 + index % 10, "$marker $index", 20)
+            lines += """{"kind":"inlining","body":${1 + index % 10},"key":"Demo","entered":null,"scopes":[{"scope":0,"body":1,"parent":null}],"arms":[{"scope":0,"at":3,"receiver":"$marker","inlined":{"always":"getter"}}],"declined":[{"scope":0,"at":4,"callee":null,"reason":"$marker"}],"outcome":{"installed":64}}"""
+        }
+        Files.writeString(file, lines.joinToString("\n", postfix = "\n"))
+        val run = TraceRun("Demo", Instant.EPOCH, file = file)
+        val reader = TraceFileReader(file, run::add, { error -> fail(error) }, run::ended)
+        Disposer.register(testRootDisposable, reader)
+        reader.finish()
+        waitFor("every listing arrives") { run.plans.size == installs }
+        val entries = run.code.values.flatten()
+        assertEquals(installs, entries.size)
+        for (entry in entries + run.plans) assertKeepsNoText(entry, marker)
+        // Reading back gives the whole listing.
+        val install = checkNotNull(run.code[1]).last()
+        assertEquals("$marker 990", run.readCode(install).instructions.first().text)
+        assertEquals(marker, run.readPlan(run.plans.last()).declined.single().reason)
+    }
+
+    /** Fails where a field of [entry] holds the text [marker], or any text longer than a name. */
+    private fun assertKeepsNoText(entry: Any, marker: String) {
+        for (field in entry.javaClass.declaredFields) {
+            field.isAccessible = true
+            when (val value = field.get(entry)) {
+                null, is Number, is RecordPlace -> Unit
+                is String -> assertTrue("${field.name} = $value", value.length < SHORT_TEXT && marker !in value)
+                else -> fail("${entry.javaClass.simpleName}.${field.name} holds a ${value.javaClass.name}")
+            }
+        }
+    }
+
+    /** Why the record at [place] can no longer be read from [file]. */
+    private fun unreadable(file: Path, place: RecordPlace): UnreadableRecordException {
+        try {
+            readRecord(file, place)
+        } catch (exception: UnreadableRecordException) {
+            return exception
+        }
+        throw AssertionError("the record was read")
+    }
+
+    private fun readLine(file: Path, place: RecordPlace): String {
+        val bytes = Files.readAllBytes(file)
+        return String(bytes, place.offset.toInt(), place.length, Charsets.UTF_8)
+    }
+
+    /** A baseline listing of [body] of [count] instructions, each [text]. */
+    private fun codeLine(body: Int, text: String, count: Int): String {
+        val instructions = (0 until count).joinToString(",") { index -> """{"offset":$index,"text":"$text","scope":null,"at":null,"annotation":null}""" }
+        return """{"kind":"code","body":$body,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":$count,"instructions":[$instructions],"data":[],"scopes":[],"mark":null}"""
     }
 
     fun testAPartialLastLineWaitsForItsEnd() {
@@ -308,6 +424,9 @@ class TraceFileReaderTest : BasePlatformTestCase() {
 
     private companion object {
         const val WAIT_SECONDS = 60
+        /** Longer than any tier, key or reason a code or plan entry names. */
+        const val SHORT_TEXT = 100
+
         const val HEADER = """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}"""
     }
 }

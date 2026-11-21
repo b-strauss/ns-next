@@ -85,7 +85,7 @@ Decided with the user on 2026-11-18.
 shell.** Tracing first, because it turns the reasons above into types,
 which printing the inlining plan needs as well; the shell is the largest
 and the most independent piece. The developer tool in the IDE came
-between printing code and the shell as stage 3 (decisions 17 to 33),
+between printing code and the shell as stage 3 (decisions 17 to 35),
 the shell becoming stage 4 (decided with the user on 2026-11-21).
 
 **2. The runtime reports typed events to a sink the host installs; the
@@ -311,7 +311,7 @@ decline a body explains. The inlining plan is the compile's whole plan,
 and lists every decline as a line of its own, each at its scope's send
 (decided with the user on 2026-11-20).
 
-Decisions 17 to 33, stage 3's, the developer tool in the IDE, were
+Decisions 17 to 35, stage 3's, the developer tool in the IDE, were
 decided with the user on 2026-11-21. The prior art they rest on is the
 JetBrains plugins that bring HotSpot's compilation log into the editor
 -- `yole/jitwatch-intellij` and `JetBrains/jitwatch4i` --, JITWatch
@@ -415,7 +415,8 @@ shows its trace too.
 **26. One tab per traced run.** The tool window keeps a tab for each
 traced run, named by its configuration and time, as the consoles do;
 the editor shows the selected tab's decorations, the newest by default,
-and closing a tab drops its data and its file. Two runs can be compared;
+and closing a tab drops its data and its file, as a later run of its
+configuration replacing it does (decision 35). Two runs can be compared;
 IntelliJ's coverage keeps its runs as suites the same way.
 
 **27. The editor shows a state icon in the gutter and inlay hints at
@@ -474,6 +475,30 @@ decorated. IntelliJ's coverage marks its data stale the same way.
 **33. The core library is traced and decorated as a program is.** The
 shipped modules' bodies are described with their sources as the
 library's files, so that decisions 27 to 32 hold there too.
+
+**34. A run keeps an index into its file, not its listings.** The file
+holds everything the run traced and listed, and the plugin is its
+reader: of a listing of machine code and an inlining plan a run keeps
+the fields its views decide by and where the record stands in the file,
+and a view that shows one reads that record again. A run of the Are We
+Fast Yet harness with `--timed`, every category and every listing,
+writes 1.1 GB, of which 1,077 MiB are 10,379 machine-code listings of
+635 bodies, one of them installed 1,108 times; kept whole they would
+fill the IDE's memory, read once and mostly never shown. The bytecode listings,
+one per body, about 2 MiB in that run, stay in memory, since every
+machine-code listing names its stretches by them.
+
+**35. A run's tab is replaced by its configuration's next run, as the
+Run window's are.** A new traced run of a configuration takes the place
+of the tab of that configuration's last run once that run's process has
+ended, unless the tab is pinned, which the tab's menu offers as the Run
+tool window's does; the replaced run goes as a closed one does, its
+data and its file with it. A run still going is never replaced, nor
+another configuration's. IntelliJ's own consoles are reused by that
+rule (`RunContentManagerImpl`), so that a run repeated while working
+leaves one tab and a pinned one is kept to compare; where no tab of the
+configuration qualifies the platform takes another's ended one, which
+the tool window does not, since a traced run is kept to be compared.
 
 ## Stage 1: tracing
 
@@ -1053,7 +1078,7 @@ a JIT.
 
 **Built** (2026-11-21;
 `docs/superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md`;
-decisions 17 to 33). The runtime numbers the bodies a trace names and,
+decisions 17 to 35). The runtime numbers the bodies a trace names and,
 on request, describes each with its source positions; `ns-next run
 --trace-file=<path>` writes the trace and the listings into a file as
 typed JSON lines; and the JetBrains plugin switches them on from the run
@@ -1365,7 +1390,16 @@ start their process through `NewspeakRunState.startProcess` alike; a
 run that traces or lists anything is handed a temporary file,
 `newspeak-trace/trace-<uuid>.jsonl` under the IDE's temporary
 directory, and gets a `TraceRun` named by its configuration and the
-time and a tab of the tool window, and is selected. Closing its tab
+time and a tab of the tool window, and is selected. A run's tab takes
+the place of the tab of its configuration's last run (decision 35) where
+that run's process has ended and its tab is not pinned -- Pin Tab in the
+tab's menu, the platform's content pinning (`Content.isPinnable`) --,
+which goes as a closed one does: the platform's Run window chooses the
+tab it reuses the same way (`RunContentManagerImpl`'s
+`getContentFromManager`), an unpinned tab whose process has ended, the
+selected one first, by the configuration's name, but falls back on any
+such tab, another configuration's too, which the tool window does not,
+so that a run is replaced only by its own configuration's. Closing its tab
 drops the run and its reader at once, and its file once its process has
 ended, since the process writes it until then, the newest run left becoming
 the selected one, whose decorations the editor shows, and every
@@ -1433,8 +1467,24 @@ such (`KEPT_EVENTS`), the Events tab's rows, dropping the oldest; what
 the events say of a body's state, a send, a cache and the Methods
 tab's and the icons' counts is kept beside them for the run's length,
 so that nothing the editor or the other views show changes when an
-event is dropped. The rest of a run -- its descriptions, listings and
-plans -- and every run until its tab is closed stay in memory.
+event is dropped. Of a machine-code listing and an inlining plan a run
+keeps only its entry (decision 34; `CodeEntry`, `PlanEntry`, which
+`TraceRecord.indexed` makes as the reader reads each line whole): of a
+listing its body, tier, key, entered application, base and bytes, by
+which the Methods tab, the Code tab's chooser and the state icons
+decide; of a plan its body, key, entered application and outcome, by
+which the Inlining tab names its root and a send's decision is
+concluded; and of either the place of its line in the file, its first
+byte's offset and its length in bytes, counted by the reader as it
+splits the bytes it reads, a line across reads included. The bodies'
+descriptions, one per body, the bytecode listings, one per body, and
+the events kept stay in memory. A view reads a record again from the
+file (`readRecord`, `TraceRun.readCode`, `TraceRun.readPlan`) with the
+reader's own parsing, on a pooled thread, since one listing's line can
+be a few MiB, its outcome delivered on the event dispatch thread in the
+modality it was asked in (`RecordReads`), and says in its place that it
+is reading, and why it cannot where the file is gone, unreadable or
+shorter than the record; the file lives while the run's tab does.
 
 **The tool window**, "Newspeak JIT" (`ui/`, decision 29), has a tab per
 traced run (`RunPanel`) of four views, above them the error that ended
@@ -1468,7 +1518,9 @@ the renderer's border, so the chooser wants the widest label measured in
 its font without that border plus what the UI takes, bounded by the
 room the tab leaves but never below its shortest label's -- over a read-only
 viewer of the listing in the text listing's format, built from the
-records, a copy installed again under the same tier and key numbered
+records, an install's listing read from the file when it is chosen and
+a read for a copy no longer chosen when it arrives dropped, a copy
+installed again under the same tier and key numbered
 (`baseline (2)`), so that the choice a batch keeps is the same install
 -- two `optimized` entries of one key are two installs of that copy,
 the second compiled anew after the first was retired or freed;
@@ -1522,7 +1574,9 @@ record names by `in` and `at`; the
 machine code's head with `base=` from the record's `base`; a first
 stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
-that the tree keeps its expansion and selection, its scopes nested
+that the tree keeps its expansion and selection, each plan's root made
+from its entry and its nodes read from the file as it is expanded and
+dropped as it is collapsed, so that the tab holds the plans open alone, its scopes nested
 under the scope whose send inlined them, the arms and the declines
 under each, the outcome at the root, a click going to the send. A view
 opens a program body's file by its path and a shipped body's under the
@@ -1622,14 +1676,22 @@ trace knows it, a tier only where its end can be heard, events and
 listings alike, a send's inlining going with its copy and shown
 only where its end can be heard, none where no outcome can arrive, a
 compile whose outcome was withheld dropped, the declines of installed
-copies alone, and the events kept beside counts that keep every one;
+copies alone, and the events kept beside counts that keep every one, a listing's
+place in bytes across reads and characters of several bytes, a run of
+a thousand listings and plans keeping none of their text, and a
+listing its file no longer gives read as an error that names why;
 `TracedRunsTest` the tabs, closable as the registered tool window
-declares them, the file's deletion, at a tab's close, once its process
+declares them and pinnable, the file's deletion, at a tab's close, once its process
 ended for a tab closed while it runs, and for a project closed before
-its run registered once its process ended, the sweep, and a closed run's listing tabs;
+its run registered once its process ended, the sweep, a closed run's
+listing tabs, and a rerun replacing its configuration's ended, unpinned
+tab and deleting its file, but neither a pinned one, a running one nor
+another configuration's;
 `TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
 every tier and a body the run did not describe, the run's line of
-missing categories, the inlining tree kept across a batch, the Events
+missing categories, the inlining tree kept across a batch, a plan read
+as it is expanded, on a pooled thread, dropped as it is collapsed and
+saying so where its file is gone, the Events
 tab's oldest rows dropped with the run's; `EventsFixtureTest` the
 Events tab's text of every event of the fixture equal to its line;
 `DecorationsTest` the icons, a deoptimized one, the neutral icon and
@@ -1640,7 +1702,8 @@ runtime's current text, none for a method a caches-only run
 or a filtered-out callee says nothing of, the hints, the eyes,
 staleness, the checksum over an emoji and over CRLF line ends, and a
 library file; `CodeTabTest` the caret's body, the chooser, a listing
-built once per choice, every label
+built once per choice and read on a pooled thread, a read for a copy no
+longer chosen dropped, a listing whose file is gone saying so, every label
 painted whole under the IDE's `DarculaComboBoxUI` with the New UI's
 renderer and the chooser bounded by a narrow tab, a copy installed
 again, the listings, a block nested where the record names its

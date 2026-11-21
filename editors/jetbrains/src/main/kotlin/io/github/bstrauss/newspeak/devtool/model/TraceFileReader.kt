@@ -41,7 +41,9 @@ private const val VERSION = 1
 /**
  * Follows the trace file at [path] while `ns-next run --trace-file` appends
  * to it (`docs/design/developer-tool.md`, decision 25), on a pooled thread:
- * each complete line parsed into its [TraceRecord], a line not yet ended
+ * each complete line parsed into its [TraceRecord] -- a listing or a plan
+ * into its entry, which names the line's place in the file
+ * ([TraceRecord.indexed]) --, a line not yet ended
  * kept until its end arrives, and the records handed to [onBatch] on the
  * EDT in the file's order, a batch at most every
  * [PUBLICATION_MILLISECONDS] or as soon as it holds [BATCH_RECORDS]. The
@@ -191,6 +193,12 @@ class TraceFileReader internal constructor(
         /** The bytes of a line whose `\n` has not arrived yet. */
         private val tail = ByteArrayOutputStream()
 
+        /** The file's offset of the first byte [take] is given next: every byte taken before, counted. */
+        private var taken = 0L
+
+        /** The file's offset of the first byte of the line not ended yet, by which its record is read again ([RecordPlace]). */
+        private var lineStart = 0L
+
         private var lineNumber = 0
 
         var pending = ArrayList<TraceRecord>()
@@ -203,8 +211,15 @@ class TraceFileReader internal constructor(
             val array = bytes.array()
             var start = bytes.arrayOffset() + bytes.position()
             val end = bytes.arrayOffset() + bytes.limit()
+            val first = start
+            val takenBefore = taken
+            taken += end - start
             for (index in start until end) {
                 if (array[index] != NEWLINE) continue
+                // Bytes, not characters: the place is what a later read seeks to.
+                val newlineAt = takenBefore + (index - first)
+                val place = RecordPlace(lineStart, Math.toIntExact(newlineAt - lineStart))
+                lineStart = newlineAt + 1
                 // A newline byte is never part of a multi-byte character, so a line decodes whole.
                 val line = if (tail.size() == 0) {
                     String(array, start, index - start, StandardCharsets.UTF_8)
@@ -213,17 +228,17 @@ class TraceFileReader internal constructor(
                     tail.toString(StandardCharsets.UTF_8).also { tail.reset() }
                 }
                 start = index + 1
-                if (!line(line)) return false
+                if (!line(line, place)) return false
                 if (pending.size >= BATCH_RECORDS) publish(drain())
             }
             tail.write(array, start, end - start)
             return true
         }
 
-        private fun line(line: String): Boolean {
+        private fun line(line: String, place: RecordPlace): Boolean {
             lineNumber++
             val record = try {
-                TraceRecord.parse(line)
+                TraceRecord.indexed(line, place)
             } catch (exception: MalformedRecordException) {
                 fail(
                     if (lineNumber == 1) NewspeakBundle.message("devtool.file.format")

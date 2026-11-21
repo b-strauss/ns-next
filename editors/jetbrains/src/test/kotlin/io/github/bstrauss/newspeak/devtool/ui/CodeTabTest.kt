@@ -3,6 +3,7 @@ package io.github.bstrauss.newspeak.devtool.ui
 import com.intellij.ide.ui.laf.darcula.ui.DarculaComboBoxUI
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
@@ -19,7 +20,9 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.JBUI
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
@@ -30,6 +33,7 @@ import io.github.bstrauss.newspeak.devtool.editor.linkedColor
 import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.sourceChecksum
 import io.github.bstrauss.newspeak.devtool.model.Bytecode
+import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -38,6 +42,7 @@ import java.awt.Container
 import java.awt.Rectangle
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.ListCellRenderer
@@ -49,6 +54,9 @@ class CodeTabTest : BasePlatformTestCase() {
     private lateinit var source: Path
     private lateinit var tracedRuns: TracedRuns
     private lateinit var decorations: DecorationsService
+
+    /** The file the records are written to, from which the tab reads its listings back. */
+    private val trace = IndexedTrace()
 
     override fun setUp() {
         super.setUp()
@@ -89,7 +97,7 @@ class CodeTabTest : BasePlatformTestCase() {
         return """{"kind":"body","body":$number,"name":"$name","family":${family ?: "null"},"module":{"id":"Demo","version":null},"source":{"file":"$file"},"range":${range(within)},"checksum":"${sourceChecksum(within)}","statements":[$statements],"sends":[]}"""
     }
 
-    private fun tracedRun(): TraceRun = TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(tracedRecords()) }
+    private fun tracedRun(): TraceRun = trace.run().also { traced -> traced.add(tracedRecords()) }
 
     private fun tracedRecords(): List<TraceRecord> {
         val lines = listOf(
@@ -120,7 +128,7 @@ class CodeTabTest : BasePlatformTestCase() {
                 """{"offset":8,"text":"ret","scope":0,"at":5,"annotation":null}],""" +
                 """"data":[],"scopes":[{"scope":0,"body":1,"parent":null},{"scope":1,"body":2,"parent":[0,4]}],"mark":null}""",
         )
-        return lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
+        return trace.records(lines)
     }
 
     /** Whether the event being dispatched counts as the user's input, as a click or a key would. */
@@ -141,12 +149,13 @@ class CodeTabTest : BasePlatformTestCase() {
     /** Whether a tab takes the production's test of a source viewport's readiness, which a headless editor never passes. */
     private var productionReadiness = false
 
-    private fun tab(run: TraceRun, parent: Disposable = testRootDisposable): CodeTab {
+    private fun tab(run: TraceRun, parent: Disposable = testRootDisposable, reads: RecordReads = immediateReads()): CodeTab {
         tracedRuns.selected = run
         return CodeTab(
             project, run, parent, tracedRuns, decorations, { null }, { userInput },
             { _, action -> if (loadingDeferred) whenLoadedActions += action else action.run() },
             { _, action -> if (openedDeferred) whenOpenedActions += action else action.run() },
+            reads = reads,
         ) { editor -> !productionReadiness && editor.scrollingModel.visibleArea.height > 0 }
     }
 
@@ -211,7 +220,7 @@ class CodeTabTest : BasePlatformTestCase() {
     fun testACaretPlacedBeforeTheRecordsShowsItsBodyWhenTheyArrive() {
         val editor = openSource()
         editor.caretAt(FIRST)
-        val run = TraceRun("Demo", Instant.EPOCH)
+        val run = trace.run()
         val tab = tab(run)
         assertNull(tab.shownBody)
         run.add(tracedRecords())
@@ -301,7 +310,7 @@ class CodeTabTest : BasePlatformTestCase() {
                     """{"offset":0,"text":"jmp rbx","scope":null,"at":null,"out-of-line":true,"annotation":null},""" +
                     """{"offset":2,"text":"mov rax,7","scope":0,"at":0,"out-of-line":false,"annotation":null}],""" +
                     """"data":[],"scopes":[{"scope":0,"body":3,"parent":null}],"mark":null}""",
-            ).map { line -> checkNotNull(TraceRecord.parse(line)) },
+            ).let(trace::records),
         )
         val tab = tab(run)
         tab.show(3)
@@ -465,17 +474,70 @@ class CodeTabTest : BasePlatformTestCase() {
         assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
     }
 
+    /** The listing is read on a pooled thread, the viewer saying so meanwhile, and shown once it arrives. */
+    fun testAListingIsReadOffTheEventDispatchThread() {
+        val onTheEdt = AtomicReference<Boolean>()
+        val watching = RecordReads(
+            { task ->
+                AppExecutorUtil.getAppExecutorService().execute {
+                    onTheEdt.set(ApplicationManager.getApplication().isDispatchThread)
+                    task.run()
+                }
+            },
+            { task, modality, expired -> ApplicationManager.getApplication().invokeLater(task, modality, expired) },
+        )
+        val tab = tab(tracedRun(), reads = watching)
+        tab.show(1)
+        choose(tab, "baseline")
+        assertNull("nothing is shown before the read", tab.listing)
+        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.listingMessage)
+        assertEquals(NewspeakBundle.message("devtool.record.reading"), tab.viewer.document.text)
+        PlatformTestUtil.waitWithEventsDispatching("the listing arrives", { tab.listing != null }, WAIT_SECONDS.toInt())
+        assertEquals("read off the EDT", false, onTheEdt.get())
+        assertNull(tab.listingMessage)
+        assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- code {Demo>>run:} baseline x64 base=0x3000 bytes=40\n"))
+    }
+
+    /** A read that arrives after another copy was chosen shows nothing: the last copy chosen is shown. */
+    fun testAReadForACopyNoLongerChosenIsDropped() {
+        val queued = ArrayList<Runnable>()
+        val tab = tab(tracedRun(), reads = RecordReads({ task -> queued += task }, { task, _, _ -> task.run() }))
+        tab.show(1)
+        choose(tab, "baseline")
+        choose(tab, "optimized key=Demo")
+        assertEquals(2, queued.size)
+        queued.toList().asReversed().forEach(Runnable::run)
+        assertTrue(tab.viewer.document.text, tab.viewer.document.text.startsWith("--- code {Demo>>run:} optimized x64 key={Demo}"))
+        assertEquals("Demo>>run: optimized key=Demo", checkNotNull(tab.listing).title)
+    }
+
+    /** A listing whose file is gone says so in the viewer, and throws nothing. */
+    fun testAListingWhoseFileIsGoneSaysSo() {
+        val tab = tab(tracedRun())
+        tab.show(1)
+        Files.delete(trace.file)
+        choose(tab, "baseline")
+        assertNull(tab.listing)
+        val message = checkNotNull(tab.listingMessage)
+        assertTrue(message, message.startsWith(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), "")))
+        assertEquals(message, tab.viewer.document.text)
+        // The bytecode, which the run keeps, is still shown.
+        choose(tab, "bytecode")
+        assertTrue(tab.viewer.document.text.startsWith("--- bytecode {Demo>>run:}\n"))
+        assertNull(tab.listingMessage)
+    }
+
     fun testACopyInstalledAgainKeepsItsChoice() {
         val baselineAgain = """{"kind":"code","body":3,"tier":"baseline","key":null,"entered":null,"architecture":"x64","bytes":8,"instructions":[{"offset":0,"text":"ret","scope":0,"at":1,"annotation":null}],"data":[],"scopes":[{"scope":0,"body":3,"parent":null}],"mark":null}"""
         val firstBaseline = baselineAgain.replace("\"bytes\":8", "\"bytes\":4")
-        val run = tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(firstBaseline)), checkNotNull(TraceRecord.parse(baselineAgain)))) }
+        val run = tracedRun().also { traced -> traced.add(trace.records(firstBaseline, baselineAgain)) }
         val tab = tab(run)
         tab.show(3)
         assertEquals(listOf("bytecode", "baseline", "baseline (2)"), (0 until tab.chooser.itemCount).map { index -> tab.chooser.getItemAt(index).label })
         choose(tab, "baseline (2)")
         assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
         // A batch offers the copies again: the choice is the same install, not the first of its label.
-        run.add(listOf(checkNotNull(TraceRecord.parse(baselineAgain.replace("\"bytes\":8", "\"bytes\":12")))))
+        run.add(trace.records(baselineAgain.replace("\"bytes\":8", "\"bytes\":12")))
         assertEquals("baseline (2)", (tab.chooser.selectedItem as CodeCopy).label)
         assertTrue(tab.viewer.document.text, "bytes=8" in tab.viewer.document.text)
     }
@@ -513,7 +575,7 @@ class CodeTabTest : BasePlatformTestCase() {
     /** A run whose method has a copy with the longest label a key and an entered application make. */
     private fun runWithALongLabel(): TraceRun {
         val long = """{"kind":"code","body":1,"tier":"optimized","key":"newspeak.core.Kernel/Integer","entered":"newspeak.core.Kernel/Number","architecture":"x64","bytes":4,"instructions":[],"data":[],"scopes":[{"scope":0,"body":1,"parent":null}],"mark":null}"""
-        return tracedRun().also { traced -> traced.add(listOf(checkNotNull(TraceRecord.parse(long)))) }
+        return tracedRun().also { traced -> traced.add(trace.records(long)) }
     }
 
     fun testTheChooserPaintsEveryLabelWhole() {

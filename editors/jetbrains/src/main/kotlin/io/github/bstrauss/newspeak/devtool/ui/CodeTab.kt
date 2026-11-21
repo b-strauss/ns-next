@@ -44,6 +44,8 @@ import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.codeListing
 import io.github.bstrauss.newspeak.devtool.editor.listingOf
 import io.github.bstrauss.newspeak.devtool.editor.showListing
+import io.github.bstrauss.newspeak.devtool.model.Bytecode
+import io.github.bstrauss.newspeak.devtool.model.CodeEntry
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.awt.BorderLayout
@@ -75,8 +77,16 @@ private fun hasExtent(editor: Editor): Boolean {
     return viewport.extentSize.width > 0 && viewport.extentSize.height > 0
 }
 
-/** A copy of a body the chooser offers: its [label] and how its listing is made. */
-class CodeCopy(val label: String, val listing: () -> CodeListing) {
+/**
+ * A copy of a body the chooser offers: its [label], and either the body's
+ * [bytecode], which the run keeps, or an [install] of its machine code,
+ * whose listing is read from the run's file when it is shown.
+ */
+class CodeCopy private constructor(val label: String, val bytecode: Bytecode?, val install: CodeEntry?) {
+    constructor(label: String, bytecode: Bytecode) : this(label, bytecode, null)
+
+    constructor(label: String, install: CodeEntry) : this(label, null, install)
+
     override fun toString(): String = label
 }
 
@@ -103,6 +113,11 @@ class CodeCopy(val label: String, val listing: () -> CodeListing) {
  * the source's statements by the bodies [decorations] keeps markers of,
  * which follow every edit, and links nothing in a method changed since the
  * run (decision 32).
+ *
+ * An install's listing is read from the run's file ([reads], decision 34)
+ * when it is chosen, the viewer saying so until it arrives and saying why
+ * where the file no longer gives it; a read for a copy no longer chosen
+ * when it arrives is dropped.
  */
 class CodeTab(
     private val project: Project,
@@ -114,6 +129,7 @@ class CodeTab(
     private val byUser: () -> Boolean = { IdeEventQueue.getInstance().trueCurrentEvent is InputEvent },
     private val whenLoaded: (Editor, Runnable) -> Unit = { editor, action -> FileEditorManager.getInstance(project).runWhenLoaded(editor, action) },
     private val deliverOpened: (VirtualFile, Runnable) -> Unit = { _, action -> action.run() },
+    private val reads: RecordReads = RecordReads.pooled(),
     private val viewportReady: (Editor) -> Boolean = ::viewportShowing,
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
@@ -231,8 +247,15 @@ class CodeTab(
     /** The viewer's wait for its viewport to show; null while none is. */
     private var viewerWait: PendingScroll? = null
 
-    /** Set once the tab is disposed. */
-    private var disposed = false
+    /** Set once the tab is disposed; read by a listing's read off the EDT too. */
+    @Volatile private var disposed = false
+
+    /** How many listings the tab asked for: a read delivers only while it is the last asked for. Read off the EDT too. */
+    @Volatile private var listingRequests = 0L
+
+    /** The message the viewer shows in place of a listing -- while it is read, or why it cannot be -- null while none is. */
+    var listingMessage: String? = null
+        private set
 
     /** A queued scroll runs no more once the tab is gone or the toggle is off. */
     private val scrollExpired = Condition<Any?> { disposed || project.isDisposed || !syncWithEditor }
@@ -359,7 +382,7 @@ class CodeTab(
     private fun copies(body: Int): List<CodeCopy> {
         val copies = ArrayList<CodeCopy>()
         val bytecode = run.bytecode[body] ?: run.bytecode.values.firstOrNull { listed -> listed.bodies.any { part -> part.body == body } }
-        if (bytecode != null) copies += CodeCopy(BYTECODE) { bytecodeListing(run, bytecode) }
+        if (bytecode != null) copies += CodeCopy(BYTECODE, bytecode)
         // A copy installed again under the same tier and key is numbered, so that a choice kept by its label is the same install.
         val installs = HashMap<String, Int>()
         for (code in run.code[body].orEmpty()) {
@@ -368,18 +391,36 @@ class CodeTab(
             code.entered?.let { entered -> label.append(" entered=").append(entered) }
             val count = installs.merge(label.toString(), 1, Int::plus) ?: 1
             if (count > 1) label.append(" (").append(count).append(')')
-            copies += CodeCopy(label.toString()) { codeListing(run, code) }
+            copies += CodeCopy(label.toString(), code)
         }
         return copies
     }
 
     private fun showChosen() {
         listingsShown++
-        val shown = (chooser.selectedItem as? CodeCopy)?.listing?.invoke()
+        val copy = chooser.selectedItem as? CodeCopy
+        val request = ++listingRequests
+        val install = copy?.install
+        if (install == null) {
+            display(copy?.bytecode?.let { bytecode -> bytecodeListing(run, bytecode) }, null)
+            return
+        }
+        display(null, NewspeakBundle.message("devtool.record.reading"))
+        reads.read(
+            { !disposed && listingRequests == request },
+            { run.readCode(install) },
+        ) { outcome ->
+            outcome.fold({ code -> display(codeListing(run, code), null) }, { error -> display(null, error.message.orEmpty()) })
+        }
+    }
+
+    /** Writes [shown] into the viewer, or [message] in its place where no listing is shown. */
+    private fun display(shown: CodeListing?, message: String?) {
         listing = shown
+        listingMessage = message
         updating = true
         try {
-            ApplicationManager.getApplication().runWriteAction { document.setText(shown?.text.orEmpty()) }
+            ApplicationManager.getApplication().runWriteAction { document.setText(shown?.text ?: message.orEmpty()) }
             showListing(document, shown)
         } finally {
             updating = false

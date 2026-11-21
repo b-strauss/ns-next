@@ -207,6 +207,74 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertEquals(2, contents.contentCount)
     }
 
+    /** Starts a run of [configuration] whose process the test ends, as `startProcess` does; answers its process and file. */
+    private fun startEnded(configuration: NewspeakRunConfiguration, ended: Boolean = true): Pair<NopProcessHandler, Path> {
+        val handler = NopProcessHandler().also { started -> started.startNotify() }
+        val file = checkNotNull(start(configuration, handler))
+        Files.writeString(file, """{"kind":"header","format":"ns-next-trace","version":1,"architecture":null}""" + "\n")
+        if (ended) {
+            handler.destroyProcess()
+            waitUntil { handler.isProcessTerminated }
+        }
+        return handler to file
+    }
+
+    fun testARunsTabCanBePinned() {
+        start(configuration("Hello"))
+        assertTrue(contents.contents.single().isPinnable)
+    }
+
+    fun testARerunReplacesTheEndedTabOfItsConfigurationAndDeletesItsFile() {
+        val configuration = configuration("Hello")
+        val (_, first) = startEnded(configuration)
+        startEnded(configuration("Other"), ended = false)
+        val replaced = tracedRuns.runs.first()
+        val (_, second) = startEnded(configuration, ended = false)
+        assertFalse("the ended run is dropped", replaced in tracedRuns.runs)
+        assertEquals(2, contents.contentCount)
+        // The new run takes the replaced tab's place, and is selected.
+        assertSame(tracedRuns.selected, (contents.contents.first().component as RunPanel).run)
+        assertEquals(second, tracedRuns.selected?.file)
+        waitUntil { !Files.exists(first) }
+        assertTrue(Files.exists(second))
+    }
+
+    fun testAPinnedTabIsNotReplaced() {
+        val configuration = configuration("Hello")
+        val (_, first) = startEnded(configuration)
+        contents.contents.single().isPinned = true
+        startEnded(configuration, ended = false)
+        assertEquals(2, tracedRuns.runs.size)
+        assertEquals(2, contents.contentCount)
+        // Longer than a release takes.
+        Thread.sleep(200)
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+        assertTrue(Files.exists(first))
+    }
+
+    fun testARunStillGoingIsNotReplaced() {
+        val configuration = configuration("Hello")
+        val (handler, first) = startEnded(configuration, ended = false)
+        startEnded(configuration, ended = false)
+        assertEquals(2, tracedRuns.runs.size)
+        assertEquals(2, contents.contentCount)
+        assertTrue(Files.exists(first))
+        // Ended later, it is replaced by the next run of its configuration, which the second still going is not.
+        handler.destroyProcess()
+        waitUntil { handler.isProcessTerminated }
+        startEnded(configuration, ended = false)
+        assertEquals(2, tracedRuns.runs.size)
+        waitUntil { !Files.exists(first) }
+    }
+
+    fun testAnotherConfigurationsTabIsNotReplaced() {
+        startEnded(configuration("First"))
+        startEnded(configuration("Second"))
+        startEnded(configuration("Third"), ended = false)
+        assertEquals(3, tracedRuns.runs.size)
+        assertEquals(3, contents.contentCount)
+    }
+
     fun testARunWithoutTracingStartsNothing() {
         assertNull(start(configuration("Hello", traced = false)))
         // Watched methods that want no event of a run that lists nothing leave nothing to trace either.
