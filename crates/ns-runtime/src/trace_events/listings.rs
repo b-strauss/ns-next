@@ -20,7 +20,7 @@ use crate::jit::CustomizationKey;
 use crate::mixin::DispatchId;
 
 use super::names::{BodyNames, NamedRoot};
-use super::{CodeTier, CompileRefusal, InlineDecline, TraceFilter, class_name_of_id};
+use super::{BodyName, CodeTier, CompileRefusal, InlineDecline, TraceFilter, class_name_of_id};
 
 /// What the sink's `listing` receives: the code of one body.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,24 +34,31 @@ pub enum Listing {
     Inlining(InliningListing),
 }
 
-/// A body's bytecode: its name, as the trace names a body
+/// A body's bytecode: the body, as the trace names it
 /// (`Demo/Account>>deposit:`), and `bytecode::disassemble`'s text of it,
 /// the blocks it makes nested under their `MakeClosure`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BytecodeListing {
-    pub body: String,
+    pub body: BodyName,
     pub text: String,
 }
 
 /// The bytecode listing of each of `roots` that `filter` selects, in
-/// order. A block is listed with the root body that makes it, never alone.
-pub(crate) fn bytecode_listings(roots: Vec<NamedRoot>, filter: &TraceFilter) -> Vec<Listing> {
+/// order, each body numbered as it is listed. A block is listed with the
+/// root body that makes it, never alone.
+pub(crate) fn bytecode_listings(
+    mutator: &Mutator<'_>,
+    names: &mut BodyNames,
+    roots: Vec<NamedRoot>,
+    filter: &TraceFilter,
+) -> Vec<Listing> {
     roots
         .into_iter()
         .filter(|root| filter.matches(&root.name))
         .map(|NamedRoot { code, name }| {
             let text = bytecode::disassemble(&code, &name);
-            Listing::Bytecode(BytecodeListing { body: name, text })
+            let body = names.name(mutator, &code);
+            Listing::Bytecode(BytecodeListing { body, text })
         })
         .collect()
 }
@@ -64,8 +71,8 @@ pub(crate) fn bytecode_listings(roots: Vec<NamedRoot>, filter: &TraceFilter) -> 
 /// `base_address` differs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeListing {
-    /// The body's name, as the trace names a body.
-    pub body: String,
+    /// The body, as the trace names it.
+    pub body: BodyName,
     /// Which compile of the body the code is.
     pub tier: CodeTier,
     /// An optimized copy's customization key: its receiver's class and,
@@ -133,8 +140,8 @@ pub enum Position {
 pub struct ListedScope {
     /// The scope's number, 0 for the body's own.
     pub number: u32,
-    /// The scope's body, as the trace names a body.
-    pub body: String,
+    /// The scope's body, as the trace names it.
+    pub body: BodyName,
     /// The scope it is inlined into and the program counter of the send
     /// it is inlined at there; `None` for the body's own scope.
     pub parent: Option<(u32, u32)>,
@@ -151,8 +158,8 @@ pub struct ListedScope {
 /// plan that failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InliningListing {
-    /// The compiled body's name, as the trace names a body.
-    pub body: String,
+    /// The compiled body, as the trace names it.
+    pub body: BodyName,
     /// The copy's customization key, named as a code listing's is; `None`
     /// for a body's one uncustomized copy.
     pub key: Option<(String, Option<String>)>,
@@ -203,7 +210,7 @@ pub enum ArmKind {
 pub struct ListedDecline {
     pub scope: u32,
     pub program_counter: u32,
-    pub callee: Option<String>,
+    pub callee: Option<BodyName>,
     pub reason: InlineDecline,
 }
 
@@ -297,7 +304,7 @@ impl PendingCode {
     /// `key`, laying out `scopes`, marked at `mark`.
     fn listed(
         self,
-        name: String,
+        name: BodyName,
         key: Option<(String, Option<String>)>,
         scopes: Vec<ListedScope>,
         mark: Option<u32>,
@@ -320,25 +327,30 @@ impl PendingCode {
 
     /// The listing of a stopped frame's baseline code, `code`'s, which the
     /// debugger names `name`, marked at `mark`, the offset the frame
-    /// returns to (`Command::FrameCode`): one scope, the body's own.
+    /// returns to (`Command::FrameCode`): one scope, the body's own,
+    /// numbered 0, since no trace numbered it.
     #[cfg(ns_jit)]
     pub(crate) fn frame_listing(self, code: &CompiledCode, name: &str, mark: u32) -> CodeListing {
         debug_assert!(
             self.scopes.is_empty(),
             "internal: baseline code lays out its body's scope alone"
         );
-        let scopes = vec![ListedScope::root(code, name)];
-        self.listed(name.to_owned(), None, scopes, Some(mark))
+        let name = BodyName {
+            number: 0,
+            name: name.to_owned(),
+        };
+        let scopes = vec![ListedScope::root(code, &name)];
+        self.listed(name, None, scopes, Some(mark))
     }
 }
 
 impl ListedScope {
     /// The scope numbered 0 of a listing of `code`'s machine code, which
     /// is named `name`.
-    fn root(code: &CompiledCode, name: &str) -> ListedScope {
+    fn root(code: &CompiledCode, name: &BodyName) -> ListedScope {
         ListedScope {
             number: 0,
-            body: name.to_owned(),
+            body: name.clone(),
             parent: None,
             instructions: bytecode::instruction_lines(code),
         }
@@ -401,7 +413,7 @@ impl PendingListing {
         mutator: &Mutator<'_>,
         names: &mut BodyNames,
         code: &CompiledCode,
-        name: String,
+        name: BodyName,
         key: Option<(String, Option<String>)>,
     ) -> Listing {
         match self {

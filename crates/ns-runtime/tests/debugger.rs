@@ -3347,7 +3347,8 @@ fn caller_listing(selector: &str, caller: &str) -> Box<CodeListing> {
              `sum:` compiled again and called from its code: {statistics:?}"
         )
     });
-    assert_eq!(listing.body, body);
+    assert_eq!(listing.body.name, body);
+    assert_eq!(listing.body.number, 0, "no trace numbered the body");
     assert_eq!(listing.key, None);
     assert_eq!(listing.scopes.len(), 1);
     let mark = listing.mark.expect("the listing marks the return");

@@ -113,6 +113,7 @@ fn print_bytecode(
                 ..Printing::default()
             },
             print_filter: TraceFilter::parse(&[pattern]).expect("a valid filter"),
+            describe_bodies: false,
         },
         Box::new(Collector(Rc::clone(&listings))),
     );
@@ -134,7 +135,7 @@ fn bytecode(listings: &[Listing]) -> Vec<&BytecodeListing> {
 fn listings_of(listings: &[Listing], body: &str) -> Vec<BytecodeListing> {
     bytecode(listings)
         .into_iter()
-        .filter(|listing| listing.body == body)
+        .filter(|listing| listing.body.name == body)
         .cloned()
         .collect()
 }
@@ -149,7 +150,7 @@ fn assert_lists_sum(listings: &[Listing]) {
     assert!(
         bytecode(listings)
             .iter()
-            .all(|listing| !listing.body.contains("newspeak.core")),
+            .all(|listing| !listing.body.name.contains("newspeak.core")),
         "the filter selects the program's bodies only"
     );
 }
@@ -191,7 +192,7 @@ fn a_shipped_module_built_on_demand_prints_at_the_next_flush() {
     assert!(
         bytecode(&listings.borrow())
             .iter()
-            .any(|listing| listing.body.starts_with("newspeak.core.TimeFactory/")),
+            .any(|listing| listing.body.name.starts_with("newspeak.core.TimeFactory/")),
         "the time module's bodies listed after the run"
     );
 }
@@ -362,6 +363,7 @@ mod code {
                     ..Printing::default()
                 },
                 print_filter: TraceFilter::parse(&[pattern]).expect("a valid filter"),
+                describe_bodies: false,
             },
             Box::new(Collector(Rc::clone(&listings))),
         );
@@ -383,7 +385,9 @@ mod code {
         listings
             .iter()
             .filter_map(|listing| match listing {
-                Listing::Code(code) if code.body == body && code.tier == tier => Some(code.clone()),
+                Listing::Code(code) if code.body.name == body && code.tier == tier => {
+                    Some(code.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -416,7 +420,7 @@ mod code {
             panic!("a baseline listing has one scope");
         };
         assert_eq!((scope.number, scope.parent), (0, None));
-        assert_eq!(scope.body, "Demo>>square:");
+        assert_eq!(scope.body.name, "Demo>>square:");
         assert!(
             scope
                 .instructions
@@ -553,7 +557,7 @@ mod code {
             let Listing::Code(code) = listing else {
                 panic!("only machine code is printed");
             };
-            assert_eq!(code.body, "Demo>>square:");
+            assert_eq!(code.body.name, "Demo>>square:");
         }
         // The same run with the filter on `cube:` lists it: the body the
         // first filter left out was compiled.
@@ -677,6 +681,7 @@ mod code {
                 filter: TraceFilter::everything(),
                 printing,
                 print_filter: TraceFilter::parse(&["Demo>>total"]).expect("a valid filter"),
+                describe_bodies: false,
             },
             Box::new(Recorder(Rc::clone(&received))),
         );
@@ -693,7 +698,7 @@ mod code {
             .iter()
             .filter_map(|item| match item {
                 Received::Listing(Listing::Code(code))
-                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                    if code.body.name == "Demo>>total" && code.tier == CodeTier::Optimized =>
                 {
                     Some(code.clone())
                 }
@@ -712,13 +717,13 @@ mod code {
         assert!(listing.code_end as usize <= listing.bytes.len());
         let root = &listing.scopes[0];
         assert_eq!(
-            (root.number, root.body.as_str(), root.parent),
+            (root.number, root.body.name.as_str(), root.parent),
             (0, "Demo>>total", None)
         );
         let Some(balance) = listing
             .scopes
             .iter()
-            .find(|scope| scope.body == "Demo/Account>>balance")
+            .find(|scope| scope.body.name == "Demo/Account>>balance")
         else {
             panic!("`balance` inlined as a scope: {:?}", listing.scopes);
         };
@@ -822,14 +827,21 @@ mod code {
         let mut compared = 0;
         for item in &received {
             match item {
-                Received::Event(event) if event.body.as_deref() == Some("Demo>>total") => {
+                Received::Event(event)
+                    if event.body.as_ref().map(|body| body.name.as_str())
+                        == Some("Demo>>total") =>
+                {
                     match &event.kind {
                         TraceEventKind::Inlined {
                             in_body,
                             program_counter,
                             callee,
                             ..
-                        } => window.push((in_body.clone(), *program_counter, callee.clone())),
+                        } => window.push((
+                            in_body.name.clone(),
+                            *program_counter,
+                            callee.name.clone(),
+                        )),
                         TraceEventKind::Optimized { .. } => {
                             planned = Some(std::mem::take(&mut window));
                         }
@@ -838,7 +850,7 @@ mod code {
                     }
                 }
                 Received::Listing(Listing::Code(code))
-                    if code.body == "Demo>>total" && code.tier == CodeTier::Optimized =>
+                    if code.body.name == "Demo>>total" && code.tier == CodeTier::Optimized =>
                 {
                     let Some(mut planned) = planned.take() else {
                         panic!("the listing follows its compile's event");
@@ -849,9 +861,9 @@ mod code {
                         .filter_map(|scope| {
                             let (parent, program_counter) = scope.parent?;
                             Some((
-                                code.scopes[parent as usize].body.clone(),
+                                code.scopes[parent as usize].body.name.clone(),
                                 program_counter,
-                                scope.body.clone(),
+                                scope.body.name.clone(),
                             ))
                         })
                         .collect();
@@ -880,7 +892,7 @@ mod code {
         received
             .iter()
             .filter_map(|item| match item {
-                Received::Listing(Listing::Inlining(plan)) if plan.body == "Demo>>total" => {
+                Received::Listing(Listing::Inlining(plan)) if plan.body.name == "Demo>>total" => {
                     Some(plan.clone())
                 }
                 _ => None,
@@ -897,13 +909,13 @@ mod code {
         };
         assert_eq!(plan.key, Some(("Demo".to_string(), None)));
         assert_eq!(
-            (plan.scopes[0].number, plan.scopes[0].body.as_str()),
+            (plan.scopes[0].number, plan.scopes[0].body.name.as_str()),
             (0, "Demo>>total")
         );
         let Some(balance) = plan
             .scopes
             .iter()
-            .find(|scope| scope.body == "Demo/Account>>balance")
+            .find(|scope| scope.body.name == "Demo/Account>>balance")
         else {
             panic!("`balance` inlined as a scope: {:?}", plan.scopes);
         };
@@ -936,7 +948,7 @@ mod code {
         // The listing follows the compile's event, and says what it said.
         let optimized = received.iter().position(|item| {
             matches!(item, Received::Event(event)
-                if event.body.as_deref() == Some("Demo>>total")
+                if event.body.as_ref().map(|body| body.name.as_str()) == Some("Demo>>total")
                     && matches!(event.kind, TraceEventKind::Optimized { .. }))
         });
         let listed = received
@@ -1000,7 +1012,7 @@ mod code {
                 && plan
                     .scopes
                     .iter()
-                    .any(|scope| scope.body == "Demo/Account>>balance")),
+                    .any(|scope| scope.body.name == "Demo/Account>>balance")),
             "the plan of the copy no room held: {:?}",
             plans.iter().map(|plan| &plan.outcome).collect::<Vec<_>>()
         );
@@ -1058,7 +1070,8 @@ mod code {
                 .any(|plan| plan.declined.iter().any(|declined| {
                     declined.scope == 0
                         && declined.reason == InlineDecline::OverWeight
-                        && declined.callee.as_deref() == Some("[] in Demo>>total")
+                        && declined.callee.as_ref().map(|callee| callee.name.as_str())
+                            == Some("[] in Demo>>total")
                 })),
             "the block declined in the body's own scope: {:?}",
             plans.iter().map(|plan| &plan.declined).collect::<Vec<_>>()

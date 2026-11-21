@@ -66,7 +66,7 @@ pub(crate) fn line(event: &TraceEvent) -> String {
     let mut line = format!(
         "[{}] {{{}}} ",
         event.category.name(),
-        event.body.as_deref().unwrap_or("")
+        event.body.as_ref().map_or("", |body| body.name.as_str())
     );
     let mut fields = Fields(&mut line);
     match &event.kind {
@@ -129,7 +129,7 @@ pub(crate) fn line(event: &TraceEvent) -> String {
         } => {
             fields.event(event);
             fields.key(key, entered);
-            fields.name("spent-by", spent_by);
+            fields.name("spent-by", &spent_by.name);
             fields.value("walk-end", walk_end.name());
         }
         TraceEventKind::OptimizationDropped {
@@ -185,8 +185,8 @@ pub(crate) fn line(event: &TraceEvent) -> String {
         } => {
             fields.event(event);
             fields.key(key, entered);
-            fields.name("in-body", in_body);
-            fields.name("callee", callee);
+            fields.name("in-body", &in_body.name);
+            fields.name("callee", &callee.name);
             fields.value("at", program_counter);
         }
         TraceEventKind::InlineDeclined {
@@ -199,8 +199,8 @@ pub(crate) fn line(event: &TraceEvent) -> String {
         } => {
             fields.event(event);
             fields.key(key, entered);
-            fields.name("in-body", in_body);
-            fields.name("callee", callee);
+            fields.name("in-body", &in_body.name);
+            fields.name("callee", &callee.name);
             fields.value("reason", reason.name());
             fields.value("at", program_counter);
         }
@@ -353,16 +353,24 @@ impl TraceSink for StandardErrorSink {
 mod tests {
     use super::*;
     use ns_runtime::trace_events::{
-        CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
+        BodyName, CodeTier, CompactionFreeing, CompileRefusal, CompileTrigger, Deferral, FreeCause,
         HoldReason, InlineDecline, InvalidationCause, OsrRefusal, RecompileWalkEnd, RetireReason,
         Revival, SiteState, VacateCause,
     };
+
+    /// `name`, numbered as a trace's first body is.
+    fn body_named(name: &str) -> BodyName {
+        BodyName {
+            number: 1,
+            name: name.to_string(),
+        }
+    }
 
     /// An event of `category` about the body named `body`.
     fn about(category: TraceCategory, body: &str, kind: TraceEventKind) -> TraceEvent {
         TraceEvent {
             category,
-            body: Some(body.to_string()),
+            body: Some(body_named(body)),
             kind,
         }
     }
@@ -512,7 +520,7 @@ mod tests {
                     Optimize,
                     "Demo/Account>>deposit:",
                     TraceEventKind::OptimizationRequested {
-                        spent_by: "[] in Demo>>main:args:".to_string(),
+                        spent_by: body_named("[] in Demo>>main:args:"),
                         walk_end: RecompileWalkEnd::NotInlined,
                         key: named("Demo/Account"),
                         entered: None,
@@ -526,7 +534,7 @@ mod tests {
                     Optimize,
                     "Demo>>run",
                     TraceEventKind::OptimizationNotDue {
-                        spent_by: "Demo>>run".to_string(),
+                        spent_by: body_named("Demo>>run"),
                         walk_end: RecompileWalkEnd::BottomOfStack,
                         key: None,
                         entered: None,
@@ -596,9 +604,9 @@ mod tests {
                     TraceEventKind::Inlined {
                         key: named("Demo"),
                         entered: None,
-                        in_body: "Demo>>main:args:".to_string(),
+                        in_body: body_named("Demo>>main:args:"),
                         program_counter: 7,
-                        callee: "Demo/Account>>deposit:".to_string(),
+                        callee: body_named("Demo/Account>>deposit:"),
                     },
                 ),
                 "[inlining] {Demo>>main:args:} inlined key={Demo} in-body={Demo>>main:args:} \
@@ -611,9 +619,9 @@ mod tests {
                     TraceEventKind::InlineDeclined {
                         key: None,
                         entered: None,
-                        in_body: "Demo>>main:args:".to_string(),
+                        in_body: body_named("Demo>>main:args:"),
                         program_counter: 31,
-                        callee: "[] in Demo>>run".to_string(),
+                        callee: body_named("[] in Demo>>run"),
                         reason: InlineDecline::OverWeight,
                     },
                 ),
@@ -860,7 +868,7 @@ mod tests {
                 format!("[{}]", event.category.name()),
                 "{written}"
             );
-            let body = event.body.as_deref().unwrap_or("");
+            let body = event.body.as_ref().map_or("", |body| body.name.as_str());
             assert_eq!(parts[1], format!("{{{body}}}"), "{written}");
             assert!(!parts[2].is_empty() && !parts[2].contains('='), "{written}");
             for field in &parts[3..] {

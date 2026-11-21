@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use ns_runtime::trace_events::{BytecodeListing, CodeListing, Listing};
+use ns_runtime::trace_events::{BodyName, BytecodeListing, CodeListing, Listing};
 use ns_runtime::{
     Command, DebugControl, Event, ModuleName, ReturnedValue, StopReason, Variable, VariableValue,
 };
@@ -2168,8 +2168,13 @@ fn is_going_on(name: &str) -> bool {
 /// `--print-code` write, so that a client reads them as a run prints them.
 fn frame_code_body(body: String, bytecode: String, machine: Option<Box<CodeListing>>) -> Value {
     let machine_code = machine.map(|machine| listing::text(&Listing::Code(*machine)));
+    // Numbered 0: no trace numbered the body, and the text shows its name
+    // alone.
     let bytecode = listing::text(&Listing::Bytecode(BytecodeListing {
-        body: body.clone(),
+        body: BodyName {
+            number: 0,
+            name: body.clone(),
+        },
         text: bytecode,
     }));
     json!({ "body": body, "bytecode": bytecode, "machineCode": machine_code })

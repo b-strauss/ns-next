@@ -95,6 +95,7 @@ pub(crate) fn execute(
                 filter: trace_filter,
                 printing,
                 print_filter,
+                describe_bodies: false,
             },
             Box::new(trace::StandardErrorSink),
         );

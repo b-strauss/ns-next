@@ -554,7 +554,19 @@ it had not received; no category and no printing is no tracing.
   factory entries, the three initializer bodies, the superclass clause
   and every block they create, transitively, the mixins an edit
   superseded included, so that a body an edit replaced keeps its name. A
-  body no mixin holds is `(unnamed)`. A copy's key is named by two
+  body no mixin holds is `(unnamed)`. Every body an event or a listing
+  names is a `BodyName`, its name beside a number `BodyNames` gives it
+  at its first delivery -- 1 the first, none given twice in a sink's
+  run, a dead body's entry never lending its number to the body that
+  takes its address -- since a name does not identify a body; a body
+  only events the filter refuses name takes none. With
+  `TraceSettings::describe_bodies`, the flush describes each body it
+  numbered just before the first delivery that names it
+  (`TraceSink::body`, `trace_events/descriptions.rs`): its module, a
+  shipped module's path among the library's files, its source range
+  and its FNV-1a 64 checksum, and its statements and sends from the
+  debugger's metadata (`Cache::metadata_with_text`), empty where the
+  body compiled again is not alike (decision 18). A copy's key is named by two
   fields, `key=` the receiver's class and `entered=` the class the body
   was entered at, the latter only where it is another, both absent for a
   body optimized as one copy; `#<id>` where no application holds the

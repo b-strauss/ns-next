@@ -29,7 +29,7 @@ pub(crate) fn text(listing: &Listing) -> String {
     let mut text = String::new();
     match listing {
         Listing::Bytecode(bytecode) => {
-            let _ = writeln!(text, "--- bytecode {{{}}}", bytecode.body);
+            let _ = writeln!(text, "--- bytecode {{{}}}", bytecode.body.name);
             text.push_str(&bytecode.text);
             if !text.ends_with('\n') {
                 text.push('\n');
@@ -122,7 +122,7 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
         .collect();
     while let Some((scope, depth)) = pending.pop() {
         let indent = "  ".repeat(depth);
-        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body);
+        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body.name);
         if let Some((parent, program_counter)) = scope.parent {
             let _ = write!(text, " at s{parent}@{program_counter}");
         }
@@ -142,7 +142,7 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
 }
 
 fn write_inlining(text: &mut String, inlining: &InliningListing) {
-    let _ = write!(text, "--- inlining {{{}}}", inlining.body);
+    let _ = write!(text, "--- inlining {{{}}}", inlining.body.name);
     write_key(text, inlining.key.as_ref());
     text.push('\n');
     write_scope_tree(text, &inlining.scopes);
@@ -163,7 +163,10 @@ fn write_inlining(text: &mut String, inlining: &InliningListing) {
             "  s{}@{} declined callee={{{}}} reason={}",
             declined.scope,
             declined.program_counter,
-            declined.callee.as_deref().unwrap_or(""),
+            declined
+                .callee
+                .as_ref()
+                .map_or("", |callee| callee.name.as_str()),
             declined.reason.name()
         );
     }
@@ -179,7 +182,7 @@ fn write_code(text: &mut String, code: &CodeListing) {
     let _ = write!(
         text,
         "--- code {{{}}} {} {}",
-        code.body,
+        code.body.name,
         code.tier.name(),
         code.architecture.name()
     );
@@ -271,7 +274,7 @@ fn write_position(text: &mut String, code: &CodeListing, position: Position, opt
     let listed = code.scopes.iter().find(|listed| listed.number == scope);
     text.push_str("  ");
     if optimized {
-        let body = listed.map_or("", |listed| listed.body.as_str());
+        let body = listed.map_or("", |listed| listed.body.name.as_str());
         let _ = write!(text, "s{scope} {{{body}}} ");
     }
     let _ = write!(text, "@{program_counter}");
@@ -363,10 +366,18 @@ fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use ns_runtime::trace_events::{
-        Annotation, Architecture, ArmKind, BytecodeListing, CodeListing, CodeTier, CompileRefusal,
-        DataWord, InlineDecline, InliningListing, InliningOutcome, ListedArm, ListedDecline,
-        ListedScope, Position,
+        Annotation, Architecture, ArmKind, BodyName, BytecodeListing, CodeListing, CodeTier,
+        CompileRefusal, DataWord, InlineDecline, InliningListing, InliningOutcome, ListedArm,
+        ListedDecline, ListedScope, Position,
     };
+
+    /// `name`, numbered as a trace's first body is.
+    fn named(name: &str) -> BodyName {
+        BodyName {
+            number: 1,
+            name: name.to_string(),
+        }
+    }
 
     /// A scope numbered `number`, its body `body`, inlined at `parent`,
     /// with `instructions`' lines.
@@ -378,7 +389,7 @@ mod tests {
     ) -> ListedScope {
         ListedScope {
             number,
-            body: body.to_string(),
+            body: named(body),
             parent,
             instructions: instructions.iter().map(ToString::to_string).collect(),
         }
@@ -397,7 +408,7 @@ mod tests {
     #[test]
     fn a_bytecode_listing_is_the_disassembly_between_its_head_and_end() {
         let listing = Listing::Bytecode(BytecodeListing {
-            body: "Demo>>sum:".to_string(),
+            body: named("Demo>>sum:"),
             text: "method Demo>>sum: (args 1, registers 2)\n   0   stmt 0  Return r0\n".to_string(),
         });
         assert_eq!(
@@ -411,7 +422,7 @@ mod tests {
     #[test]
     fn an_inlining_listing_is_its_tree_its_arms_its_declines_and_its_outcome() {
         let mut inlining = InliningListing {
-            body: "Demo>>total".to_string(),
+            body: named("Demo>>total"),
             key: Some(("Demo/Account".to_string(), Some("Demo/Base".to_string()))),
             scopes: vec![
                 scope(0, "Demo>>total", None, &[]),
@@ -437,7 +448,7 @@ mod tests {
                 ListedDecline {
                     scope: 0,
                     program_counter: 11,
-                    callee: Some("Demo>>helper".to_string()),
+                    callee: Some(named("Demo>>helper")),
                     reason: InlineDecline::OverWeight,
                 },
                 ListedDecline {
@@ -482,7 +493,7 @@ mod tests {
     #[test]
     fn an_optimized_listing_names_its_scopes_and_shows_foreign_bytes_in_hex() {
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>total".to_string(),
+            body: named("Demo>>total"),
             tier: CodeTier::Optimized,
             key: Some(("Demo".to_string(), None)),
             architecture: foreign_architecture(),
@@ -551,7 +562,7 @@ mod tests {
     #[test]
     fn a_frame_s_listing_marks_the_instruction_it_returns_to() {
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>main:args:".to_string(),
+            body: named("Demo>>main:args:"),
             tier: CodeTier::Baseline,
             key: None,
             architecture: foreign_architecture(),
@@ -607,7 +618,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // the data word
         ];
         let listing = Listing::Code(CodeListing {
-            body: "Demo>>square:".to_string(),
+            body: named("Demo>>square:"),
             tier: CodeTier::Baseline,
             key: None,
             architecture: Architecture::X64,

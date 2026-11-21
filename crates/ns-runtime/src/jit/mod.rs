@@ -11710,6 +11710,7 @@ mod tests {
                         ..Printing::default()
                     },
                     print_filter: TraceFilter::everything(),
+                    describe_bodies: false,
                 },
                 Box::new(ListingCollector(Rc::clone(&listings))),
             );
