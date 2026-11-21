@@ -136,6 +136,8 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
         val at = instruction.at
         // An instruction without a scope of its own stands in the body's.
         val linked = at?.let { index -> ListingPosition(instruction.scope?.let { scope -> scopeBodies[scope] } ?: code.body, index) }
+        // The record writes an out-of-line stretch and the code before the first position alike, both
+        // without scope and index, so a stretch without them is named out of line only after a position.
         if (position != lastPosition && (lastPosition != null || at != null)) {
             if (at == null) {
                 writer.line("  out of line")

@@ -45,7 +45,6 @@ import io.github.bstrauss.newspeak.devtool.ui.TOOL_WINDOW_ID
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
 /**
@@ -333,27 +332,11 @@ class DecorationsService internal constructor(
         return markers
     }
 
-    private fun sourcePath(body: Body): Path? = try {
-        body.file?.let { file -> Path.of(file) } ?: body.library?.let { library -> libraryDirectory()?.resolve(library) }
-    } catch (_: InvalidPathException) {
-        null
-    }
-
-    private fun sameFile(source: Path, path: Path): Boolean = source.toAbsolutePath().normalize() == path.toAbsolutePath().normalize()
+    private fun sourcePath(body: Body): Path? = bodySourcePath(body, libraryDirectory())
 
     /** A marker over [range] of [document], null where the range lies outside its text. */
-    private fun marker(document: Document, range: SourceRange): RangeMarker? {
-        fun offset(line: Int, column: Int): Int? {
-            if (line < 0 || line >= document.lineCount || column < 0) return null
-            // The runtime counts columns in UTF-16 units, as a document's offsets are.
-            val offset = document.getLineStartOffset(line) + column
-            return offset.takeIf { offset <= document.getLineEndOffset(line) }
-        }
-        val start = offset(range.startLine, range.startColumn) ?: return null
-        val end = offset(range.endLine, range.endColumn) ?: return null
-        if (start > end) return null
-        return document.createRangeMarker(start, end)
-    }
+    private fun marker(document: Document, range: SourceRange): RangeMarker? =
+        documentRange(document, range)?.let { offsets -> document.createRangeMarker(offsets) }
 
     private fun isStale(document: Document, method: MethodMarkers): Boolean = method.bodies.any { body ->
         val marker = body.marker
@@ -484,6 +467,29 @@ class DecorationsService internal constructor(
         } else if (hintTooltipShown) {
             editor.contentComponent.toolTipText = null
             hintTooltipShown = false
+        }
+    }
+
+    /** The run decorated: the selected one, whose bodies [placedBodies] places; null while none is. */
+    val decoratedRun: TraceRun? get() = run
+
+    /**
+     * The bodies of [traced] in [document] where it is the decorated run,
+     * each at its marker's offsets, which followed every edit since the run,
+     * and stale where its method's text no longer has the records'
+     * checksums; none for another run and a document no body is from. The
+     * Code tab's caret and linked highlighting place themselves by these, so
+     * that nothing reads the run's ranges against a text they no longer
+     * describe.
+     */
+    fun placedBodies(document: Document, traced: TraceRun): List<PlacedBody> {
+        if (traced !== run) return emptyList()
+        val file = FileDocumentManager.getInstance().getFile(document) ?: return emptyList()
+        if (file.extension != NEWSPEAK_EXTENSION) return emptyList()
+        return markersOf(document, file, traced).methods.values.flatMap { method ->
+            method.bodies.filter { body -> body.marker.isValid }.map { body ->
+                PlacedBody(body.body, document, body.marker.textRange, method.stale)
+            }
         }
     }
 

@@ -1,16 +1,23 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.TextEditor
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import io.github.bstrauss.newspeak.devtool.TracedRuns
+import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
+import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
+import io.github.bstrauss.newspeak.devtool.editor.DeveloperToolDecorationsSettings
 import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
 import io.github.bstrauss.newspeak.devtool.editor.linkedColor
+import io.github.bstrauss.newspeak.devtool.editor.sourceChecksum
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -19,11 +26,21 @@ import java.time.Instant
 
 class CodeTabTest : BasePlatformTestCase() {
     private lateinit var source: Path
+    private lateinit var tracedRuns: TracedRuns
+    private lateinit var decorations: DecorationsService
 
     override fun setUp() {
         super.setUp()
         source = Files.createTempDirectory("newspeak-code-tab").resolve("Demo.ns")
         Files.writeString(source, DEMO)
+        // Runs and decorations of the test's own, never the project's services, which outlive a test.
+        tracedRuns = TracedRuns(project) { null }
+        Disposer.register(testRootDisposable, tracedRuns)
+        val watchedMethods = WatchedMethods(project)
+        watchedMethods.fetcher = { _ -> null }
+        val settings = DeveloperToolDecorationsSettings.Settings()
+        decorations = DecorationsService(project, tracedRuns, watchedMethods, { null }, { settings })
+        Disposer.register(testRootDisposable, decorations)
     }
 
     /** `[startLine, startColumn, endLine, endColumn]` of [part] in [DEMO], searched from the start of [within]. */
@@ -39,7 +56,7 @@ class CodeTabTest : BasePlatformTestCase() {
 
     private fun body(number: Int, name: String, within: String, family: Int?, statements: String): String {
         val file = source.toString().replace("\\", "\\\\")
-        return """{"kind":"body","body":$number,"name":"$name","family":${family ?: "null"},"module":{"id":"Demo","version":null},"source":{"file":"$file"},"range":${range(within)},"checksum":"0000000000000000","statements":[$statements],"sends":[]}"""
+        return """{"kind":"body","body":$number,"name":"$name","family":${family ?: "null"},"module":{"id":"Demo","version":null},"source":{"file":"$file"},"range":${range(within)},"checksum":"${sourceChecksum(within)}","statements":[$statements],"sends":[]}"""
     }
 
     private fun tracedRun(): TraceRun {
@@ -49,6 +66,8 @@ class CodeTabTest : BasePlatformTestCase() {
                 1, "Demo>>run:", RUN, null,
                 """{"instructions":[0,3],"range":${range(FIRST)}},{"instructions":[3,6],"range":${range(SECOND)}}""",
             ),
+            body(3, "Demo>>other", OTHER, null, """{"instructions":[0,2],"range":${range(OTHER_STATEMENT)}}"""),
+            """{"kind":"bytecode","body":3,"bodies":[{"body":3,"instructions":[{"index":0,"statement":0,"text":"LoadLiteral r1, 7"},{"index":1,"statement":0,"text":"Return r1"}]}]}""",
             body(2, "[] in Demo>>run:", BLOCK, 1, """{"instructions":[0,2],"range":${range(BLOCK_STATEMENT, BLOCK)}}"""),
             """{"kind":"bytecode","body":1,"bodies":[""" +
                 """{"body":1,"instructions":[""" +
@@ -72,7 +91,10 @@ class CodeTabTest : BasePlatformTestCase() {
         return TraceRun("Demo", Instant.EPOCH).also { traced -> traced.add(lines.map { line -> checkNotNull(TraceRecord.parse(line)) }) }
     }
 
-    private fun tab(run: TraceRun) = CodeTab(project, run, testRootDisposable, libraryDirectory = { null }, active = { true })
+    private fun tab(run: TraceRun): CodeTab {
+        tracedRuns.selected = run
+        return CodeTab(project, run, testRootDisposable, tracedRuns, decorations)
+    }
 
     private fun openSource(): Editor {
         myFixture.configureFromExistingVirtualFile(checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source)))
@@ -241,6 +263,9 @@ class CodeTabTest : BasePlatformTestCase() {
         val document = checkNotNull(FileDocumentManager.getInstance().getDocument(file))
         assertFalse(document.isWritable)
         assertEquals(shown.text, document.text)
+        // The same copy opened again brings its tab forward.
+        assertSame(file, tab.openInEditor(checkNotNull(tab.listing)))
+        assertEquals(1, manager.openFiles.count { open -> open is CodeListingFile })
         // The tab stays while the tool window's view moves on.
         choose(tab, "bytecode")
         assertTrue(manager.isFileOpen(file))
@@ -256,12 +281,45 @@ class CodeTabTest : BasePlatformTestCase() {
         assertFalse(text.isWritable)
     }
 
+    fun testAMethodEditedSinceTheRunLinksNothing() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        val document = editor.document
+        // A line more inside run:, so that the method below moves by a line.
+        WriteCommandAction.runWriteCommandAction(project) { document.insertString(document.text.indexOf("+ 1") + 1, "\n     ") }
+        editor.caretModel.moveToOffset(document.text.indexOf("y::") + 1)
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
+        // The method below the edit is unchanged and still linked, at the place its text moved to.
+        editor.caretModel.moveToOffset(document.text.indexOf(OTHER_STATEMENT) + 1)
+        assertEquals(3, tab.shownBody)
+        val statement = editor.markupModel.allHighlighters.single { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS }
+        assertEquals(OTHER_STATEMENT, document.getText(statement.textRange))
+        assertEquals(listOf("   0   stmt 0  LoadLiteral r1, 7" to 0, "   1   stmt 0  Return r1" to 0), highlightedLines(tab.viewer))
+        // Leaving every body takes the highlights away.
+        editor.caretModel.moveToOffset(0)
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
+    }
+
+    fun testAnotherRunSelectedTakesTheHighlightsAway() {
+        val tab = tab(tracedRun())
+        val editor = openSource()
+        editor.caretAt(FIRST)
+        assertEquals(3, highlightedLines(tab.viewer).size)
+        tracedRuns.selected = TraceRun("Other", Instant.EPOCH)
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(tab.viewer))
+        assertTrue(editor.markupModel.allHighlighters.none { highlighter -> highlighter.textAttributesKey in LINKED_STATEMENT_COLORS })
+    }
+
     private companion object {
         const val FIRST = "y:: x + 1"
         const val SECOND = "^[y * 2] value"
         const val BLOCK = "[y * 2]"
         const val BLOCK_STATEMENT = "y * 2"
         const val RUN = "run: x = (\n    | y |\n    y:: x + 1.\n    ^[y * 2] value\n  )"
-        val DEMO = "class Demo = () (\n  $RUN\n)\n"
+        const val OTHER_STATEMENT = "^3 + 4"
+        const val OTHER = "other = (\n    $OTHER_STATEMENT\n  )"
+        val DEMO = "class Demo = () (\n  $RUN\n  $OTHER\n)\n"
     }
 }

@@ -3,33 +3,31 @@ package io.github.bstrauss.newspeak.devtool.ui
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
-import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.TextRange
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.editor.CodeListing
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
+import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.LinkedHighlighting
+import io.github.bstrauss.newspeak.devtool.editor.PlacedBody
 import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.codeListing
 import io.github.bstrauss.newspeak.devtool.editor.listingOf
 import io.github.bstrauss.newspeak.devtool.editor.showListing
-import io.github.bstrauss.newspeak.devtool.model.SourceRange
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
-import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.awt.BorderLayout
 import java.awt.FlowLayout
-import java.nio.file.Path
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JButton
 import javax.swing.JPanel
@@ -49,16 +47,18 @@ class CodeCopy(val label: String, val listing: () -> CodeListing) {
  * tab that stays. Source, bytecode and machine code are highlighted
  * together ([LinkedHighlighting]).
  *
- * Only while [active] -- its run the selected one -- does it follow the
- * caret, so that two runs' tabs never both draw; [libraryDirectory] answers
- * where the core library's files lie.
+ * Only while its run is [tracedRuns]' selected one does it follow the
+ * caret, so that two runs' tabs never both draw. It places the caret and
+ * the source's statements by the bodies [decorations] keeps markers of,
+ * which follow every edit, and links nothing in a method changed since the
+ * run (decision 32).
  */
 class CodeTab(
     private val project: Project,
     private val run: TraceRun,
     parent: Disposable,
-    private val libraryDirectory: () -> Path? = { project.service<NewspeakCoreLibrary>().directory },
-    private val active: () -> Boolean = { TracedRuns.getInstance(project).selected === run },
+    private val tracedRuns: TracedRuns = TracedRuns.getInstance(project),
+    private val decorations: DecorationsService = DecorationsService.getInstance(project),
 ) : JPanel(BorderLayout()) {
     private val document = EditorFactory.getInstance().createDocument("")
 
@@ -70,7 +70,7 @@ class CodeTab(
 
     private val title = JBLabel()
 
-    val highlighting = LinkedHighlighting(project, run, { body -> LinkedHighlighting.sourcePathOf(body, libraryDirectory()) }, parent)
+    val highlighting = LinkedHighlighting(project, run, { document -> decorations.placedBodies(document, run) }, parent)
 
     /** The body whose copies are offered; null before the caret stood in one. */
     var shownBody: Int? = null
@@ -104,15 +104,24 @@ class CodeTab(
             parent,
         )
         run.onChanged(parent) { shownBody?.let { body -> offer(body, keepChoice = true) } }
+        // A run no longer selected leaves nothing drawn for the selected one's tab to draw over.
+        tracedRuns.addListener({ if (!active()) highlighting.deselect() }, parent)
     }
 
     /** Shows the copies of [body], its bytecode first: the gutter menu's "Show Code" and the caret's body. */
     fun show(body: Int) = offer(body, keepChoice = false)
 
-    /** Opens [listing] in an editor tab of its own, read-only, named `<body name> <tier>`. */
+    /**
+     * Opens [listing] in an editor tab of its own, read-only, named `<body
+     * name> <tier>`; the tab already open for the same copy of the same run
+     * is brought forward instead of a second one.
+     */
     fun openInEditor(listing: CodeListing): CodeListingFile {
-        val file = CodeListingFile(listing)
-        FileEditorManager.getInstance(project).openFile(file, true)
+        val manager = FileEditorManager.getInstance(project)
+        val file = manager.openFiles.filterIsInstance<CodeListingFile>().firstOrNull { open ->
+            open.listing.run === listing.run && open.listing.title == listing.title && open.listing.text == listing.text
+        } ?: CodeListingFile(listing)
+        manager.openFile(file, true)
         return file
     }
 
@@ -156,12 +165,13 @@ class CodeTab(
         highlighting.refresh()
     }
 
+    private fun active(): Boolean = tracedRuns.selected === run
+
     private fun caretMoved(editor: Editor) {
         if (updating || editor.isDisposed) return
         if (editor.project != null && editor.project !== project) return
         if (!active()) {
-            // A run no longer selected leaves nothing drawn for the selected one's tab to draw over.
-            if (highlighting.selected != null) highlighting.select(0, null)
+            if (highlighting.selected != null) highlighting.deselect()
             return
         }
         val document = editor.document
@@ -171,37 +181,24 @@ class CodeTab(
             highlighting.selectInstruction(shownListing.positions.getOrNull(editor.caretModel.logicalPosition.line))
             return
         }
-        val file = FileDocumentManager.getInstance().getFile(document) ?: return
-        val path = file.fileSystem.getNioPath(file)?.let(LinkedHighlighting::normalized) ?: return
-        val offset = editor.caretModel.offset
-        val line = document.getLineNumber(offset)
-        val caret = Place(line, offset - document.getLineStartOffset(line))
-        val library = libraryDirectory()
-        val body = run.bodies.values
-            .filter { candidate -> candidate.range?.holds(caret) == true }
-            .filter { candidate -> LinkedHighlighting.sourcePathOf(candidate, library)?.let(LinkedHighlighting::normalized) == path }
-            .innermost { candidate -> checkNotNull(candidate.range) } ?: return
+        val caret = editor.caretModel.offset
+        // Bodies nest, so the innermost holding the caret starts last, and of those ends first.
+        val placed = decorations.placedBodies(document, run)
+            .filter { candidate -> candidate.range.startOffset <= caret && caret <= candidate.range.endOffset }
+            .maxWithOrNull(compareBy<PlacedBody> { candidate -> candidate.range.startOffset }.thenByDescending { candidate -> candidate.range.endOffset })
+        // Outside every body, and in a method changed since the run, the caret names no statement.
+        if (placed == null || placed.stale) {
+            highlighting.deselect()
+            return
+        }
+        val body = placed.body
         if (body.number != shownBody) show(body.number)
         val statement = body.statements.withIndex()
-            .filter { (_, statement) -> statement.range?.holds(caret) == true }
-            .innermost { (_, statement) -> checkNotNull(statement.range) }
-        highlighting.select(body.number, statement?.index)
+            .mapNotNull { (index, statement) -> statement.range?.let(placed::place)?.let { range -> index to range } }
+            .filter { (_, range) -> range.startOffset <= caret && caret <= range.endOffset }
+            .maxWithOrNull(compareBy<Pair<Int, TextRange>> { (_, range) -> range.startOffset }.thenByDescending { (_, range) -> range.endOffset })
+        highlighting.select(body.number, statement?.first)
     }
-
-    /** A place in a document: its line and its column in UTF-16 units, as the records' ranges count them. */
-    private data class Place(val line: Int, val column: Int) : Comparable<Place> {
-        override fun compareTo(other: Place): Int = compareValuesBy(this, other, Place::line, Place::column)
-    }
-
-    private val SourceRange.start get() = Place(startLine, startColumn)
-
-    private val SourceRange.end get() = Place(endLine, endColumn)
-
-    private fun SourceRange.holds(place: Place): Boolean = start <= place && place <= end
-
-    /** The one of these whose range lies innermost: ranges nest, so the latest start, and of those the earliest end. */
-    private fun <T> List<T>.innermost(range: (T) -> SourceRange): T? =
-        maxWithOrNull(compareBy<T> { item -> range(item).start }.thenByDescending { item -> range(item).end })
 
     private companion object {
         const val BYTECODE = "bytecode"
