@@ -165,7 +165,12 @@ struct Reference {
 enum Unanswered {
     TimedOut,
     Ended,
+    /// The server ends.
+    ServerEnding,
 }
+
+/// What a call the server's end cut off is answered.
+pub(crate) const SERVER_ENDING: &str = "the server is ending";
 
 /// What `debug_start` asks for.
 pub(crate) struct StartOptions {
@@ -305,11 +310,14 @@ impl Session {
     /// publishes is current. `None` once the server ends.
     pub(crate) fn next_call(&mut self) -> Option<Call> {
         loop {
-            if let Some(call) = self.inbox.next_pending() {
-                return Some(call);
-            }
+            // The server's end comes first: a call queued behind it is
+            // refused, never served -- a resumed program and a wait
+            // nobody reads.
             if self.inbox.ended() {
                 return None;
+            }
+            if let Some(call) = self.inbox.next_pending() {
+                return Some(call);
             }
             match self.inbox.receive(None) {
                 Ok(Input::Call(call)) => return Some(call),
@@ -385,10 +393,16 @@ impl Session {
                 REQUEST_BOUND.as_secs()
             )),
             Err(Unanswered::Ended) => Err(self.ended_refusal()),
+            Err(Unanswered::ServerEnding) => Err(SERVER_ENDING.to_string()),
         }
     }
 
     fn send(&mut self, command: &str, arguments: Value) -> Result<i64, String> {
+        // After the server's end the inbox is read no more, so a request
+        // would wait out its whole bound.
+        if self.inbox.ended() {
+            return Err(SERVER_ENDING.to_string());
+        }
         if self.ending || matches!(self.state, State::Ended { .. }) {
             return Err(self.ended_refusal());
         }
@@ -416,7 +430,10 @@ impl Session {
                 }
                 Next::TimedOut => return Err(Unanswered::TimedOut),
                 Next::Call(call) => self.inbox.queue(call),
-                Next::End => self.inbox.end(),
+                Next::End => {
+                    self.inbox.end();
+                    return Err(Unanswered::ServerEnding);
+                }
             }
         }
     }
@@ -442,7 +459,10 @@ impl Session {
                     return Err(format!("the debugger sent no `{name}` event"));
                 }
                 Next::Call(call) => self.inbox.queue(call),
-                Next::End => self.inbox.end(),
+                Next::End => {
+                    self.inbox.end();
+                    return Err(SERVER_ENDING.to_string());
+                }
             }
         }
     }
@@ -509,10 +529,11 @@ impl Session {
 
     // ---- Waiting ----
 
-    /// Waits at most `wait` for the running program to stop or end.
+    /// Waits at most `wait` for the running program to stop or end; the
+    /// server's end ends the wait at once.
     fn wait_for_stop(&mut self, wait: Duration) {
         let deadline = Instant::now() + wait;
-        while matches!(self.state, State::Running { .. }) && !self.ending {
+        while matches!(self.state, State::Running { .. }) && !self.ending && !self.inbox.ended() {
             match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
@@ -608,7 +629,9 @@ impl Session {
                 self.publish();
             }
             let deadline = Instant::now() + wait;
-            while !self.ending && Instant::now() < deadline {
+            // The server's end kills at once: the server waits for no
+            // program's `ensure:` blocks.
+            while !self.ending && !self.inbox.ended() && Instant::now() < deadline {
                 match self.client.next(deadline, &self.inbox) {
                     Next::Message(message) => {
                         if message["type"] == "event" {
@@ -880,6 +903,7 @@ impl Session {
                     // own word.
                     Ok(response) if response["message"] != ABORTED => response,
                     Err(Unanswered::Ended) => return Err(self.ended_refusal()),
+                    Err(Unanswered::ServerEnding) => return Err(SERVER_ENDING.to_string()),
                     _ => {
                         return Err(format!(
                             "the evaluation did not end within {:.1} s and was aborted; \
@@ -890,6 +914,7 @@ impl Session {
                 }
             }
             Err(Unanswered::Ended) => return Err(self.ended_refusal()),
+            Err(Unanswered::ServerEnding) => return Err(SERVER_ENDING.to_string()),
         };
         let body = body_of(&response)?;
         let mut text = summary::cut(

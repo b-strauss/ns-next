@@ -55,6 +55,16 @@ impl Responses {
         // The writer ends only once every sender is gone.
         let _ = self.sender.send(message);
     }
+
+    /// Writes a batch's answers, in their order, as one array, and
+    /// nothing for none. Each member's response passes here as itself,
+    /// so that whatever decides whether a response is written decides it
+    /// for a batch's member as for a single answer.
+    pub(crate) fn send_batch(&self, members: Vec<Value>) {
+        if !members.is_empty() {
+            self.send(Value::Array(members));
+        }
+    }
 }
 
 /// Where a reply goes: straight to the standard output, or into the
@@ -153,13 +163,8 @@ pub(crate) fn collect_batch(responses: Responses) -> std::io::Result<Sender<(usi
         .name("ns-next mcp batch".to_string())
         .spawn(move || {
             let mut collected: Vec<(usize, Value)> = answers.iter().collect();
-            if collected.is_empty() {
-                return;
-            }
             collected.sort_by_key(|(place, _)| *place);
-            responses.send(Value::Array(
-                collected.into_iter().map(|(_, answer)| answer).collect(),
-            ));
+            responses.send_batch(collected.into_iter().map(|(_, answer)| answer).collect());
         })?;
     Ok(collector)
 }

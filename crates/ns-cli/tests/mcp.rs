@@ -224,6 +224,31 @@ impl McpServer {
         line.trim().parse().expect("a process id")
     }
 
+    /// Closes the server's input, as a client that ends does.
+    fn close_input(&self) {
+        self.stdin.lock().expect("the input").take();
+    }
+
+    /// Whether the server's process ends within `within`.
+    fn exited_within(&self, within: Duration) -> bool {
+        let started = Instant::now();
+        loop {
+            let ended = self
+                .child
+                .lock()
+                .expect("the child")
+                .try_wait()
+                .map_or(true, |status| status.is_some());
+            if ended {
+                return true;
+            }
+            if started.elapsed() > within {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn notify(&mut self, method: &str) {
         self.write(&json!({ "jsonrpc": "2.0", "method": method }));
     }
@@ -1069,7 +1094,10 @@ fn several_sessions_need_their_number() {
 }
 
 /// A session waiting for its program holds neither another session's
-/// calls, its start included, nor a `ping`.
+/// calls, its start included, nor a `ping`. The wait is the longest a
+/// tool takes and the program spins forever, so that nothing but the
+/// test's own act ends the wait: each answer before it is told apart by
+/// order alone, never by a clock.
 #[test]
 fn a_wait_holds_no_other_session() {
     let (_spin_directory, spin) = program("Spin", SPIN);
@@ -1077,12 +1105,13 @@ fn a_wait_holds_no_other_session() {
     let mut server = McpServer::start();
     let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
     assert!(started(&running).1.starts_with("running for "), "{running}");
-    let wait = server.send_call("debug_wait", json!({ "session": 1, "seconds": 20 }));
-    let bound = Duration::from_secs(10);
+    // Before the second start, whose process the server names last.
+    let spinning = server.program_process();
+    let wait = server.send_call("debug_wait", json!({ "session": 1, "seconds": 600 }));
     let answered = |server: &mut McpServer, identifier: i64, what: &str| {
         let response = server
-            .response(identifier, bound)
-            .unwrap_or_else(|| panic!("{what} was not answered within {bound:?}"));
+            .response(identifier, TIMEOUT)
+            .unwrap_or_else(|| panic!("{what} was not answered within {TIMEOUT:?}"));
         assert!(
             server.response(wait, Duration::ZERO).is_none(),
             "the wait answered before {what}"
@@ -1101,13 +1130,104 @@ fn a_wait_holds_no_other_session() {
     assert!(text.starts_with("#0 Counter>>main:args:"), "{text}");
     let ping = server.send("ping", json!({}));
     assert_eq!(answered(&mut server, ping, "the ping")["result"], json!({}));
+    // The program's end ends the wait: its connection closes.
+    kill_process(spinning);
     let waited = server
         .response(wait, TIMEOUT)
         .unwrap_or_else(|| panic!("the wait was not answered"));
     let (text, is_error) = text_of(&waited);
     assert!(!is_error, "{text}");
-    assert!(text.starts_with("running for "), "{text}");
+    assert!(text.starts_with("ended: "), "{text}");
     server.succeed("debug_stop", json!({ "session": 1 }));
+}
+
+/// A call queued behind a waiting one when the server's end comes is
+/// refused, never served: the end cuts the wait, which answers where the
+/// program is, and the call queued after it is answered that the server
+/// is ending. The program's process ends with the server.
+#[test]
+fn a_call_queued_at_the_server_s_end_is_refused() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start();
+    let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
+    assert!(started(&running).1.starts_with("running for "), "{running}");
+    let process = server.program_process();
+    let wait = server.send_call("debug_wait", json!({ "seconds": 600 }));
+    let queued = server.send_call("debug_wait", json!({ "seconds": 0 }));
+    server.close_input();
+    let (text, is_error) = text_of(
+        &server
+            .response(wait, TIMEOUT)
+            .unwrap_or_else(|| panic!("the wait was not answered")),
+    );
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("running for "), "{text}");
+    let (text, is_error) = text_of(
+        &server
+            .response(queued, TIMEOUT)
+            .unwrap_or_else(|| panic!("the queued call was not answered")),
+    );
+    assert!(is_error, "{text}");
+    assert_eq!(text, "the server is ending");
+    assert!(server.exited_within(TIMEOUT), "the server did not end");
+    assert!(
+        ended_within(process, TIMEOUT),
+        "the program outlived its server"
+    );
+}
+
+/// Closing the input ends the server and every session's program, the
+/// one that waits included.
+#[test]
+fn closing_the_input_ends_every_session_s_program() {
+    let (_spin_directory, spin) = program("Spin", SPIN);
+    let (_counter_directory, counter) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
+    let spinning = server.program_process();
+    server.succeed("debug_start", counter_start(&counter));
+    let stopped = server.program_process();
+    server.send_call("debug_wait", json!({ "session": 1, "seconds": 600 }));
+    server.close_input();
+    assert!(server.exited_within(TIMEOUT), "the server did not end");
+    assert!(
+        ended_within(spinning, TIMEOUT),
+        "the waiting session's program outlived its server"
+    );
+    assert!(
+        ended_within(stopped, TIMEOUT),
+        "the stopped session's program outlived its server"
+    );
+}
+
+/// Whether the process `process` ends within `within`.
+fn ended_within(process: u32, within: Duration) -> bool {
+    let started = Instant::now();
+    while process_runs(process) {
+        if started.elapsed() > within {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Kills the process `process`.
+fn kill_process(process: u32) {
+    let status = if cfg!(windows) {
+        std::process::Command::new("taskkill")
+            .args(["/PID", &process.to_string(), "/F"])
+            .stdout(Stdio::null())
+            .status()
+    } else {
+        std::process::Command::new("kill")
+            .args(["-9", &process.to_string()])
+            .status()
+    };
+    assert!(
+        status.is_ok_and(|status| status.success()),
+        "kill process {process}"
+    );
 }
 
 /// A batch is answered as one array, in its members' order, once each

@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use super::registry::{Registry, SessionHandle};
 use super::responses::Reply;
+use super::session::SERVER_ENDING;
 use super::tools;
 
 /// What reaches a session.
@@ -136,6 +137,9 @@ fn serve(
     default_runtime: &std::path::Path,
 ) {
     let number = handle.number;
+    // However the worker ends -- a panic too -- its session is no longer
+    // listed as open; the paths below close it earlier, before they answer.
+    let _registration = Registration { registry, number };
     let refusal = || match registry.find(Some(number)) {
         Err(refusal) => refusal,
         Ok(_) => format!("no session {number} is open"),
@@ -177,5 +181,17 @@ fn serve(
     registry.close(number);
     let inbox = session.take_inbox();
     drop(session);
-    inbox.refuse_remaining(|| "the server is ending".to_string());
+    inbox.refuse_remaining(|| SERVER_ENDING.to_string());
+}
+
+/// A session's entry in the registry, removed when its worker ends.
+struct Registration<'registry> {
+    registry: &'registry Registry,
+    number: u32,
+}
+
+impl Drop for Registration<'_> {
+    fn drop(&mut self) {
+        self.registry.close(self.number);
+    }
 }

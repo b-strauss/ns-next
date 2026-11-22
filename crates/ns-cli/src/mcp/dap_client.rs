@@ -90,7 +90,10 @@ impl DapClient {
         match inbox.receive(Some(deadline)) {
             Ok(Input::Dap(message)) => self.received(message),
             Ok(Input::Call(call)) => Next::Call(call),
-            // Every sender gone: nothing but the server's end drops them.
+            // Every sender gone: a live session holds one in its handle,
+            // so only the detached inbox a dropped session leaves
+            // (`Session::take_inbox`) answers this. It is the end too, and
+            // every wait stops at the end, so none spins on it.
             Ok(Input::End) | Err(RecvTimeoutError::Disconnected) => Next::End,
             Err(RecvTimeoutError::Timeout) => Next::TimedOut,
         }
