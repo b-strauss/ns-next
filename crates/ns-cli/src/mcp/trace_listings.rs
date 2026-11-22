@@ -660,15 +660,21 @@ pub(crate) mod tests {
         assert_eq!(lines[5], "  ->+0x0004  04 05 06 07");
     }
 
-    /// A file whose records listed no bytecode of a scope's body -- one no
-    /// mixin holds, or one the print filter or the printing left out --
+    /// A file that lists bytecode but no record of which lists a scope's
+    /// body -- one no mixin holds, or one the print filter left out --
     /// carries its lines in the scope, which the listing is written by as
     /// `--print-code` writes it; once a record lists the body, the scope
-    /// carries none.
+    /// carries none, and a file that lists no bytecode never carries any.
     #[test]
     fn a_scope_no_bytecode_record_lists_carries_its_lines() {
         let code = Listing::Code(square_code(16));
-        let mut listed = crate::trace_file::ListedBodies::default();
+        let mut unlisting = crate::trace_file::ListedBodies::new(false);
+        assert_eq!(
+            unlisting.record(&code)["scopes"][0].get("lines"),
+            None,
+            "a file that lists no bytecode"
+        );
+        let mut listed = crate::trace_file::ListedBodies::new(true);
         let alone = listed.record(&code);
         let Listing::Code(square) = &code else {
             unreachable!("a code listing")
@@ -802,7 +808,7 @@ pub(crate) mod tests {
         }
         let names_of = |number: u32| names.get(&number).cloned().unwrap_or_default();
         let mut machine_code = 0;
-        let mut listed = crate::trace_file::ListedBodies::default();
+        let mut listed = crate::trace_file::ListedBodies::new(true);
         for listing in listings.iter() {
             if !matches!(listing, Listing::Bytecode(_)) {
                 machine_code += 1;

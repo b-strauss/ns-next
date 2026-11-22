@@ -626,10 +626,7 @@ fn key_record(key: Option<&(String, Option<String>)>) -> (Value, Value) {
 /// The scopes of a code or inlining listing, each with its body's number
 /// and the scope and program counter it is inlined at, and, for a body
 /// `listed` says no earlier record lists the bytecode of, its instruction
-/// lines: a body no mixin holds -- a factory a host's instantiation built
-/// for itself -- has no bytecode listing ever, and one the print filter
-/// or the printing left out none in this file, so that a reader writes
-/// its positions as the text listing does from the record alone.
+/// lines (`ListedBodies`).
 fn scopes_record(scopes: &[ListedScope], listed: &dyn Fn(u32) -> bool) -> Vec<Value> {
     scopes
         .iter()
@@ -670,19 +667,43 @@ fn listing_record_given(listing: &Listing, listed: &dyn Fn(u32) -> bool) -> Valu
     }
 }
 
-/// The bodies whose bytecode a file's records have listed so far.
-#[derive(Default)]
-pub(crate) struct ListedBodies(HashSet<u32>);
+/// Which bodies' instruction lines a file's code and inlining records
+/// carry in their scopes. A file that lists bytecode names its positions
+/// as the text listing does, with each instruction, from the bytecode
+/// records it holds; where none lists a scope's body -- one no mixin
+/// holds, a factory a host's instantiation built for itself, which has no
+/// bytecode listing ever, or one the print filter leaves out -- the scope
+/// carries its body's lines, so that the file writes every position as
+/// the text listing does. A file that lists no bytecode carries none: its
+/// positions name their program counters alone, and its code records
+/// stay free of every scope's bytecode.
+pub(crate) struct ListedBodies {
+    /// Whether the file lists bytecode at all.
+    bytecode: bool,
+    /// The bodies its bytecode records listed so far.
+    bodies: HashSet<u32>,
+}
 
 impl ListedBodies {
+    /// The bodies of a file that lists bytecode where `bytecode` says so.
+    pub(crate) fn new(bytecode: bool) -> ListedBodies {
+        ListedBodies {
+            bytecode,
+            bodies: HashSet::new(),
+        }
+    }
+
     /// The record of `listing` as the file it follows writes it, its
     /// bodies noted when it lists their bytecode.
     pub(crate) fn record(&mut self, listing: &Listing) -> Value {
         if let Listing::Bytecode(bytecode) = listing {
-            self.0
+            self.bodies
                 .extend(bytecode.bodies.iter().map(|listed| number(&listed.body)));
         }
-        let listed = &self.0;
+        if !self.bytecode {
+            return listing_record_given(listing, &|_| true);
+        }
+        let listed = &self.bodies;
         listing_record_given(listing, &|body| listed.contains(&body))
     }
 }
@@ -959,7 +980,7 @@ pub(crate) fn create(
     let mut sink = TraceFileSink {
         file: BufWriter::new(file),
         modules,
-        listed: ListedBodies::default(),
+        listed: ListedBodies::new(printing.bytecode),
     };
     sink.write(&header_record(categories, printing));
     // A reader that opens the file at once finds it a trace.

@@ -5906,7 +5906,11 @@ the way not taken: every question would run the program from its start.
     number and its listings and the call that picks one; a session that
     lists no code says how to list it, one whose `listing_filter` is
     set that it lists only the bodies the filter matches, and a binary
-    without a JIT that every body runs interpreted.
+    without a JIT that every body runs interpreted. A session that lists
+    `bytecode` too names every position of its machine code with its
+    instruction, as `--print-code` does; one that lists `code` alone
+    names each by its program counter, `@4`, its trace file holding no
+    bytecode.
   - `debug_trace_events` lists the events, in the run's order, that
     every filter given selects: `category`, one or several or `all` as
     `trace` takes them; `event`, the line's word or the record's, so that
