@@ -1143,6 +1143,91 @@ fn body_numbers(record: &serde_json::Value, numbers: &mut Vec<u64>) {
     }
 }
 
+/// The bodies a trace may number without describing: the VM mirror's
+/// class's factory, which no declaration writes, so that no text holds
+/// its source.
+const UNDESCRIBABLE: [&str; 1] = ["VmMirror class>>new"];
+
+/// A whole run of the benchmark project -- every module and the core
+/// library loaded, every category traced and every listing printed, so
+/// that each loaded body's bytecode names it -- describes every body the
+/// file numbers before any record names it: factories and the
+/// initializer bodies the compiler synthesizes for a declaration that
+/// writes none among them. The one exception is a body no text holds,
+/// which the same run's text listing names.
+#[test]
+fn a_whole_run_describes_every_body_it_numbers() {
+    let directory = ScratchDirectory::new("trace-file-whole-run");
+    let project = repository_root().join("benchmarks/are-we-fast-yet/newspeak");
+    let options = [
+        "--trace=all",
+        "--print-bytecode",
+        "--print-code",
+        "--print-inlining",
+    ];
+    let file = directory.join("trace.jsonl");
+    let filed = plain_run(&project)
+        .args(options)
+        .arg(format!("--trace-file={}", file.display()))
+        .args(["--", "Bounce"])
+        .output()
+        .unwrap();
+    assert!(filed.status.success(), "{filed:?}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut described = std::collections::BTreeSet::new();
+    let mut undescribed = Vec::new();
+    let mut listings = Vec::new();
+    for line in text.lines().skip(1) {
+        let record: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}"));
+        if record["kind"] == "body" {
+            described.insert(record["body"].as_u64().unwrap());
+            continue;
+        }
+        if record["kind"] == "bytecode" {
+            listings.push(record["body"].as_u64().unwrap());
+        }
+        let mut numbers = Vec::new();
+        body_numbers(&record, &mut numbers);
+        undescribed.extend(
+            numbers
+                .into_iter()
+                .filter(|number| !described.contains(number)),
+        );
+    }
+    assert!(
+        described.len() > 1_000,
+        "{} bodies described",
+        described.len()
+    );
+    if undescribed.is_empty() {
+        return;
+    }
+    // The same run's text listings name each listed root, in the same
+    // order as the file lists them.
+    let listed = plain_run(&project)
+        .args(options)
+        .args(["--", "Bounce"])
+        .output()
+        .unwrap();
+    let names: Vec<String> = String::from_utf8_lossy(&listed.stderr)
+        .lines()
+        .filter_map(|line| line.strip_prefix("--- bytecode {"))
+        .filter_map(|rest| rest.split_once('}').map(|(name, _)| name.to_string()))
+        .collect();
+    assert_eq!(names.len(), listings.len());
+    for number in undescribed {
+        let name = listings
+            .iter()
+            .position(|listed| *listed == number)
+            .map(|position| names[position].as_str());
+        assert!(
+            name.is_some_and(|name| UNDESCRIBABLE.contains(&name)),
+            "body {number} ({name:?}) is named and never described"
+        );
+    }
+}
+
 /// With `--trace-file` the file replaces standard error for the trace and
 /// the listings, every category and every kind: the run writes nothing
 /// there, where the same run without the file lists its bytecode -- with

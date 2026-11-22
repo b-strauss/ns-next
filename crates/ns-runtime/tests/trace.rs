@@ -2984,3 +2984,136 @@ fn every_initializer_body_of_an_applied_class_is_described() {
         }
     }
 }
+
+/// Factories of every kind, each sent often enough to be compiled: a
+/// nested class's, one whose class has a `<:` clause, the module class's
+/// own, whose header writes no pattern, a class-side method beside them,
+/// and the initializer the compiler synthesizes for a class that writes
+/// none.
+const FACTORIES: &str = indoc! {"
+    class Demo = Object new () (
+      class Point x: ax = (
+        |
+          public x = ax.
+        |
+      ) ()
+
+      class Mixed new: seed = (
+        |
+          public mixed = seed.
+        |
+      ) ()
+
+      class Empty = () ()
+
+      class Applied new: seed = Point x: seed <: Mixed new: seed + 1 (
+      ) (
+        public sum = (
+          ^x + mixed
+        )
+      ) : (
+        public twice: seed = (
+          ^(self new: seed) sum * 2
+        )
+      )
+
+      public run = (
+        | total ::= 0. |
+        1 to: 1000 do: [:index |
+          total:: total + (Point x: index) x + (Applied twice: index).
+          self class new.
+          Empty new].
+        ^total
+      )
+    )
+"};
+
+/// What `source`'s `run` delivers to a describing sink that also prints
+/// every body's bytecode, which names every body of each mixin made: the
+/// `compile` category's events and the bodies' descriptions.
+fn received_listing_bytecode(source: &str) -> Vec<Received> {
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::new(Describing(Rc::clone(&received)));
+    run_source_made_by(
+        source,
+        Factory::Plain,
+        |interpreter| {
+            interpreter.set_jit_stress(false);
+            interpreter.set_optimize_stress(false);
+            interpreter.set_trace(
+                TraceSettings {
+                    printing: Printing {
+                        bytecode: true,
+                        ..Printing::default()
+                    },
+                    describe_bodies: true,
+                    ..tracing(
+                        TraceCategories::default().with(TraceCategory::Compile),
+                        TraceFilter::everything(),
+                    )
+                },
+                sink,
+            );
+        },
+        |_| false,
+    );
+    received.take()
+}
+
+/// Every body a trace numbers is described, a factory's and a synthesized
+/// initializer's among them, with its source, its statements and its
+/// sends.
+#[test]
+fn every_factory_body_is_described() {
+    let received = received(FACTORIES, &[TraceCategory::Compile], true);
+    let described: Vec<&BodyDescription> = received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description) => Some(description),
+            Received::Event(_) => None,
+        })
+        .collect();
+    let named: Vec<&BodyName> = events_of(&received)
+        .into_iter()
+        .filter_map(|event| event.body.as_ref())
+        .collect();
+    for body in &named {
+        assert!(
+            described
+                .iter()
+                .any(|description| description.body.number == body.number),
+            "{} is not described: {:?}",
+            body.name,
+            described
+                .iter()
+                .map(|description| description.body.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+    let text = FACTORIES;
+    let slice = |span: ns_syntax::Span| &text[span.start as usize..span.end as usize];
+    // A factory body stands at its header's factory pattern, in the
+    // module's text, with no statement and no send: the compiler
+    // synthesizes it from the header's arity, and the source writes none.
+    for (name, pattern) in [
+        ("Demo/Point class>>x:", "x: ax"),
+        ("Demo/Applied class>>new:", "new: seed"),
+        ("Demo class>>new", "Demo"),
+    ] {
+        let description = description_of(&received, name);
+        assert_eq!(slice(description.source), pattern, "{name}");
+        let current = description.current.as_ref().expect("the module's text");
+        assert_eq!(current.source, description.source, "{name}");
+        assert!(description.statements.is_empty() && description.sends.is_empty());
+    }
+    // So does an initializer the compiler synthesizes, at its header, which
+    // the bytecode listing of its mixin names.
+    let listed = received_listing_bytecode(FACTORIES);
+    for name in ["Demo/Empty initializer", "Demo/Empty initializer, own part"] {
+        let empty = description_of(&listed, name);
+        assert_eq!(slice(empty.source), "Empty", "{name}");
+        assert!(empty.current.is_some(), "{name}");
+    }
+    let twice = description_of(&received, "Demo/Applied class>>twice:");
+    assert!(!twice.statements.is_empty() && !twice.sends.is_empty());
+}

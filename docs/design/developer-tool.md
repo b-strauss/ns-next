@@ -1161,8 +1161,13 @@ source placed in neither, since only the source is known to stand
 there, so that a body an edit
 compiled is placed in the edited text, and one a later edit moved where
 it stands now. A version without a text of its own, a builtin's or an
-image's without source, and a factory's body are described as the
-module's current text holds their span. A block's family root is
+image's without source, is described as the module's current text
+holds its span; a body the compiler synthesizes, which has no source --
+a factory's, and an initializer of a declaration that writes none --
+is described where its metadata stands in that text: a factory at its
+header's factory pattern, or the class's name for a header that writes
+none, an initializer at its declaration's header, with the statements
+and sends that metadata gives (a factory none). A block's family root is
 named even when its code is gone by the flush -- a collection reclaimed
 the version that held it while an event of the block waited -- by the
 number the root was given while it lived or one given then, which every

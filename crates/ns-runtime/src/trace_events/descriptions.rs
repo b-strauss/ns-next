@@ -26,7 +26,7 @@ use super::BodyName;
 use crate::bytecode::{CallSite, CompiledCode};
 use crate::debugger::ModuleName;
 use crate::debugger::metadata::Cache;
-use crate::debugger::metadata::again::{BodyOrigin, declaration_path};
+use crate::debugger::metadata::again::{BodyOrigin, Member, declaration_path};
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{shipped_module_text, shipped_source_files};
 
@@ -157,9 +157,11 @@ impl std::fmt::Debug for BodyDescription {
 /// where that holds the same source: at the body's own span, or where the
 /// current text's declaration of the same member holds the family root's
 /// own source, which an edit above it moved. A version without a text of
-/// its own -- a builtin's, an image's without source -- and a factory's
-/// body are described as the module's current text holds their span, as
-/// nothing else says where they stand.
+/// its own -- a builtin's, an image's without source -- is described as
+/// the module's current text holds its span, and a body the compiler
+/// synthesized -- a factory's, an initializer of a declaration that
+/// writes none -- where its metadata places it in that text
+/// (`describe_synthesized`), as nothing else says where they stand.
 pub(crate) fn describe(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
@@ -178,6 +180,10 @@ pub(crate) fn describe(
             .map(|file| file.path.to_string())
     });
     let shipped_path = shipped_path.flatten();
+    // A body the compiler synthesized has no source of its own to slice.
+    if matches!(origin.member, Member::Factory) || code.source.start == code.source.end {
+        return describe_synthesized(mutator, code, origin, body, family, module, shipped_path);
+    }
     let source = code.source;
     let placement = Cache::own_placement(mutator, code, origin);
     let mut current_text = || -> Option<Rc<str>> {
@@ -242,6 +248,67 @@ pub(crate) fn describe(
         current: current.map(|(text, source)| CurrentText { text, source }),
         source,
         checksum: source_checksum(own.as_bytes()),
+        statements,
+        sends,
+    })
+}
+
+/// The description of the body `code`, which `origin` names, that the
+/// compiler synthesized rather than lowered from source: a factory's,
+/// made from its class header's arity, and an initializer body of a
+/// declaration that writes none -- no slot, no initializer, a class side
+/// the declaration leaves out. Its own span is empty and no text holds
+/// it, so it stands where its metadata says (`debugger.md`, decision 12):
+/// a factory at its header's factory pattern, or the class's name for a
+/// header that writes none, an initializer at its declaration's header,
+/// in the module's current text; with the statements and sends its
+/// metadata gives in that text -- a factory none, since the source
+/// writes none. `None` for a body no metadata pairs with.
+fn describe_synthesized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    origin: &BodyOrigin,
+    body: BodyName,
+    family: Option<BodyName>,
+    module: ModuleName,
+    shipped_path: Option<String>,
+) -> Option<BodyDescription> {
+    let (metadata, text) = Cache::metadata_with_text(mutator, code, origin)?;
+    let standing = metadata.factory_pattern.or(metadata.header_pattern)?;
+    let own = text.get(range_of(standing))?;
+    let checksum = source_checksum(own.as_bytes());
+    let statements = metadata
+        .statements
+        .iter()
+        .map(|statement| DescribedStatement {
+            instructions: statement.instructions.clone(),
+            span: Some(statement.span),
+        })
+        .collect();
+    let sends = metadata
+        .sends
+        .iter()
+        .map(|send| DescribedSend {
+            index: send.index,
+            site: send
+                .call_site
+                .filter(|site| *site != CallSite::UNCACHED)
+                .map(|site| site.number),
+            call: Some(send.call),
+            selector: send.selector.iter().copied().map(Some).collect(),
+        })
+        .collect();
+    Some(BodyDescription {
+        body,
+        family,
+        module,
+        shipped_path,
+        current: Some(CurrentText {
+            text,
+            source: standing,
+        }),
+        source: standing,
+        checksum,
         statements,
         sends,
     })
