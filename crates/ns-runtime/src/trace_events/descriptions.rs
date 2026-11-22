@@ -78,11 +78,13 @@ pub struct CurrentText {
 }
 
 /// The instructions one statement compiled to, and the statement's
-/// source, in bytes of the module's text.
+/// source, in bytes of the module's text; `None` where that text has no
+/// place for it: a full initializer's statement of a clause the version's
+/// text no longer holds where the body's source moved.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DescribedStatement {
     pub instructions: Range<u32>,
-    pub span: Span,
+    pub span: Option<Span>,
 }
 
 /// One send instruction and the source it was lowered from, in bytes of
@@ -95,10 +97,11 @@ pub struct DescribedSend {
     /// category's transitions number it; `None` for a send no cache
     /// serves: a mirror send, or one the reference lowering compiled.
     pub site: Option<u32>,
-    /// The call, from its receiver to its last argument.
-    pub call: Span,
-    /// The selector's tokens.
-    pub selector: Vec<Span>,
+    /// The call, from its receiver to its last argument; `None` where the
+    /// text has no place for it, as for a statement.
+    pub call: Option<Span>,
+    /// The selector's tokens, each `None` where the text has no place for it.
+    pub selector: Vec<Option<Span>>,
 }
 
 /// The FNV-1a 64 hash of `text` (offset basis `0xcbf29ce484222325`,
@@ -225,7 +228,7 @@ pub(crate) fn describe(
                         .filter(|site| *site != CallSite::UNCACHED)
                         .map(|site| site.number),
                     call: send.call,
-                    selector: send.selector.to_vec(),
+                    selector: send.selector.clone(),
                 })
                 .collect(),
         ),

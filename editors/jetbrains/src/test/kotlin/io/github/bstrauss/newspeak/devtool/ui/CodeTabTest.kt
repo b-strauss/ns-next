@@ -679,6 +679,33 @@ class CodeTabTest : BasePlatformTestCase() {
         assertEquals(NewspeakBundle.message("devtool.record.failed", failure.toString()), checkNotNull(delivered).exceptionOrNull()?.message)
     }
 
+    /**
+     * A placed body may list a statement the runtime has no place for --
+     * a full initializer's statement of a clause, its range `null` -- beside
+     * placed ones: the caret on a placed statement links its own lines
+     * alone, and a listing line of the unplaced one selects it and colours
+     * no source, throwing nothing.
+     */
+    fun testAStatementWithoutARangeLinksNoSource() {
+        val run = trace.run()
+        run.add(
+            trace.records(
+                """{"kind":"header","format":"ns-next-trace","version":1,"architecture":"x64"}""",
+                body(3, "Demo>>other", OTHER, null, """{"instructions":[0,1],"range":null},{"instructions":[1,2],"range":${range(OTHER_STATEMENT)}}"""),
+                """{"kind":"bytecode","body":3,"bodies":[{"body":3,"instructions":[{"index":0,"statement":0,"text":"InitializeSuperclass r1"},{"index":1,"statement":1,"text":"Return r1"}]}]}""",
+            ),
+        )
+        val tab = tab(run)
+        val editor = openSource()
+        editor.caretAt(OTHER_STATEMENT)
+        assertEquals(3 to 1, tab.highlighting.selected)
+        assertEquals(listOf("Return r1"), highlightedLines(tab.viewer).map { (line, _) -> line.substringAfter("stmt 1  ") })
+        val unplaced = tab.viewer.document.text.lines().indexOfFirst { line -> "InitializeSuperclass" in line }
+        tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(unplaced, 0))
+        assertEquals(3 to 0, tab.highlighting.selected)
+        assertEquals(emptyList<Pair<String, Int>>(), highlightedLines(editor))
+    }
+
     /** A listing whose file is gone says so in the viewer, and throws nothing. */
     fun testAListingWhoseFileIsGoneSaysSo() {
         val tab = tab(tracedRun())

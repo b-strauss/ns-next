@@ -1134,8 +1134,11 @@ otherwise. A span outside the root's source is the declaration's own --
 a full initializer's statements of the superclass and of each `<:`
 clause stand at the clauses, or at the declaration's name where it
 writes none --: it moves by the same distance where the body's version
-text holds the same bytes there, and stands empty at the body's start
-where it does not, so that every initializer body -- the full one, the
+text holds the same bytes there, its true place, and has no place
+where it does not -- an edit moved the clause and the body apart, or
+the place lies outside the declaration's text or across a hole in it
+-- (`moved_into`), never a place made up; every statement and send is
+kept either way, so that every initializer body -- the full one, the
 own part, the standalone body, the superclass clause -- is described
 with all its statements and sends wherever it runs, its slots'
 statements linked as any. The
@@ -1251,7 +1254,13 @@ The records:
   (`null` for a send no cache serves), the call from its receiver to its
   last argument and each token of its selector; both empty for a body
   whose metadata the runtime could not compile again alike from its own
-  source. Every range is counted in a text that holds the body's source
+  source. A statement's or a send's range, or a token's, is also `null`
+  in a body whose own range is placed, where it lies outside the body's
+  source: a full initializer's statements of its superclass and its `<:`
+  clauses stand at the clauses, or at the class's name where it writes no
+  clause, which every class without a superclass clause has -- the
+  statement listed all the same, so that the instructions keep their
+  statements' numbers, and nothing linked to it. Every range is counted in a text that holds the body's source
   as it was compiled: the program file's text as read where it holds it
   at the body's span or at the span the runtime's current text holds it
   at, else the runtime's current text where its declaration of the
@@ -1675,7 +1684,10 @@ text, a body whose counterpart differs only in a comment with its
 statements and sends, a body a later edit moved where it stands
 now, and every initializer body -- of a plain class and of one a
 superclass and a `<:` clause make -- with its slots' statements and
-sends;
+sends, and `debugger/metadata/cache.rs`'s unit test the place of a span
+outside a body's source: moved onto the same bytes, and none where the
+bytes differ, the place lies outside the declaration's text or across a
+hole in it;
 `crates/ns-runtime/tests/printing.rs` the structured bytecode listing
 beside its text, each body's line among them. `trace_file.rs`'s unit
 tests hold every event of `trace.rs`'s `every_event` to a record with
@@ -1684,7 +1696,9 @@ every field its line writes, and the plugin's fixture
 bodies numbered apart, and its line -- to what this build writes
 (`the_events_fixture_is_current`, written again by the ignored
 `regenerate_the_events_fixture`), a bytecode record to each body's
-line, every record to one line, a range to UTF-16 columns counted in
+line, every record to one line, a statement and a send without a place,
+or placed outside the body's source, to a `null` range beside the
+placed ones, a range to UTF-16 columns counted in
 the file's text where it holds the body and else in the text the
 description hands, the file placing a moved body where it holds it,
 each record's `placed`, a block in its root's text at its distance
@@ -1747,7 +1761,8 @@ library file; `CodeTabTest` the caret's body, the chooser, a listing
 built once per choice and read on a pooled thread, the text before it
 kept, linking nothing and opening nothing, and the notice of a slow read, a batch that keeps the chosen install
 leaving the viewer alone, a read for a copy no longer chosen dropped, a
-listing whose file is gone saying so in words, a failed listing read
+listing whose file is gone saying so in words, a statement without a
+range linking no source, a failed listing read
 again when chosen again and never by a batch, a read that throws shown
 as a failure, a listing's text built off the event dispatch thread from
 the names that stood when it was chosen, every label

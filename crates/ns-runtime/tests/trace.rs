@@ -2266,6 +2266,12 @@ fn events_of(received: &[Received]) -> Vec<&TraceEvent> {
         .collect()
 }
 
+/// `span`, which the test's body places: every statement and send of a
+/// body whose source holds them has a place.
+fn with_place(span: Option<ns_syntax::Span>) -> ns_syntax::Span {
+    span.expect("the span has a place")
+}
+
 /// The description of the body named `name` in `received`.
 fn description_of<'received>(
     received: &'received [Received],
@@ -2440,13 +2446,18 @@ fn a_description_carries_ranges_and_sends() {
         description
             .sends
             .iter()
-            .map(|send| send.selector.iter().map(|span| slice(*span)).collect())
+            .map(|send| {
+                send.selector
+                    .iter()
+                    .map(|span| slice(with_place(*span)))
+                    .collect()
+            })
             .collect()
     };
     assert!(
-        run.sends
-            .iter()
-            .any(|send| slice(send.call).starts_with("self each:") && send.site.is_some()),
+        run.sends.iter().any(
+            |send| slice(with_place(send.call)).starts_with("self each:") && send.site.is_some()
+        ),
         "the sends described: {:?}",
         selectors(run)
     );
@@ -2566,7 +2577,8 @@ fn an_edited_module_describes_each_body_in_its_own_text() {
         superseded
             .statements
             .iter()
-            .any(|statement| slice(statement.span).starts_with("^[:index | index max: 1]")),
+            .any(|statement| slice(with_place(statement.span))
+                .starts_with("^[:index | index max: 1]")),
         "compiled again from its own source: {superseded:?}"
     );
     // First described after the install, which added lines above it.
@@ -2581,22 +2593,21 @@ fn an_edited_module_describes_each_body_in_its_own_text() {
     );
     assert_eq!(in_current(later, later.source), own);
     assert!(
-        later
-            .sends
-            .iter()
-            .any(|send| slice(send.call).starts_with("1 to: count do:")
+        later.sends.iter().any(
+            |send| slice(with_place(send.call)).starts_with("1 to: count do:")
                 && send
                     .selector
                     .iter()
-                    .map(|token| slice(*token))
-                    .eq(["to:", "do:"])),
+                    .map(|token| slice(with_place(*token)))
+                    .eq(["to:", "do:"])
+        ),
         "the loop's send in the program's text: {later:?}"
     );
     assert!(
         later
             .statements
             .iter()
-            .any(|statement| slice(statement.span) == "^total"),
+            .any(|statement| slice(with_place(statement.span)) == "^total"),
         "{later:?}"
     );
 }
@@ -2656,7 +2667,7 @@ fn a_body_whose_counterpart_differs_in_layout_keeps_its_metadata() {
     assert!(
         old.statements
             .iter()
-            .any(|statement| slice(statement.span) == "^[:index | index max: 1]"),
+            .any(|statement| slice(with_place(statement.span)) == "^[:index | index max: 1]"),
         "{old:?}"
     );
     let old_block = descriptions_of(&received, "[] in Demo/Subject>>maker")
@@ -2667,8 +2678,12 @@ fn a_body_whose_counterpart_differs_in_layout_keeps_its_metadata() {
         old_block
             .sends
             .iter()
-            .any(|send| slice(send.call) == "index max: 1"
-                && send.selector.iter().map(|token| slice(*token)).eq(["max:"])),
+            .any(|send| slice(with_place(send.call)) == "index max: 1"
+                && send
+                    .selector
+                    .iter()
+                    .map(|token| slice(with_place(*token)))
+                    .eq(["max:"])),
         "{old_block:?}"
     );
     let new = descriptions_of(&received, "Demo/Subject>>maker")
@@ -2679,7 +2694,8 @@ fn a_body_whose_counterpart_differs_in_layout_keeps_its_metadata() {
     assert!(
         new.statements
             .iter()
-            .any(|statement| in_current(new, statement.span) == "^[:index | index max: 1]"),
+            .any(|statement| in_current(new, with_place(statement.span))
+                == "^[:index | index max: 1]"),
         "{new:?}"
     );
 }
@@ -2746,7 +2762,8 @@ fn a_body_a_later_edit_moved_is_placed_where_its_source_stands() {
         maker
             .statements
             .iter()
-            .any(|statement| in_current(maker, statement.span) == "^[:index | index max: 2]"),
+            .any(|statement| in_current(maker, with_place(statement.span))
+                == "^[:index | index max: 2]"),
         "{maker:?}"
     );
     let block = descriptions_of(&received, "[] in Demo/Subject>>maker")
@@ -2757,7 +2774,7 @@ fn a_body_a_later_edit_moved_is_placed_where_its_source_stands() {
         block
             .sends
             .iter()
-            .any(|send| in_current(block, send.call) == "index max: 2"),
+            .any(|send| in_current(block, with_place(send.call)) == "index max: 2"),
         "{block:?}"
     );
 }
@@ -2856,7 +2873,7 @@ fn every_initializer_body_is_described_with_its_statements() {
         let statements: Vec<&str> = initializer
             .statements
             .iter()
-            .map(|statement| slice(statement.span))
+            .filter_map(|statement| statement.span.map(slice))
             .collect();
         assert!(
             statements
@@ -2867,7 +2884,7 @@ fn every_initializer_body_is_described_with_its_statements() {
         let selectors: Vec<&str> = initializer
             .sends
             .iter()
-            .flat_map(|send| send.selector.iter().map(|span| slice(*span)))
+            .flat_map(|send| send.selector.iter().filter_map(|span| span.map(slice)))
             .collect();
         assert!(
             selectors.contains(&"+") && selectors.contains(&"max:"),
@@ -2951,7 +2968,7 @@ fn every_initializer_body_of_an_applied_class_is_described() {
                 let statements: Vec<&str> = body
                     .statements
                     .iter()
-                    .map(|statement| slice(statement.span))
+                    .filter_map(|statement| statement.span.map(slice))
                     .collect();
                 assert!(
                     statements.iter().any(|statement| statement.contains(slot)),

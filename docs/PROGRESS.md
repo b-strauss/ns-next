@@ -8578,7 +8578,13 @@ keeping what they showed until it arrives and saying why where the file
 no longer gives it; the bytecode listings, one per body, stay in memory.
 A new traced run of a configuration replaces the tab of its last run
 under the same executor once that run's process has ended, unless the
-tab is pinned, the replaced run going with its file.
+tab is pinned, the replaced run going with its file. The Inlining tab
+and the Events tab's grouped tree show what arrives after they were
+made, and every initializer body -- the full one, which runs, among
+them -- is described with its statements and sends, so that the Code
+tab links its slots: a span outside the body's source, a full
+initializer's statement of a clause, moves where the body's version
+text holds the same bytes and is written `null` where it has no place.
 
 No golden, `run-corpus` outcome, image or instruction encoding changed.
 `crates/ns-runtime/tests/trace.rs` pins the numbers and descriptions,
@@ -8623,8 +8629,14 @@ code of `ns-memory` or `ns-assembler` and no decoder.
 - `04b373ba`, `8e555b5f` -- Show Frame Code.
 - `e6591aaa` -- a traced run end to end.
 - the last commit -- the documentation and the gate results.
-- `b9a81ae6`, `514bf770`, `9ac09f16` and the batch's last commit -- a run's listings and plans
-  as places in its file, and a rerun replacing its ended tab.
+- `b9a81ae6`, `514bf770`, `9ac09f16`, `40e8f4eb`, `13f406ae` -- a run's
+  listings and plans as places in its file, read back off the event
+  dispatch thread, and a rerun replacing its ended tab.
+- `56dc8438` -- the Inlining tab and the grouped Events tree show what
+  arrives after them.
+- `f433d221` and the batch's last commit -- every initializer body
+  described with its statements and sends, a span the version's text has
+  no place for written `null`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 4, the
 shell, next; and the MCP server and the trace file.
