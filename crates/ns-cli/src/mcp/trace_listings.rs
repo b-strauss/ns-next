@@ -581,6 +581,67 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(target_arch = "x86_64")]
+    /// The plugin's fixture of listings (`ListingsFixtureTest`), from the
+    /// repository's root: each listing's record, the bodies it names, the
+    /// bytecode records its position lines read, and the text `--print-*`
+    /// writes of it, which the plugin's listings are held to.
+    const LISTINGS_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../editors/jetbrains/src/test/resources/devtool/listings.jsonl"
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    /// The fixture's lines: the bytecode listings and the copies of
+    /// machine code, a baseline one with positions `passed` among them.
+    fn listings_fixture() -> String {
+        let bodies: Vec<Value> = NAMES
+            .iter()
+            .map(|(number, name)| serde_json::json!({ "body": number, "name": name }))
+            .collect();
+        let bytecode = bytecode_records();
+        let mut fixture = String::new();
+        for listing in [
+            Listing::Bytecode(run_bytecode()),
+            Listing::Bytecode(square_bytecode()),
+            Listing::Code(square_code(16)),
+            Listing::Code(run_optimized()),
+        ] {
+            let entry = serde_json::json!({
+                "bodies": bodies,
+                "bytecode": bytecode,
+                "record": listing_record(&listing),
+                "text": listing::text(&listing),
+            });
+            fixture.push_str(&entry.to_string());
+            fixture.push('\n');
+        }
+        fixture
+    }
+
+    // Its machine code is in hex as an x64 binary writes a foreign
+    // architecture's: the fixture is the same on every x64 host alone.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_listings_fixture_is_current() {
+        let written = std::fs::read_to_string(LISTINGS_FIXTURE)
+            .unwrap_or_else(|error| panic!("{LISTINGS_FIXTURE}: {error}"));
+        // A checkout may have given the file CRLF line ends.
+        assert!(
+            written.replace("\r\n", "\n") == listings_fixture(),
+            "{LISTINGS_FIXTURE} is stale: run `cargo test -p ns-cli --bins regenerate_the_listings_fixture -- --ignored`"
+        );
+    }
+
+    // Its machine code is in hex as an x64 binary writes a foreign
+    // architecture's: the fixture is the same on every x64 host alone.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    #[ignore = "regenerates the plugin's listings fixture; run deliberately"]
+    fn regenerate_the_listings_fixture() {
+        std::fs::write(LISTINGS_FIXTURE, listings_fixture()).expect("write the listings fixture");
+    }
+
     /// Where the run listed no bytecode, a position line names its
     /// program counter alone.
     #[test]
@@ -615,8 +676,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A loop hot enough to compile and optimize `run`, inlining `twice:`;
-    /// the loop's block makes a block, which makes a block.
+    /// A loop hot enough to compile `run`'s blocks and, run again and
+    /// again, optimize them and `twice:`, whose branches and loops lay out
+    /// stretches out of line; the loop's block makes a block, which makes
+    /// a block.
     const HOT: &str = indoc! {"
         class Hot = Object new () (
           public run = (
@@ -628,6 +691,10 @@ pub(crate) mod tests {
           )
 
           twice: number = (
+            | other ::= number. |
+            number > 5 ifFalse: [other:: 1].
+            [other > 100] whileFalse: [other:: other + 50].
+            number isNil ifTrue: [^0].
             ^number * 2.
           )
         )
@@ -661,10 +728,12 @@ pub(crate) mod tests {
         );
         let class = interpreter.load_module(&resolved);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        expect_ok(
-            interpreter.send(&instance, Symbol::intern("run"), &[]),
-            "run",
-        );
+        for _ in 0..20 {
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("run"), &[]),
+                "run",
+            );
+        }
         drop(interpreter);
         let listings = listings.borrow();
         let mut names: HashMap<u32, String> = HashMap::new();

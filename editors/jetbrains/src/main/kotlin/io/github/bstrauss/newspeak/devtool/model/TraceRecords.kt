@@ -188,11 +188,20 @@ data class BytecodeBody(
 data class Bytecode(val body: Int, val bodies: List<BytecodeBody>) : TraceRecord
 
 /**
+ * A position in machine code: the [scope] and bytecode index [at] of a
+ * stretch, both null before the first position and out of line, and
+ * whether it is [outOfLine], which tells those two apart.
+ */
+data class CodePosition(val scope: Int?, val at: Int?, val outOfLine: Boolean)
+
+/**
  * An instruction of machine code: its [offset] in the body, its text, the
  * [scope] and bytecode index [at] of the stretch it stands in, both null
  * before the first position and out of line, whether it stands [outOfLine],
- * which tells those two apart -- false where a record does not say -- and
- * what a call or jump out of it reaches.
+ * which tells those two apart -- false where a record does not say --,
+ * what a call or jump out of it reaches, and the positions [passed] at it:
+ * those instructions before it that emitted no code left beside its own,
+ * in order, empty where a record does not give them.
  */
 data class CodeInstruction(
     val offset: Int,
@@ -201,6 +210,7 @@ data class CodeInstruction(
     val at: Int?,
     val annotation: String?,
     val outOfLine: Boolean = false,
+    val passed: List<CodePosition> = emptyList(),
 )
 
 /** A data word of machine code: its [offset] from the first data word and what it holds. */
@@ -332,6 +342,14 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
                 at = instruction.optionalInteger("at"),
                 annotation = instruction.optionalText("annotation"),
                 outOfLine = instruction.optional("out-of-line")?.asBoolean ?: false,
+                passed = instruction.optional("passed")?.asJsonArray?.map { element ->
+                    val position = element.asJsonObject
+                    CodePosition(
+                        position.optionalInteger("scope"),
+                        position.optionalInteger("at"),
+                        position.optional("out-of-line")?.asBoolean ?: false,
+                    )
+                } ?: emptyList(),
             )
         },
         data = record.requiredArray("data").map { element ->

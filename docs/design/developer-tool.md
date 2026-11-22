@@ -1639,7 +1639,12 @@ listings are the text listing's: the bytecode with its body's line and
 each block nested eight columns deeper under the `MakeClosure` the
 record names by `in` and `at`; the
 machine code's head with `base=` from the record's `base`; a first
-stretch out of line named, by the record's `out-of-line`. Inlining is a tree per
+stretch out of line named, by the record's `out-of-line`; each position
+an instruction's `passed` names on a line of its own, linked as the
+stretch's own is; and two annotations of one instruction each after
+`  ; `. `ListingsFixtureTest` holds the plugin's listings to the text the
+CLI writes for the same records, from the fixture `trace_listings.rs`'s
+`the_listings_fixture_is_current` keeps current. Inlining is a tree per
 optimizing compile in the file's order, each batch's plans appended so
 that the tree keeps its expansion and selection, each plan's root made
 from its entry and its nodes read from the file as it is first
