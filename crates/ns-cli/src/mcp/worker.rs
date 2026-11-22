@@ -23,6 +23,7 @@ use super::registry::{Registry, SessionHandle};
 use super::responses::Reply;
 use super::session::SERVER_ENDING;
 use super::tools;
+use super::trace_files::TraceDirectory;
 
 /// What reaches a session.
 pub(crate) enum Input {
@@ -180,13 +181,15 @@ impl Inbox {
 }
 
 /// Starts the worker of the session `handle`, which reads `receiver` and
-/// serves `start`, its `debug_start`, first.
+/// serves `start`, its `debug_start`, first, creating a trace file in
+/// `traces` if it traces.
 pub(crate) fn spawn(
     registry: Arc<Registry>,
     handle: Arc<SessionHandle>,
     receiver: Receiver<Input>,
     start: Call,
     default_runtime: PathBuf,
+    traces: Result<Arc<TraceDirectory>, String>,
 ) -> std::io::Result<JoinHandle<()>> {
     std::thread::Builder::new()
         .name(format!("ns-next mcp session {}", handle.number))
@@ -197,6 +200,7 @@ pub(crate) fn spawn(
                 Inbox::new(receiver),
                 start,
                 &default_runtime,
+                &traces,
             )
         })
 }
@@ -207,6 +211,7 @@ fn serve(
     mut inbox: Inbox,
     start: Call,
     default_runtime: &std::path::Path,
+    traces: &Result<Arc<TraceDirectory>, String>,
 ) {
     let number = handle.number;
     // However the worker ends -- a panic too -- its session is no longer
@@ -217,7 +222,7 @@ fn serve(
         Ok(_) => format!("no session {number} is open"),
     };
     inbox.serve(Some(&start));
-    let mut session = match tools::start(start.arguments, default_runtime, handle, inbox) {
+    let mut session = match tools::start(start.arguments, default_runtime, traces, handle, inbox) {
         Ok((mut session, answer)) => {
             // A cancelled start keeps its session; only its answer goes
             // unseen, and the output it carried is shown by the next.

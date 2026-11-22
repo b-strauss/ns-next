@@ -52,6 +52,8 @@ const TOOLS: [(&str, &[&str], &[&str]); 17] = [
             "runtime",
             "trace",
             "trace_filter",
+            "listings",
+            "listing_filter",
             "wait",
         ],
     ),
@@ -117,6 +119,17 @@ impl McpServer {
     /// that machine code compiles what a plain run's thresholds decide.
     fn start_plain() -> McpServer {
         McpServer::launch(Path::new(binary()), &[], true)
+    }
+
+    /// `ns-next mcp` keeping its files below `data`, given as its
+    /// `LOCALAPPDATA` and `XDG_CACHE_HOME`; `plain` as `start_plain`.
+    fn start_in(data: &Path, plain: bool) -> McpServer {
+        let data = data.display().to_string();
+        let variables = [
+            ("LOCALAPPDATA", data.as_str()),
+            ("XDG_CACHE_HOME", data.as_str()),
+        ];
+        McpServer::launch(Path::new(binary()), &variables, plain)
     }
 
     fn launch(executable: &Path, variables: &[(&str, &str)], plain: bool) -> McpServer {
@@ -999,39 +1012,113 @@ const A_HOT_METHOD: &str = indoc! {"
     )
 "};
 
-/// `trace` and `trace_filter` reach the program as `--trace` and one
-/// `--trace-filter` each, and their lines arrive with its output. Without
-/// a JIT nothing compiles and nothing is said, so the test answers nothing
+/// The server's own directory below a data directory a test gives it as
+/// `LOCALAPPDATA` and `XDG_CACHE_HOME`, which holds its trace files.
+fn traces_in(data: &Path) -> PathBuf {
+    data.join("ns-next").join("traces")
+}
+
+/// The trace directories of the servers in `traces`: every directory
 /// there.
-#[test]
-fn a_trace_arrives_with_the_output() {
-    let mut server = McpServer::start_plain();
-    let (_directory, path) = program("Demo", A_HOT_METHOD);
-    // A target without a JIT compiles no body and traces nothing: a plain
-    // run says whether this one does.
+fn trace_directories(traces: &Path) -> Vec<PathBuf> {
+    let mut directories: Vec<PathBuf> = std::fs::read_dir(traces)
+        .expect("read the traces' directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    directories.sort();
+    directories
+}
+
+/// The trace file of session `session` of the one server whose directory
+/// lies in `traces`.
+fn trace_file_of(traces: &Path, session: u32) -> PathBuf {
+    let directories = trace_directories(traces);
+    assert_eq!(directories.len(), 1, "{directories:?}");
+    directories[0].join(format!("session-{session}.trace"))
+}
+
+/// The records of the trace file at `path`, one JSON object a line.
+fn trace_records(path: &Path) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}")))
+        .collect()
+}
+
+/// Whether `records` hold a `compile` event `compiled` of the body named
+/// `name`.
+fn compiled_in(records: &[Value], name: &str) -> bool {
+    let numbers: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["kind"] == "body" && record["name"] == name)
+        .map(|record| &record["body"])
+        .collect();
+    records.iter().any(|record| {
+        record["kind"] == "event"
+            && record["category"] == "compile"
+            && record["event"] == "compiled"
+            && numbers.contains(&&record["body"])
+    })
+}
+
+/// Whether a plain run of `path` with `--trace=compile` compiles a body:
+/// a target without a JIT traces nothing.
+fn compiles_bodies(path: &Path) -> bool {
     let mut direct = common::target_command(binary());
-    direct.arg("run").arg(&path).arg("--trace=compile");
+    direct.arg("run").arg(path).arg("--trace=compile");
     direct.env_remove("NS_NEXT_NO_JIT");
     for mode in STRESS_MODES {
         direct.env_remove(format!("NS_NEXT_STRESS_{mode}"));
     }
     let direct = direct.output().expect("run the program");
-    if !String::from_utf8_lossy(&direct.stderr).contains("[compile] ") {
-        return;
-    }
-    let traced = server.succeed(
+    String::from_utf8_lossy(&direct.stderr).contains("[compile] ")
+}
+
+/// A traced session's child writes its trace and its listings into a file
+/// of the server's, `traces/<server>/session-<n>.trace` in the user's own
+/// directory, and nothing of them into the output; `debug_stop` deletes
+/// it. `trace_filter` reaches the child, a session that traces nothing
+/// has no file, and a target without a JIT compiles nothing to trace.
+#[test]
+fn a_traced_session_writes_its_own_file() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Demo", A_HOT_METHOD);
+    let compiles = compiles_bodies(&path);
+    let stopped = server.succeed(
         "debug_start",
-        json!({ "program": path, "trace": "compile" }),
+        json!({
+            "program": path,
+            "trace": "compile",
+            "listings": ["bytecode"],
+            "breakpoints": [{ "location": location(&path, 11) }],
+        }),
     );
+    assert!(started(&stopped).1.starts_with("stopped: "), "{stopped}");
+    assert!(!stopped.contains("[compile]"), "{stopped}");
+    let file = trace_file_of(&traces, 1);
+    let header = std::fs::read_to_string(&file).expect("read the trace file");
+    let header = header.lines().next().expect("a header");
+    assert!(header.contains(r#""kind":"header""#), "{header}");
+    assert!(header.contains(r#""listings":["bytecode"]"#), "{header}");
+    let ended = server.succeed("debug_continue", json!({ "session": 1 }));
+    assert!(ended.starts_with("ended: exit status 0"), "{ended}");
+    assert_eq!(line_starting(&ended, "output: "), r#"output: "338350\n""#);
+    let records = trace_records(&file);
     assert!(
-        started(&traced).1.starts_with("ended: exit status 0"),
-        "{traced}"
+        records.iter().any(|record| record["kind"] == "bytecode"),
+        "no bytecode listing in {}",
+        file.display()
     );
-    assert!(traced.contains("[compile] "), "{traced}");
-    assert!(
-        traced.contains("[compile] {Demo>>square:} compiled"),
-        "{traced}"
-    );
+    assert_eq!(compiled_in(&records, "Demo>>square:"), compiles);
+    let closed = server.succeed("debug_stop", json!({ "session": 1 }));
+    assert!(closed.ends_with("session 1 is closed"), "{closed}");
+    assert!(!file.exists(), "debug_stop left {}", file.display());
+
     let filtered = server.succeed(
         "debug_start",
         json!({
@@ -1040,10 +1127,9 @@ fn a_trace_arrives_with_the_output() {
             "trace_filter": ["Demo>>nothing:", "Demo>>sq..."],
         }),
     );
-    assert!(
-        filtered.contains("[compile] {Demo>>square:} compiled"),
-        "{filtered}"
-    );
+    assert_eq!(started(&filtered).0, 2, "{filtered}");
+    let records = trace_records(&trace_file_of(&traces, 2));
+    assert_eq!(compiled_in(&records, "Demo>>square:"), compiles);
     let excluded = server.succeed(
         "debug_start",
         json!({
@@ -1052,9 +1138,109 @@ fn a_trace_arrives_with_the_output() {
             "trace_filter": ["Demo>>nothing:"],
         }),
     );
-    assert!(!excluded.contains("{Demo>>square:}"), "{excluded}");
+    assert_eq!(started(&excluded).0, 3, "{excluded}");
+    let records = trace_records(&trace_file_of(&traces, 3));
+    assert_eq!(records[0]["kind"], "header");
+    assert!(!compiled_in(&records, "Demo>>square:"));
     let untraced = server.succeed("debug_start", json!({ "program": path }));
-    assert!(!untraced.contains("[compile] "), "{untraced}");
+    assert_eq!(started(&untraced).0, 4, "{untraced}");
+    assert!(!untraced.contains("[compile]"), "{untraced}");
+    assert!(!trace_file_of(&traces, 4).exists());
+}
+
+/// `listing_filter` selects among the listings, and is refused without
+/// them before anything starts: no program, no trace file.
+#[test]
+fn a_listing_filter_needs_listings() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), false);
+    let (_directory, path) = program("Demo", A_HOT_METHOD);
+    let refused = server.fail(
+        "debug_start",
+        json!({ "program": path, "trace": "compile", "listing_filter": ["Demo>>sq..."] }),
+    );
+    assert_eq!(
+        refused,
+        "a listing_filter selects the bodies whose listings are written: give listings"
+    );
+    let unknown = server.fail(
+        "debug_start",
+        json!({ "program": path, "listings": ["machine"] }),
+    );
+    assert_eq!(
+        unknown,
+        r#""machine" is no kind of listing: bytecode, code or inlining"#
+    );
+    let directories = trace_directories(&traces);
+    assert_eq!(directories.len(), 1, "{directories:?}");
+    let files: Vec<PathBuf> = std::fs::read_dir(&directories[0])
+        .expect("read the server's trace directory")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert!(files.is_empty(), "{files:?}");
+    let said = String::from_utf8_lossy(&server.stderr.lock().expect("stderr")).to_string();
+    assert!(!said.contains("runs as process"), "{said}");
+}
+
+/// A server that starts removes the trace directory and lock of every
+/// server whose lock it can take itself -- one that is gone -- and every
+/// directory without a lock beside it, and leaves those of a server whose
+/// lock is held; its own directory and lock go with it.
+#[test]
+fn a_starting_server_removes_the_traces_of_dead_servers() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    std::fs::create_dir_all(traces.join("1-dead")).expect("create the dead's directory");
+    std::fs::write(traces.join("1-dead.lock"), "").expect("write the dead's lock");
+    std::fs::write(traces.join("1-dead").join("session-1.trace"), "{}\n")
+        .expect("write the dead's trace");
+    std::fs::create_dir_all(traces.join("2-orphan")).expect("create the orphan");
+    std::fs::create_dir_all(traces.join("3-live")).expect("create the live one's directory");
+    let live = std::fs::File::create(traces.join("3-live.lock")).expect("create the live lock");
+    live.try_lock().expect("lock the live one's lock");
+    let server = McpServer::start_in(data.path(), false);
+    assert!(!traces.join("1-dead").exists(), "the dead's directory");
+    assert!(!traces.join("1-dead.lock").exists(), "the dead's lock");
+    assert!(!traces.join("2-orphan").exists(), "the orphan");
+    assert!(traces.join("3-live").is_dir(), "the live one's directory");
+    assert!(traces.join("3-live.lock").is_file(), "the live one's lock");
+    let own: Vec<PathBuf> = trace_directories(&traces)
+        .into_iter()
+        .filter(|directory| directory != &traces.join("3-live"))
+        .collect();
+    assert_eq!(own.len(), 1, "{own:?}");
+    let own = own.into_iter().next().expect("the server's directory");
+    let own_lock = own.with_extension("lock");
+    assert!(own_lock.is_file(), "{}", own_lock.display());
+    server.close_input();
+    assert!(server.exited_within(TIMEOUT), "the server did not end");
+    assert!(!own.exists(), "the server left {}", own.display());
+    assert!(!own_lock.exists(), "the server left {}", own_lock.display());
+    assert!(traces.join("3-live").is_dir(), "the live one's directory");
+    assert!(traces.join("3-live.lock").is_file(), "the live one's lock");
+    drop(server);
+}
+
+/// While its session is open, no other process deletes a trace file: the
+/// server's handle does not share deletion.
+#[cfg(windows)]
+#[test]
+fn a_live_server_s_trace_resists_deletion() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), false);
+    let (_directory, path) = program("Demo", A_HOT_METHOD);
+    let ended = server.succeed(
+        "debug_start",
+        json!({ "program": path, "trace": "compile" }),
+    );
+    assert!(started(&ended).1.starts_with("ended: "), "{ended}");
+    let file = trace_file_of(&traces, 1);
+    assert!(std::fs::remove_file(&file).is_err(), "deleted");
+    assert!(file.is_file(), "{}", file.display());
+    drop(server);
 }
 
 /// The arguments of a start of `path`, a `COUNTER`, stopping at its line 5.

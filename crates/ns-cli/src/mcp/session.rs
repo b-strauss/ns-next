@@ -25,6 +25,7 @@ use super::registry::{SessionHandle, SessionState};
 use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
 use super::tools;
+use super::trace_files::TraceFile;
 use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -201,6 +202,13 @@ pub(crate) struct StartOptions {
     pub(crate) trace: Option<String>,
     /// One `--trace-filter` pattern each.
     pub(crate) trace_filter: Vec<String>,
+    /// The listings, each `--print-<kind>`.
+    pub(crate) listings: Vec<String>,
+    /// One `--print-filter` pattern each.
+    pub(crate) listing_filter: Vec<String>,
+    /// The file the child writes the trace and the listings into, its
+    /// `--trace-file`, when it traces or lists.
+    pub(crate) trace_file: Option<TraceFile>,
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) wait: Duration,
 }
@@ -232,6 +240,10 @@ pub(crate) struct Session {
     inbox: Inbox,
     /// Where the session publishes its state.
     handle: Arc<SessionHandle>,
+    /// The file the child writes its trace into, deleted with the
+    /// session once the child is gone: `Drop` kills the child before the
+    /// fields drop.
+    _trace_file: Option<TraceFile>,
 }
 
 /// What a start made before the session is: the child, connected.
@@ -259,7 +271,7 @@ impl Session {
     /// the start's answer, or why it could not start and the inbox, with
     /// the calls queued meanwhile.
     pub(crate) fn start(
-        options: StartOptions,
+        mut options: StartOptions,
         handle: Arc<SessionHandle>,
         inbox: Inbox,
     ) -> Result<(Session, String), (String, Inbox)> {
@@ -284,6 +296,7 @@ impl Session {
             runtime: format!("{} {}", options.runtime.display(), launched.fingerprint),
             inbox,
             handle,
+            _trace_file: options.trace_file.take(),
         };
         match session.configure(&options, &launched.secret, &launched.core_library) {
             Ok(answer) => Ok((session, answer)),
@@ -1498,13 +1511,24 @@ fn launch(options: &StartOptions, handle: &SessionHandle) -> Result<Launched, St
         .hex();
     let mut command = target_runner::target_command(&options.runtime);
     command.arg("run").arg(format!("--debug-connect={address}"));
-    // Before the program, as `run` reads its options there; the lines
-    // arrive on the child's standard error with its other output.
+    // Before the program, as `run` reads its options there. The trace
+    // and the listings go into the server's file, which replaces the
+    // child's standard error for them, so that the output stays the
+    // program's.
     if let Some(trace) = &options.trace {
         command.arg(format!("--trace={trace}"));
     }
     for pattern in &options.trace_filter {
         command.arg(format!("--trace-filter={pattern}"));
+    }
+    for kind in &options.listings {
+        command.arg(format!("--print-{kind}"));
+    }
+    for pattern in &options.listing_filter {
+        command.arg(format!("--print-filter={pattern}"));
+    }
+    if let Some(trace_file) = &options.trace_file {
+        command.arg(format!("--trace-file={}", trace_file.path().display()));
     }
     command.arg(&options.program);
     if !options.arguments.is_empty() {

@@ -10,13 +10,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::own_directory::own_directory;
 use crate::target_runner;
 
-/// The directory in the user's own local data directory that holds what
-/// the server keeps (`own_directory`).
-const OWN_DIRECTORY: &str = "ns-next";
-
-/// The directory below `OWN_DIRECTORY` that holds the shipped sources, one
+/// The directory below the server's own (`own_directory`) that holds the shipped sources, one
 /// directory per fingerprint.
 const CORE_LIBRARY_DIRECTORY: &str = "core-library";
 
@@ -30,28 +27,6 @@ const STALE: Duration = Duration::from_secs(24 * 60 * 60);
 /// The file of a directory of shipped sources that names their
 /// fingerprint, which `shipped-sources` writes.
 const FINGERPRINT_FILE: &str = "fingerprint";
-
-/// The directory the server keeps its files in, the user's own: on
-/// Windows `ns-next` in the local application data directory
-/// (`%LOCALAPPDATA%`), elsewhere in the user's cache directory
-/// (`$XDG_CACHE_HOME`, or `~/.cache`). Never the shared temporary
-/// directory, where another user could put a file of their own first --
-/// sources the server would show.
-fn own_directory() -> Result<PathBuf, String> {
-    let absolute = |variable: &str| {
-        std::env::var_os(variable)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    let base = if cfg!(windows) {
-        absolute("LOCALAPPDATA").ok_or("LOCALAPPDATA names no directory")?
-    } else {
-        absolute("XDG_CACHE_HOME")
-            .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
-            .ok_or("neither XDG_CACHE_HOME nor HOME names a directory")?
-    };
-    Ok(base.join(OWN_DIRECTORY))
-}
 
 /// Removes the directories of shipped sources untouched for `STALE` but
 /// the running binary's, which the sessions of this server most likely

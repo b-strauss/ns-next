@@ -5663,11 +5663,17 @@ the way not taken: every question would run the program from its start.
   open or is left out among several (`registry.rs`). A session lasts
   until `debug_stop` closes it or the server ends, after its program
   ended too. `debug_start(program, breakpoints?, stop_on_entry?,
-  arguments?, runtime?, trace?, trace_filter?, wait?)` (`trace` is `ns-next
-  run --trace`'s value, `trace_filter` an array of patterns, each passed as
-  one `--trace-filter=<pattern>`, a prefix ending in `...`; both go before
-  the program, and the trace lines arrive on standard error, with the
-  program's output in every answer), `debug_breakpoints(set?, clear?)`,
+  arguments?, runtime?, trace?, trace_filter?, listings?, listing_filter?,
+  wait?)` (`trace` is `ns-next run --trace`'s value, `trace_filter` an
+  array of patterns, each passed as one `--trace-filter=<pattern>`, a
+  prefix ending in `...`; `listings` any of `bytecode`, `code` and
+  `inlining`, each passed as `--print-<kind>`, and `listing_filter` one
+  `--print-filter=<pattern>` each, refused without `listings`; all go
+  before the program, and with `trace` or `listings` the child writes
+  them through `--trace-file` into a file of the server's,
+  `traces/<server>/session-<n>.trace` in the user's own directory,
+  deleted at `debug_stop`, so that nothing of them reaches the
+  program's output), `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
   `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`

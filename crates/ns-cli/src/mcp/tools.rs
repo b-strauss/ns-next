@@ -13,7 +13,11 @@ use serde_json::{Value, json};
 
 use super::registry::SessionHandle;
 use super::session::{Breakpoint, Session, StartOptions};
+use super::trace_files::TraceDirectory;
 use super::worker::Inbox;
+
+/// The listings `debug_start` takes, each passed as `--print-<kind>`.
+const LISTINGS: [&str; 3] = ["bytecode", "code", "inlining"];
 
 /// How long a tool that lets the program go on waits for its next stop
 /// when not told, and how long an evaluation may run before it is
@@ -119,24 +123,50 @@ pub(crate) fn call(session: &mut Session, name: &str, arguments: Value) -> Answe
 }
 
 /// `debug_start`: starts the program `arguments` names as the session
-/// `handle`, whose worker's inbox is `inbox`; answers the session and the
+/// `handle`, whose worker's inbox is `inbox`, a traced one writing its
+/// trace into a file created in `traces`; answers the session and the
 /// start's answer, or why it did not start and the inbox back.
 pub(crate) fn start(
     arguments: Value,
     default_runtime: &Path,
+    traces: &Result<Arc<TraceDirectory>, String>,
     handle: Arc<SessionHandle>,
     inbox: Inbox,
 ) -> Result<(Session, String), (String, Inbox)> {
-    let options = match start_options(arguments, default_runtime) {
+    let options = match start_options(arguments, default_runtime, traces, handle.number) {
         Ok(options) => options,
         Err(reason) => return Err((reason, inbox)),
     };
     Session::start(options, handle, inbox)
 }
 
-fn start_options(arguments: Value, default_runtime: &Path) -> Result<StartOptions, String> {
+fn start_options(
+    arguments: Value,
+    default_runtime: &Path,
+    traces: &Result<Arc<TraceDirectory>, String>,
+    session_number: u32,
+) -> Result<StartOptions, String> {
     let arguments: StartArguments = parse(arguments)?;
     let wait = wait_of(arguments.wait)?;
+    let mut listings = Vec::new();
+    for kind in arguments.listings {
+        if !LISTINGS.contains(&kind.as_str()) {
+            return Err(format!(
+                "{kind:?} is no kind of listing: bytecode, code or inlining"
+            ));
+        }
+        // `run` takes each print option once.
+        if !listings.contains(&kind) {
+            listings.push(kind);
+        }
+    }
+    // Refused here, as `run` refuses it, but before anything starts.
+    if !arguments.listing_filter.is_empty() && listings.is_empty() {
+        return Err(
+            "a listing_filter selects the bodies whose listings are written: give listings"
+                .to_string(),
+        );
+    }
     let program = std::path::absolute(&arguments.program)
         .map_err(|error| format!("{}: {error}", arguments.program))?;
     if !program.exists() {
@@ -148,6 +178,16 @@ fn start_options(arguments: Value, default_runtime: &Path) -> Result<StartOption
         }
         None => default_runtime.to_path_buf(),
     };
+    // Created last, once every argument is known good, and before the
+    // child starts, which only writes it.
+    let trace_file = if arguments.trace.is_some() || !listings.is_empty() {
+        let traces = traces
+            .as_ref()
+            .map_err(|reason| format!("the server keeps no trace files: {reason}"))?;
+        Some(traces.create(session_number)?)
+    } else {
+        None
+    };
     Ok(StartOptions {
         program,
         runtime,
@@ -155,6 +195,9 @@ fn start_options(arguments: Value, default_runtime: &Path) -> Result<StartOption
         stop_on_entry: arguments.stop_on_entry,
         trace: arguments.trace,
         trace_filter: arguments.trace_filter,
+        listings,
+        listing_filter: arguments.listing_filter,
+        trace_file,
         breakpoints: arguments.breakpoints,
         wait,
     })
@@ -231,6 +274,10 @@ struct StartArguments {
     trace: Option<String>,
     #[serde(default)]
     trace_filter: Vec<String>,
+    #[serde(default)]
+    listings: Vec<String>,
+    #[serde(default)]
+    listing_filter: Vec<String>,
     #[serde(default)]
     wait: Option<f64>,
 }
@@ -380,8 +427,10 @@ pub(crate) fn list() -> Value {
                 "stop_on_entry": { "type": "boolean", "description": "Stop at the first statement of main:args:." },
                 "arguments": { "type": "array", "items": { "type": "string" }, "description": "The program's arguments." },
                 "runtime": { "type": "string", "description": "The ns-next binary to run the program with; this server's own executable by default." },
-                "trace": { "type": "string", "description": "What the program traces, as ns-next run's --trace: categories separated by commas (compile, osr, optimize, inlining, deoptimize, code-zone, caches) or all. The trace lines arrive on standard error, with the program's output in every answer." },
+                "trace": { "type": "string", "description": "What the program traces, as ns-next run's --trace: categories separated by commas (compile, osr, optimize, inlining, deoptimize, code-zone, caches) or all. The program writes the trace into a file the server keeps for the session until debug_stop; nothing of it reaches the program's output." },
                 "trace_filter": { "type": "array", "items": { "type": "string" }, "description": "Patterns selecting the bodies whose events are traced, one --trace-filter each, in the method syntax of locations (Demo>>square:, Demo/Account>>deposit:); a pattern ending in ... is a prefix (Demo>>sq...). A comma is part of a selector, never a separator. Only with trace: ns-next refuses a filter without it." },
+                "listings": { "type": "array", "items": { "type": "string", "enum": ["bytecode", "code", "inlining"] }, "description": "The listings the program writes into the session's trace file, as ns-next run's --print-bytecode, --print-code and --print-inlining: a body's bytecode, its machine code, an optimizing compile's inlining plan." },
+                "listing_filter": { "type": "array", "items": { "type": "string" }, "description": "Patterns selecting the bodies whose listings are written, one --print-filter each, in trace_filter's syntax. Only with listings." },
                 "wait": wait_schema()
             }),
             &["program"],

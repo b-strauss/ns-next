@@ -13,12 +13,14 @@
 //! registry (`registry.rs`).
 
 mod dap_client;
+mod own_directory;
 mod registry;
 mod responses;
 mod session;
 mod shipped_sources;
 mod summary;
 mod tools;
+mod trace_files;
 mod worker;
 
 use std::io::{BufRead, Write};
@@ -32,6 +34,7 @@ use serde_json::{Value, json};
 
 use registry::Registry;
 use responses::{Reply, ReplyDestination, Responses};
+use trace_files::TraceDirectory;
 use worker::Call;
 
 /// The revisions of the specification the server speaks, the latest
@@ -62,18 +65,27 @@ struct Server {
     responses: Responses,
     registry: Arc<Registry>,
     default_runtime: PathBuf,
+    /// The directory the sessions' trace files are created in, or why the
+    /// server has none, which a traced start answers.
+    traces: Result<Arc<TraceDirectory>, String>,
     workers: Vec<JoinHandle<()>>,
 }
 
 /// `ns-next mcp`: removes the stale shipped sources of other binaries
-/// (`shipped_sources.rs`), then serves until the client closes the
+/// (`shipped_sources.rs`) and the trace files of servers that are gone,
+/// claims a directory for its own (`trace_files.rs`), then serves until the client closes the
 /// standard input. This thread reads the input and answers at once what
 /// asks nothing of a session, so that a `ping` never waits behind a
 /// tool; a tool call goes to its session's worker. A `debug_start` runs
 /// the program with this very executable unless told otherwise. Every
-/// session's program ends with the server.
+/// session's program ends with the server, and its trace files and their
+/// directory with it.
 pub(crate) fn execute() -> ExitCode {
     shipped_sources::remove_stale_core_libraries();
+    let traces = TraceDirectory::claim().map(Arc::new);
+    if let Err(reason) = &traces {
+        say(&format!("ns-next mcp: no trace files: {reason}"));
+    }
     let default_runtime = std::env::current_exe().unwrap_or_else(|error| {
         say(&format!(
             "ns-next mcp: the executable's path is unknown: {error}"
@@ -91,6 +103,7 @@ pub(crate) fn execute() -> ExitCode {
         responses,
         registry: Arc::new(Registry::new()),
         default_runtime,
+        traces,
         workers: Vec::new(),
     };
     let stdin = std::io::stdin();
@@ -108,9 +121,15 @@ pub(crate) fn execute() -> ExitCode {
     server.registry.end_all();
     let deadline = Instant::now() + tools::STOP_WAIT + session::END_BOUND;
     let Server {
-        responses, workers, ..
+        responses,
+        workers,
+        traces,
+        ..
     } = server;
     wait_until(deadline, || workers.iter().all(JoinHandle::is_finished));
+    // The directory goes once its files have: a worker that has not ended
+    // keeps it, and the next server that starts removes it.
+    drop(traces);
     // The writer ends once every answer is written, the workers' last
     // among them.
     drop(responses);
@@ -246,6 +265,7 @@ impl Server {
             receiver,
             call,
             self.default_runtime.clone(),
+            self.traces.clone(),
         );
         match started {
             Ok(worker) => self.workers.push(worker),

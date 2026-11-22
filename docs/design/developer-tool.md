@@ -45,8 +45,9 @@ is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
   and the zone compacted -- and every inline cache transition and
   vacating of every cache is a typed event with its reasons as enums
   (`ns_runtime::trace_events`), written as one line each by `ns-next run
-  --trace` and by `debug_start`'s `trace`, and as one record each into
-  the file of `--trace-file`, which the plugin reads.
+  --trace`, and as one record each into the file of `--trace-file`,
+  which the plugin reads and `debug_start`'s `trace` has the MCP
+  server's child write.
 - `ns_runtime::tool_names` is the one grammar of the tools' names,
   `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`, and
   `tool_names::KnownModule::resolve` the one lookup of a module a name
@@ -737,9 +738,9 @@ breakpoint's name; each refusal names the pattern.
   `load` and `bench` do not.
 - **`debug_start`** takes `trace`, `--trace`'s value, and `trace_filter`,
   an array of patterns, each passed as one `--trace-filter`, both before
-  the program; the lines arrive with the program's output in every
-  answer ([debugger.md](debugger.md), "The MCP server"; decisions 7 and
-  9).
+  the program, which writes the events through `--trace-file` into a
+  file of the server's, never into its output ([debugger.md](debugger.md),
+  "The MCP server").
 - **The plugin's run configuration** passes `--trace` and
   `--trace-filter` from its "Developer Tool" tab and the watched
   methods, always with `--trace-file`, after the subcommand and
@@ -773,7 +774,7 @@ declaration order `trace_events.rs`'s unit tests. The line format is pinned by
 `crates/ns-cli/src/trace.rs`'s unit tests, `--trace` and its refusals by
 `crates/ns-cli/tests/cli.rs` (the folded line by
 `trace_inlining_folds_the_declines_of_no_body`), `debug_start`'s trace by
-`crates/ns-cli/tests/mcp.rs` (`a_trace_arrives_with_the_output`) and the
+`crates/ns-cli/tests/mcp.rs` (`a_traced_session_writes_its_own_file`) and the
 plugin's options by its `NewspeakRunConfigurationTest`; the
 CLI's and the MCP server's tests strip every stress mode from the child
 and answer nothing on a target without a JIT.
@@ -1024,10 +1025,11 @@ top frame of a stop runs in the interpreter, so its machine code is
   binary are refused as `--trace-filter`'s are, `--print-filter:` and
   the reason, with exit status 2 before anything runs. Only `run`
   prints; `load` and `bench` do not.
-- **`debug_start`** takes no print option, on purpose: its answers keep
-  the last 2,000 characters of the program's output and standard error,
-  which a run's listings would fill. An agent asks for the code of the
-  frame it stopped in instead.
+- **`debug_start`** takes `listings`, any of `bytecode`, `code` and
+  `inlining`, each passed as `--print-<kind>`, and `listing_filter`, one
+  `--print-filter` each, refused without `listings`; the child writes
+  them into the session's trace file, never into the output its answers
+  show ([debugger.md](debugger.md), "The MCP server").
 - **`nsNext/frameCode { frameId }`**, a request of the agent's own
   (`debug/agent.rs`), forwards `Command::FrameCode` for a frame of the
   stop and answers `{ body, bytecode, machineCode }`, each listing's
