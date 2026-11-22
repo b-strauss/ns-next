@@ -5922,8 +5922,8 @@ the way not taken: every question would run the program from its start.
     which says it in its head instead, `installs (10 of 64) — next:
     debug_trace {"session":1,"list":"installs","start":10}`; where more
     follow, `— next:` the exact call, `session` first, then the tool's
-    arguments in its signature's order, then `start` and `count`, every argument given
-    repeated with `start` advanced, `debug_trace_listing`'s `index`
+    arguments in its signature's order, then `start` and `count`, every
+    argument given repeated with `start` advanced, `debug_trace_listing`'s `index`
     always among them, so that a new install between pages does not
     change the listing: `next: debug_trace_events
     {"session":1,"category":"deoptimize","start":50}`.

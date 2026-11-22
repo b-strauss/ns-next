@@ -207,8 +207,8 @@ typed event already serves (decided with the user on 2026-11-18).
 **9. The lines reach the command line as the process's standard
 error.** `--trace` is a flag of `run`, as the statistics are. The IDE
 reads the same events from a file of its own instead (decision 17), and
-so does the agent, from a file the MCP server owns (decision 36). The DAP agent is
-not involved: it still writes nothing to the program's streams, and no
+so does the agent, from a file the MCP server owns (decision 36). The
+DAP agent is not involved: it still writes nothing to the program's streams, and no
 trace line is dropped by its bounded connection. A channel of their own
 over DAP stays possible, since the events are typed (decided with the
 user on 2026-11-18).
@@ -598,8 +598,8 @@ measured, so that the budget assumes the worst plausible one. A cut
 answer ends in `Showing <first>–<last> of <total> — next: <exact call>`
 -- but each list the overview cuts, which says it in its head,
 `installs (10 of 64) — next: debug_trace
-{"session":1,"list":"installs","start":10}` --, the tool's name and its arguments as one JSON object, `session` always
-among them, then the tool's arguments in its signature's order, then
+{"session":1,"list":"installs","start":10}` --, the tool's name and
+its arguments as one JSON object, `session` always among them, then the tool's arguments in its signature's order, then
 `start` and `count`, as Chrome DevTools' pages end in their range and
 the next page's call; a page that is the whole needs no such line, and
 `debug_trace_listing` writes it always, since a listing's window is a
