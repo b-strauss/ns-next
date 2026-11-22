@@ -383,6 +383,7 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
                 "site": send.site,
                 "call": range(send.call),
                 "selector": selector,
+                "name": send.name,
             })
         })
         .collect();
@@ -1190,6 +1191,7 @@ mod tests {
                 site: Some(0),
                 call: Some(send),
                 selector: vec![Some(Span::new(start("size"), start("size") + 4))],
+                name: Some("size".to_string()),
             }],
         };
         let record = body_record(&description, &mut demo_sources());
@@ -1198,6 +1200,8 @@ mod tests {
         assert_eq!(record["sends"][0]["call"], json!([1, 10, 1, 20]));
         assert_eq!(record["sends"][0]["at"], 1);
         assert_eq!(record["sends"][0]["site"], 0);
+        // The selector's text, as the compiled send names it.
+        assert_eq!(record["sends"][0]["name"], "size");
         assert_eq!(record["range"], json!([1, 2, 1, 22]));
         assert_eq!(record["statements"][0]["instructions"], json!([0, 3]));
         assert_eq!(record["statements"][0]["range"], json!([1, 10, 1, 20]));
@@ -1342,6 +1346,7 @@ mod tests {
             site: None,
             call: None,
             selector: vec![None, description.statements[1].span],
+            name: None,
         });
         // And one placed outside the body's source, at the class's name, as a
         // class that writes no superclass clause places its superclass's.
@@ -1364,6 +1369,8 @@ mod tests {
             json!([null, [1, 2, 1, 5]]),
             "{record}"
         );
+        // A send whose instruction names no selector has no name.
+        assert_eq!(record["sends"][0]["name"], Value::Null, "{record}");
     }
 
     /// Where the file's text does not hold the body at its span -- a body

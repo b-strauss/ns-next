@@ -1,7 +1,8 @@
 //! The trace tools' answers (`docs/design/debugger.md`, "The MCP server",
 //! "The trace tools"), one function each, every one rendered as text from
 //! a session's `TraceIndex` and bounded by `pages.rs`: `overview`, the
-//! run-wide lists an agent starts from. Each tool runs on a thread of its
+//! run-wide lists an agent starts from, and `journal`, one method's
+//! bodies, copies, events and sends. Each tool runs on a thread of its
 //! own and locks the index alone, never waiting on the session's worker,
 //! so that the trace of a program that runs, or of a wait in progress, can
 //! be asked.
@@ -11,12 +12,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::pages::{
-    ANSWER_BUDGET, ENTRY_MAXIMUM, OVERVIEW_DEFAULT, call_text, characters, count_of, counted,
-    showing_line, size, thousands,
+    ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, OVERVIEW_DEFAULT, call_text, characters, count_of,
+    counted, showing_line, size, thousands,
 };
 use super::registry::SessionHandle;
 use super::tools::{Answer, parse};
-use super::trace_index::{CopyKey, ListingKind, TraceIndex};
+use super::trace_index::{BodySource, CopyKey, ListingKind, TraceIndex};
 
 /// The overview's lists, in the order it writes them.
 const LISTS: [&str; 5] = [
@@ -30,7 +31,7 @@ const LISTS: [&str; 5] = [
 /// Whether the tool `name` answers from a session's trace, on a thread of
 /// its own rather than the session's worker.
 pub(crate) fn is_trace_tool(name: &str) -> bool {
-    name == "debug_trace"
+    matches!(name, "debug_trace" | "debug_trace_method")
 }
 
 /// Calls the trace tool `name` of the session `handle`, once the index
@@ -54,8 +55,39 @@ pub(crate) fn call(handle: &SessionHandle, name: &str, arguments: Value) -> Answ
                 arguments.count,
             )
         }
+        "debug_trace_method" => {
+            let arguments: JournalArguments = parse(arguments)?;
+            let part = arguments
+                .part
+                .as_deref()
+                .map(|name| {
+                    Part::from_name(name)
+                        .ok_or_else(|| format!("{name:?} is no part: events or sends"))
+                })
+                .transpose()?;
+            let index = trace.caught_up();
+            journal(
+                &index,
+                handle,
+                &arguments.method,
+                part,
+                arguments.start,
+                arguments.count,
+            )
+        }
         _ => Err(format!("no tool is named {name}")),
     }
+}
+
+#[derive(Deserialize)]
+struct JournalArguments {
+    method: String,
+    #[serde(default)]
+    part: Option<String>,
+    #[serde(default)]
+    start: Option<usize>,
+    #[serde(default)]
+    count: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -628,6 +660,739 @@ fn declined_in(index: &TraceIndex, bodies: &[(u32, u32)]) -> String {
     }
 }
 
+/// A part of a journal, paged alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Part {
+    Events,
+    Sends,
+}
+
+impl Part {
+    pub(crate) fn from_name(name: &str) -> Option<Part> {
+        match name {
+            "events" => Some(Part::Events),
+            "sends" => Some(Part::Sends),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Part::Events => "events",
+            Part::Sends => "sends",
+        }
+    }
+}
+
+/// One entry of a folded sequence: the `cycle` texts from `first`,
+/// repeated `repetitions` times in a row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Folded {
+    pub(crate) first: usize,
+    pub(crate) cycle: usize,
+    pub(crate) repetitions: usize,
+}
+
+/// The longest cycle a fold writes once.
+const LONGEST_CYCLE: usize = 4;
+
+/// `texts` folded greedily: at each position the shortest cycle of one to
+/// `LONGEST_CYCLE` texts that repeats at least twice in a row there is one
+/// entry, as many repetitions as follow; a text that starts no such cycle
+/// is an entry of its own. A body that keeps being compiled, abandoned and
+/// revived writes three events for every round, and a run of thousands of
+/// rounds reads as one entry, its count beside it.
+pub(crate) fn fold(texts: &[u32]) -> Vec<Folded> {
+    let mut folded = Vec::new();
+    let mut position = 0;
+    while position < texts.len() {
+        let repeated = (1..=LONGEST_CYCLE).find_map(|cycle| {
+            let pattern = texts.get(position..position + cycle)?;
+            let mut repetitions = 1;
+            while texts.get(position + repetitions * cycle..position + (repetitions + 1) * cycle)
+                == Some(pattern)
+            {
+                repetitions += 1;
+            }
+            (repetitions >= 2).then_some(Folded {
+                first: position,
+                cycle,
+                repetitions,
+            })
+        });
+        let entry = repeated.unwrap_or(Folded {
+            first: position,
+            cycle: 1,
+            repetitions: 1,
+        });
+        position += entry.cycle * entry.repetitions;
+        folded.push(entry);
+    }
+    folded
+}
+
+/// The most characters a journal's head -- its bodies, copies and
+/// inlining lines -- takes of the budget, so that a name matching many
+/// bodies still leaves room for the events and the sends.
+const HEAD_BUDGET: usize = ANSWER_BUDGET / 2;
+
+/// `debug_trace_method`: the journal of every body `method` names -- `#<n>`
+/// or a name in the tools' grammar, a method's root and its blocks, every
+/// version's and every edited body's (`TraceIndex::bodies_named`).
+/// Without `part`, its head, then the first page of its events, folded,
+/// and the first page of its sends; with `part`, that part alone from
+/// `start`. Each cut part ends in the call that goes on, which repeats
+/// every argument given, `start` advanced.
+pub(crate) fn journal(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    method: &str,
+    part: Option<Part>,
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Answer {
+    let shown = count_of(count, ENTRY_DEFAULT, ENTRY_MAXIMUM)?;
+    if part.is_none() && start.is_some() {
+        return Err("start pages one part: pass part as well".to_string());
+    }
+    let bodies = index.bodies_named(method)?;
+    let (events, folded_events) = journal_events(index, &bodies);
+    let sends = journal_sends(index, &bodies);
+    let next_from = |part: Part, last: usize| {
+        let mut arguments = json!({
+            "session": session.number,
+            "method": method,
+            "part": part.name(),
+            "start": last,
+        });
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        ("debug_trace_method", arguments)
+    };
+    let events_head = |taken: Option<usize>| {
+        let entries = match taken {
+            Some(taken) => format!(
+                "{} of {}",
+                thousands(taken as u64),
+                counted(events.len() as u64, "entry", "entries")
+            ),
+            None => counted(events.len() as u64, "entry", "entries"),
+        };
+        format!(
+            "events ({entries}, folding {})",
+            counted(folded_events as u64, "event", "events")
+        )
+    };
+    let sends_head = |taken: Option<usize>| match taken {
+        Some(taken) => format!(
+            "sends ({} of {})",
+            thousands(taken as u64),
+            thousands(sends.len() as u64)
+        ),
+        None => format!(
+            "sends ({})",
+            counted(sends.len() as u64, "entry", "entries")
+        ),
+    };
+    let Some(part) = part else {
+        let mut lines = journal_head(index, session, method, &bodies);
+        let mut used: usize = lines.iter().map(|line| characters(line) + 1).sum();
+        // What the sends write besides their entries is kept back while the
+        // events' entries are taken.
+        let sends_fixed = part_fixed(&sends_head(Some(sends.len())), sends.len(), &|last| {
+            next_from(Part::Sends, last)
+        });
+        let events_page = Page {
+            head: &|taken| events_head(Some(taken)),
+            entries: &events,
+            next: &|last| next_from(Part::Events, last),
+            name: Part::Events.name(),
+        };
+        // The events take at most half of what is left, so that the sends
+        // have a page too, and what the sends do not need.
+        let sends_wanted: usize = sends
+            .iter()
+            .take(shown)
+            .map(|entry| characters(entry) + 1)
+            .sum();
+        let left = ANSWER_BUDGET.saturating_sub(used + sends_fixed);
+        let reserve = sends_fixed + sends_wanted.min(left / 2);
+        events_page.write(&mut lines, &mut used, 0, shown, reserve, false);
+        let sends_page = Page {
+            head: &|taken| sends_head(Some(taken)),
+            entries: &sends,
+            next: &|last| next_from(Part::Sends, last),
+            name: Part::Sends.name(),
+        };
+        sends_page.write(&mut lines, &mut used, 0, shown, 0, false);
+        return Ok(lines.join("\n"));
+    };
+    let start = start.unwrap_or(0);
+    let (entries, head): (&[String], String) = match part {
+        Part::Events => (&events, events_head(None)),
+        Part::Sends => (&sends, sends_head(None)),
+    };
+    if entries.is_empty() && start == 0 {
+        return Ok(format!("{}: none", part.name()));
+    }
+    if start >= entries.len() {
+        return Err(format!(
+            "start {start} is past the end: {} has {}",
+            part.name(),
+            counted(entries.len() as u64, "entry", "entries")
+        ));
+    }
+    let mut lines = Vec::new();
+    let mut used = 0;
+    let page = Page {
+        head: &|_| head.clone(),
+        entries,
+        next: &|last| next_from(part, last),
+        name: part.name(),
+    };
+    page.write(&mut lines, &mut used, start, shown, 0, true);
+    Ok(lines.join("\n"))
+}
+
+/// A part of a journal as it is paged: its head by the entries taken,
+/// its entries, and the call that goes on from an entry.
+struct Page<'page> {
+    head: &'page dyn Fn(usize) -> String,
+    entries: &'page [String],
+    next: &'page dyn Fn(usize) -> (&'static str, Value),
+    name: &'static str,
+}
+
+impl Page<'_> {
+    /// Writes the page from `start`: its head, at most `shown` entries
+    /// while the answer stays within the budget with `reserve` characters
+    /// kept back for what is written after it, and its `Showing` line --
+    /// where it is cut, or always where `showing` asks it.
+    fn write(
+        &self,
+        lines: &mut Vec<String>,
+        used: &mut usize,
+        start: usize,
+        shown: usize,
+        reserve: usize,
+        showing: bool,
+    ) {
+        let total = self.entries.len();
+        if total == 0 {
+            let none = format!("{}: none", self.name);
+            *used += characters(&none) + 1;
+            lines.push(none);
+            return;
+        }
+        let fixed = part_fixed(&(self.head)(total), total, self.next);
+        let mut taken = Vec::new();
+        for entry in self.entries.iter().skip(start).take(shown) {
+            let length = characters(entry) + 1;
+            if *used + length + fixed + reserve > ANSWER_BUDGET {
+                break;
+            }
+            *used += length;
+            taken.push(entry.clone());
+        }
+        let head = (self.head)(taken.len());
+        *used += characters(&head) + 1;
+        lines.push(head);
+        lines.extend(taken.iter().cloned());
+        let last = start + taken.len();
+        if showing || last < total {
+            let next = (last < total).then(|| (self.next)(last));
+            let line = showing_line(start + 1, last, total, next);
+            *used += characters(&line) + 1;
+            lines.push(line);
+        }
+    }
+}
+
+/// The characters a part writes besides its entries, at the most: its
+/// head as long as `head`, whose numbers are the total's, and the
+/// longest `Showing` line it can end in.
+fn part_fixed(head: &str, total: usize, next: &dyn Fn(usize) -> (&'static str, Value)) -> usize {
+    characters(head) + 1 + characters(&showing_line(total, total, total, Some(next(total)))) + 1
+}
+
+/// The journal's head: the method, its module and place; its bodies;
+/// each body's copies; and each body's inlining as a callee.
+fn journal_head(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    method: &str,
+    bodies: &[u32],
+) -> Vec<String> {
+    let description = |number: u32| index.body(number)?.description.as_ref();
+    let roots: Vec<&str> = {
+        let mut names: Vec<&str> = bodies
+            .iter()
+            .filter_map(|number| description(*number))
+            .filter(|described| described.family.is_none())
+            .map(|described| described.name.as_str())
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    };
+    let lead = bodies
+        .iter()
+        .copied()
+        .find(|number| description(*number).is_some_and(|described| described.family.is_none()))
+        .or_else(|| {
+            bodies
+                .iter()
+                .copied()
+                .find(|number| description(*number).is_some())
+        });
+    let lead_description = lead.and_then(description);
+    let first = match (roots.len() > 1, lead_description) {
+        (true, _) => format!(
+            "{method} — {} methods — session {}",
+            roots.len(),
+            session.number
+        ),
+        (false, Some(described)) => {
+            let mut place = match &described.source {
+                BodySource::File(path) => path.clone(),
+                BodySource::Library(path) => format!("core library {path}"),
+                BodySource::Nowhere => "no file".to_string(),
+            };
+            if let Some(range) = described.range {
+                place.push_str(&format!(":{}", range[0] + 1));
+            }
+            format!(
+                "{} — {}, {place} — session {}",
+                described.name,
+                module_text(&described.module),
+                session.number
+            )
+        }
+        (false, None) => format!(
+            "#{} (not described) — session {}",
+            bodies[0], session.number
+        ),
+    };
+    let mut first = first;
+    if let Some(failure) = index.failure() {
+        first.push_str("; ");
+        first.push_str(failure);
+    }
+    let mut lines = vec![first];
+    let mut used = characters(&lines[0]) + 1;
+    let items: Vec<String> = bodies
+        .iter()
+        .map(|number| match description(*number) {
+            None => format!("#{number} (not described)"),
+            Some(described) => {
+                let lead_name = lead_description.map(|lead| lead.name.as_str());
+                let kind = if described.family.is_none()
+                    && Some(described.name.as_str()) == lead_name
+                    && described.name.contains(">>")
+                {
+                    "method".to_string()
+                } else {
+                    described.name.clone()
+                };
+                let mut item = format!("#{number} {kind}");
+                if let Some(lead) = lead_description
+                    && lead.module != described.module
+                {
+                    item.push_str(&format!(" of {}", module_text(&described.module)));
+                }
+                if let Some(range) = described.range {
+                    item.push_str(&format!(" (line {})", range[0] + 1));
+                }
+                item
+            }
+        })
+        .collect();
+    let bodies_line = joined_within("bodies: ", &items, HEAD_BUDGET.saturating_sub(used));
+    used += characters(&bodies_line) + 1;
+    lines.push(bodies_line);
+    let mut more: Vec<String> = Vec::new();
+    for number in bodies {
+        more.extend(copies_line(index, *number));
+    }
+    for number in bodies {
+        more.extend(inlined_line(index, *number));
+    }
+    let mut left = more.len();
+    for line in more {
+        let length = characters(&line) + 1;
+        if used + length > HEAD_BUDGET {
+            break;
+        }
+        used += length;
+        left -= 1;
+        lines.push(line);
+    }
+    if left > 0 {
+        lines.push(format!(
+            "… {} more of the head: a narrower name, or #<n>, tells them",
+            counted(left as u64, "line", "lines")
+        ));
+    }
+    lines
+}
+
+/// `prefix` and `items`, joined by `, ` while they stay within `limit`
+/// characters, and how many were left out.
+fn joined_within(prefix: &str, items: &[String], limit: usize) -> String {
+    let mut line = prefix.to_string();
+    for (position, item) in items.iter().enumerate() {
+        let separator = if position == 0 { "" } else { ", " };
+        let later = items.len() - position - 1;
+        // Room for the item and, where more follow, the count of those a
+        // later item that does not fit would leave out.
+        let tail = if later > 0 {
+            characters(&format!(", … {} more", thousands(later as u64)))
+        } else {
+            0
+        };
+        if position > 0
+            && characters(&line) + characters(separator) + characters(item) + tail > limit
+        {
+            line.push_str(&format!(
+                ", … {} more",
+                thousands((items.len() - position) as u64)
+            ));
+            return line;
+        }
+        line.push_str(separator);
+        line.push_str(item);
+    }
+    line
+}
+
+/// A module as the head writes it: its id, and `@` its version where it
+/// has one.
+fn module_text(module: &ns_runtime::ModuleName) -> String {
+    match &module.version {
+        Some(version) => format!("{}@{version}", module.id),
+        None => module.id.clone(),
+    }
+}
+
+/// `1–3, 7`: the 1-based `positions`, ascending, a run of consecutive ones
+/// written as its first and last.
+fn ranges(positions: &[usize]) -> String {
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for &position in positions {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == position => *last = position,
+            _ => runs.push((position, position)),
+        }
+    }
+    runs.into_iter()
+        .map(|(first, last)| {
+            if first == last {
+                thousands(first as u64)
+            } else {
+                format!("{}–{}", thousands(first as u64), thousands(last as u64))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `copies of #<n>: …`, the body's machine code by tier -- for optimized
+/// code by key -- each with its installs and the 1-based indexes of its
+/// `code` and `inlining` records among the body's own, which
+/// `debug_trace_listing` takes; `None` for a body without machine code.
+fn copies_line(index: &TraceIndex, number: u32) -> Option<String> {
+    let tally = index.body(number)?;
+    let installs = index.installs(number);
+    let listings = index.listings();
+    let mut baseline = Vec::new();
+    let mut twin = Vec::new();
+    let mut optimized: Vec<(CopyKey, Vec<usize>)> = Vec::new();
+    let key_of = |key: Option<u32>, entered: Option<u32>| CopyKey { key, entered };
+    for (position, listing) in tally.code.iter().enumerate() {
+        let entry = &listings[*listing as usize];
+        let position = position + 1;
+        match entry.tier.map(|tier| index.text(tier)) {
+            Some("optimized") => {
+                let key = key_of(entry.key, entry.entered);
+                match optimized.iter_mut().find(|(known, _)| *known == key) {
+                    Some((_, positions)) => positions.push(position),
+                    None => optimized.push((key, vec![position])),
+                }
+            }
+            Some("twin") => twin.push(position),
+            _ => baseline.push(position),
+        }
+    }
+    let mut plans: Vec<(CopyKey, Vec<usize>)> = Vec::new();
+    for (position, listing) in tally.inlining.iter().enumerate() {
+        let entry = &listings[*listing as usize];
+        let key = key_of(entry.key, entry.entered);
+        match plans.iter_mut().find(|(known, _)| *known == key) {
+            Some((_, positions)) => positions.push(position + 1),
+            None => plans.push((key, vec![position + 1])),
+        }
+    }
+    let mut keys: Vec<CopyKey> = tally.copies.iter().map(|copies| copies.key).collect();
+    for key in optimized.iter().chain(&plans).map(|(key, _)| *key) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    let mut pieces = Vec::new();
+    for (tier, count, positions) in [
+        ("baseline", installs.baseline, &baseline),
+        ("twin", installs.twin, &twin),
+    ] {
+        if count == 0 && positions.is_empty() {
+            continue;
+        }
+        let mut piece = format!("{tier} {}", thousands(u64::from(count)));
+        if !positions.is_empty() {
+            piece.push_str(&format!(" (code {})", ranges(positions)));
+        }
+        pieces.push(piece);
+    }
+    let positions_of = |listed: &[(CopyKey, Vec<usize>)], key: CopyKey| {
+        listed
+            .iter()
+            .find(|(known, _)| *known == key)
+            .map(|(_, positions)| positions.clone())
+            .unwrap_or_default()
+    };
+    for key in keys {
+        let code = positions_of(&optimized, key);
+        let inlining = positions_of(&plans, key);
+        let count = if index.traces(TraceCategory::Optimize) {
+            tally
+                .copies
+                .iter()
+                .find(|copies| copies.key == key)
+                .map_or(0, |copies| copies.count)
+        } else {
+            u32::try_from(code.len()).unwrap_or(u32::MAX)
+        };
+        let mut piece = format!(
+            "optimized {} {}",
+            key_text(index, key),
+            thousands(u64::from(count))
+        );
+        let mut listed = Vec::new();
+        if !code.is_empty() {
+            listed.push(format!("code {}", ranges(&code)));
+        }
+        if !inlining.is_empty() {
+            listed.push(format!("inlining {}", ranges(&inlining)));
+        }
+        if !listed.is_empty() {
+            piece.push_str(&format!(" ({})", listed.join("; ")));
+        }
+        pieces.push(piece);
+    }
+    (!pieces.is_empty()).then(|| format!("copies of #{number}: {}", pieces.join(", ")))
+}
+
+/// `inlined #<n> into: …`, the bodies whose compiles inlined the body and
+/// how often, by key, the most first, and its declines as a callee by
+/// reason; `None` for a body no compile inlined or declined.
+fn inlined_line(index: &TraceIndex, number: u32) -> Option<String> {
+    let tally = index.body(number)?;
+    if tally.inlined_into.is_empty() && tally.declined_as_callee.is_empty() {
+        return None;
+    }
+    let into = if tally.inlined_into.is_empty() {
+        "none".to_string()
+    } else {
+        ranked(&tally.inlined_into)
+            .into_iter()
+            .map(|((body, key), count)| {
+                let key = key.map_or_else(
+                    || "no key".to_string(),
+                    |key| format!("key={{{}}}", index.text(key)),
+                );
+                format!(
+                    "{} ×{} ({key})",
+                    named(index, body),
+                    thousands(u64::from(count))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut line = format!("inlined #{number} into: {into}");
+    if !tally.declined_as_callee.is_empty() {
+        let total: u32 = tally
+            .declined_as_callee
+            .iter()
+            .map(|(_, count)| count)
+            .sum();
+        line.push_str(&format!(
+            "; declined ×{} ({})",
+            thousands(u64::from(total)),
+            breakdown(&tally.declined_as_callee, |reason| index
+                .text(reason)
+                .to_string())
+        ));
+    }
+    Some(line)
+}
+
+/// The events of `bodies`, in file order, folded, each entry one line;
+/// and how many events they are.
+fn journal_events(index: &TraceIndex, bodies: &[u32]) -> (Vec<String>, usize) {
+    let mut numbers: Vec<u32> = bodies
+        .iter()
+        .filter_map(|number| index.body(*number))
+        .flat_map(|tally| tally.events.iter().copied())
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let events = index.events();
+    let texts: Vec<u32> = numbers
+        .iter()
+        .map(|number| events[*number as usize].text())
+        .collect();
+    let entries = fold(&texts)
+        .into_iter()
+        .map(|folded| {
+            let cycle = &texts[folded.first..folded.first + folded.cycle];
+            format!("  {}", folded_text(index, cycle, folded.repetitions))
+        })
+        .collect();
+    (entries, numbers.len())
+}
+
+/// A folded entry as the journal writes it: an event alone as its text;
+/// one repeated with `×<repetitions>` after it; a cycle in parentheses,
+/// joined by ` → `, the `#<n> [<category>] ` its events share written
+/// once before it.
+fn folded_text(index: &TraceIndex, cycle: &[u32], repetitions: usize) -> String {
+    let texts: Vec<&str> = cycle.iter().map(|text| index.text(*text)).collect();
+    let times = format!(" ×{}", thousands(repetitions as u64));
+    if let [text] = texts.as_slice() {
+        return if repetitions == 1 {
+            (*text).to_string()
+        } else {
+            format!("{text}{times}")
+        };
+    }
+    let prefix_of = |text: &str| text.find("] ").map(|end| text[..end + 2].to_string());
+    let shared = prefix_of(texts[0])
+        .filter(|prefix| texts.iter().all(|text| text.starts_with(prefix.as_str())));
+    match shared {
+        Some(prefix) => {
+            let rests: Vec<&str> = texts.iter().map(|text| &text[prefix.len()..]).collect();
+            format!("{prefix}({}){times}", rests.join(" → "))
+        }
+        None => format!("({}){times}", texts.join(" → ")),
+    }
+}
+
+/// The value of the field `name` in an event's fields as its text line
+/// writes them, ` key={Bounce} at=3`: `{Bounce}`, braces kept.
+fn field_value<'fields>(fields: &'fields str, name: &str) -> Option<&'fields str> {
+    let mut depth = 0usize;
+    let mut token_start = 0;
+    let bytes = fields.as_bytes();
+    let mut tokens = Vec::new();
+    for (position, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b' ' if depth == 0 => {
+                tokens.push(&fields[token_start..position]);
+                token_start = position + 1;
+            }
+            _ => {}
+        }
+    }
+    tokens.push(&fields[token_start..]);
+    tokens
+        .into_iter()
+        .find_map(|token| token.strip_prefix(name)?.strip_prefix('='))
+}
+
+/// An event's key as the trace's lines write it, from its fields:
+/// `key={Bounce}`, with its `entered={…}` where it has one.
+fn event_key(fields: &str) -> String {
+    let parts: Vec<String> = ["key", "entered"]
+        .into_iter()
+        .filter_map(|name| field_value(fields, name).map(|value| format!("{name}={value}")))
+        .collect();
+    if parts.is_empty() {
+        "no key".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// The sends of `bodies`, each body's in bytecode order, each one line:
+/// the body, the call's 1-based line and column, the selector the trace
+/// file names, and what the trace says became of it -- the latest
+/// inlining and the cache's state.
+fn journal_sends(index: &TraceIndex, bodies: &[u32]) -> Vec<String> {
+    let events = index.events();
+    let mut entries = Vec::new();
+    for &number in bodies {
+        let Some(described) = index
+            .body(number)
+            .and_then(|tally| tally.description.as_ref())
+        else {
+            continue;
+        };
+        for send in &described.sends {
+            let place = send.call.map_or_else(
+                || "(unplaced)".to_string(),
+                |call| format!("{}:{}", call[0] + 1, call[1] + 1),
+            );
+            let name = send.name.as_deref().unwrap_or("send");
+            let outcome = index.send_outcome(number, send.instruction);
+            let mut said = Vec::new();
+            if let Some(decision) = outcome.inlining {
+                let event = &events[decision as usize];
+                let fields = index.fields(event);
+                let key = event_key(fields);
+                match index.event_word(event) {
+                    "inlined" => {
+                        let callee = event
+                            .callee()
+                            .map_or_else(|| "?".to_string(), |callee| named(index, callee));
+                        said.push(format!("inlined {{{callee}}} ({key})"));
+                    }
+                    word => {
+                        let reason = event
+                            .reason()
+                            .map_or_else(String::new, |reason| format!(" {}", index.text(reason)));
+                        said.push(format!("{word}{reason} ({key})"));
+                    }
+                }
+            }
+            if let Some(cache) = outcome.cache {
+                let mut text = format!("cache {}", index.text(cache.after));
+                match cache.receivers {
+                    0 => {}
+                    1 => {
+                        if let Some(receiver) =
+                            field_value(index.fields(&events[cache.event as usize]), "receiver")
+                        {
+                            text.push_str(&format!(" {receiver}"));
+                        }
+                    }
+                    receivers => text.push_str(&format!(" ({receivers} receivers)")),
+                }
+                said.push(text);
+            }
+            let mut entry = format!("  #{number} {place} {name}");
+            if !said.is_empty() {
+                entry.push(' ');
+                entry.push_str(&said.join("; "));
+            }
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::{Registry, SessionState};
@@ -1035,5 +1800,348 @@ mod tests {
                 size(index.bytes())
             )
         );
+    }
+
+    #[test]
+    fn a_fold_writes_a_repeated_cycle_once() {
+        let entry = |first, cycle, repetitions| Folded {
+            first,
+            cycle,
+            repetitions,
+        };
+        assert_eq!(
+            fold(&[1, 2, 3, 2, 3, 2, 3, 4]),
+            [entry(0, 1, 1), entry(1, 2, 3), entry(7, 1, 1)]
+        );
+        assert_eq!(fold(&[5, 5, 5]), [entry(0, 1, 3)]);
+        // A cycle of five is longer than a fold writes once.
+        let five = [1, 2, 3, 4, 5, 1, 2, 3, 4, 5];
+        assert_eq!(
+            fold(&five),
+            (0..10).map(|first| entry(first, 1, 1)).collect::<Vec<_>>()
+        );
+        // A cycle of four is folded, the shortest cycle first.
+        assert_eq!(
+            fold(&[1, 2, 3, 4, 1, 2, 3, 4, 6, 6]),
+            [entry(0, 4, 2), entry(8, 1, 2)]
+        );
+        assert_eq!(fold(&[]), []);
+    }
+
+    /// A body record of `Bounce@1.0.0`'s file, standing at `line` (from 0).
+    fn bounce_body(number: u32, name: &str, family: Option<u32>, line: u32, sends: Value) -> Value {
+        json!({
+            "kind": "body", "body": number, "name": name, "family": family,
+            "module": { "id": "Bounce", "version": "1.0.0" },
+            "source": { "file": "D:\\work\\Bounce.ns" },
+            "range": [line, 2, line + 2, 3], "placed": "source",
+            "checksum": "0000000000000001", "statements": [], "sends": sends,
+        })
+    }
+
+    fn code_record(body: u32, tier: &str, key: Option<&str>) -> Value {
+        json!({ "kind": "code", "body": body, "tier": tier, "key": key, "entered": key,
+                "bytes": 100, "instructions": [] })
+    }
+
+    fn optimized_event(body: u32, key: &str) -> Value {
+        event_of(
+            "optimize",
+            Some(body),
+            &json!({ "event": "optimized", "key": key, "entered": key, "bytes": 900,
+                     "inlined-scopes": 1, "inlined-sites": 1, "type-case-arms": 0,
+                     "eliminated-blocks": 0 }),
+        )
+    }
+
+    /// `Bounce/Ball>>bounce`, #12, with two blocks: compiled, abandoned and
+    /// revived three times over, its twin, four on-stack entries of a
+    /// block, two optimized copies of one key that inline `x`, a cache
+    /// filled; inlined and declined in `Bounce>>run`'s compile.
+    fn bounce_journal() -> Scratch {
+        let mut scratch = Scratch::new("journal");
+        scratch.header(
+            &[
+                "compile",
+                "osr",
+                "optimize",
+                "inlining",
+                "deoptimize",
+                "code-zone",
+                "caches",
+            ],
+            &["code", "inlining"],
+        );
+        scratch.record(&bounce_body(4, "Bounce>>run", None, 3, json!([])));
+        scratch.record(&bounce_body(
+            12,
+            "Bounce/Ball>>bounce",
+            None,
+            13,
+            json!([
+                { "at": 0, "site": 0, "call": [14, 8, 14, 12], "selector": [[14, 10, 14, 12]],
+                  "name": "x:" },
+                { "at": 4, "site": 1, "call": [15, 4, 15, 20], "selector": [[15, 8, 15, 11]],
+                  "name": "do:" },
+                // A record of a writer that named no selector.
+                { "at": 7, "site": null, "call": null, "selector": [] },
+            ]),
+        ));
+        scratch.record(&bounce_body(
+            13,
+            "[] in Bounce/Ball>>bounce",
+            Some(12),
+            15,
+            json!([]),
+        ));
+        scratch.record(&bounce_body(
+            15,
+            "[] in Bounce/Ball>>bounce",
+            Some(12),
+            18,
+            json!([]),
+        ));
+        scratch.record(&bounce_body(30, "Bounce/Ball>>x", None, 30, json!([])));
+        let compile = |fields: Value| event_of("compile", Some(12), &fields);
+        scratch.record(&compile(
+            json!({ "event": "compiled", "trigger": "call", "bytes": 1216 }),
+        ));
+        scratch.record(&code_record(12, "baseline", None));
+        scratch.record(&code_record(12, "baseline", None));
+        for _ in 0..3 {
+            scratch.record(&compile(json!({ "event": "abandoned", "exits": 64 })));
+            scratch.record(&compile(json!({ "event": "revived", "by": "decay" })));
+            scratch.record(&compile(
+                json!({ "event": "compiled", "trigger": "entry", "bytes": 1216 }),
+            ));
+        }
+        scratch.record(&compile(json!({ "event": "compiled-twin", "bytes": 2000 })));
+        scratch.record(&code_record(12, "twin", None));
+        for _ in 0..4 {
+            scratch.record(&event_of(
+                "osr",
+                Some(13),
+                &json!({ "event": "osr-entered", "at": 3 }),
+            ));
+        }
+        scratch.record(&event_of(
+            "inlining",
+            Some(12),
+            &json!({ "event": "inlined", "key": "Bounce/Ball", "entered": "Bounce/Ball",
+                     "in-body": 12, "callee": 30, "at": 0 }),
+        ));
+        for _ in 0..2 {
+            scratch.record(&optimized_event(12, "Bounce/Ball"));
+            scratch.record(&code_record(12, "optimized", Some("Bounce/Ball")));
+            scratch.record(&json!({
+                "kind": "inlining", "body": 12, "key": "Bounce/Ball", "entered": "Bounce/Ball",
+                "outcome": { "installed": 900 }, "scopes": [], "arms": [], "declined": [],
+            }));
+        }
+        scratch.record(&event_of(
+            "inlining",
+            Some(4),
+            &json!({ "event": "inlined", "key": "Bounce", "entered": null, "in-body": 4,
+                     "callee": 12, "at": 2 }),
+        ));
+        scratch.record(&event_of(
+            "inlining",
+            Some(4),
+            &json!({ "event": "declined", "key": "Bounce", "entered": null, "in-body": 4,
+                     "callee": 12, "reason": "over-weight", "at": 5 }),
+        ));
+        scratch.record(&optimized_event(4, "Bounce"));
+        scratch.record(&event_of(
+            "caches",
+            Some(12),
+            &json!({ "event": "transition", "before": "vacant", "after": "monomorphic",
+                     "selector": "x:", "site": 0, "receiver": "Bounce/Ball" }),
+        ));
+        scratch
+    }
+
+    #[test]
+    fn a_journal_names_its_bodies_copies_events_and_sends() {
+        let scratch = bounce_journal();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        let answer =
+            journal(&index, &handle, "Bounce/Ball>>bounce", None, None, None).expect("a journal");
+        let expected = [
+            r"Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns:14 — session 1",
+            "bodies: #12 method (line 14), #13 [] in Bounce/Ball>>bounce (line 16), #15 [] in Bounce/Ball>>bounce (line 19)",
+            "copies of #12: baseline 4 (code 1–2), twin 1 (code 3), optimized key={Bounce/Ball} entered={Bounce/Ball} 2 (code 4–5; inlining 1–2)",
+            "inlined #12 into: Bounce>>run #4 ×1 (key={Bounce}); declined ×1 (over-weight 1)",
+            "events (7 of 7 entries, folding 19 events)",
+            "  #12 [compile] compiled trigger=call bytes=1216",
+            "  #12 [compile] (abandoned exits=64 → revived by=decay → compiled trigger=entry bytes=1216) ×3",
+            "  #12 [compile] compiled-twin bytes=2000",
+            "  #13 [osr] osr-entered at=3 ×4",
+            "  #12 [inlining] inlined key={Bounce/Ball} entered={Bounce/Ball} in-body={#12} callee={#30} at=0",
+            "  #12 [optimize] optimized key={Bounce/Ball} entered={Bounce/Ball} bytes=900 inlined-scopes=1 inlined-sites=1 type-case-arms=0 eliminated-blocks=0 ×2",
+            "  #12 [caches] vacant->monomorphic selector=#x: site=0 receiver={Bounce/Ball}",
+            "sends (3 of 3)",
+            "  #12 15:9 x: inlined {Bounce/Ball>>x #30} (key={Bounce/Ball} entered={Bounce/Ball}); cache monomorphic {Bounce/Ball}",
+            "  #12 16:5 do:",
+            "  #12 (unplaced) send",
+        ];
+        assert_eq!(answer.lines().collect::<Vec<_>>(), expected, "{answer}");
+        // A block alone, by its number.
+        let block = journal(&index, &handle, "#13", None, None, None).expect("a journal");
+        assert_eq!(
+            block.lines().collect::<Vec<_>>(),
+            [
+                r"[] in Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns:16 — session 1",
+                "bodies: #13 [] in Bounce/Ball>>bounce (line 16)",
+                "events (1 of 1 entry, folding 4 events)",
+                "  #13 [osr] osr-entered at=3 ×4",
+                "sends: none",
+            ],
+            "{block}"
+        );
+    }
+
+    /// Every part pages with the call that goes on, which repeats every
+    /// argument given, and says where it stopped.
+    #[test]
+    fn a_journal_s_parts_are_paged_with_their_exact_next() {
+        let scratch = bounce_journal();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let method = "Bounce/Ball>>bounce";
+        let page = journal(
+            &index,
+            &handle,
+            method,
+            Some(Part::Events),
+            Some(2),
+            Some(2),
+        )
+        .expect("a page");
+        assert_eq!(
+            page.lines().collect::<Vec<_>>(),
+            [
+                "events (7 entries, folding 19 events)",
+                "  #12 [compile] compiled-twin bytes=2000",
+                "  #13 [osr] osr-entered at=3 ×4",
+                r##"Showing 3–4 of 7 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":4,"count":2}"##,
+            ]
+        );
+        let last =
+            journal(&index, &handle, method, Some(Part::Sends), Some(2), None).expect("a page");
+        assert_eq!(
+            last,
+            "sends (3 entries)\n  #12 (unplaced) send\nShowing 3–3 of 3"
+        );
+        let head = journal(&index, &handle, method, None, None, Some(2)).expect("a journal");
+        let lines: Vec<&str> = head.lines().collect();
+        assert_eq!(lines[4], "events (2 of 7 entries, folding 19 events)");
+        assert_eq!(
+            lines[7],
+            r##"Showing 1–2 of 7 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":2,"count":2}"##
+        );
+        assert_eq!(lines[8], "sends (2 of 3)");
+        assert_eq!(
+            lines[11],
+            r##"Showing 1–2 of 3 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"sends","start":2,"count":2}"##
+        );
+        assert_eq!(lines.len(), 12, "{head}");
+        assert_eq!(
+            journal(&index, &handle, method, Some(Part::Sends), Some(3), None),
+            Err("start 3 is past the end: sends has 3 entries".to_string())
+        );
+        assert_eq!(
+            journal(&index, &handle, method, None, Some(1), None),
+            Err("start pages one part: pass part as well".to_string())
+        );
+        assert_eq!(
+            journal(&index, &handle, method, None, None, Some(0)),
+            Err("a count of 0: give 1 or more".to_string())
+        );
+        assert_eq!(
+            journal(&index, &handle, "#9", None, None, None),
+            Err("no body of the trace is named #9".to_string())
+        );
+        assert_eq!(
+            journal(&index, &handle, "#15", Some(Part::Events), None, None),
+            Ok("events: none".to_string())
+        );
+    }
+
+    /// A body the trace numbers without describing it has a journal of
+    /// its number, and its events.
+    #[test]
+    fn an_undescribed_body_has_a_journal() {
+        let mut scratch = Scratch::new("undescribed-journal");
+        scratch.header(&["compile"], &[]);
+        scratch.record(&compiled(44));
+        scratch.record(&compiled(44));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer = journal(&index, &handle, "#44", None, None, None).expect("a journal");
+        assert_eq!(
+            answer.lines().collect::<Vec<_>>(),
+            [
+                "#44 (not described) — session 1",
+                "bodies: #44 (not described)",
+                "copies of #44: baseline 2",
+                "events (1 of 1 entry, folding 2 events)",
+                "  #44 [compile] compiled trigger=call bytes=96 ×2",
+                "sends: none",
+            ]
+        );
+    }
+
+    /// However many entries are asked, the journal stays under the
+    /// budget, and each part cut by it names the call that goes on.
+    #[test]
+    fn a_journal_stays_under_its_budget() {
+        let mut scratch = Scratch::new("journal-budget");
+        scratch.header(&["compile"], &[]);
+        let sends: Vec<Value> = (0..300)
+            .map(|instruction| {
+                json!({ "at": instruction, "site": null, "call": [1, 0, 1, 4], "selector": [],
+                        "name": format!("{}{instruction}:", "s".repeat(200)) })
+            })
+            .collect();
+        scratch.record(&bounce_body(1, "Bounce>>run", None, 0, json!(sends)));
+        for bytes in 0..300 {
+            scratch.record(&event_of(
+                "compile",
+                Some(1),
+                &json!({ "event": "compiled", "trigger": "x".repeat(200), "bytes": bytes }),
+            ));
+        }
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer =
+            journal(&index, &handle, "Bounce>>run", None, None, Some(200)).expect("a journal");
+        assert!(
+            characters(&answer) <= ANSWER_BUDGET,
+            "{}",
+            characters(&answer)
+        );
+        let showing: Vec<&str> = answer
+            .lines()
+            .filter(|line| line.starts_with("Showing 1–"))
+            .collect();
+        assert_eq!(showing.len(), 2, "{answer}");
+        assert!(
+            showing[0].contains(r#""part":"events","start":"#)
+                && showing[1].contains(r#""part":"sends","start":"#),
+            "{answer}"
+        );
+        let page = journal(
+            &index,
+            &handle,
+            "Bounce>>run",
+            Some(Part::Sends),
+            None,
+            Some(200),
+        )
+        .expect("a page");
+        assert!(characters(&page) <= ANSWER_BUDGET, "{}", characters(&page));
+        assert!(page.lines().last().unwrap().contains(" — next: "), "{page}");
     }
 }

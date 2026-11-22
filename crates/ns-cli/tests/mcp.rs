@@ -41,7 +41,7 @@ const STRESS_MODES: [&str; 15] = [
 ];
 
 /// The tools and their parameters, the required ones first.
-const TOOLS: [(&str, &[&str], &[&str]); 18] = [
+const TOOLS: [(&str, &[&str], &[&str]); 19] = [
     (
         "debug_start",
         &["program"],
@@ -82,6 +82,11 @@ const TOOLS: [(&str, &[&str], &[&str]); 18] = [
     ("debug_mark", &["label"], &["reference", "session"]),
     ("debug_stop", &[], &["session"]),
     ("debug_trace", &[], &["list", "start", "count", "session"]),
+    (
+        "debug_trace_method",
+        &["method"],
+        &["part", "start", "count", "session"],
+    ),
 ];
 
 /// A running `ns-next mcp` and the lines it writes to its standard output.
@@ -1259,6 +1264,125 @@ fn a_traced_stop_says_its_trace() {
         1,
         "{closed}"
     );
+}
+
+/// A method that holds two blocks, the first sending a hot method.
+const TWO_BLOCKS: &str = indoc! {"
+    class Demo = Object new () (
+      square: number = (
+        ^number * number.
+      )
+
+      run = (
+        |
+          total ::= 0.
+          squared = [:value | total:: total + (square: value)].
+        |
+        1 to: 100 do: squared.
+        ^[total] value
+      )
+
+      public main: platform args: arguments = (
+        | result = run. |
+        platform transcript show: result printString; newLine.
+      )
+    )
+"};
+
+/// `debug_trace_method` names a method's bodies -- the method and both
+/// its blocks, each by its own number -- its sends by the selectors the
+/// trace file gives, a hot method's copy with its code listing's index --
+/// none on a target without a JIT -- and a page cut short ends in the
+/// call that goes on.
+#[test]
+fn a_method_s_journal_names_its_bodies() {
+    let data = ScratchDirectory::new("local-data");
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Demo", TWO_BLOCKS);
+    let compiles = compiles_bodies(&path);
+    let stopped = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "all",
+            "listings": ["bytecode", "code"],
+            "breakpoints": [{ "location": location(&path, 17) }],
+        }),
+    );
+    assert!(
+        started(&stopped).1.starts_with("stopped: breakpoint"),
+        "{stopped}"
+    );
+    let journal = server.succeed(
+        "debug_trace_method",
+        json!({ "session": 1, "method": "Demo>>run" }),
+    );
+    let lines: Vec<&str> = journal.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!("Demo>>run — Demo, {}:6 — session 1", path.display()),
+        "{journal}"
+    );
+    let bodies: Vec<&str> = lines[1]
+        .strip_prefix("bodies: ")
+        .unwrap_or_else(|| panic!("no bodies:\n{journal}"))
+        .split(", ")
+        .collect();
+    assert_eq!(bodies.len(), 3, "{journal}");
+    let number_of = |item: &str, rest: &str| -> u32 {
+        item.strip_prefix('#')
+            .and_then(|item| item.strip_suffix(rest))
+            .and_then(|number| number.parse().ok())
+            .unwrap_or_else(|| panic!("{item:?} is no `#<n>{rest}`:\n{journal}"))
+    };
+    let run = number_of(bodies[0], " method (line 6)");
+    let squared = number_of(bodies[1], " [] in Demo>>run (line 9)");
+    let answered = number_of(bodies[2], " [] in Demo>>run (line 12)");
+    assert!(
+        run != squared && squared != answered && run != answered,
+        "{journal}"
+    );
+    // The block's send of `square:`, by the selector its record names.
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with(&format!("  #{squared} 9:44 square:"))),
+        "{journal}"
+    );
+    let sends = lines
+        .iter()
+        .find_map(|line| {
+            line.strip_prefix("sends (")?
+                .split_once(" of ")?
+                .1
+                .strip_suffix(')')
+        })
+        .unwrap_or_else(|| panic!("no sends:\n{journal}"));
+    let page = server.succeed(
+        "debug_trace_method",
+        json!({ "session": 1, "method": "Demo>>run", "part": "sends", "count": 1 }),
+    );
+    assert_eq!(
+        page.lines().last().unwrap(),
+        format!(
+            r#"Showing 1–1 of {sends} — next: debug_trace_method {{"session":1,"method":"Demo>>run","part":"sends","start":1,"count":1}}"#
+        ),
+        "{page}"
+    );
+    let square = server.succeed(
+        "debug_trace_method",
+        json!({ "session": 1, "method": "Demo>>square:" }),
+    );
+    let copies: Vec<&str> = square
+        .lines()
+        .filter(|line| line.starts_with("copies of #"))
+        .collect();
+    if compiles {
+        assert_eq!(copies.len(), 1, "{square}");
+        assert!(copies[0].contains(": baseline 1 (code 1)"), "{square}");
+    } else {
+        assert!(copies.is_empty(), "{square}");
+    }
 }
 
 /// `listing_filter` selects among the listings, and is refused without

@@ -2467,6 +2467,37 @@ fn a_description_carries_ranges_and_sends() {
         "the loop's send described: {:?}",
         selectors(each)
     );
+    // Each send names its selector as the compiled instruction does,
+    // whatever its tokens' places.
+    let names = |description: &BodyDescription| -> Vec<Option<String>> {
+        description
+            .sends
+            .iter()
+            .map(|send| send.name.clone())
+            .collect()
+    };
+    let each_call = run
+        .sends
+        .iter()
+        .find(|send| slice(with_place(send.call)).starts_with("self each:"))
+        .expect("the send of each:");
+    assert_eq!(each_call.name.as_deref(), Some("each:"), "{:?}", names(run));
+    let loop_send = each
+        .sends
+        .iter()
+        .find(|send| {
+            send.selector
+                .iter()
+                .map(|span| slice(with_place(*span)))
+                .eq(["to:", "do:"])
+        })
+        .expect("the loop's send");
+    assert_eq!(
+        loop_send.name.as_deref(),
+        Some("to:do:"),
+        "{:?}",
+        names(each)
+    );
 }
 
 /// A method an edit replaces, and a closure its old version made that

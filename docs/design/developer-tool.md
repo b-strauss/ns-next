@@ -1119,7 +1119,8 @@ span and its checksum (`source_checksum`, FNV-1a 64 over the source's
 UTF-8 bytes with every `\r` left out), the module's current text with
 where it holds the body's source, if it does (`CurrentText`), and each
 statement's instructions and each send's index, site, call and selector
-tokens, from the debugger's metadata (`debugger/metadata/`). Every span
+tokens, from the debugger's metadata (`debugger/metadata/`), and the
+selector the send instruction names, read from the compiled code. Every span
 counts in the text the body's version was read in -- the module's text
 as loaded, or as the install that made the version left it -- since
 that is the text the body was compiled from: an edit installed before
@@ -1265,10 +1266,15 @@ The records:
   are, so that a file with CRLF or mixed line ends still matches. `statements` are
   `{"instructions":[from,to],"range":[…]}`, each statement's
   instructions and source in emission order, and `sends` are
-  `{"at":index,"site":n|null,"call":[…],"selector":[[…],…]}`, each send
-  instruction's index, its site as the `caches` category numbers it
-  (`null` for a send no cache serves), the call from its receiver to its
-  last argument and each token of its selector; both empty for a body
+  `{"at":index,"site":n|null,"call":[…],"selector":[[…],…],"name":"…"|null}`,
+  each send instruction's index, its site as the `caches` category
+  numbers it (`null` for a send no cache serves), the call from its
+  receiver to its last argument, each token of its selector, and the
+  selector as the compiled send names it (`at:put:`, a super send's
+  without `super`, a mirror send's mirror selector; `null` for an
+  instruction that names none), read from the instruction rather than
+  the source, so that a reader names the sends of a body no text holds
+  as it was compiled, without reading source; both empty for a body
   whose metadata the runtime could not compile again alike from its own
   source. A statement's or a send's range, or a token's, is also `null`
   in a body whose own range is placed, where it lies outside the body's

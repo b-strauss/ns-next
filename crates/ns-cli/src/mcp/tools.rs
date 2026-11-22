@@ -567,6 +567,17 @@ pub(crate) fn list() -> Value {
             }),
             &[],
         ),
+        tool(
+            "debug_trace_method",
+            "Answers a method's journal from a traced session's trace file: every body the name matches -- the method and its blocks, each version's and each edited body's -- by #number, kind and line; each body's machine code installed by tier and, for optimized code, by key, with the indexes of its code and inlining listings; the bodies that inlined it and its declines as a callee; then its events in file order, a repeated cycle of one to four events written once as (a → b) ×n; then its sends in bytecode order, each with its line and column, its selector, its latest inlining and its cache's state. Readable while the program runs. Without part, the head and the first page of each; with part, that part alone, paged by start and count.",
+            json!({
+                "method": { "type": "string", "description": "The method, as the tools name one: the module's id, @ its version for one version only, then / and the path to a class inside the module, then >> and the selector (Demo/Account>>deposit:), a trailing ... making a prefix; or #<n>, a body by the number the trace gives it." },
+                "part": { "type": "string", "enum": ["events", "sends"], "description": "One part alone, paged." },
+                "start": { "type": "integer", "minimum": 0, "description": "With part: how many of its entries to skip; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many entries of each part; 50 by default, 200 at most." }
+            }),
+            &["method"],
+        ),
     ];
     // Every tool but the one that opens a session names the session.
     for tool in tools.iter_mut().skip(1) {

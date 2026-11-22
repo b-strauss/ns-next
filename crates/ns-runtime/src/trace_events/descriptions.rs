@@ -28,6 +28,7 @@ use crate::debugger::ModuleName;
 use crate::debugger::metadata::Cache;
 use crate::debugger::metadata::again::{BodyOrigin, Member, declaration_path};
 use crate::debugger::metadata::synthesized_standing;
+use crate::debugger::stepping::selector_label;
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{shipped_module_text, shipped_source_files};
 
@@ -103,6 +104,12 @@ pub struct DescribedSend {
     pub call: Option<Span>,
     /// The selector's tokens, each `None` where the text has no place for it.
     pub selector: Vec<Option<Span>>,
+    /// The selector as the compiled send names it -- a super send's
+    /// without `super`, a mirror send's mirror selector -- read from the
+    /// instruction, never the source, so that a body whose source no text
+    /// holds as it was compiled still names its sends; `None` for an
+    /// index whose instruction is no send.
+    pub name: Option<String>,
 }
 
 /// The FNV-1a 64 hash of `text` (offset basis `0xcbf29ce484222325`,
@@ -236,6 +243,7 @@ pub(crate) fn describe(
                         .map(|site| site.number),
                     call: send.call,
                     selector: send.selector.clone(),
+                    name: send_name(code, send.index),
                 })
                 .collect(),
         ),
@@ -319,6 +327,7 @@ fn describe_synthesized(
                 .map(|site| site.number),
             call: own_span(send.call),
             selector: send.selector.iter().map(|token| own_span(*token)).collect(),
+            name: send_name(code, send.index),
         })
         .collect();
     Some(BodyDescription {
@@ -334,6 +343,15 @@ fn describe_synthesized(
         statements,
         sends,
     })
+}
+
+/// The selector the send at `index` of `code` names, as a step into's
+/// target names it; `None` past the body's end or for no send.
+fn send_name(code: &CompiledCode, index: u32) -> Option<String> {
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|index| *index < code.instruction_count())?;
+    selector_label(&code.instruction(index))
 }
 
 /// `span` as a range of byte offsets.

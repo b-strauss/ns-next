@@ -15,13 +15,6 @@ use serde_json::Value;
 pub(crate) const ANSWER_BUDGET: usize = 20_000;
 
 /// The entries of a journal's or the events' page by default.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the journal, the events and the listing windows page by it"
-    )
-)]
 pub(crate) const ENTRY_DEFAULT: usize = 50;
 
 /// The entries of each of the overview's lists by default.
@@ -30,10 +23,7 @@ pub(crate) const OVERVIEW_DEFAULT: usize = 10;
 /// The lines of a listing's window by default.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "the journal, the events and the listing windows page by it"
-    )
+    expect(dead_code, reason = "the listing and code windows page by it")
 )]
 pub(crate) const LINE_DEFAULT: usize = 150;
 
@@ -43,10 +33,7 @@ pub(crate) const ENTRY_MAXIMUM: usize = 200;
 /// The most lines a window holds, whatever it is asked.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "the journal, the events and the listing windows page by it"
-    )
+    expect(dead_code, reason = "the listing and code windows page by it")
 )]
 pub(crate) const LINE_MAXIMUM: usize = 500;
 
