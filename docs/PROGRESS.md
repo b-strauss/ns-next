@@ -69,6 +69,7 @@ first.
 
 | The developer tool: designed in thirty-five decisions and four stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace`; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code`; stage 3, the IDE -- bodies numbered and described with their source positions, `ns-next run --trace-file`'s typed JSON lines, the analyzer's `newspeak/methodNames` and `newspeak/moduleIdentity`, and in the plugin the "Developer Tool" tab, watched methods, the "Newspeak JIT" tool window (Methods, Events, Code, Inlining), gutter state icons, inlay hints at the sends, code editor tabs linked to the source and Show Frame Code; then what the user met in the IDE -- closable run tabs that drop their data, the Code tab shown at once, its chooser's labels whole, its scroll with the editor in both directions on request, the frame's line coloured as the execution point, and a restored line breakpoint that keeps its properties; then what a run keeps -- its machine-code listings and plans as places in the trace file, read back when a view shows one, and a rerun replacing its configuration's ended, unpinned tab under the same executor, as the Run window does | Partial (stages 1 to 3 of 4) | 2026-11-21 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md), [developer-tool-stage-3-the-ide](superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md) |
 | The MCP server's sessions and trace tools -- numbered sessions served concurrently, each by a worker thread a pause, a stop, a cancellation and the server's end reach during a wait; a traced session's `--trace-file` written into a file the server owns in the user's own directory, claimed by a held lock, and indexed as it grows; the `trace:` line and four bounded tools, `debug_trace`, `debug_trace_method`, `debug_trace_listing` and `debug_trace_events`, every cut answer ending in its exact next call, and `debug_code`, `debug_stack` and `debug_variables` paged alike; a class's three initializer bodies named apart; every body the compiler synthesizes described; and a closed standard output ending the run with status 1 | Complete | 2026-11-22 | [mcp-trace](superpowers/plans/2026-11-22-0310-mcp-trace.md) |
+| The JIT tool window's filters and grouping -- the Methods tab filtered by name as the Events tab is, both in a search field with a clear button; both tabs grouped by nothing, the method or the class; the Events tab's categories in a popup | Complete | 2026-11-22 | -- |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8759,6 +8760,30 @@ codegen budgets, the suite under every stress mode and without the JIT,
 205"), the plugin's verification against six IDEs, and `linux` and
 `aarch64` in Docker, the first to compile the POSIX half of the trace
 files.
+
+## The JIT tool window's filters and grouping (2026-11-22)
+
+[developer-tool.md](design/developer-tool.md), decision 29 and "The tool
+window". The Methods tab filters by a part of a method's name, as the
+Events tab does, both regardless of case, in a search field with a
+button that clears it; and both tabs group by `Grouping`, nothing, the
+method or the class (`devtool/ui/Grouping.kt`, `classOf`): the Methods
+tab's method rows under their class, or each method with blocks over a
+row per body, in a tree rebuilt at every batch that keeps what was
+expanded and selected and sorts by its header; the Events tab's events
+under their method, or under their class and method. The Events tab's
+seven categories moved into a popup under a button after the name, the
+grouping and the text view, whose label counts the categories shown.
+The plugin's `TabsTest` pins the filters, the groupings, the kept
+expansion and the categories' button.
+
+- `94184015` -- the name filter and the grouping in both tabs.
+- `33727705` -- the clear button and the categories' popup.
+- `66891ad4` -- the name fields wider.
+
+The commit gates passed on every commit, and the plugin's verification
+against six IDEs at the batch's end; the batch changed the plugin
+alone.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
 stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
