@@ -21,6 +21,7 @@ mod shipped_sources;
 mod summary;
 mod tools;
 mod trace_files;
+mod trace_index;
 mod worker;
 
 use std::io::{BufRead, Write};

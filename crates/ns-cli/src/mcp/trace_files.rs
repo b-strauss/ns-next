@@ -181,6 +181,22 @@ impl TraceDirectory {
     }
 }
 
+#[cfg(test)]
+impl TraceDirectory {
+    /// A directory of a test's own at `directory`, with its lock file
+    /// beside it, removed as a claimed one is.
+    pub(crate) fn scratch(directory: PathBuf) -> Arc<TraceDirectory> {
+        std::fs::create_dir_all(&directory).expect("the scratch trace directory");
+        let lock_path = directory.with_extension(LOCK_EXTENSION);
+        let lock = File::create(&lock_path).expect("the scratch lock file");
+        Arc::new(TraceDirectory {
+            directory,
+            lock_path,
+            _lock: lock,
+        })
+    }
+}
+
 impl Drop for TraceDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directory);
@@ -202,6 +218,13 @@ pub(crate) struct TraceFile {
 impl TraceFile {
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The server's own handle, which the trace index reads through.
+    pub(crate) fn file(&self) -> &File {
+        self.file
+            .as_ref()
+            .expect("internal: a trace file is open until it is dropped")
     }
 }
 

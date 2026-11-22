@@ -26,6 +26,7 @@ use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
 use super::tools;
 use super::trace_files::TraceFile;
+use super::trace_index::{self, TraceIndex};
 use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -240,10 +241,10 @@ pub(crate) struct Session {
     inbox: Inbox,
     /// Where the session publishes its state.
     handle: Arc<SessionHandle>,
-    /// The file the child writes its trace into, deleted with the
-    /// session once the child is gone: `Drop` kills the child before the
-    /// fields drop.
-    _trace_file: Option<TraceFile>,
+    /// The index of the file the child writes its trace into, which the
+    /// session's handle shares with the trace tools; the file is closed
+    /// and deleted with the session once the child is gone.
+    trace: Option<Arc<Mutex<TraceIndex>>>,
 }
 
 /// What a start made before the session is: the child, connected.
@@ -261,7 +262,28 @@ impl Drop for Session {
         self.client.close();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Closed here rather than when the last holder of the index lets
+        // it go -- a trace tool's thread may still hold it -- so that the
+        // file is gone when `debug_stop` answers.
+        close_trace(self.trace.as_ref());
     }
+}
+
+/// Closes the trace file `trace` indexes, which deletes it.
+fn close_trace(trace: Option<&Arc<Mutex<TraceIndex>>>) {
+    if let Some(trace) = trace {
+        trace_index::lock(trace).close();
+    }
+}
+
+/// The index of `file`, published in `handle` and followed from now on,
+/// so that the trace tools read the trace of a start still waiting.
+fn index_trace(file: TraceFile, handle: &SessionHandle) -> Arc<Mutex<TraceIndex>> {
+    let index = Arc::new(Mutex::new(TraceIndex::over(file)));
+    trace_index::spawn_follower(&index);
+    // Set by this start alone: a session starts once.
+    let _ = handle.trace.set(Arc::clone(&index));
+    index
 }
 
 impl Session {
@@ -275,9 +297,20 @@ impl Session {
         handle: Arc<SessionHandle>,
         inbox: Inbox,
     ) -> Result<(Session, String), (String, Inbox)> {
-        let launched = match launch(&options, &handle) {
+        let trace_path = options
+            .trace_file
+            .as_ref()
+            .map(|file| file.path().to_path_buf());
+        let trace = options
+            .trace_file
+            .take()
+            .map(|file| index_trace(file, &handle));
+        let launched = match launch(&options, trace_path.as_deref(), &handle) {
             Ok(launched) => launched,
-            Err(reason) => return Err((reason, inbox)),
+            Err(reason) => {
+                close_trace(trace.as_ref());
+                return Err((reason, inbox));
+            }
         };
         let mut session = Session {
             child: launched.child,
@@ -296,7 +329,7 @@ impl Session {
             runtime: format!("{} {}", options.runtime.display(), launched.fingerprint),
             inbox,
             handle,
-            _trace_file: options.trace_file.take(),
+            trace,
         };
         match session.configure(&options, &launched.secret, &launched.core_library) {
             Ok(answer) => Ok((session, answer)),
@@ -1495,10 +1528,15 @@ fn frame_of(frame: &Value) -> Frame {
     }
 }
 
-/// Starts the child `options` asks for and waits for its agent to
+/// Starts the child `options` asks for, its trace written into
+/// `trace_path`, and waits for its agent to
 /// connect; answers it connected, its messages arriving in the inbox of
 /// `handle`, or why it did not start.
-fn launch(options: &StartOptions, handle: &SessionHandle) -> Result<Launched, String> {
+fn launch(
+    options: &StartOptions,
+    trace_path: Option<&Path>,
+    handle: &SessionHandle,
+) -> Result<Launched, String> {
     let (core_library, fingerprint) =
         shipped_sources::core_library(&options.runtime, handle.number)?;
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -1527,8 +1565,8 @@ fn launch(options: &StartOptions, handle: &SessionHandle) -> Result<Launched, St
     for pattern in &options.listing_filter {
         command.arg(format!("--print-filter={pattern}"));
     }
-    if let Some(trace_file) = &options.trace_file {
-        command.arg(format!("--trace-file={}", trace_file.path().display()));
+    if let Some(trace_path) = trace_path {
+        command.arg(format!("--trace-file={}", trace_path.display()));
     }
     command.arg(&options.program);
     if !options.arguments.is_empty() {

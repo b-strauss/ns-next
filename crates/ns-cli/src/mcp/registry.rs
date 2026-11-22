@@ -6,8 +6,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
+use super::trace_index::TraceIndex;
 use super::worker::Input;
 
 /// What a session's program does, as its worker last published.
@@ -34,12 +35,16 @@ impl SessionState {
 }
 
 /// An open session as the registry holds it: its number, its label -- the
-/// program's name -- its published state, and the inbox of its worker.
+/// program's name -- its published state, the inbox of its worker, and
+/// the index of its trace file.
 pub(crate) struct SessionHandle {
     pub(crate) number: u32,
     pub(crate) label: String,
     pub(crate) state: Mutex<SessionState>,
     pub(crate) inbox: Sender<Input>,
+    /// Set once, by the worker, when the start creates the trace file: the
+    /// trace tools lock the index alone and never wait on the worker.
+    pub(crate) trace: OnceLock<Arc<Mutex<TraceIndex>>>,
 }
 
 impl SessionHandle {
@@ -89,6 +94,7 @@ impl Registry {
             label,
             state: Mutex::new(SessionState::Starting),
             inbox,
+            trace: OnceLock::new(),
         });
         sessions.open.insert(number, Arc::clone(&handle));
         (number, receiver, handle)

@@ -28,11 +28,11 @@ use crate::listing::{self, AnnotatedInstruction};
 
 /// The format's name, which the header gives so that a reader refuses a
 /// file that is no trace.
-const FORMAT: &str = "ns-next-trace";
+pub(crate) const FORMAT: &str = "ns-next-trace";
 
 /// The format's version, raised with every change a reader of the old
 /// one would misread.
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 1;
 
 /// The architecture the file's `code` records are instructions of: the
 /// one this binary's JIT emits for, the targets `ns-runtime`'s `build.rs`
