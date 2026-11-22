@@ -8786,5 +8786,6 @@ against six IDEs at the batch's end; the batch changed the plugin
 alone.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
-stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
-developer tool's stage 4, the shell.
+stage 6, hot swap, edit-and-continue and `ActivationMirror`. The
+developer tool's stage 4, the shell, is set back, when to take it up
+not decided.

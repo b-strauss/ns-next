@@ -45,33 +45,6 @@ file through four tools of its own (2026-11-22; "The MCP server",
 decisions 18 and 19). It needs its questions decided and a plan of its
 own.
 
-The developer tool (the item "A developer tool like V8's `d8`" below)
-has its stages 1 to 3 built: `ns-next run --trace=<categories>` writes
-a line for every decision of the tiers and the caches with its reasons,
-each body named by the tools' form `id@version/Inner>>selector`;
-`--print-bytecode`, `--print-code` and `--print-inlining` print the
-bytecode a run makes, the machine code it installs and every optimizing
-compile's inlining plan, a stopped frame's code answered through
-`nsNext/frameCode` and `debug_code`; and in the JetBrains plugin a
-run's trace and listings, written by `--trace-file` as typed JSON lines
-with each body's source positions, are switched on in the run
-configuration's "Developer Tool" tab and through the project's watched
-methods, read live in Run and Debug, and shown in the "Newspeak JIT"
-tool window, as state icons in the gutter, as inlay hints at the sends,
-in editor tabs of the code and, at a stop, as the frame's code; and
-the MCP server has a traced session's child write that file and answers
-it through `debug_trace`, `debug_trace_method`, `debug_trace_listing`
-and `debug_trace_events`, every answer bounded
-([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
-"Stage 2: printing code", "Stage 3: the developer tool in the IDE",
-decisions 36 to 39; [modules.md](design/modules.md), decision 8). Its
-stage 4, the shell,
-is next for it: it needs a plan of its own, which decides its open
-questions -- how an input is compiled, how a workspace variable becomes
-a slot, whether results are named, how an interrupt stops an input,
-line editing without a new dependency
-([developer-tool.md](design/developer-tool.md), "Open questions").
-
 **Road step 9, an optimizing JIT with type feedback, inlining and
 deoptimization**, Strongtalk's and HotSpot's class: hot code recompiled
 along the receiver types the inline caches recorded, built to the
@@ -2467,7 +2440,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   (decisions 36 to 39, built 2026-11-22). Open: stage 4,
   `ns-next shell`, evaluating against a workspace object as the
   Newspeak IDE does; it matters because an expression is still
-  evaluated only at a stop. Its open questions are decided in its plan
+  evaluated only at a stop. It is set back behind the debugger's stage
+  6, when to take it up not decided (decided with the user on
+  2026-11-22). Its open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
 - **The IDE's debug session as MCP tools** (asked for by the user on
