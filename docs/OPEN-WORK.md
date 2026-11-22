@@ -33,6 +33,12 @@ thread mirrors" below). With the install, "Create Method" for an
 uncaught `MessageNotUnderstood` and the forced `nil` from
 `Object>>doesNotUnderstand:` when it is declined ("Exceptions"). Over
 DAP, requests of ns-next's own, and in the plugin a hot-swap action.
+Hot swap is split into three batches, the complete install, hot swap in
+the debugger and developing in an empty world, and the first one's
+decisions are taken but for one, the change of a module's identity
+([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"); it waits for the specification of the
+current state, which comes first (decided with the user on 2026-11-23).
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
 at the safepoint", "Launching, the start and the end", "The MCP
 server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
