@@ -1249,6 +1249,23 @@ fn a_live_server_s_trace_resists_deletion() {
     drop(server);
 }
 
+/// On POSIX `traces/` is the user's alone, so that no other user reads the
+/// traces below it in a cache directory others may read.
+#[cfg(unix)]
+#[test]
+fn the_traces_directory_is_the_user_s_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let server = McpServer::start_in(data.path(), false);
+    let mode = std::fs::metadata(&traces)
+        .expect("the traces' directory")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    drop(server);
+}
+
 /// The arguments of a start of `path`, a `COUNTER`, stopping at its line 5.
 fn counter_start(path: &Path) -> Value {
     json!({
