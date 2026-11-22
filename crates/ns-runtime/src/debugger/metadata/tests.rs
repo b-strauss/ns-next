@@ -1771,3 +1771,125 @@ fn a_body_that_compiles_again_otherwise_fails_the_check() {
         ),
     }
 }
+
+/// A module whose nested class `Point` has a factory and no class side of
+/// its own, below a class an edit lengthens.
+const A_FACTORY_BELOW: &str = indoc! {"
+    class Root = Object new (
+    ) (
+      public class A = () (
+        public a = ( ^1 )
+      )
+      public class Point x: ax = (
+        |
+          public x = ax.
+        |
+      ) ()
+    ) : ()
+"};
+
+/// The description of the factory body of `class_side`, a version of
+/// `Point`'s class side.
+fn factory_description(
+    mutator: &mut Mutator<'_>,
+    class_side: &Rc<Mixin>,
+) -> crate::trace_events::descriptions::BodyDescription {
+    let origin = BodyOrigin {
+        mixin: Rc::clone(class_side),
+        member: Member::Factory,
+    };
+    let body = crate::trace_events::BodyName {
+        number: 1,
+        name: "Root/Point class>>x:".to_string(),
+    };
+    crate::trace_events::descriptions::describe(
+        mutator,
+        &factory_code(class_side),
+        &origin,
+        body,
+        None,
+    )
+    .expect("the factory is described")
+}
+
+/// `Point`'s class side as the heap holds it now: synthesized, since the
+/// declaration declares none.
+fn point_class_side(mutator: &mut Mutator<'_>, root: &Root) -> Rc<Mixin> {
+    let root_mixin = applied_mixin(mutator, root);
+    let point = nested_mixin(mutator, &root_mixin, "Point");
+    mutator.metaclass_mixin(&point)
+}
+
+/// A synthesized body is placed where its own version declared it: after
+/// an edit above it, at its header moved in the current text and at its
+/// own in the text it was read in; after an edit that renamed its factory
+/// and kept its arity, in its own text alone, never at the new header,
+/// which its old version compiles alike with.
+#[test]
+fn a_synthesized_body_is_placed_where_its_version_declared_it() {
+    let source = A_FACTORY_BELOW;
+    let (mut interpreter, root) = loaded_under(source, Lowering::Optimized);
+    interpreter.enter(|mutator| {
+        let slice = |span: ns_syntax::Span| &source[span.start as usize..span.end as usize];
+        let root_mixin = applied_mixin(mutator, &root);
+        let first = nested_mixin(mutator, &root_mixin, "A");
+        let first_id = mutator.heap().known_mixin_id(&first).expect("A's id");
+        let lengthening = crate::interpreter::edit::Edit {
+            header: None,
+            instance_side: vec![crate::interpreter::edit::MemberEdit::AddMethod(
+                "public longer = ( ^3 + 4 )".to_string(),
+            )],
+            class_side: Vec::new(),
+        };
+        if let Err(diagnostic) = mutator.install_edit(first_id, &lengthening) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        mutator.debug_metadata.clear();
+        let original = point_class_side(mutator, &root);
+        let moved = factory_description(mutator, &original);
+        assert_eq!(slice(moved.source), "x: ax");
+        let current = moved.current.as_ref().expect("the current text holds it");
+        assert_eq!(
+            &current.text[current.source.start as usize..current.source.end as usize],
+            "x: ax"
+        );
+        assert!(
+            current.source.start > moved.source.start,
+            "the edit moved it"
+        );
+        assert_eq!(
+            moved.checksum,
+            crate::trace_events::descriptions::source_checksum(b"x: ax")
+        );
+
+        let root_mixin = applied_mixin(mutator, &root);
+        let point = nested_mixin(mutator, &root_mixin, "Point");
+        let point_id = mutator.heap().known_mixin_id(&point).expect("Point's id");
+        let renaming = crate::interpreter::edit::Edit {
+            header: Some(
+                "public class Point at: ax = (\n    |\n      public x = ax.\n    |\n  ) "
+                    .to_string(),
+            ),
+            instance_side: Vec::new(),
+            class_side: Vec::new(),
+        };
+        if let Err(diagnostic) = mutator.install_edit(point_id, &renaming) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        mutator.debug_metadata.clear();
+        let superseded = factory_description(mutator, &original);
+        assert_eq!(slice(superseded.source), "x: ax");
+        assert_eq!(superseded.checksum, moved.checksum);
+        assert!(
+            superseded.current.is_none(),
+            "the current text's header is another's: {superseded:?}"
+        );
+        let renamed = point_class_side(mutator, &root);
+        let edited = factory_description(mutator, &renamed);
+        let current = edited.current.as_ref().expect("the current text holds it");
+        assert_eq!(
+            &current.text[current.source.start as usize..current.source.end as usize],
+            "at: ax"
+        );
+    });
+}

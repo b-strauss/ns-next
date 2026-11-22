@@ -27,6 +27,7 @@ use crate::bytecode::{CallSite, CompiledCode};
 use crate::debugger::ModuleName;
 use crate::debugger::metadata::Cache;
 use crate::debugger::metadata::again::{BodyOrigin, Member, declaration_path};
+use crate::debugger::metadata::synthesized_standing;
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{shipped_module_text, shipped_source_files};
 
@@ -261,9 +262,15 @@ pub(crate) fn describe(
 /// it, so it stands where its metadata says (`debugger.md`, decision 12):
 /// a factory at its header's factory pattern, or the class's name for a
 /// header that writes none, an initializer at its declaration's header,
-/// in the module's current text; with the statements and sends its
-/// metadata gives in that text -- a factory none, since the source
-/// writes none. `None` for a body no metadata pairs with.
+/// as its own version declared them (`Cache::synthesized_place`). Its
+/// source and checksum are its version's, in the text that version was
+/// read in, as every other body's are, and the module's current text is
+/// handed only where it holds the same text at that place, so that a
+/// body an edit renamed the header of is placed only in a text that
+/// still holds its own header. Its statements and sends are its
+/// metadata's -- a factory none, since the source writes none -- each
+/// where the version's text holds it. `None` for a body no metadata
+/// pairs with.
 fn describe_synthesized(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
@@ -273,19 +280,35 @@ fn describe_synthesized(
     module: ModuleName,
     shipped_path: Option<String>,
 ) -> Option<BodyDescription> {
-    let (metadata, text) = Cache::metadata_with_text(mutator, code, origin)?;
-    let standing = metadata.factory_pattern.or(metadata.header_pattern)?;
-    let own = text.get(range_of(standing))?;
+    let place = Cache::synthesized_place(mutator, code, origin)?;
+    let standing = synthesized_standing(&place.metadata)?;
+    let compiled = Rc::clone(&place.compiled);
+    // A span of the compiled text where the version's own text holds the
+    // same bytes, in that text's offsets; the compiled text itself for a
+    // version without one.
+    let own_span = |span: Span| -> Option<Span> {
+        let (Some(shift), Some(version)) = (place.shift, origin.mixin.text.as_ref()) else {
+            return Some(span);
+        };
+        let start = u32::try_from(i64::from(span.start) + shift).ok()?;
+        let end = u32::try_from(i64::from(span.end) + shift).ok()?;
+        let moved = Span::new(start, end);
+        (version.slice(moved) == compiled.get(range_of(span))).then_some(moved)
+    };
+    let source = own_span(standing)?;
+    let own = compiled.get(range_of(standing))?;
     let checksum = source_checksum(own.as_bytes());
-    let statements = metadata
+    let statements = place
+        .metadata
         .statements
         .iter()
         .map(|statement| DescribedStatement {
             instructions: statement.instructions.clone(),
-            span: Some(statement.span),
+            span: own_span(statement.span),
         })
         .collect();
-    let sends = metadata
+    let sends = place
+        .metadata
         .sends
         .iter()
         .map(|send| DescribedSend {
@@ -294,8 +317,8 @@ fn describe_synthesized(
                 .call_site
                 .filter(|site| *site != CallSite::UNCACHED)
                 .map(|site| site.number),
-            call: Some(send.call),
-            selector: send.selector.iter().copied().map(Some).collect(),
+            call: own_span(send.call),
+            selector: send.selector.iter().map(|token| own_span(*token)).collect(),
         })
         .collect();
     Some(BodyDescription {
@@ -303,11 +326,10 @@ fn describe_synthesized(
         family,
         module,
         shipped_path,
-        current: Some(CurrentText {
-            text,
-            source: standing,
-        }),
-        source: standing,
+        current: place
+            .current
+            .map(|(text, source)| CurrentText { text, source }),
+        source,
         checksum,
         statements,
         sends,

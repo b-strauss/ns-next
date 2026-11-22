@@ -1164,10 +1164,15 @@ it stands now. A version without a text of its own, a builtin's or an
 image's without source, is described as the module's current text
 holds its span; a body the compiler synthesizes, which has no source --
 a factory's, and an initializer of a declaration that writes none --
-is described where its metadata stands in that text: a factory at its
-header's factory pattern, or the class's name for a header that writes
-none, an initializer at its declaration's header, with the statements
-and sends that metadata gives (a factory none). A block's family root is
+is described where its metadata places it as its own version declared
+it: a factory at its header's factory pattern, or the class's name for
+a header that writes none, an initializer at its declaration's header,
+with the statements and sends that metadata gives (a factory none). Its
+source and checksum are those of the text its version was read in, as
+every other body's, and the current text is handed only where it holds
+the same text at the body's place, so that a factory an edit renamed
+the header of, which compiles alike with the new one, is placed in a
+text that still holds its own header and never at the new one. A block's family root is
 named even when its code is gone by the flush -- a collection reclaimed
 the version that held it while an event of the block waited -- by the
 number the root was given while it lived or one given then, which every

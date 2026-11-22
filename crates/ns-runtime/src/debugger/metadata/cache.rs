@@ -506,6 +506,122 @@ fn moved_into(
     }
 }
 
+/// Where a body the compiler synthesized stands, as its own version
+/// declared it (`Cache::synthesized_place`).
+pub(crate) struct SynthesizedPlace {
+    /// The body's metadata, compiled again from `compiled`.
+    pub(crate) metadata: Rc<BodyMetadata>,
+    /// The text the metadata's spans count in: the module's current text
+    /// with the version's own declaration laid where the current one
+    /// stands.
+    pub(crate) compiled: Rc<str>,
+    /// What moves a span of `compiled` within the declaration's header to
+    /// the text the version was read in; `None` for a version without a
+    /// text of its own, whose spans count in the current text.
+    pub(crate) shift: Option<i64>,
+    /// The module's current text and where the body's place is in it,
+    /// where it holds there what the version declared there.
+    pub(crate) current: Option<(Rc<str>, Span)>,
+}
+
+impl Cache {
+    /// Where the body `code` of `origin`, which the compiler synthesized
+    /// -- a factory's, an initializer of a declaration that writes none --
+    /// stands as its own version declared it. Such a body has no source:
+    /// its metadata places it at its class header (decision 12), which
+    /// any version of the declaration of the same arity compiles alike
+    /// with, so that the current text's header alone would place an old
+    /// version at a header an edit renamed. The version's own
+    /// declaration, its nested declarations as they stand now, is laid
+    /// where the current one stands in the module's current text and the
+    /// level compiled again from that, so that its place is the one the
+    /// version declared; the current text is handed only where it holds
+    /// the same text at the body's place there. `None` where the module
+    /// has no text or the body pairs with nothing.
+    pub(crate) fn synthesized_place(
+        mutator: &mut Mutator<'_>,
+        code: &Rc<CompiledCode>,
+        origin: &BodyOrigin,
+    ) -> Option<SynthesizedPlace> {
+        let lowering = mutator.lowering;
+        let shared = Cache::current_level(mutator, &origin.mixin, lowering)?;
+        let (level, fresh) = &*shared;
+        let current_text = Rc::clone(&level.text);
+        let current_metadata = paired_metadata(level, code, origin)?;
+        let current_place = synthesized_standing(&current_metadata)?;
+        let Some(version) = origin.mixin.text.as_ref() else {
+            return Some(SynthesizedPlace {
+                metadata: current_metadata,
+                compiled: Rc::clone(&current_text),
+                shift: None,
+                current: Some((current_text, current_place)),
+            });
+        };
+        let declared = fresh.text.as_ref()?;
+        let range = declared.range();
+        let nested = declared
+            .holes()
+            .iter()
+            .map(|hole| text_at(&current_text, *hole).map(str::to_string))
+            .collect::<Option<Vec<String>>>()?;
+        let own_declaration = version.assemble(&nested)?;
+        let shift = i64::from(version.range().start) - i64::from(range.start);
+        if text_at(&current_text, range) == Some(own_declaration.as_str()) {
+            return Some(SynthesizedPlace {
+                metadata: current_metadata,
+                compiled: Rc::clone(&current_text),
+                shift: Some(shift),
+                current: Some((current_text, current_place)),
+            });
+        }
+        let patched = format!(
+            "{}{own_declaration}{}",
+            current_text.get(..range.start as usize)?,
+            current_text.get(range.end as usize..)?
+        );
+        let (patched_level, _) = compile_level_in(mutator, &origin.mixin, lowering, Some(patched))?;
+        let metadata = paired_metadata(&patched_level, code, origin)?;
+        let own_place = synthesized_standing(&metadata)?;
+        let own = text_at(&patched_level.text, own_place)?;
+        let current = (text_at(&current_text, current_place) == Some(own))
+            .then(|| (Rc::clone(&current_text), current_place));
+        Some(SynthesizedPlace {
+            metadata,
+            compiled: Rc::clone(&patched_level.text),
+            shift: Some(shift),
+            current,
+        })
+    }
+}
+
+/// The place a synthesized body's metadata gives it: a factory's pattern,
+/// an initializer's header.
+pub(crate) fn synthesized_standing(metadata: &BodyMetadata) -> Option<Span> {
+    metadata.factory_pattern.or(metadata.header_pattern)
+}
+
+/// The metadata `level` pairs `code` with: a factory body by its arity,
+/// every other body by its pairing.
+fn paired_metadata(
+    level: &super::again::LevelAgain,
+    code: &Rc<CompiledCode>,
+    origin: &BodyOrigin,
+) -> Option<Rc<BodyMetadata>> {
+    if matches!(origin.member, Member::Factory) {
+        return level.factory.metadata_of(code);
+    }
+    level
+        .pairs
+        .iter()
+        .find(|(body, _)| address(body) == address(code))
+        .and_then(|(_, metadata)| metadata.clone())
+}
+
+/// The text `span` covers in `text`.
+fn text_at(text: &str, span: Span) -> Option<&str> {
+    text.get(span.start as usize..span.end as usize)
+}
+
 /// The lowerings a level is compiled again under, in order: the
 /// interpreter's, then the other, for an image's code, which either may
 /// have compiled (decision 5).
