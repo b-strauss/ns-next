@@ -5681,12 +5681,13 @@ the way not taken: every question would run the program from its start.
   `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
-  `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`
-  -- the frame's bytecode and the machine code it goes on in, marked
-  where its call returns, or `the frame goes on in the interpreter`,
-  through `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
-  printing code") -- `debug_variables(frame? | reference?, start?,
-  count?)`, `debug_evaluate(expression, frame?)`,
+  `debug_pause`, `debug_wait(seconds)`, `debug_stack(start?, count?)`,
+  `debug_code(frame?, start?, count?)` -- a window of the frame's
+  bytecode and the machine code it goes on in, marked where its call
+  returns, or `the frame goes on in the interpreter`, through
+  `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
+  printing code"), 150 lines by default and 500 at most --
+  `debug_variables(frame? | reference?, start?, count?)`, `debug_evaluate(expression, frame?)`,
   `debug_set_variable(name, value, frame?)`, `debug_frame(action:
   restart | return, frame, value?)`, `debug_memory(class? |
   referrers_of?)`, `debug_mark(reference?, label)` -- without a
@@ -5720,7 +5721,12 @@ the way not taken: every question would run the program from its start.
   expands, `debug_mark` marks and `debug_memory` asks the referrers of,
   valid until the program goes on. `debug_stack` and `debug_variables`
   answer one entry a line in the same forms, every location an absolute
-  path, at most 100 unless asked for a page; an evaluation and a set
+  path, a page of 50 frames or 100 variables by default and 200 at most;
+  a page or window that is not the whole, `debug_code`'s too, ends in
+  `Showing <first>–<last> of <total>` and, where more follow, `— next:`
+  the exact call that answers them, every argument given repeated with
+  `start` advanced, and a page stops at the entry that would take it past
+  20,000 characters; an evaluation and a set
   variable answer the value and the output since the last answer. Text,
   not JSON: it is what an agent reads, in fewer tokens, and as precise.
   The output a program wrote before it stopped is still on its way

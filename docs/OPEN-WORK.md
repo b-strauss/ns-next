@@ -3178,10 +3178,6 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
-- **`debug_code` answers a whole listing** (noted 2026-11-20, in the
-  developer tool's stage 2's final review): the MCP tool has no bound,
-  so a very large body gives megabytes in one answer; a line cap with a
-  tail naming the lines left out would bound it.
 - **A class's three initializer bodies print under one name** (noted
   2026-11-20, in the final review): the full initializer, its own part
   and the standalone body of `Demo` all head their listings and trace
@@ -3707,10 +3703,8 @@ program's subclass of `String` as an argument, the error of a
   `frame_code_marks_where_a_compiled_caller_returns`
   (`tests/debug_adapter.rs`) asserts only when `machineCode` is present,
   so a change of the JIT's thresholds would leave it checking nothing,
-  and it does not assert where the mark stands; `debug_code`'s refusal
-  test asserts little, and `Session::code` reads a missing `bytecode`
-  as empty; `an_optimized_copy_lists_its_scopes`'s straight-line check
-  is weaker for the earlier fast paths than for the last; no test
+  and it does not assert where the mark stands;
+  `an_optimized_copy_lists_its_scopes`'s straight-line check is weaker for the earlier fast paths than for the last; no test
   reaches an inlining listing's arm whose receiver's id a collection
   reclaims before the flush (`name_freed_keys`);
   `a_refused_optimization_prints_its_plan` sizes its zone by

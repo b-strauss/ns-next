@@ -1,5 +1,6 @@
-//! What every answer of the trace tools and `debug_code` shares
-//! (`docs/design/debugger.md`, "The MCP server"): how many entries and
+//! What every paged answer shares, the trace tools', `debug_code`'s,
+//! `debug_stack`'s and `debug_variables`' (`docs/design/debugger.md`,
+//! "The MCP server"): how many entries and
 //! lines a page or window holds by default and at most, the character
 //! budget every answer stays under, the `Showing` line that ends a page
 //! and the exact `next:` call in it, and how numbers and sizes are
@@ -14,13 +15,13 @@ use serde_json::Value;
 /// its cut. A page stops at the entry that would pass it.
 pub(crate) const ANSWER_BUDGET: usize = 20_000;
 
-/// The entries of a journal's or the events' page by default.
+/// The entries of a journal's, the events' or the stack's page by default.
 pub(crate) const ENTRY_DEFAULT: usize = 50;
 
 /// The entries of each of the overview's lists by default.
 pub(crate) const OVERVIEW_DEFAULT: usize = 10;
 
-/// The lines of a listing's window by default.
+/// The lines of a listing's or a frame's code's window by default.
 pub(crate) const LINE_DEFAULT: usize = 150;
 
 /// The most entries a page holds, whatever it is asked.
@@ -66,11 +67,59 @@ pub(crate) fn showing_line(
     line
 }
 
+/// The arguments of the call that answers what follows a page: every
+/// argument `given` holds, `session` set to the session's number, which
+/// the call names even where it was left out, and `start` advanced to
+/// `start`, so that the next page is asked as the page was.
+pub(crate) fn next_arguments(given: &Value, session: u32, start: usize) -> Value {
+    let mut arguments = match given {
+        Value::Object(members) => Value::Object(members.clone()),
+        _ => Value::Object(serde_json::Map::new()),
+    };
+    arguments["session"] = Value::from(session);
+    arguments["start"] = Value::from(start);
+    arguments
+}
+
+/// A page of `entries`, the entries from `start` of `total`, as many as
+/// keep the page and its `Showing` line within `budget` characters, a
+/// line's newline counted; a page that is not the whole ends in its
+/// `Showing` line, naming the call `next_from` makes of the first entry
+/// it leaves out where more follow.
+pub(crate) fn page<'a>(
+    entries: impl IntoIterator<Item = &'a String>,
+    start: usize,
+    total: usize,
+    budget: usize,
+    next_from: impl Fn(usize) -> (&'static str, Value),
+) -> Vec<String> {
+    let showing_at_most =
+        characters(&showing_line(total, total, total, Some(next_from(total)))) + 1;
+    let mut used = 0;
+    let mut lines = Vec::new();
+    let mut last = start;
+    for entry in entries {
+        let length = characters(entry) + 1;
+        if used + length + showing_at_most > budget {
+            break;
+        }
+        used += length;
+        lines.push(entry.clone());
+        last += 1;
+    }
+    if start > 0 || last < total {
+        let next = (last < total).then(|| next_from(last));
+        lines.push(showing_line(start + 1, last, total, next));
+    }
+    lines
+}
+
 /// What each tool an answer names a call of is asked about, in the order
 /// its signature gives its parameters: between `session`, which comes
 /// first, and `start` and `count`, which come last.
-const PARAMETER_ORDERS: [(&str, &[&str]); 5] = [
+const PARAMETER_ORDERS: [(&str, &[&str]); 6] = [
     ("debug_code", &["frame"]),
+    ("debug_variables", &["frame", "reference"]),
     ("debug_trace", &["list"]),
     ("debug_trace_method", &["method", "part"]),
     ("debug_trace_listing", &["method", "kind", "index"]),
@@ -275,6 +324,61 @@ mod tests {
                 ))
             ),
             r##"Showing 1,001–1,050 of 2,000 — next: debug_trace_events {"session":1,"category":"deoptimize","start":1050}"##
+        );
+    }
+
+    #[test]
+    fn a_next_call_repeats_every_argument_given() {
+        assert_eq!(
+            next_arguments(&json!({ "frame": 0, "count": 3 }), 1, 3),
+            json!({ "session": 1, "frame": 0, "start": 3, "count": 3 })
+        );
+        assert_eq!(
+            next_arguments(&json!({ "session": 2, "start": 3 }), 2, 6),
+            json!({ "session": 2, "start": 6 })
+        );
+        assert_eq!(
+            next_arguments(&Value::Null, 1, 50),
+            json!({ "session": 1, "start": 50 })
+        );
+    }
+
+    #[test]
+    fn a_page_says_where_it_stopped_unless_it_is_the_whole() {
+        let entries: Vec<String> = (1..=5).map(|entry| format!("entry {entry}")).collect();
+        let next_from = |start: usize| ("debug_stack", json!({ "session": 1, "start": start }));
+        assert_eq!(page(&entries, 0, 5, ANSWER_BUDGET, next_from), entries);
+        assert_eq!(
+            page(&entries[..2], 0, 5, ANSWER_BUDGET, next_from),
+            [
+                "entry 1",
+                "entry 2",
+                r#"Showing 1–2 of 5 — next: debug_stack {"session":1,"start":2}"#
+            ]
+        );
+        assert_eq!(
+            page(&entries[3..], 3, 5, ANSWER_BUDGET, next_from),
+            ["entry 4", "entry 5", "Showing 4–5 of 5"]
+        );
+        // A budget of the Showing line at its longest and two entries,
+        // each with its newline.
+        let showing_at_most =
+            characters(r#"Showing 5–5 of 5 — next: debug_stack {"session":1,"start":5}"#) + 1;
+        let budget = showing_at_most + 2 * ("entry 1".len() + 1);
+        assert_eq!(
+            page(&entries, 0, 5, budget, next_from),
+            [
+                "entry 1",
+                "entry 2",
+                r#"Showing 1–2 of 5 — next: debug_stack {"session":1,"start":2}"#
+            ]
+        );
+        assert_eq!(
+            page(&entries, 0, 5, budget - 1, next_from),
+            [
+                "entry 1",
+                r#"Showing 1–1 of 5 — next: debug_stack {"session":1,"start":1}"#
+            ]
         );
     }
 

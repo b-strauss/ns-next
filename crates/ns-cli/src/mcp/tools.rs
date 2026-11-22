@@ -79,15 +79,24 @@ pub(crate) fn call(session: &mut Session, name: &str, arguments: Value) -> Answe
             let wait = wait_of(Some(arguments.seconds))?;
             Ok(session.wait(wait))
         }),
-        "debug_stack" => session.stack(),
-        "debug_code" => parse(arguments)
-            .and_then(|arguments: CodeArguments| session.code(arguments.frame.unwrap_or(0))),
-        "debug_variables" => parse(arguments).and_then(|arguments: VariablesArguments| {
+        "debug_stack" => parse(arguments.clone()).and_then(|parsed: PageArguments| {
+            session.stack(parsed.start, parsed.count, &arguments)
+        }),
+        "debug_code" => parse(arguments.clone()).and_then(|parsed: CodeArguments| {
+            session.code(
+                parsed.frame.unwrap_or(0),
+                parsed.start,
+                parsed.count,
+                &arguments,
+            )
+        }),
+        "debug_variables" => parse(arguments.clone()).and_then(|parsed: VariablesArguments| {
             session.variables(
-                arguments.frame,
-                arguments.reference,
-                arguments.start.unwrap_or(0),
-                arguments.count.filter(|count| *count > 0),
+                parsed.frame,
+                parsed.reference,
+                parsed.start,
+                parsed.count,
+                &arguments,
             )
         }),
         "debug_evaluate" => parse(arguments).and_then(|arguments: EvaluateArguments| {
@@ -356,6 +365,18 @@ struct FrameArguments {
 struct CodeArguments {
     #[serde(default)]
     frame: Option<usize>,
+    #[serde(default)]
+    start: Option<usize>,
+    #[serde(default)]
+    count: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct PageArguments {
+    #[serde(default)]
+    start: Option<usize>,
+    #[serde(default)]
+    count: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -489,24 +510,31 @@ pub(crate) fn list() -> Value {
         ),
         tool(
             "debug_stack",
-            "Lists the stopped program's frames, one a line, each with its absolute path, line and column.",
-            json!({}),
+            "Lists the stopped program's frames, one a line, each with its absolute path, line and column; paged by start and count, a page that is not every frame ending in a Showing line with the exact call of the next.",
+            json!({
+                "start": { "type": "integer", "minimum": 0, "description": "The first frame to list, 0 the top one; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many frames; 50 by default, 200 at most." }
+            }),
             &[],
         ),
         tool(
             "debug_code",
-            "Answers the code of a frame of the stopped program as ns-next run's --print-bytecode and --print-code print it: its method's or block's bytecode, the instruction the frame stands at marked ->, then the machine code the frame goes on in, the instruction it returns to marked ->, or that it goes on in the interpreter.",
-            json!({ "frame": frame() }),
+            "Answers the code of a frame of the stopped program as ns-next run's --print-bytecode and --print-code print it: its method's or block's bytecode, the instruction the frame stands at marked ->, then the machine code the frame goes on in, the instruction it returns to marked ->, or that it goes on in the interpreter; a window of its lines by start and count, a window that is not every line ending in a Showing line with the exact call of the next.",
+            json!({
+                "frame": frame(),
+                "start": { "type": "integer", "minimum": 0, "description": "How many of the code's lines to skip; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many lines; 150 by default, 500 at most." }
+            }),
             &[],
         ),
         tool(
             "debug_variables",
-            "Lists a frame's variables, or the fields and elements of a value by its reference, one a line.",
+            "Lists a frame's variables, or the fields and elements of a value by its reference, one a line; paged by start and count, a page that is not every one ending in a Showing line with the exact call of the next.",
             json!({
                 "frame": frame(),
                 "reference": reference(),
                 "start": { "type": "integer", "minimum": 0, "description": "The first to list; 0 by default." },
-                "count": { "type": "integer", "minimum": 1, "description": "How many to list; 100 by default." }
+                "count": { "type": "integer", "minimum": 1, "description": "How many to list; 100 by default, 200 at most." }
             }),
             &[],
         ),

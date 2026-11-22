@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::ScratchDirectory;
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use serde_json::{Value, json};
 
 /// The longest any single answer takes before the test fails.
@@ -64,8 +64,8 @@ const TOOLS: [(&str, &[&str], &[&str]); 21] = [
     ("debug_run_to", &["location"], &["wait", "session"]),
     ("debug_pause", &[], &["session"]),
     ("debug_wait", &["seconds"], &["session"]),
-    ("debug_stack", &[], &["session"]),
-    ("debug_code", &[], &["frame", "session"]),
+    ("debug_stack", &[], &["start", "count", "session"]),
+    ("debug_code", &[], &["frame", "start", "count", "session"]),
     (
         "debug_variables",
         &[],
@@ -650,11 +650,209 @@ fn debug_code_answers_the_bytecode() {
     // The top frame stands at the stop's safepoint, never at a call its
     // machine code returns from.
     assert!(
-        code.contains("--- end\nthe frame goes on in the interpreter"),
+        code.ends_with("--- end\nthe frame goes on in the interpreter"),
         "{code}"
     );
+    // The whole code fits the default window, which says nothing of
+    // pages.
+    let lines: Vec<&str> = code.lines().collect();
+    let total = lines.len();
+    assert!(total > 6, "{code}");
+    let window = server.succeed("debug_code", json!({ "frame": 0, "count": 3 }));
+    let next = r#"debug_code {"session":1,"frame":0,"start":3,"count":3}"#;
+    assert_eq!(
+        window,
+        format!(
+            "{}\nShowing 1–3 of {total} — next: {next}",
+            lines[..3].join("\n")
+        )
+    );
+    let (tool, arguments) = next.split_once(' ').expect("a call");
+    let arguments: Value = serde_json::from_str(arguments).expect("the call's arguments");
+    let following = server.succeed(tool, arguments);
+    assert_eq!(
+        following,
+        format!(
+            "{}\nShowing 4–6 of {total} — next: {}",
+            lines[3..6].join("\n"),
+            r#"debug_code {"session":1,"frame":0,"start":6,"count":3}"#
+        )
+    );
+    let last = server.succeed("debug_code", json!({ "start": total - 1 }));
+    assert_eq!(
+        last,
+        format!("{}\nShowing {total}–{total} of {total}", lines[total - 1])
+    );
+    let past = server.fail("debug_code", json!({ "start": total }));
+    assert_eq!(
+        past,
+        format!("start {total} is past the end: the frame's code has {total} lines")
+    );
+    let nothing = server.fail("debug_code", json!({ "count": 0 }));
+    assert_eq!(nothing, "a count of 0: give 1 or more");
     let refused = server.fail("debug_code", json!({ "frame": 9 }));
-    assert!(!refused.is_empty(), "{refused}");
+    assert_eq!(refused, "no frame of this stop has that id");
+}
+
+/// A root whose `outer:` is entered often enough to run machine code by
+/// the time `report:`, which it calls, stops before it sends `double:`.
+const HOT_CALLER: &str = indoc! {"
+    class Hot = Object new () (
+      public main: platform args: arguments = (
+        1 to: 50 do: [:index | self outer: index].
+      )
+      outer: index = (
+        ^self report: index
+      )
+      report: index = (
+        | total |
+        total:: self double: index.
+        ^total + 1
+      )
+      double: index = (
+        ^index + index
+      )
+    ) : ()
+"};
+
+/// A window counts the bytecode's lines and the machine code's as one
+/// listing, so that one straddles the two; a target without a JIT says
+/// the frame goes on in the interpreter.
+#[test]
+fn debug_code_windows_the_bytecode_and_the_machine_code_as_one() {
+    let (_directory, path) = program("Hot", HOT_CALLER);
+    let compiles = compiles_bodies(&path);
+    let mut server = McpServer::start_plain();
+    server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": location(&path, 11), "hit_condition": "40" }],
+        }),
+    );
+    let whole = server.succeed("debug_code", json!({ "frame": 1, "count": 500 }));
+    assert!(whole.starts_with("--- bytecode {Hot>>outer:}\n"), "{whole}");
+    let lines: Vec<&str> = whole.lines().collect();
+    assert!(
+        lines.iter().all(|line| !line.starts_with("Showing ")),
+        "{whole}"
+    );
+    let total = lines.len();
+    let seam = lines
+        .iter()
+        .position(|line| *line == "--- end")
+        .expect("the bytecode's end");
+    if compiles {
+        assert!(
+            lines[seam + 1].starts_with("--- code {Hot>>outer:} baseline "),
+            "{whole}"
+        );
+    } else {
+        assert_eq!(lines[seam + 1], "the frame goes on in the interpreter");
+        assert_eq!(total, seam + 2, "{whole}");
+    }
+    let window = server.succeed(
+        "debug_code",
+        json!({ "frame": 1, "start": seam, "count": 2 }),
+    );
+    let next = (seam + 2 < total).then(|| {
+        format!(
+            r#" — next: debug_code {{"session":1,"frame":1,"start":{},"count":2}}"#,
+            seam + 2
+        )
+    });
+    assert_eq!(
+        window,
+        format!(
+            "{}\nShowing {}–{} of {total}{}",
+            lines[seam..seam + 2].join("\n"),
+            seam + 1,
+            seam + 2,
+            next.unwrap_or_default()
+        )
+    );
+}
+
+/// `number` as an answer writes it, a `,` between groups of three digits.
+fn grouped(number: usize) -> String {
+    let digits = number.to_string();
+    let mut text = String::new();
+    for (place, digit) in digits.chars().enumerate() {
+        if place > 0 && (digits.len() - place).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
+}
+
+/// The text of each statement of `long_program`'s, long in its bytecode
+/// listing.
+const LONG_LITERAL: &str = "a literal long enough that every line of the bytecode that loads it passes \
+     the average a window of five hundred lines can hold";
+
+/// A root whose one method's bytecode is longer, in characters, than an
+/// answer holds.
+fn long_program() -> String {
+    let statements: String = (0..300)
+        .map(|_| format!("    out show: '{LONG_LITERAL}'.\n"))
+        .collect();
+    formatdoc! {"
+        class Long = Object new () (
+          public main: platform args: arguments = (
+            | out = platform transcript. |
+        {statements}  )
+        ) : ()
+    "}
+}
+
+#[test]
+fn debug_code_stays_within_its_budget_and_says_where_it_stopped() {
+    let (_directory, path) = program("Long", &long_program());
+    let mut server = McpServer::start();
+    server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": location(&path, 4) }],
+        }),
+    );
+    let window = server.succeed("debug_code", json!({ "count": 500 }));
+    assert!(window.chars().count() <= 20_000, "{window}");
+    let lines: Vec<&str> = window.lines().collect();
+    let showing = lines.last().expect("a Showing line");
+    let shown = lines.len() - 1;
+    // Cut by the budget, before the count.
+    assert!(shown < 500, "{showing}");
+    let prefix = format!("Showing 1–{shown} of ");
+    let rest = showing
+        .strip_prefix(&prefix)
+        .unwrap_or_else(|| panic!("{showing}"));
+    let (total, next) = rest.split_once(" — next: ").expect("a next call");
+    let total: usize = total.replace(',', "").parse().expect("a total");
+    assert!(total > shown, "{showing}");
+    assert_eq!(
+        next,
+        format!(r#"debug_code {{"session":1,"start":{shown},"count":500}}"#)
+    );
+    // The window ends at the line that would have passed the budget.
+    let (tool, arguments) = next.split_once(' ').expect("a call");
+    let arguments: Value = serde_json::from_str(arguments).expect("the call's arguments");
+    let following = server.succeed(tool, arguments);
+    assert!(following.chars().count() <= 20_000, "{following}");
+    let first_left_out = following.lines().next().expect("a line");
+    let grouped = grouped(total);
+    let showing_at_most = format!(
+        "Showing {grouped}–{grouped} of {grouped} — next: debug_code {{\"session\":1,\"start\":{total},\"count\":500}}"
+    );
+    let used: usize = lines[..shown]
+        .iter()
+        .map(|line| line.chars().count() + 1)
+        .sum();
+    assert!(
+        used + first_left_out.chars().count() + 1 + showing_at_most.chars().count() + 1 > 20_000,
+        "{first_left_out}"
+    );
 }
 
 /// A root that says it spins, then counts forever.
@@ -939,6 +1137,74 @@ fn killing_the_server_ends_its_program() {
     }
 }
 
+/// A root that recurses twelve sends deep, then stops at the bottom.
+const DEEP: &str = indoc! {"
+    class Deep = Object new () (
+      down: depth = (
+        depth = 0 ifTrue: [^ 0].
+        ^ (down: depth - 1) + 1
+      )
+      public main: platform args: arguments = (
+        platform transcript show: (down: 12) printString; newLine.
+      )
+    ) : ()
+"};
+
+#[test]
+fn debug_stack_is_paged_with_its_exact_next() {
+    let (_directory, path) = program("Deep", DEEP);
+    let mut server = McpServer::start();
+    server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "breakpoints": [{ "location": location(&path, 3) }],
+        }),
+    );
+    // The first stop is the outermost `down:`'s, the thirteenth the
+    // innermost one's.
+    for _ in 0..12 {
+        server.succeed("debug_continue", json!({}));
+    }
+    let whole = server.succeed("debug_stack", json!({}));
+    let frames: Vec<&str> = whole.lines().collect();
+    // Thirteen `down:`s and `main:args:`, at least.
+    assert!(frames.len() >= 14, "{whole}");
+    assert!(frames.iter().all(|frame| frame.starts_with('#')), "{whole}");
+    let total = frames.len();
+    let page = server.succeed("debug_stack", json!({ "count": 2 }));
+    let next = r#"debug_stack {"session":1,"start":2,"count":2}"#;
+    assert_eq!(
+        page,
+        format!(
+            "{}\nShowing 1–2 of {total} — next: {next}",
+            frames[..2].join("\n")
+        )
+    );
+    let (tool, arguments) = next.split_once(' ').expect("a call");
+    let arguments: Value = serde_json::from_str(arguments).expect("the call's arguments");
+    let following = server.succeed(tool, arguments);
+    assert_eq!(
+        following,
+        format!(
+            "{}\nShowing 3–4 of {total} — next: {}",
+            frames[2..4].join("\n"),
+            r#"debug_stack {"session":1,"start":4,"count":2}"#
+        )
+    );
+    assert!(following.starts_with("#2 Deep>>down: "), "{following}");
+    let last = server.succeed("debug_stack", json!({ "start": total - 1 }));
+    assert_eq!(
+        last,
+        format!("{}\nShowing {total}–{total} of {total}", frames[total - 1])
+    );
+    let past = server.fail("debug_stack", json!({ "start": total }));
+    assert_eq!(
+        past,
+        format!("start {total} is past the end: the stack has {total} frames")
+    );
+}
+
 /// A root that holds an array, then lets it go.
 const MARKS: &str = indoc! {"
     class Marks = Object new () (
@@ -973,6 +1239,43 @@ fn a_reference_expands_and_a_mark_names_a_value() {
         .to_string();
     let children = server.succeed("debug_variables", json!({ "reference": reference }));
     assert_eq!(children, "[1] = 10\n[2] = 20\n[3] = 30");
+    let first = server.succeed(
+        "debug_variables",
+        json!({ "reference": reference, "count": 2 }),
+    );
+    let next =
+        format!(r#"debug_variables {{"session":1,"reference":{reference},"start":2,"count":2}}"#);
+    assert_eq!(
+        first,
+        format!("[1] = 10\n[2] = 20\nShowing 1–2 of 3 — next: {next}")
+    );
+    let (tool, arguments) = next.split_once(' ').expect("a call");
+    let arguments: Value = serde_json::from_str(arguments).expect("the call's arguments");
+    let rest = server.succeed(tool, arguments);
+    assert_eq!(rest, "[3] = 30\nShowing 3–3 of 3");
+    let past = server.fail(
+        "debug_variables",
+        json!({ "reference": reference, "start": 3 }),
+    );
+    assert_eq!(
+        past,
+        format!("start 3 is past the end: [ref {reference}] has 3 elements")
+    );
+    let locals = server.succeed("debug_variables", json!({ "frame": 0, "count": 1 }));
+    let (local, showing) = locals
+        .split_once('\n')
+        .expect("a local and its Showing line");
+    assert!(local.starts_with("self = "), "{locals}");
+    let total = server
+        .succeed("debug_variables", json!({ "frame": 0 }))
+        .lines()
+        .count();
+    assert_eq!(
+        showing,
+        format!(
+            r#"Showing 1–1 of {total} — next: debug_variables {{"session":1,"frame":0,"start":1,"count":1}}"#
+        )
+    );
     server.succeed(
         "debug_mark",
         json!({ "reference": reference, "label": "first" }),

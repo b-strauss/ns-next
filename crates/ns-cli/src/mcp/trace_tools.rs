@@ -1685,14 +1685,17 @@ fn journal_sends(index: &TraceIndex, bodies: &[u32]) -> Vec<String> {
             continue;
         };
         for send in &described.sends {
-            let place = match (send.call, described.placed) {
-                (Some(call), Placed::Source) => format!("{}:{}", call[0] + 1, call[1] + 1),
-                (Some(call), Placed::Current) => {
-                    format!("{}:{} of its current text", call[0] + 1, call[1] + 1)
-                }
-                _ => "(unplaced)".to_string(),
+            // A place in the current text, which no file holds, says so
+            // after the selector, where it does not part the two.
+            let (place, qualifier) = match (send.call, described.placed) {
+                (Some(call), Placed::Source) => (format!("{}:{}", call[0] + 1, call[1] + 1), ""),
+                (Some(call), Placed::Current) => (
+                    format!("{}:{}", call[0] + 1, call[1] + 1),
+                    " (in its current text)",
+                ),
+                _ => ("(unplaced)".to_string(), ""),
             };
-            let name = send.name.as_deref().unwrap_or("send");
+            let name = format!("{}{qualifier}", send.name.as_deref().unwrap_or("send"));
             let outcome = index.send_outcome(number, send.instruction);
             let mut said = Vec::new();
             if let Some(decision) = outcome.inlining {
@@ -3226,7 +3229,7 @@ mod tests {
                 "bodies: #12 method (edited, line 14 of its current text), #13 [] in Bounce/Ball>>bounce",
                 "events: none",
                 "sends (1 of 1)",
-                "  #12 15:9 of its current text x:",
+                "  #12 15:9 x: (in its current text)",
             ],
             "{answer}"
         );

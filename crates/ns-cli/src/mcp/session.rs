@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::dap_client::{DapClient, Next};
+use super::pages::{
+    self, ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, LINE_DEFAULT, LINE_MAXIMUM, characters,
+    count_of, counted,
+};
 use super::registry::{SessionHandle, SessionState};
 use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
@@ -54,8 +58,8 @@ const ABORT_BOUND: Duration = Duration::from_secs(10);
 const OUTPUT_QUIET: Duration = Duration::from_millis(20);
 const OUTPUT_SETTLE: Duration = Duration::from_millis(200);
 
-/// The most lines `debug_stack`, `debug_variables` and `debug_memory`
-/// answer unless asked for a page.
+/// The lines `debug_variables` answers unless asked for another count,
+/// and the most `debug_memory` answers.
 pub(crate) const LISTING_LIMIT: usize = 100;
 
 /// The agent's message for an evaluation the abort ended.
@@ -162,12 +166,14 @@ struct StopEvent {
 }
 
 /// A value a stop's answers handed out by its reference: the DAP
-/// `variablesReference` that lists its children, 0 for none, and its
-/// `nsNext/valueReference`, by which it is marked and its referrers asked.
+/// `variablesReference` that lists its children, 0 for none, its
+/// `nsNext/valueReference`, by which it is marked and its referrers asked,
+/// and, for a value whose children are its elements, how many it has.
 #[derive(Clone, Copy)]
 struct Reference {
     variables: i64,
     value: Option<i64>,
+    elements: Option<usize>,
 }
 
 /// Why a request got no response.
@@ -880,7 +886,7 @@ impl Session {
             stack: Vec::new(),
             total_frames: 0,
         };
-        let Ok((frames, total)) = self.frames(summary::STACK_LIMIT) else {
+        let Ok((frames, total)) = self.frames(0, summary::STACK_LIMIT) else {
             return stop;
         };
         stop.total_frames = total;
@@ -899,11 +905,11 @@ impl Session {
         stop
     }
 
-    /// The first `levels` frames of the stop, and how many there are.
-    fn frames(&mut self, levels: usize) -> Result<(Vec<Value>, usize), String> {
+    /// `levels` frames of the stop from `start`, and how many there are.
+    fn frames(&mut self, start: usize, levels: usize) -> Result<(Vec<Value>, usize), String> {
         let body = self.request(
             "stackTrace",
-            json!({ "threadId": 1, "startFrame": 0, "levels": levels }),
+            json!({ "threadId": 1, "startFrame": start, "levels": levels }),
         )?;
         let frames = body["stackFrames"].as_array().cloned().unwrap_or_default();
         let total = body["totalFrames"]
@@ -958,7 +964,14 @@ impl Session {
     fn remember(&mut self, shown: &Value) -> Option<i64> {
         let variables = shown["variablesReference"].as_i64().unwrap_or(0);
         let value = shown["nsNext/valueReference"].as_i64();
-        let reference = Reference { variables, value };
+        let elements = shown["indexedVariables"]
+            .as_u64()
+            .and_then(|elements| usize::try_from(elements).ok());
+        let reference = Reference {
+            variables,
+            value,
+            elements,
+        };
         // The agent numbers both from one count, so neither names
         // another value's.
         let number = value.or((variables != 0).then_some(variables))?;
@@ -977,35 +990,54 @@ impl Session {
 
     // ---- The tools at a stop ----
 
-    /// `debug_stack`: every frame, one a line, at most `LISTING_LIMIT`.
-    pub(crate) fn stack(&mut self) -> Result<String, String> {
+    /// `debug_stack`: the frames from `start`, one a line, `count` of them
+    /// or `ENTRY_DEFAULT`, and where that is not every frame, the
+    /// `Showing` line; `given` is the call's arguments, which its next
+    /// call repeats.
+    pub(crate) fn stack(
+        &mut self,
+        start: Option<usize>,
+        count: Option<usize>,
+        given: &Value,
+    ) -> Result<String, String> {
         self.require_stopped()?;
-        let (frames, total) = self.frames(LISTING_LIMIT)?;
-        let mut lines: Vec<String> = frames
-            .iter()
-            .enumerate()
-            .map(|(index, frame)| summary::frame_text(index, &frame_of(frame)))
-            .collect();
-        if total > frames.len() {
-            lines.push(format!("… {} more frames", total - frames.len()));
+        let shown = count_of(count, ENTRY_DEFAULT, ENTRY_MAXIMUM)?;
+        let start = start.unwrap_or(0);
+        let (frames, total) = self.frames(start, shown)?;
+        if start > 0 && start >= total {
+            return Err(format!(
+                "start {start} is past the end: the stack has {}",
+                counted(total as u64, "frame", "frames")
+            ));
         }
-        Ok(lines.join("\n"))
+        let entries: Vec<String> = frames
+            .iter()
+            .take(shown)
+            .enumerate()
+            .map(|(offset, frame)| summary::frame_text(start + offset, &frame_of(frame)))
+            .collect();
+        let next_from = self.next_from("debug_stack", given);
+        Ok(pages::page(&entries, start, total, ANSWER_BUDGET, next_from).join("\n"))
     }
 
     /// `debug_variables`: the variables of a frame, or a value's children,
-    /// one a line, from `start`, `count` of them or `LISTING_LIMIT`.
+    /// one a line, from `start`, `count` of them or `LISTING_LIMIT`, and
+    /// where that is not every one, the `Showing` line; `given` is the
+    /// call's arguments, which its next call repeats.
     pub(crate) fn variables(
         &mut self,
         frame: Option<usize>,
         reference: Option<i64>,
-        start: usize,
+        start: Option<usize>,
         count: Option<usize>,
+        given: &Value,
     ) -> Result<String, String> {
         self.require_stopped()?;
-        let shown = count.unwrap_or(LISTING_LIMIT);
-        // One more than shown, to tell whether there are more.
-        let asked = Some(shown.saturating_add(1));
-        let (variables, more_hint) = match (frame, reference) {
+        let shown = count_of(count, LISTING_LIMIT, ENTRY_MAXIMUM)?;
+        let start = start.unwrap_or(0);
+        // The page shown, the total it is a page of, what has them and
+        // what they are called.
+        let (page, total, owner, noun) = match (frame, reference) {
             (Some(_), Some(_)) => {
                 return Err("debug_variables takes a frame or a reference, not both".to_string());
             }
@@ -1014,30 +1046,66 @@ impl Session {
                 if target.variables == 0 {
                     return Err(format!("the value [ref {number}] has no children"));
                 }
-                let variables = self.variables_of(target.variables, start, asked)?;
-                (variables, format!("reference {number}"))
+                let owner = format!("[ref {number}]");
+                match target.elements {
+                    // A value that says how many elements it has is asked
+                    // for its page alone: it may have millions.
+                    Some(total) => {
+                        let asked = shown.min(total.saturating_sub(start));
+                        let page = if asked == 0 {
+                            Vec::new()
+                        } else {
+                            self.variables_of(target.variables, start, Some(asked))?
+                        };
+                        (page, total, owner, ("element", "elements"))
+                    }
+                    // Its slots, as many as its class declares, are asked
+                    // whole, so that their total is known.
+                    None => {
+                        let every = self.variables_of(target.variables, 0, None)?;
+                        let total = every.len();
+                        let page = every.into_iter().skip(start).take(shown).collect();
+                        (page, total, owner, ("child", "children"))
+                    }
+                }
             }
             (frame, None) => {
                 let frame = frame.unwrap_or(0);
-                let variables = self.frame_variables(frame, start, asked)?;
-                (variables, format!("frame {frame}"))
+                let every = self.frame_variables(frame, 0, None)?;
+                let total = every.len();
+                let page = every.into_iter().skip(start).take(shown).collect();
+                (
+                    page,
+                    total,
+                    format!("frame {frame}"),
+                    ("variable", "variables"),
+                )
             }
         };
-        let mut lines: Vec<String> = variables
-            .iter()
-            .take(shown)
-            .map(summary::variable_text)
-            .collect();
-        if lines.is_empty() {
-            lines.push("no variables".to_string());
+        if total == 0 && start == 0 {
+            return Ok("no variables".to_string());
         }
-        if variables.len() > shown {
-            lines.push(format!(
-                "… more: debug_variables {more_hint} start {}",
-                start + shown
+        if start >= total {
+            return Err(format!(
+                "start {start} is past the end: {owner} has {}",
+                counted(total as u64, noun.0, noun.1)
             ));
         }
-        Ok(lines.join("\n"))
+        let entries: Vec<String> = page.iter().map(summary::variable_text).collect();
+        let next_from = self.next_from("debug_variables", given);
+        Ok(pages::page(&entries, start, total, ANSWER_BUDGET, next_from).join("\n"))
+    }
+
+    /// The call of `tool` that answers its page from a start on: the call
+    /// `given` made, its session named and its start advanced.
+    fn next_from(
+        &self,
+        tool: &'static str,
+        given: &Value,
+    ) -> impl Fn(usize) -> (&'static str, Value) + use<> {
+        let session = self.handle.number;
+        let given = given.clone();
+        move |start| (tool, pages::next_arguments(&given, session, start))
     }
 
     /// `debug_evaluate`: the expression in frame `frame`, the top one
@@ -1149,21 +1217,46 @@ impl Session {
             .join("\n"))
     }
 
-    /// `debug_code`: the bytecode of frame `frame`, then the machine code
-    /// it goes on in, or the line saying it goes on interpreted.
-    pub(crate) fn code(&mut self, frame: usize) -> Result<String, String> {
+    /// `debug_code`: a window of the code of frame `frame` -- its
+    /// bytecode, then the machine code it goes on in, or the line saying
+    /// it goes on interpreted --, the lines from `start`, `count` of them
+    /// or `LINE_DEFAULT`, and where that is not every line, the `Showing`
+    /// line; `given` is the call's arguments, which its next call repeats.
+    pub(crate) fn code(
+        &mut self,
+        frame: usize,
+        start: Option<usize>,
+        count: Option<usize>,
+        given: &Value,
+    ) -> Result<String, String> {
         self.require_stopped()?;
+        let shown = count_of(count, LINE_DEFAULT, LINE_MAXIMUM)?;
         let body = self.request(
             "nsNext/frameCode",
             json!({ "frameId": frame.saturating_add(1) }),
         )?;
-        let bytecode = body["bytecode"].as_str().unwrap_or_default();
-        let text = match body["machineCode"].as_str() {
-            // Every listing ends its lines; the answer ends with its last.
-            Some(machine_code) => format!("{bytecode}{}", machine_code.trim_end_matches('\n')),
-            None => format!("{bytecode}the frame goes on in the interpreter"),
-        };
-        Ok(self.with_output(text))
+        let lines = code_lines(frame, &body)?;
+        let start = start.unwrap_or(0);
+        if start > 0 && start >= lines.len() {
+            return Err(format!(
+                "start {start} is past the end: the frame's code has {}",
+                counted(lines.len() as u64, "line", "lines")
+            ));
+        }
+        // The output since the last answer follows the window, which
+        // keeps back its room.
+        let output = self.output_line();
+        let budget = ANSWER_BUDGET - output.as_ref().map_or(0, |line| characters(line) + 1);
+        let next_from = self.next_from("debug_code", given);
+        let mut answer = pages::page(
+            lines.iter().skip(start).take(shown),
+            start,
+            lines.len(),
+            budget,
+            next_from,
+        );
+        answer.extend(output);
+        Ok(answer.join("\n"))
     }
 
     /// `debug_frame`: restarts frame `frame` or makes it return `value`,
@@ -1286,11 +1379,16 @@ impl Session {
 
     /// `text`, and the output since the last answer on a line after it.
     fn with_output(&mut self, text: String) -> String {
-        let output = self.new_output();
-        match summary::output_line(&output) {
+        match self.output_line() {
             Some(line) => format!("{text}\n{line}"),
             None => text,
         }
+    }
+
+    /// The line of the output since the last answer; none for no output.
+    fn output_line(&mut self) -> Option<String> {
+        let output = self.new_output();
+        summary::output_line(&output)
     }
 
     // ---- Breakpoints ----
@@ -1665,6 +1763,22 @@ fn accept(listener: &TcpListener, child: &mut Child) -> Result<std::net::TcpStre
     }
 }
 
+/// The lines of `debug_code`'s listing of frame `frame` in the agent's
+/// `nsNext/frameCode` response `body`: the bytecode's, then the machine
+/// code's or the line saying the frame goes on in the interpreter.
+fn code_lines(frame: usize, body: &Value) -> Result<Vec<String>, String> {
+    // Every frame runs a body, so a response without its bytecode is the
+    // agent's fault, never an empty listing.
+    let bytecode = body["bytecode"]
+        .as_str()
+        .ok_or_else(|| format!("the debugger answered no bytecode for frame {frame}"))?;
+    let text = match body["machineCode"].as_str() {
+        Some(machine_code) => format!("{bytecode}{machine_code}"),
+        None => format!("{bytecode}the frame goes on in the interpreter"),
+    };
+    Ok(text.lines().map(ToString::to_string).collect())
+}
+
 /// Reads `stream` into `written` on a thread of its own until it ends.
 fn collect(mut stream: impl Read + Send + 'static, written: Written) {
     let _ = std::thread::Builder::new()
@@ -1689,5 +1803,49 @@ fn wait_for_readers(output: &Written) {
     let started = Instant::now();
     while Arc::strong_count(output) > 1 && started.elapsed() < END_BOUND {
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_s_code_is_its_bytecode_then_its_machine_code() {
+        let bytecode = "--- bytecode {Demo>>run}\n   0-> stmt 0  LoadSelf r1\n--- end\n";
+        assert_eq!(
+            code_lines(0, &json!({ "bytecode": bytecode })),
+            Ok(vec![
+                "--- bytecode {Demo>>run}".to_string(),
+                "   0-> stmt 0  LoadSelf r1".to_string(),
+                "--- end".to_string(),
+                "the frame goes on in the interpreter".to_string(),
+            ])
+        );
+        let machine_code = "--- code {Demo>>run} baseline\n  ->+0x0000  ret\n--- end\n";
+        assert_eq!(
+            code_lines(
+                1,
+                &json!({ "bytecode": bytecode, "machineCode": machine_code })
+            )
+            .map(|lines| lines[3..].to_vec()),
+            Ok(vec![
+                "--- code {Demo>>run} baseline".to_string(),
+                "  ->+0x0000  ret".to_string(),
+                "--- end".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_response_without_bytecode_is_refused() {
+        assert_eq!(
+            code_lines(2, &json!({ "body": "Demo>>run" })),
+            Err("the debugger answered no bytecode for frame 2".to_string())
+        );
+        assert_eq!(
+            code_lines(0, &json!({ "bytecode": null, "machineCode": "--- end\n" })),
+            Err("the debugger answered no bytecode for frame 0".to_string())
+        );
     }
 }
