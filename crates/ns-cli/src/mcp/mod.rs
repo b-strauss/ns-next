@@ -260,8 +260,9 @@ impl Server {
     /// to its new worker, so that a call naming the session while it
     /// starts is queued behind the start.
     fn start(&mut self, call: Call) {
-        let label = registry::label_of(call.arguments["program"].as_str().unwrap_or_default());
-        let (number, receiver, handle) = self.registry.open(label);
+        let label = registry::label_of_start(&call.arguments);
+        let trace_request = registry::TraceRequest::of_start(&call.arguments);
+        let (number, receiver, handle) = self.registry.open(label, trace_request);
         // Finished workers are let go as new ones start.
         self.workers.retain(|worker| !worker.is_finished());
         let started = worker::spawn(

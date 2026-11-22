@@ -5756,10 +5756,11 @@ the way not taken: every question would run the program from its start.
   own, numbered from 1, a number never given twice, and answers
   `session: <n>` on its first line; every other tool takes `session`,
   which may be left out while one session is open, and is refused naming
-  the open sessions, each with its program and state, when it names none
-  open or is left out among several (`registry.rs`), as `2 sessions are
-  open: session 1 (Bounce.ns, stopped), session 3 (CD, running) — pass
-  session`. A session lasts
+  the open sessions, each with its program, the arguments it runs with,
+  cut at 40 characters, and its state, when it names none open or is left
+  out among several (`registry.rs`), as `2 sessions are open: session 1
+  (newspeak Bounce, stopped), session 3 (newspeak CD, running) — pass
+  session`, so that two sessions of one project are told apart. A session lasts
   until `debug_stop` closes it or the server ends, after its program
   ended too, with no limit on how many are open (decision 18). There are
   21 tools. `debug_start(program, breakpoints?, stop_on_entry?,
@@ -5819,7 +5820,8 @@ the way not taken: every question would run the program from its start.
   traced session `trace:`, how much its trace file holds, read up to the
   answer -- `trace: 412 MB, 16,636 events, 78 bodies, 4,692 listings —
   debug_trace {"session":1} for an overview`, a failed reading of the
-  file named after it --; and on
+  file named after it, and in `debug_stop`'s answer, which closes the
+  session, `— deleted with the session` in place of the call --; and on
   `debug_start`'s answer `runtime:` the binary and the fingerprint of its
   shipped sources. A value with children carries a reference (`[ref
   4]`), the agent's value reference for it, which `debug_variables`
@@ -5831,7 +5833,14 @@ the way not taken: every question would run the program from its start.
   `Showing <first>–<last> of <total>` and, where more follow, `— next:`
   the exact call that answers them, every argument given repeated with
   `start` advanced, and a page stops at the entry that would take it past
-  20,000 characters; an evaluation and a set
+  20,000 characters, but for its first, which it takes cut to the room
+  left, ending in `… (<n> characters left out)`, so that a line longer
+  than an answer -- a long literal's -- never stalls a page. A stop's
+  summary is held to the same budget: each source line it shows is cut
+  at 200 characters, `… (<n> characters left out; the file holds the
+  line whole)`, an exception's text and a condition's error at 2,000,
+  and a summary still past the budget has its longest lines cut; an
+  evaluation and a set
   variable answer the value and the output since the last answer. Text,
   not JSON: it is what an agent reads, in fewer tokens, and as precise.
   The output a program wrote before it stopped is still on its way
@@ -5843,7 +5852,9 @@ the way not taken: every question would run the program from its start.
   ended, as the tool window's four tabs show the plugin's
   ([developer-tool.md](developer-tool.md), decisions 36 to 39); a
   session that traces nothing is refused, `session 1 traces nothing:
-  debug_start with trace or listings writes a trace`.
+  debug_start with trace or listings writes a trace`, and a traced one
+  whose start has not yet opened its file is told so, `session 1 is
+  starting: its trace file is not open yet; call again in a moment`.
   - `debug_trace` is the overview: the session and its counts, what the
     file's header says was traced and listed, the events per traced
     category, then five lists of 10 entries each, ranked by their first
@@ -5879,7 +5890,9 @@ the way not taken: every question would run the program from its start.
     the `debug_trace_events` call that gives every event of the method in
     the run's own order. A body an edit compiled is placed in its
     module's current text and says so, `(edited, line 14 of its current
-    text)`.
+    text)`. A sends part of a trace that does not trace `inlining` or
+    `caches`, whose outcomes it would show, says so in its head,
+    `sends (3 entries; not traced: caches)`.
   - `debug_trace_listing` is a window of one listing, as `--print-*`
     writes it (one `listing::View` writes both, `trace_listings.rs`
     reading a record into it): `kind` `bytecode`, a method's and its
@@ -5891,8 +5904,9 @@ the way not taken: every question would run the program from its start.
     head line, whose base address differs in every run; a name of several
     bodies with such a listing is asked back, naming each with its
     number and its listings and the call that picks one; a session that
-    lists no code says how to list it, and a binary without a JIT that
-    every body runs interpreted.
+    lists no code says how to list it, one whose `listing_filter` is
+    set that it lists only the bodies the filter matches, and a binary
+    without a JIT that every body runs interpreted.
   - `debug_trace_events` lists the events, in the run's order, that
     every filter given selects: `category`, one or several or `all` as
     `trace` takes them; `event`, the line's word or the record's, so that
@@ -5909,14 +5923,17 @@ the way not taken: every question would run the program from its start.
     the trace filter's own `TraceFilter::parse` and `check`, so that a
     name of no module is refused in the words `--trace-filter` refuses it
     in, and one that matches nothing answers `no body of the trace is
-    named <method>`.
+    named <method>`, followed, in a session whose start set
+    `trace_filter` -- or, for a listing, `listing_filter` --, by `— the
+    session's trace_filter ["Demo>>run"] may have left it out`.
   - The bounds are fixed (decision 38 there): the overview's lists 10
     entries, a journal's part and the events 50, a listing window 150
     lines, and on request at most 200 entries or 500 lines; `count: 0`,
     a `start` past the end and `start` without `list` or `part` are
     refused, a larger `count` capped. Every page stops at the entry or
     line that would take its answer past `ANSWER_BUDGET`, 20,000
-    characters. A page that is not the whole -- and every window of
+    characters, a page's first taken cut instead, as above. A page that
+    is not the whole -- and every window of
     `debug_trace_listing`, which always says where it stands -- ends in
     `Showing <first>–<last> of <total>`, but each list the overview cuts,
     which says it in its head instead, `installs (10 of 64) — next:
@@ -5954,7 +5971,7 @@ the way not taken: every question would run the program from its start.
   directory, the shipped sources' (below), never the shared temporary
   directory, where another user could put a file at the path first,
   which the server would read; `traces/` is the user's alone on POSIX
-  (mode `0700`). `<server>` is the server's process id and 32 hex digits
+  (mode `0700`, set on a `traces/` that exists with a wider mode too). `<server>` is the server's process id and 32 hex digits
   of the operating system's random source, so that servers of several
   clients never meet. A server claims its directory by an exclusive lock
   it holds for its whole life on `traces/<server>.lock`, which the

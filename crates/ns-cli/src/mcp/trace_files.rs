@@ -94,6 +94,14 @@ impl TraceDirectory {
         builder
             .create(&traces)
             .map_err(|error| format!("creating {}: {error}", traces.display()))?;
+        // The builder's mode reaches only a directory it creates: one an
+        // earlier build or a hand made with a wider mode is narrowed too.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&traces, std::fs::Permissions::from_mode(TRACES_MODE))
+                .map_err(|error| format!("restricting {}: {error}", traces.display()))?;
+        }
         remove_dead(&traces);
         let mut last_reason = String::new();
         for _ in 0..CLAIM_ATTEMPTS {

@@ -590,7 +590,10 @@ larger `count` capped; `debug_code`'s window is a listing window too.
 Every answer is text, as every tool's of the server is, without
 `structuredContent`: it is what an agent reads, in fewer tokens. Every
 page also stops at the entry or line that would take its answer past
-`ANSWER_BUDGET`, 20,000 characters (`mcp/pages.rs`): Claude Code warns
+`ANSWER_BUDGET`, 20,000 characters (`mcp/pages.rs`) -- but for the
+page's first, which it takes cut to the room left, saying how many
+characters it left out, so that a line longer than an answer never
+makes a page of nothing whose next call is the call just made --: Claude Code warns
 at a tool answer of 10,000 tokens and cuts one at 25,000 by default, and
 20,000 characters stay at the warning even at two characters a token,
 the density machine code's hex and registers might have, which nothing

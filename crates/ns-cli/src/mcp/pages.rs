@@ -99,12 +99,12 @@ pub(crate) fn page<'a>(
     let mut lines = Vec::new();
     let mut last = start;
     for entry in entries {
-        let length = characters(entry) + 1;
-        if used + length + showing_at_most > budget {
+        let room = budget.saturating_sub(used + showing_at_most);
+        let Some(taken) = taken_within(entry, room, lines.is_empty(), None) else {
             break;
-        }
-        used += length;
-        lines.push(entry.clone());
+        };
+        used += characters(&taken) + 1;
+        lines.push(taken);
         last += 1;
     }
     if start > 0 || last < total {
@@ -112,6 +112,78 @@ pub(crate) fn page<'a>(
         lines.push(showing_line(start + 1, last, total, next));
     }
     lines
+}
+
+/// The fewest characters a page's first entry is cut to: below it, the
+/// page takes nothing and leaves the entry to the call that pages on,
+/// whose page it begins with all the room an answer has.
+pub(crate) const CUT_MINIMUM: usize = 200;
+
+/// `entry` as a page takes it within `room` characters, its newline
+/// counted: whole where it fits; where it does not but is the page's
+/// `first`, cut to the room by `cut_line` -- `hint` saying where it is
+/// whole -- so that a page always gets past it and the call that pages on
+/// never asks the page again; and none otherwise, the page ending before
+/// it.
+pub(crate) fn taken_within(
+    entry: &str,
+    room: usize,
+    first: bool,
+    hint: Option<&str>,
+) -> Option<String> {
+    let length = characters(entry) + 1;
+    if length <= room {
+        return Some(entry.to_string());
+    }
+    (first && room > CUT_MINIMUM).then(|| cut_line(entry, room - 1, hint))
+}
+
+/// `line` cut to `width` characters at most: its start, then `… (<n>
+/// characters left out)`, `hint` -- how to see the line whole, where a
+/// tool has a way -- after a `; ` inside the parentheses; the line itself
+/// where it is no longer than `width`. A width too narrow for the marker
+/// keeps none of the line and answers the marker alone.
+pub(crate) fn cut_line(line: &str, width: usize, hint: Option<&str>) -> String {
+    let length = characters(line);
+    if length <= width {
+        return line.to_string();
+    }
+    let marker = |left_out: usize| match hint {
+        Some(hint) => format!(
+            "… ({} characters left out; {hint})",
+            thousands(left_out as u64)
+        ),
+        None => format!("… ({} characters left out)", thousands(left_out as u64)),
+    };
+    // The marker with every character counted out is at least as long as
+    // the one the cut writes, so the cut stays within `width`.
+    let kept = width.saturating_sub(characters(&marker(length)));
+    let mut cut: String = line.chars().take(kept).collect();
+    cut.push_str(&marker(length - kept));
+    cut
+}
+
+/// Cuts the longest of `lines` until they and their newlines hold at most
+/// `budget` characters, each cut by `cut_line` with `hint` and to no fewer
+/// than `CUT_MINIMUM`: what holds an answer to the budget whose lines are
+/// each bounded but could together pass it.
+pub(crate) fn fit_lines(lines: &mut [String], budget: usize, hint: Option<&str>) {
+    loop {
+        let used: usize = lines.iter().map(|line| characters(line) + 1).sum();
+        if used <= budget + 1 {
+            return;
+        }
+        let Some(longest) = (0..lines.len()).max_by_key(|position| characters(&lines[*position]))
+        else {
+            return;
+        };
+        let length = characters(&lines[longest]);
+        let width = length.saturating_sub(used - budget - 1).max(CUT_MINIMUM);
+        if width >= length {
+            return;
+        }
+        lines[longest] = cut_line(&lines[longest], width, hint);
+    }
 }
 
 /// What each tool an answer names a call of is asked about, in the order
@@ -380,6 +452,73 @@ mod tests {
                 r#"Showing 1–1 of 5 — next: debug_stack {"session":1,"start":1}"#
             ]
         );
+    }
+
+    #[test]
+    fn a_line_is_cut_saying_how_much_it_left_out() {
+        let line = "x".repeat(1_000);
+        // The marker is sized for every character counted out, so the
+        // cut may end a little short of the width, never past it.
+        assert_eq!(
+            cut_line(&line, 100, None),
+            format!("{}… (929 characters left out)", "x".repeat(71))
+        );
+        assert_eq!(
+            cut_line(&line, 100, Some("see the file")),
+            format!(
+                "{}… (943 characters left out; see the file)",
+                "x".repeat(57)
+            )
+        );
+        assert_eq!(cut_line("short", 100, None), "short");
+    }
+
+    #[test]
+    fn a_page_s_first_entry_is_taken_cut_and_passed() {
+        let long = "y".repeat(ANSWER_BUDGET * 2);
+        let entries = vec!["short".to_string(), long.clone(), "after".to_string()];
+        let next_from = |start: usize| ("debug_code", json!({ "session": 1, "start": start }));
+        // The page ends before the long entry, which is not its first.
+        assert_eq!(
+            page(&entries, 0, 3, ANSWER_BUDGET, next_from),
+            [
+                "short",
+                r#"Showing 1–1 of 3 — next: debug_code {"session":1,"start":1}"#
+            ]
+        );
+        // The page it begins takes it cut, and the next one goes on after
+        // it: never a page of nothing whose next call is the call made.
+        let cut = page(&entries[1..], 1, 3, ANSWER_BUDGET, next_from);
+        assert_eq!(cut.len(), 2, "{cut:?}");
+        assert!(cut[0].starts_with("yyy"), "{}", &cut[0][..10]);
+        assert!(
+            cut[0].ends_with(" characters left out)"),
+            "{}",
+            &cut[0][cut[0].len() - 40..]
+        );
+        assert_eq!(
+            cut[1],
+            r#"Showing 2–2 of 3 — next: debug_code {"session":1,"start":2}"#
+        );
+        let used: usize = cut.iter().map(|line| characters(line) + 1).sum();
+        assert!(used <= ANSWER_BUDGET + 1, "{used}");
+        // Too little room left to say anything takes nothing.
+        assert_eq!(taken_within(&long, CUT_MINIMUM, true, None), None);
+        assert_eq!(taken_within(&long, 10_000, false, None), None);
+    }
+
+    #[test]
+    fn lines_are_fitted_to_a_budget_longest_first() {
+        let mut lines = vec!["a".repeat(300), "b".repeat(1_000), "c".repeat(50)];
+        fit_lines(&mut lines, 1_000, None);
+        let used: usize = lines.iter().map(|line| characters(line) + 1).sum::<usize>() - 1;
+        assert!(used <= 1_000, "{used}");
+        assert_eq!(lines[0], "a".repeat(300));
+        assert_eq!(lines[2], "c".repeat(50));
+        assert!(lines[1].ends_with(" characters left out)"), "{}", lines[1]);
+        let mut fitting = vec!["a".repeat(10)];
+        fit_lines(&mut fitting, 1_000, None);
+        assert_eq!(fitting, ["a".repeat(10)]);
     }
 
     #[test]

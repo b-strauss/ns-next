@@ -1571,14 +1571,17 @@ fn a_traced_stop_says_its_trace() {
         assert!(installs.ends_with("\ninstalls: none"), "{installs}");
     }
     let closed = server.succeed("debug_stop", json!({ "session": 1 }));
-    assert_eq!(
-        closed
-            .lines()
-            .filter(|line| line.starts_with("trace: "))
-            .count(),
-        1,
+    let closing: Vec<&str> = closed
+        .lines()
+        .filter(|line| line.starts_with("trace: "))
+        .collect();
+    assert_eq!(closing.len(), 1, "{closed}");
+    assert!(
+        closing[0].ends_with(" — deleted with the session"),
         "{closed}"
     );
+    let gone = server.fail("debug_trace", json!({ "session": 1 }));
+    assert!(gone.starts_with("no session 1 is open"), "{gone}");
 }
 
 /// A method that holds two blocks, the first sending a hot method.
@@ -1732,6 +1735,127 @@ fn body_number(records: &[Value], name: &str, root: bool) -> u64 {
         })
         .and_then(|record| record["body"].as_u64())
         .unwrap_or_else(|| panic!("no body {name}"))
+}
+
+/// The length of the literal in Are We Fast Yet's `Json>>RapBenchmarkMinified`,
+/// the repository's own longest line.
+const LONG_LINE: usize = 25_828;
+
+/// A root whose fourth line is a literal of `LONG_LINE` characters with its
+/// quotes, and which stops on the line after it.
+fn long_line_program() -> String {
+    let literal = "x".repeat(LONG_LINE - 2);
+    formatdoc! {"
+        class Literal = Object new () (
+          public main: platform args: arguments = (
+            | text |
+            text:: '{literal}'.
+            platform transcript show: text size printString; newLine.
+          )
+        ) : ()
+    "}
+}
+
+/// Follows a window's `next:` calls from `first`, its answer, to the
+/// end; answers every line the pages held, each page's `Showing` line
+/// left out, after checking that each page stays within the budget and
+/// begins where the one before it ended.
+fn every_page(server: &mut McpServer, first: String) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut answer = first;
+    let mut expected_first = None;
+    loop {
+        assert!(answer.chars().count() <= 20_000, "{answer}");
+        let page: Vec<&str> = answer.lines().collect();
+        let showing = page
+            .iter()
+            .position(|line| line.starts_with("Showing "))
+            .unwrap_or_else(|| panic!("no Showing line:\n{answer}"));
+        let range = page[showing]
+            .strip_prefix("Showing ")
+            .and_then(|rest| rest.split(" of ").next())
+            .expect("a range");
+        let (first, last) = range.split_once('–').expect("a range");
+        let first: usize = first.replace(',', "").parse().expect("a first line");
+        let last: usize = last.replace(',', "").parse().expect("a last line");
+        assert!(first <= last, "{}", page[showing]);
+        if let Some(expected) = expected_first {
+            assert_eq!(first, expected, "{}", page[showing]);
+        }
+        expected_first = Some(last + 1);
+        lines.extend(page[..showing].iter().map(|line| line.to_string()));
+        let Some((_, next)) = page[showing].split_once(" — next: ") else {
+            return lines;
+        };
+        let (tool, arguments) = next.split_once(' ').expect("a call");
+        let arguments: Value = serde_json::from_str(arguments).expect("the call's arguments");
+        answer = server.succeed(tool, arguments);
+    }
+}
+
+/// A line longer than an answer holds is answered cut, saying how much
+/// it left out, and the window goes past it: `debug_code` and
+/// `debug_trace_listing` over the literal, and a stop beside it, whose
+/// excerpt cuts it.
+#[test]
+fn a_line_longer_than_an_answer_is_cut_and_passed() {
+    let data = ScratchDirectory::new("local-data");
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Literal", &long_line_program());
+    let stopped = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "listings": ["bytecode"],
+            "breakpoints": [{ "location": location(&path, 5) }],
+        }),
+    );
+    assert!(
+        stopped.chars().count() <= 20_000,
+        "{}",
+        stopped.chars().count()
+    );
+    let excerpt = stopped
+        .lines()
+        .find(|line| line.starts_with("  4 | "))
+        .unwrap_or_else(|| panic!("no line 4:\n{stopped}"));
+    let source = format!("    text:: '{}'.", "x".repeat(LONG_LINE - 2));
+    let length = source.chars().count();
+    let hint = "the file holds the line whole";
+    let kept = 200
+        - format!("… ({} characters left out; {hint})", grouped(length))
+            .chars()
+            .count();
+    assert_eq!(
+        excerpt,
+        format!(
+            "  4 | {}… ({} characters left out; {hint})",
+            &source[..kept],
+            grouped(length - kept)
+        )
+    );
+    for (tool, arguments) in [
+        ("debug_code", json!({ "count": 500 })),
+        (
+            "debug_trace_listing",
+            json!({ "method": "Literal>>main:args:", "kind": "bytecode", "count": 500 }),
+        ),
+    ] {
+        let first = server.succeed(tool, arguments);
+        let lines = every_page(&mut server, first);
+        let cut: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains(" characters left out)"))
+            .collect();
+        assert_eq!(cut.len(), 1, "{tool}: {lines:?}");
+        assert!(cut[0].contains("LoadLiteral"), "{tool}: {}", cut[0]);
+        // The pages go on past the literal, to the body's last
+        // instruction.
+        assert!(
+            lines.iter().any(|line| line.contains("ImplicitReturn")),
+            "{tool}: {lines:?}"
+        );
+    }
 }
 
 /// `debug_trace_listing` answers a window of a listing: a line saying
@@ -2152,6 +2276,26 @@ fn the_traces_directory_is_the_user_s_alone() {
     use std::os::unix::fs::PermissionsExt;
     let data = ScratchDirectory::new("local-data");
     let traces = traces_in(data.path());
+    let server = McpServer::start_in(data.path(), false);
+    let mode = std::fs::metadata(&traces)
+        .expect("the traces' directory")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    drop(server);
+}
+
+/// A `traces/` that exists with a wider mode -- made by hand, or by an
+/// earlier build -- is narrowed to the user's alone as a server claims it.
+#[cfg(unix)]
+#[test]
+fn an_existing_traces_directory_is_narrowed_to_the_user_s_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    std::fs::create_dir_all(&traces).expect("create the traces' directory");
+    std::fs::set_permissions(&traces, std::fs::Permissions::from_mode(0o755))
+        .expect("widen the traces' directory");
     let server = McpServer::start_in(data.path(), false);
     let mode = std::fs::metadata(&traces)
         .expect("the traces' directory")

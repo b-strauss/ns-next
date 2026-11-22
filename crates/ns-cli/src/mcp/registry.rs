@@ -8,6 +8,8 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use serde_json::Value;
+
 use super::trace_index::Trace;
 use super::worker::Input;
 
@@ -34,12 +36,50 @@ impl SessionState {
     }
 }
 
+/// What a `debug_start` asked of its trace, as its arguments give it:
+/// whether it traces or lists anything, and the filters that narrow it,
+/// which the trace tools name where a body or a listing is missing.
+#[derive(Default)]
+pub(crate) struct TraceRequest {
+    pub(crate) traced: bool,
+    pub(crate) trace_filter: Vec<String>,
+    pub(crate) listing_filter: Vec<String>,
+}
+
+impl TraceRequest {
+    /// The request `arguments`, a `debug_start`'s, make; read leniently,
+    /// since the start itself refuses arguments of the wrong shape.
+    pub(crate) fn of_start(arguments: &Value) -> TraceRequest {
+        let strings = |name: &str| -> Vec<String> {
+            arguments[name]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let traces = arguments["trace"]
+            .as_str()
+            .is_some_and(|categories| !categories.is_empty());
+        TraceRequest {
+            traced: traces || !strings("listings").is_empty(),
+            trace_filter: strings("trace_filter"),
+            listing_filter: strings("listing_filter"),
+        }
+    }
+}
+
 /// An open session as the registry holds it: its number, its label -- the
-/// program's name -- its published state, the inbox of its worker, and
-/// the index of its trace file.
+/// program's name and its arguments -- its published state, the inbox of
+/// its worker, what its start asked of its trace, and the index of its
+/// trace file.
 pub(crate) struct SessionHandle {
     pub(crate) number: u32,
     pub(crate) label: String,
+    pub(crate) trace_request: TraceRequest,
     pub(crate) state: Mutex<SessionState>,
     pub(crate) inbox: Sender<Input>,
     /// Set once, by the worker, when the start creates the trace file: the
@@ -86,7 +126,11 @@ impl Registry {
 
     /// Registers a session of `label` as starting: its number, the inbox
     /// its worker reads and its handle.
-    pub(crate) fn open(&self, label: String) -> (u32, Receiver<Input>, Arc<SessionHandle>) {
+    pub(crate) fn open(
+        &self,
+        label: String,
+        trace_request: TraceRequest,
+    ) -> (u32, Receiver<Input>, Arc<SessionHandle>) {
         let (inbox, receiver) = mpsc::channel();
         let mut sessions = self.sessions.lock().expect("the sessions");
         let number = sessions.next_number;
@@ -94,6 +138,7 @@ impl Registry {
         let handle = Arc::new(SessionHandle {
             number,
             label,
+            trace_request,
             state: Mutex::new(SessionState::Starting),
             inbox,
             trace: OnceLock::new(),
@@ -164,6 +209,29 @@ impl Registry {
     }
 }
 
+/// The most characters of a program's arguments a label shows.
+const LABEL_ARGUMENTS_LIMIT: usize = 40;
+
+/// The label of the program a `debug_start`'s `arguments` name: the
+/// program's, then the arguments it runs with, cut short, so that two
+/// sessions of one project, which run it with different arguments, are
+/// told apart.
+pub(crate) fn label_of_start(arguments: &Value) -> String {
+    let mut label = label_of(arguments["program"].as_str().unwrap_or_default());
+    let given: Vec<&str> = arguments["arguments"]
+        .as_array()
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if !given.is_empty() {
+        label.push(' ');
+        label.push_str(&super::summary::cut(
+            &given.join(" "),
+            LABEL_ARGUMENTS_LIMIT,
+        ));
+    }
+    label
+}
+
 /// The label of the program `program` names, as `debug_start` was given
 /// it: a `.ns` file's name, or the name of a project's directory, given as
 /// the directory or as its `newspeak.json`.
@@ -198,11 +266,44 @@ mod tests {
     }
 
     #[test]
+    fn a_label_names_the_arguments_a_program_runs_with() {
+        let directory = std::env::temp_dir().join("newspeak");
+        let program = directory.to_string_lossy().to_string();
+        assert_eq!(
+            label_of_start(&serde_json::json!({ "program": program, "arguments": ["CD", "2"] })),
+            "newspeak CD 2"
+        );
+        assert_eq!(
+            label_of_start(&serde_json::json!({ "program": program })),
+            "newspeak"
+        );
+        let long = "x".repeat(60);
+        assert_eq!(
+            label_of_start(&serde_json::json!({ "program": program, "arguments": [long] })),
+            format!("newspeak {}…", "x".repeat(LABEL_ARGUMENTS_LIMIT))
+        );
+    }
+
+    #[test]
+    fn a_trace_request_is_read_from_the_start_s_arguments() {
+        let request = TraceRequest::of_start(&serde_json::json!({
+            "program": "Demo.ns",
+            "listings": ["code"],
+            "listing_filter": ["Demo>>run"],
+        }));
+        assert!(request.traced);
+        assert!(request.trace_filter.is_empty());
+        assert_eq!(request.listing_filter, ["Demo>>run"]);
+        assert!(!TraceRequest::of_start(&serde_json::json!({ "program": "Demo.ns" })).traced);
+        assert!(TraceRequest::of_start(&serde_json::json!({ "trace": "all" })).traced);
+    }
+
+    #[test]
     fn numbers_are_never_given_twice() {
         let registry = Registry::new();
-        let (first, _first_inbox, _) = registry.open("A.ns".to_string());
+        let (first, _first_inbox, _) = registry.open("A.ns".to_string(), TraceRequest::default());
         registry.close(first);
-        let (second, _second_inbox, _) = registry.open("B.ns".to_string());
+        let (second, _second_inbox, _) = registry.open("B.ns".to_string(), TraceRequest::default());
         assert_eq!((first, second), (1, 2));
         assert_eq!(
             registry.find(Some(1)).err().as_deref(),

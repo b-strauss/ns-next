@@ -16,9 +16,10 @@ use serde_json::{Value, json};
 
 use super::pages::{
     ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, LINE_DEFAULT, LINE_MAXIMUM, OVERVIEW_DEFAULT,
-    call_text, characters, count_of, counted, showing_line, size, thousands,
+    call_text, characters, count_of, counted, cut_line, showing_line, size, taken_within,
+    thousands,
 };
-use super::registry::SessionHandle;
+use super::registry::{SessionHandle, SessionState};
 use super::tools::{Answer, parse};
 use super::trace_index::{
     BodyRecord, BodySource, CopyKey, ListingEntry, ListingKind, Placed, PlanOutcome, TraceIndex,
@@ -47,6 +48,17 @@ pub(crate) fn is_trace_tool(name: &str) -> bool {
 /// read everything the file held at the call.
 pub(crate) fn call(handle: &SessionHandle, name: &str, arguments: Value) -> Answer {
     let Some(trace) = handle.trace.get() else {
+        // A traced start opens its file a moment after its session: a
+        // call in between is told to come back, never that nothing is
+        // traced.
+        if handle.trace_request.traced
+            && *handle.state.lock().expect("a session's state") == SessionState::Starting
+        {
+            return Err(format!(
+                "session {} is starting: its trace file is not open yet; call again in a moment",
+                handle.number
+            ));
+        }
         return Err(format!(
             "session {} traces nothing: debug_start with trace or listings writes a trace",
             handle.number
@@ -112,7 +124,8 @@ pub(crate) fn call(handle: &SessionHandle, name: &str, arguments: Value) -> Answ
                 arguments.event.as_deref(),
                 arguments.reason.as_deref(),
                 arguments.method.as_deref(),
-            )?;
+            )
+            .map_err(|refusal| with_filters(refusal, handle, false))?;
             events(&index, handle, &query, arguments.start, arguments.count)
         }
         _ => Err(format!("no tool is named {name}")),
@@ -188,14 +201,22 @@ fn trace_counts(index: &TraceIndex) -> String {
 
 /// The `trace:` line of every summary of a traced session, naming the
 /// call that answers the overview.
-pub(crate) fn trace_line(index: &TraceIndex, session_number: u32) -> String {
+pub(crate) fn trace_line(index: &TraceIndex, session_number: u32, closing: bool) -> String {
+    // The session's last answer names no call of it: its file goes with it.
+    let after = if closing {
+        "deleted with the session".to_string()
+    } else {
+        format!(
+            "{} for an overview",
+            call_text("debug_trace", &json!({ "session": session_number }))
+        )
+    };
     let mut line = format!(
-        "trace: {}, {}, {}, {} — {} for an overview",
+        "trace: {}, {}, {}, {} — {after}",
         size(index.bytes()),
         counted(index.event_count() as u64, "event", "events"),
         counted(index.body_count() as u64, "body", "bodies"),
         counted(index.listing_count() as u64, "listing", "listings"),
-        call_text("debug_trace", &json!({ "session": session_number })),
     );
     if let Some(failure) = index.failure() {
         line.push_str("; ");
@@ -307,17 +328,17 @@ fn every_list(
         };
         let mut taken = Vec::new();
         for entry in entries.iter().take(shown) {
-            let length = characters(entry) + 1;
-            if used + length + reserve > ANSWER_BUDGET {
+            let room = ANSWER_BUDGET.saturating_sub(used + reserve);
+            let Some(entry) = taken_within(entry, room, taken.is_empty(), None) else {
                 break;
-            }
-            used += length;
-            taken.push(entry.as_str());
+            };
+            used += characters(&entry) + 1;
+            taken.push(entry);
         }
         let head = list_head(list.name, taken.len(), entries.len(), session_number, count);
         used += characters(&head) + 1;
         lines.push(head);
-        lines.extend(taken.iter().map(|entry| entry.to_string()));
+        lines.extend(taken);
         if let Some(closing) = &list.closing {
             used += characters(closing) + 1;
             lines.push(closing.clone());
@@ -424,13 +445,13 @@ fn one_list(
     let mut used: usize = lines.iter().map(|line| characters(line) + 1).sum();
     let mut taken = 0;
     for entry in entries.iter().skip(start).take(shown) {
-        let length = characters(entry) + 1;
-        if used + length + reserve > ANSWER_BUDGET {
+        let room = ANSWER_BUDGET.saturating_sub(used + reserve);
+        let Some(entry) = taken_within(entry, room, taken == 0, None) else {
             break;
-        }
-        used += length;
+        };
+        used += characters(&entry) + 1;
         taken += 1;
-        lines.push(entry.clone());
+        lines.push(entry);
     }
     lines.extend(list.closing.clone());
     let last = start + taken;
@@ -844,7 +865,9 @@ pub(crate) fn journal(
     if part.is_none() && start.is_some() {
         return Err("start pages one part: pass part as well".to_string());
     }
-    let bodies = index.bodies_named(method)?;
+    let bodies = index
+        .bodies_named(method)
+        .map_err(|refusal| with_filters(refusal, session, false))?;
     let (events, groups, folded_events) = journal_events(index, &bodies);
     let sends: Vec<Entry> = journal_sends(index, &bodies)
         .into_iter()
@@ -880,14 +903,26 @@ pub(crate) fn journal(
             )
         )
     };
+    // A send's outcome comes from two categories; one not traced leaves
+    // it unsaid, which the head says, lest it read as nothing happened.
+    let untraced: Vec<&str> = [TraceCategory::Inlining, TraceCategory::Caches]
+        .into_iter()
+        .filter(|category| !index.traces(*category))
+        .map(TraceCategory::name)
+        .collect();
+    let sends_note = if untraced.is_empty() {
+        String::new()
+    } else {
+        format!("; not traced: {}", untraced.join(", "))
+    };
     let sends_head = |taken: Option<usize>| match taken {
         Some(taken) => format!(
-            "sends ({} of {})",
+            "sends ({} of {}{sends_note})",
             thousands(taken as u64),
             thousands(sends.len() as u64)
         ),
         None => format!(
-            "sends ({})",
+            "sends ({}{sends_note})",
             counted(sends.len() as u64, "entry", "entries")
         ),
     };
@@ -1005,16 +1040,15 @@ impl Page<'_> {
             let group_head = (entry.group != group)
                 .then(|| entry.group.map(|number| self.groups[number].clone()))
                 .flatten();
-            let length = characters(&entry.text)
-                + 1
-                + group_head.as_ref().map_or(0, |head| characters(head) + 1);
-            if *used + length + fixed + reserve > ANSWER_BUDGET {
+            let head_length = group_head.as_ref().map_or(0, |head| characters(head) + 1);
+            let room = ANSWER_BUDGET.saturating_sub(*used + head_length + fixed + reserve);
+            let Some(text) = taken_within(&entry.text, room, entries_taken == 0, None) else {
                 break;
-            }
-            *used += length;
+            };
+            *used += head_length + characters(&text) + 1;
             group = entry.group;
             taken.extend(group_head);
-            taken.push(entry.text.clone());
+            taken.push(text);
             entries_taken += 1;
         }
         let head = (self.head)(entries_taken);
@@ -1095,8 +1129,14 @@ fn first_line(index: &TraceIndex, session: &SessionHandle, method: &str, bodies:
         first.push_str("; ");
         first.push_str(failure);
     }
-    first
+    // A name past any reasonable length still leaves the page its room.
+    cut_line(&first, FIRST_LINE_LIMIT, None)
 }
+
+/// The most characters of a journal's first line: a tenth of the head's
+/// budget, which a method's name, its module and its place fit in many
+/// times over.
+const FIRST_LINE_LIMIT: usize = HEAD_BUDGET / 10;
 
 /// The journal's head: the method, its module and place; its bodies;
 /// each body's copies; and each body's inlining as a callee.
@@ -1761,10 +1801,12 @@ pub(crate) fn listing_window(
     count: Option<usize>,
 ) -> Answer {
     let shown = count_of(count, LINE_DEFAULT, LINE_MAXIMUM)?;
-    let bodies = index.bodies_named(method)?;
+    let bodies = index
+        .bodies_named(method)
+        .map_err(|refusal| with_filters(refusal, session, true))?;
     let candidates = listing_candidates(index, &bodies, kind);
     let (number, records) = match candidates.as_slice() {
-        [] => return Err(no_listing(index, method, kind)),
+        [] => return Err(no_listing(index, session, method, kind)),
         [only] => only.clone(),
         several => {
             return Err(ask_back(
@@ -1854,12 +1896,12 @@ pub(crate) fn listing_window(
     let mut answer = vec![head];
     let mut last = start;
     for line in lines.iter().skip(start).take(shown) {
-        let length = characters(line) + 1;
-        if used + length + showing_at_most > ANSWER_BUDGET {
+        let room = ANSWER_BUDGET.saturating_sub(used + showing_at_most);
+        let Some(line) = taken_within(line, room, last == start, None) else {
             break;
-        }
-        used += length;
-        answer.push(line.clone());
+        };
+        used += characters(&line) + 1;
+        answer.push(line);
         last += 1;
     }
     let next = (last < total_lines).then(|| next_from(last));
@@ -1916,12 +1958,23 @@ fn listing_candidates(
 
 /// Why `method` has no listing of `kind`: the run lists none, or the
 /// binary has no JIT to list machine code of.
-fn no_listing(index: &TraceIndex, method: &str, kind: ListingKind) -> String {
+fn no_listing(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    method: &str,
+    kind: ListingKind,
+) -> String {
     let mut refusal = format!("no {} listing of {method}", kind.name());
+    let listing_filter = &session.trace_request.listing_filter;
     if !index.lists(kind) {
         refusal.push_str(&format!(
             " — the session lists no {0}: debug_start with listings [\"{0}\"] lists it",
             kind.name()
+        ));
+    } else if !listing_filter.is_empty() {
+        refusal.push_str(&format!(
+            " — listing_filter {} lists only the bodies it matches",
+            serde_json::to_string(listing_filter).unwrap_or_default()
         ));
     } else if kind != ListingKind::Bytecode
         && index
@@ -1931,6 +1984,38 @@ fn no_listing(index: &TraceIndex, method: &str, kind: ListingKind) -> String {
         refusal.push_str(" — this ns-next has no JIT: every body runs interpreted");
     }
     refusal
+}
+
+/// `refusal`, of a name the trace has no body or module of, and the
+/// filters the session's start set, which may have kept the body out:
+/// `trace_filter`, and for a listing `listing_filter` too.
+fn with_filters(refusal: String, session: &SessionHandle, listing: bool) -> String {
+    // Only a name of no body, or of no module the trace knows, is one a
+    // filter may explain; a malformed name is not.
+    if !(refusal.starts_with("no body of the trace") || refusal.contains(": no module `")) {
+        return refusal;
+    }
+    let request = &session.trace_request;
+    let mut filters = Vec::new();
+    if !request.trace_filter.is_empty() {
+        filters.push(format!(
+            "trace_filter {}",
+            serde_json::to_string(&request.trace_filter).unwrap_or_default()
+        ));
+    }
+    if listing && !request.listing_filter.is_empty() {
+        filters.push(format!(
+            "listing_filter {}",
+            serde_json::to_string(&request.listing_filter).unwrap_or_default()
+        ));
+    }
+    if filters.is_empty() {
+        return refusal;
+    }
+    format!(
+        "{refusal} — the session's {} may have left it out",
+        filters.join(" and ")
+    )
 }
 
 /// The refusal of a name of several bodies with listings of `kind`: each
@@ -2261,11 +2346,11 @@ pub(crate) fn events(
     let mut lines = Vec::new();
     for &number in selected.iter().skip(start).take(shown) {
         let line = format!("  {}", event_line(index, number));
-        let length = characters(&line) + 1;
-        if used + length > ANSWER_BUDGET {
+        let room = ANSWER_BUDGET.saturating_sub(used);
+        let Some(line) = taken_within(&line, room, lines.is_empty(), None) else {
             break;
-        }
-        used += length;
+        };
+        used += characters(&line) + 1;
         lines.push(line);
     }
     let last = start + lines.len();
@@ -2340,7 +2425,10 @@ mod tests {
     /// A session `Bounce.ns`, stopped, and the registry that holds it.
     fn stopped_session() -> (Registry, std::sync::Arc<SessionHandle>) {
         let registry = Registry::new();
-        let (_, _, handle) = registry.open("Bounce.ns".to_string());
+        let (_, _, handle) = registry.open(
+            "Bounce.ns".to_string(),
+            crate::mcp::registry::TraceRequest::default(),
+        );
         handle.publish(SessionState::Stopped);
         (registry, handle)
     }
@@ -2732,9 +2820,18 @@ mod tests {
         let scratch = written();
         let index = scratch.caught_up();
         assert_eq!(
-            trace_line(&index, 4),
+            trace_line(&index, 4, false),
             format!(
                 r##"trace: {}, 88 events, 13 bodies, 0 listings — debug_trace {{"session":4}} for an overview"##,
+                size(index.bytes())
+            )
+        );
+        // The session's last answer names no call the session's close
+        // refuses.
+        assert_eq!(
+            trace_line(&index, 4, true),
+            format!(
+                "trace: {}, 88 events, 13 bodies, 0 listings — deleted with the session",
                 size(index.bytes())
             )
         );
@@ -3228,7 +3325,7 @@ mod tests {
                 r"Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns (edited, line 14 of its current text) — session 1",
                 "bodies: #12 method (edited, line 14 of its current text), #13 [] in Bounce/Ball>>bounce",
                 "events: none",
-                "sends (1 of 1)",
+                "sends (1 of 1; not traced: inlining, caches)",
                 "  #12 15:9 x: (in its current text)",
             ],
             "{answer}"
@@ -3240,7 +3337,7 @@ mod tests {
                 r"Bounce/Ball>>x — Bounce@1.0.0, D:\work\Bounce.ns:31 — session 1",
                 "bodies: #30 method (line 31)",
                 "events: none",
-                "sends (1 of 1)",
+                "sends (1 of 1; not traced: inlining, caches)",
                 "  #30 15:9 x:",
             ],
             "{answer}"
@@ -4130,6 +4227,148 @@ mod tests {
     /// A page of the most events of long lines stays within the budget,
     /// cut before its count, numbered past a thousand, and goes on where
     /// it stopped.
+    /// A session's handle whose start asked for a trace with `filter` as
+    /// both its filters.
+    fn filtered_session(filter: &str) -> (Registry, std::sync::Arc<SessionHandle>) {
+        let registry = Registry::new();
+        let (_, _, handle) = registry.open(
+            "Bounce.ns".to_string(),
+            crate::mcp::registry::TraceRequest {
+                traced: true,
+                trace_filter: vec![filter.to_string()],
+                listing_filter: vec![filter.to_string()],
+            },
+        );
+        handle.publish(SessionState::Stopped);
+        (registry, handle)
+    }
+
+    /// A refusal of a body or a listing the trace lacks names the filters
+    /// the start set, which may have left it out.
+    #[test]
+    fn a_refusal_names_the_filters_that_may_have_left_it_out() {
+        let scratch = written();
+        let (_registry, handle) = filtered_session("Bounce>>m...");
+        let index = scratch.caught_up();
+        assert_eq!(
+            journal(&index, &handle, "#99", None, None, None),
+            Err(r#"no body of the trace is named #99 — the session's trace_filter ["Bounce>>m..."] may have left it out"#.to_string())
+        );
+        assert_eq!(
+            listing_window(&index, &handle, "#99", ListingKind::Code, None, None, None),
+            Err(r#"no body of the trace is named #99 — the session's trace_filter ["Bounce>>m..."] and listing_filter ["Bounce>>m..."] may have left it out"#.to_string())
+        );
+        assert_eq!(
+            listing_window(&index, &handle, "#1", ListingKind::Code, None, None, None),
+            Err(r#"no code listing of #1 — listing_filter ["Bounce>>m..."] lists only the bodies it matches"#.to_string())
+        );
+        // A malformed name is no filter's doing.
+        let malformed =
+            journal(&index, &handle, "Bounce>>", None, None, None).expect_err("a malformed name");
+        assert!(!malformed.contains("filter"), "{malformed}");
+        // Without filters, the refusals are as they were.
+        let (_registry, plain) = stopped_session();
+        assert_eq!(
+            journal(&index, &plain, "#99", None, None, None),
+            Err("no body of the trace is named #99".to_string())
+        );
+    }
+
+    /// A trace tool called while a traced start has not yet opened its
+    /// file is told to call again, never that the session traces nothing.
+    #[test]
+    fn a_traced_start_not_yet_open_says_so() {
+        let registry = Registry::new();
+        let (_, _, starting) = registry.open(
+            "Bounce.ns".to_string(),
+            crate::mcp::registry::TraceRequest {
+                traced: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            call(&starting, "debug_trace", json!({})),
+            Err(
+                "session 1 is starting: its trace file is not open yet; call again in a moment"
+                    .to_string()
+            )
+        );
+        let (_, _, untraced) = registry.open(
+            "Bounce.ns".to_string(),
+            crate::mcp::registry::TraceRequest::default(),
+        );
+        assert_eq!(
+            call(&untraced, "debug_trace", json!({})),
+            Err(
+                "session 2 traces nothing: debug_start with trace or listings writes a trace"
+                    .to_string()
+            )
+        );
+    }
+
+    /// An entry longer than an answer holds is taken cut as its page's
+    /// first, and the call that pages on starts after it: the events, a
+    /// journal's part and an overview's list alike.
+    #[test]
+    fn an_entry_longer_than_an_answer_is_cut_and_passed() {
+        let mut scratch = Scratch::new("long-entry");
+        scratch.header(&["compile"], &[]);
+        let long = format!("Demo/{}>>run", "Inner".repeat(5_000));
+        scratch.body(1, &long, None);
+        scratch.body(2, "Demo>>short", None);
+        scratch.record(&compiled(1));
+        scratch.record(&compiled(2));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let cut_and_passed = |answer: &str, next: &str| {
+            assert!(
+                characters(answer) <= ANSWER_BUDGET,
+                "{}",
+                characters(answer)
+            );
+            let lines: Vec<&str> = answer.lines().collect();
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains(" characters left out)")),
+                "{answer}"
+            );
+            assert!(
+                lines[lines.len() - 1].ends_with(next),
+                "{}",
+                lines[lines.len() - 1]
+            );
+        };
+        let events = queried(&index, &handle, [None; 4], None, Some(5)).expect("events");
+        cut_and_passed(
+            &events,
+            r#"Showing 1–1 of 2 — next: debug_trace_events {"session":1,"start":1,"count":5}"#,
+        );
+        let journal =
+            journal(&index, &handle, "#1", Some(Part::Events), None, None).expect("a journal");
+        assert!(
+            journal.lines().any(|line| line.starts_with("Showing 1–")),
+            "{journal}"
+        );
+        assert!(
+            characters(&journal) <= ANSWER_BUDGET,
+            "{}",
+            characters(&journal)
+        );
+        assert!(
+            journal
+                .lines()
+                .any(|line| line.contains(" characters left out)")),
+            "{journal}"
+        );
+        let installs =
+            overview(&index, &handle, Some("installs"), None, Some(1)).expect("the installs");
+        cut_and_passed(
+            &installs,
+            r#"Showing 1–1 of 2 — next: debug_trace {"session":1,"list":"installs","start":1,"count":1}"#,
+        );
+    }
+
     #[test]
     fn the_events_stay_under_their_budget() {
         let mut scratch = Scratch::new("events-budget");

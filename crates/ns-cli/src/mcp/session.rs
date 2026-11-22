@@ -774,7 +774,7 @@ impl Session {
     /// `wait`.
     pub(crate) fn stop(&mut self, wait: Duration) -> String {
         self.end_program(wait);
-        self.summary(false)
+        self.summary_closing(false, true)
     }
 
     /// Ends the program as `debug_stop` does, and the session's view of it.
@@ -832,6 +832,12 @@ impl Session {
     /// The answer that says where the program is, with its output since
     /// the last answer; with `runtime`, the binary and its fingerprint.
     pub(crate) fn summary(&mut self, runtime: bool) -> String {
+        self.summary_closing(runtime, false)
+    }
+
+    /// The summary, `closing` for `debug_stop`'s, the session's last,
+    /// whose `trace:` line names no call of the session.
+    fn summary_closing(&mut self, runtime: bool, closing: bool) -> String {
         let situation = match &self.state {
             State::Running { since } => Situation::Running {
                 seconds: since.elapsed().as_secs_f64(),
@@ -845,7 +851,7 @@ impl Session {
         let trace = self
             .trace
             .as_ref()
-            .map(|trace| trace_tools::trace_line(&trace.caught_up(), self.handle.number));
+            .map(|trace| trace_tools::trace_line(&trace.caught_up(), self.handle.number, closing));
         let runtime = runtime.then(|| self.runtime.clone());
         summary::summary(&situation, &output, trace.as_deref(), runtime.as_deref())
     }
