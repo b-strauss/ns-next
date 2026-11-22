@@ -9,11 +9,6 @@
 //! choose by, and per body the counts the overview ranks by -- never a
 //! listing's content, which a window reads again from the file.
 
-#![expect(
-    dead_code,
-    reason = "the trace tools read the index's accessors as they arrive"
-)]
-
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -74,6 +69,10 @@ impl ListingKind {
 pub(crate) struct Header {
     /// The architecture its `code` records are instructions of; `None`
     /// for a binary without a JIT.
+    #[expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )]
     pub(crate) architecture: Option<String>,
     /// The categories traced; `None` for a header that does not say,
     /// which is taken to trace every one, as the plugin takes it.
@@ -94,6 +93,10 @@ pub(crate) enum BodySource {
 }
 
 /// A send of a body as its record describes it.
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 pub(crate) struct DescribedSend {
     /// Its instruction's index in the body.
     pub(crate) instruction: u32,
@@ -106,6 +109,10 @@ pub(crate) struct DescribedSend {
 }
 
 /// A `body` record but its statements.
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 pub(crate) struct BodyRecord {
     pub(crate) name: String,
     /// A block's family root.
@@ -128,6 +135,10 @@ fn stored(value: Option<u32>) -> u32 {
 }
 
 /// A number an event stores, `None` where it has none.
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 fn optional(value: u32) -> Option<u32> {
     (value != ABSENT).then_some(value)
 }
@@ -138,6 +149,10 @@ fn optional(value: u32) -> Option<u32> {
 /// and its text interned. Its fields are its text's after the word; its
 /// record, should an answer need more, is read again from `offset`
 /// (`TraceIndex::read_event`), as a listing is.
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 pub(crate) struct IndexedEvent {
     /// Where its record begins in the file.
     offset: u64,
@@ -158,6 +173,10 @@ pub(crate) struct IndexedEvent {
     category: TraceCategory,
 }
 
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 impl IndexedEvent {
     pub(crate) fn offset(&self) -> u64 {
         self.offset
@@ -232,6 +251,10 @@ pub(crate) enum PlanOutcome {
 
 /// One listing record of the file: its place and the fields its answers
 /// choose by, never its content.
+#[expect(
+    dead_code,
+    reason = "the journal, the listing window and the events query read it"
+)]
 pub(crate) struct ListingEntry {
     pub(crate) kind: ListingKind,
     pub(crate) body: u32,
@@ -298,6 +321,8 @@ pub(crate) struct BodyTally {
     pub(crate) deoptimizations: Vec<((u32, Option<u32>), u32)>,
     /// Its optimized copies by key, from its `optimized` events.
     pub(crate) copies: Vec<Copies>,
+    /// The bytes of the copy its last `optimized` event installed.
+    pub(crate) last_copy_bytes: u64,
     /// The `declined` events naming it the callee, by reason.
     pub(crate) declined_as_callee: Vec<(u32, u32)>,
     /// The bodies whose compiles declined it, by number.
@@ -318,6 +343,13 @@ pub(crate) struct BodyTally {
 
 /// A send's cache as its site's last transition left it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )
+)]
 pub(crate) struct CacheState {
     /// The state after the transition, interned.
     pub(crate) after: u32,
@@ -329,6 +361,13 @@ pub(crate) struct CacheState {
 
 /// What the trace says became of a send.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )
+)]
 pub(crate) struct SendOutcome {
     /// The `inlined` or `declined` event of the last installed copy that
     /// still lives and planned it.
@@ -541,6 +580,13 @@ fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize
 }
 
 /// Fills `buffer` from `offset` of `file`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )
+)]
 fn read_exactly_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
     let mut filled = 0;
     while filled < buffer.len() {
@@ -886,12 +932,14 @@ impl TraceIndex {
         true
     }
 
-    /// Whether the file is closed.
-    fn closed(&self) -> bool {
-        self.file.is_none()
-    }
-
     /// The file's path, while it is open.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn path(&self) -> Option<&Path> {
         self.file.as_deref().map(TraceFile::path)
     }
@@ -953,11 +1001,22 @@ impl TraceIndex {
     }
 
     /// The number `text` is interned as, if any event or listing gave it.
+    #[expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )]
     pub(crate) fn interned(&self, text: &str) -> Option<u32> {
         self.contents.interner.numbers.get(text).copied()
     }
 
     /// Every event, in file order.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn events(&self) -> &[IndexedEvent] {
         &self.contents.events
     }
@@ -965,6 +1024,13 @@ impl TraceIndex {
     /// The fields of `event` as its text line writes them after the
     /// word, each body field `{#<n>}`: ` trigger=call bytes=1216`, empty
     /// for none.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn fields(&self, event: &IndexedEvent) -> &str {
         let text = self.text(event.text);
         let word = self.text(event.word);
@@ -975,6 +1041,13 @@ impl TraceIndex {
 
     /// The record's event word of `event`: `transition` for a cache
     /// transition, whose line writes its two states.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn event_word(&self, event: &IndexedEvent) -> &str {
         let word = self.text(event.word);
         if event.category == TraceCategory::Caches && word.contains("->") {
@@ -986,6 +1059,13 @@ impl TraceIndex {
 
     /// `declined-no-body`'s reasons of the event `index`, with their
     /// counts; empty for any other event.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn reasons(&self, index: u32) -> &[(u32, u32)] {
         self.contents
             .reasons
@@ -994,6 +1074,13 @@ impl TraceIndex {
     }
 
     /// The record of `event`, read again from the file to its newline.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn read_event(&self, event: &IndexedEvent) -> Result<Value, String> {
         let Some(trace_file) = &self.file else {
             return Err("the trace file is closed".to_string());
@@ -1033,6 +1120,13 @@ impl TraceIndex {
     }
 
     /// Every listing record, in file order.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn listings(&self) -> &[ListingEntry] {
         &self.contents.listings
     }
@@ -1060,6 +1154,10 @@ impl TraceIndex {
 
     /// The `bytecode` record that lists the body `number`, or else its
     /// family root's, which lists every block of it.
+    #[expect(
+        dead_code,
+        reason = "the journal, the listing window and the events query read it"
+    )]
     pub(crate) fn bytecode_of(&self, number: u32) -> Option<&ListingEntry> {
         let tally = self.body(number)?;
         let index = tally.bytecode.or_else(|| {
@@ -1107,6 +1205,13 @@ impl TraceIndex {
     /// its inlining where a copy's end -- `deoptimize` and `code-zone` --
     /// and its beginning can be heard, so that no decision stands for
     /// good, and its cache, by the site's number in the body's family.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn send_outcome(&self, number: u32, instruction: u32) -> SendOutcome {
         let sends = &self.contents.sends;
         let inlining_ends = sends.outcome_can_arrive
@@ -1144,6 +1249,13 @@ impl TraceIndex {
     /// every version and every edited body. A name of no module of the
     /// trace's or the binary's is refused as every tool refuses it, and a
     /// name of a known module the trace has no body of says so.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn bodies_named(&self, asked: &str) -> Result<Vec<u32>, String> {
         let asked = asked.trim();
         if let Some(number) = asked.strip_prefix('#') {
@@ -1183,6 +1295,13 @@ impl TraceIndex {
     /// and bounded by its own length, the lock keeps the file from being
     /// closed under the read, and the follower, which reads without the
     /// lock, waits for it only to hand a slice over.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the journal, the listing window and the events query read it"
+        )
+    )]
     pub(crate) fn read_record(&self, offset: u64, length: u32) -> Result<Value, String> {
         let Some(trace_file) = &self.file else {
             return Err("the trace file is closed".to_string());
@@ -1723,6 +1842,7 @@ impl Contents {
                 "optimized" => {
                     tally.announced.optimized += 1;
                     let bytes = head.bytes.unwrap_or(0);
+                    tally.last_copy_bytes = bytes;
                     match tally
                         .copies
                         .iter_mut()
@@ -1870,7 +1990,7 @@ impl Contents {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::trace_files::TraceDirectory;
     use super::*;
     use crate::trace::tests::{every_event, split_outside_braces};
@@ -1888,7 +2008,7 @@ mod tests {
     /// A trace file of the test `name`'s own, in a scratch directory the
     /// index deletes it from, and a writer appending to it as the child's
     /// handle does.
-    struct Scratch {
+    pub(crate) struct Scratch {
         /// Dropped first: on Windows an open handle refuses the deletion.
         writer: File,
         trace: Arc<Trace>,
@@ -1896,7 +2016,12 @@ mod tests {
     }
 
     impl Scratch {
-        fn new(name: &str) -> Scratch {
+        pub(crate) fn new(name: &str) -> Scratch {
+            Scratch::with_slices(name, SLICE_BYTES)
+        }
+
+        /// As `new`, the follower reading slices of `slice` bytes.
+        fn with_slices(name: &str, slice: u64) -> Scratch {
             let directory = std::env::temp_dir()
                 .join(format!("ns-next-trace-index-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&directory);
@@ -1907,14 +2032,14 @@ mod tests {
                 .open(trace_file.path())
                 .expect("the writer's handle");
             Scratch {
-                trace: Trace::over(trace_file),
+                trace: Trace::following(trace_file, slice, |_| {}),
                 writer,
                 _directory: directory,
             }
         }
 
         /// The index once the follower read what was written.
-        fn caught_up(&self) -> MutexGuard<'_, TraceIndex> {
+        pub(crate) fn caught_up(&self) -> MutexGuard<'_, TraceIndex> {
             self.trace.caught_up()
         }
 
@@ -1928,11 +2053,11 @@ mod tests {
         }
 
         /// `record` as its line.
-        fn record(&mut self, record: &Value) {
+        pub(crate) fn record(&mut self, record: &Value) {
             self.write(&format!("{record}\n"));
         }
 
-        fn header(&mut self, categories: &[&str], listings: &[&str]) {
+        pub(crate) fn header(&mut self, categories: &[&str], listings: &[&str]) {
             self.record(&json!({
                 "kind": "header",
                 "format": FORMAT,
@@ -1943,7 +2068,7 @@ mod tests {
             }));
         }
 
-        fn body(&mut self, number: u32, name: &str, family: Option<u32>) {
+        pub(crate) fn body(&mut self, number: u32, name: &str, family: Option<u32>) {
             self.record(&body_record(number, name, family));
         }
     }
@@ -2444,7 +2569,7 @@ mod tests {
 
     /// An event record of `category` about `body`, or about none, with
     /// `fields`.
-    fn event_of(category: &str, body: Option<u32>, fields: &Value) -> Value {
+    pub(crate) fn event_of(category: &str, body: Option<u32>, fields: &Value) -> Value {
         let mut record = json!({ "kind": "event", "category": category, "body": body });
         for (name, value) in fields.as_object().expect("fields") {
             record[name] = value.clone();
@@ -2677,6 +2802,55 @@ mod tests {
         }
         writing.store(false, std::sync::atomic::Ordering::Release);
         child.join().expect("the child's writes");
+    }
+
+    /// A line longer than a slice -- a listing of several MiB is one line
+    /// -- is read over several slices and taken whole once it ends: never
+    /// split at a slice's end, and never holding the reading up while its
+    /// end is still to come.
+    #[test]
+    fn a_line_longer_than_a_slice_is_taken_whole() {
+        let mut scratch = Scratch::with_slices("long-line", 2048);
+        scratch.header(&[], &["inlining"]);
+        // Longer than a slice and than one read of the file.
+        let scopes: Vec<Value> = (0..12_000)
+            .map(|number| json!({ "scope": number, "body": 1 }))
+            .collect();
+        let record = json!({
+            "kind": "inlining",
+            "body": 1,
+            "key": "Demo",
+            "entered": null,
+            "outcome": { "installed": 2304 },
+            "scopes": scopes,
+        });
+        let line = record.to_string();
+        assert!(line.len() > 2 * READ_BYTES, "{}", line.len());
+        let header = scratch.caught_up().bytes();
+        let (first, rest) = line.as_bytes().split_at(line.len() / 2);
+        scratch.write_bytes(first);
+        {
+            let index = scratch.caught_up();
+            assert_eq!(index.failure(), None);
+            assert_eq!(index.listing_count(), 0);
+            assert_eq!(index.bytes(), header);
+        }
+        scratch.write_bytes(rest);
+        scratch.write(
+            "
+",
+        );
+        scratch.body(2, "Demo>>after", None);
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        assert_eq!(index.listing_count(), 1);
+        let entry = &index.listings()[0];
+        assert_eq!((entry.offset, entry.length as usize), (header, line.len()));
+        assert_eq!(entry.outcome, Some(PlanOutcome::Installed(2304)));
+        assert_eq!(index.read_record(entry.offset, entry.length), Ok(record));
+        assert_eq!(index.body_name(2), Some("Demo>>after"));
+        let size = std::fs::metadata(index.path().unwrap()).unwrap().len();
+        assert_eq!(index.bytes(), size);
     }
 
     /// The follower reads and parses without the index's lock, so that a

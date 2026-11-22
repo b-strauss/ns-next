@@ -41,7 +41,7 @@ const STRESS_MODES: [&str; 15] = [
 ];
 
 /// The tools and their parameters, the required ones first.
-const TOOLS: [(&str, &[&str], &[&str]); 17] = [
+const TOOLS: [(&str, &[&str], &[&str]); 18] = [
     (
         "debug_start",
         &["program"],
@@ -81,6 +81,7 @@ const TOOLS: [(&str, &[&str], &[&str]); 17] = [
     ("debug_memory", &[], &["class", "referrers_of", "session"]),
     ("debug_mark", &["label"], &["reference", "session"]),
     ("debug_stop", &[], &["session"]),
+    ("debug_trace", &[], &["list", "start", "count", "session"]),
 ];
 
 /// A running `ns-next mcp` and the lines it writes to its standard output.
@@ -1152,6 +1153,112 @@ fn a_traced_session_writes_its_own_file() {
     assert_eq!(started(&untraced).0, 4, "{untraced}");
     assert!(!untraced.contains("[compile]"), "{untraced}");
     assert!(!trace_file_of(&traces, 4).exists());
+}
+
+/// The overview's lists, in the order `debug_trace` writes them.
+const TRACE_LISTS: [&str; 5] = [
+    "installs",
+    "abandoned",
+    "deoptimized",
+    "optimized",
+    "declined",
+];
+
+/// A traced session's stop says in one `trace:` line how much its trace
+/// holds and which call answers the overview, and `debug_trace` answers
+/// the five lists, a compiled method among the installs by its number --
+/// none on a target without a JIT -- as does `debug_stop`'s summary.
+#[test]
+fn a_traced_stop_says_its_trace() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Demo", A_HOT_METHOD);
+    let compiles = compiles_bodies(&path);
+    let stopped = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "all",
+            "listings": ["code", "inlining"],
+            "breakpoints": [{ "location": location(&path, 11) }],
+        }),
+    );
+    let (_, summary) = started(&stopped);
+    assert!(summary.starts_with("stopped: breakpoint"), "{stopped}");
+    let trace_lines: Vec<&str> = summary
+        .lines()
+        .filter(|line| line.starts_with("trace: "))
+        .collect();
+    assert_eq!(trace_lines.len(), 1, "{stopped}");
+    let trace_line = trace_lines[0];
+    assert!(
+        trace_line.ends_with(r#" — debug_trace {"session":1} for an overview"#),
+        "{trace_line}"
+    );
+    assert!(trace_line.contains(" events, "), "{trace_line}");
+    // After the output and before the binary.
+    let lines: Vec<&str> = summary.lines().collect();
+    let place = lines.iter().position(|line| *line == trace_line).unwrap();
+    assert!(lines[place + 1].starts_with("runtime: "), "{stopped}");
+
+    let overview = server.succeed("debug_trace", json!({ "session": 1 }));
+    assert!(
+        overview.starts_with("session 1 (Demo.ns, stopped): "),
+        "{overview}"
+    );
+    assert!(
+        overview.contains(
+            "\ntraced: compile, osr, optimize, inlining, deoptimize, code-zone, caches; listed: code, inlining\n"
+        ),
+        "{overview}"
+    );
+    let heads: Vec<usize> = TRACE_LISTS
+        .iter()
+        .map(|list| {
+            overview
+                .lines()
+                .position(|line| {
+                    line.starts_with(&format!("{list} (")) || line.starts_with(&format!("{list}: "))
+                })
+                .unwrap_or_else(|| panic!("no list {list}:\n{overview}"))
+        })
+        .collect();
+    assert!(heads.is_sorted(), "{overview}");
+    let records = trace_records(&trace_file_of(&traces, 1));
+    let square = records
+        .iter()
+        .find(|record| record["kind"] == "body" && record["name"] == "Demo>>square:")
+        .map(|record| record["body"].as_u64().expect("a body's number"));
+    let installs = server.succeed(
+        "debug_trace",
+        json!({ "session": 1, "list": "installs", "count": 1 }),
+    );
+    if compiles {
+        let number = square.expect("square: is described");
+        let entry = format!("  Demo>>square: #{number}: ");
+        let call = format!(r##"→ debug_trace_method {{"session":1,"method":"#{number}"}}"##);
+        assert!(
+            overview
+                .lines()
+                .any(|line| line.starts_with(&entry) && line.ends_with(&call)),
+            "{overview}"
+        );
+        let showing = installs.lines().last().unwrap();
+        assert!(showing.starts_with("Showing 1–1 of "), "{installs}");
+    } else {
+        assert!(overview.contains("\ninstalls: none\n"), "{overview}");
+        assert!(installs.ends_with("\ninstalls: none"), "{installs}");
+    }
+    let closed = server.succeed("debug_stop", json!({ "session": 1 }));
+    assert_eq!(
+        closed
+            .lines()
+            .filter(|line| line.starts_with("trace: "))
+            .count(),
+        1,
+        "{closed}"
+    );
 }
 
 /// `listing_filter` selects among the listings, and is refused without

@@ -10,10 +10,12 @@
 //! a child its session starts, a DAP client of whose agent the server is
 //! (`session.rs`, `dap_client.rs`), and each session is served by a
 //! worker thread of its own (`worker.rs`), found by its number in the
-//! registry (`registry.rs`).
+//! registry (`registry.rs`). The trace tools answer from a session's
+//! trace index on a thread of their own (`trace_tools.rs`).
 
 mod dap_client;
 mod own_directory;
+mod pages;
 mod registry;
 mod responses;
 mod session;
@@ -22,6 +24,7 @@ mod summary;
 mod tools;
 mod trace_files;
 mod trace_index;
+mod trace_tools;
 mod worker;
 
 use std::io::{BufRead, Write};
@@ -312,6 +315,10 @@ impl Server {
                 return;
             }
         };
+        if trace_tools::is_trace_tool(&call.tool) {
+            answer_from_trace(handle, call);
+            return;
+        }
         if let Err(std::sync::mpsc::SendError(input)) = handle.inbox.send(worker::Input::Call(call))
             && let worker::Input::Call(call) = input
         {
@@ -323,6 +330,31 @@ impl Server {
                 .unwrap_or_else(|| format!("no session {} is open", handle.number));
             call.reply.answer(Err(refusal));
         }
+    }
+}
+
+/// Answers the trace tool `call` of the session `handle` on a thread of
+/// its own, which locks the session's trace index alone: a trace is asked
+/// while its program runs or a call of its session waits, and never waits
+/// on the session's worker.
+fn answer_from_trace(handle: Arc<registry::SessionHandle>, call: Call) {
+    let number = handle.number;
+    let started = std::thread::Builder::new()
+        .name(format!("ns-next mcp session {number} {}", call.tool))
+        .spawn(move || {
+            let Call {
+                tool,
+                arguments,
+                reply,
+            } = call;
+            reply.answer(trace_tools::call(&handle, &tool, arguments));
+        });
+    // The call went with the thread that did not start, and its reply's
+    // drop answered it.
+    if let Err(error) = started {
+        say(&format!(
+            "ns-next mcp: starting a trace tool of session {number}: {error}"
+        ));
     }
 }
 

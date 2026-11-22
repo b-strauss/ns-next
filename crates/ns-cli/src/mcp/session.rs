@@ -27,6 +27,7 @@ use super::summary::{self, Frame, Shown, Situation, Stop};
 use super::tools;
 use super::trace_files::TraceFile;
 use super::trace_index::Trace;
+use super::trace_tools;
 use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -833,8 +834,14 @@ impl Session {
             State::Stopped(_) => Situation::Stopped(Box::new(self.stop_view())),
         };
         let output = self.new_output();
+        // Read to the length the file had now, which holds everything the
+        // stop or the end flushed.
+        let trace = self
+            .trace
+            .as_ref()
+            .map(|trace| trace_tools::trace_line(&trace.caught_up(), self.handle.number));
         let runtime = runtime.then(|| self.runtime.clone());
-        summary::summary(&situation, &output, runtime.as_deref())
+        summary::summary(&situation, &output, trace.as_deref(), runtime.as_deref())
     }
 
     /// The output since the last answer that showed output.

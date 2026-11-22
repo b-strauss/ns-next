@@ -74,9 +74,15 @@ pub(crate) struct Stop {
 }
 
 /// The answer of a tool that let the program go on, or that asked where
-/// it is: the situation, the output since the last answer, and on
-/// `debug_start`'s answer the binary and its fingerprint.
-pub(crate) fn summary(situation: &Situation, output: &str, runtime: Option<&str>) -> String {
+/// it is: the situation, the output since the last answer, a traced
+/// session's `trace:` line, and on `debug_start`'s answer the binary and
+/// its fingerprint.
+pub(crate) fn summary(
+    situation: &Situation,
+    output: &str,
+    trace: Option<&str>,
+    runtime: Option<&str>,
+) -> String {
     let mut lines = Vec::new();
     match situation {
         Situation::Stopped(stop) => stopped_lines(stop, &mut lines),
@@ -87,6 +93,7 @@ pub(crate) fn summary(situation: &Situation, output: &str, runtime: Option<&str>
         }),
     }
     lines.extend(output_line(output));
+    lines.extend(trace.map(str::to_string));
     if let Some(runtime) = runtime {
         lines.push(format!("runtime: {runtime}"));
     }
@@ -268,6 +275,7 @@ mod tests {
         let summary = summary(
             &Situation::Stopped(Box::new(stop)),
             "start\n",
+            Some("trace: 1 KB, 2 events, 1 body, 0 listings"),
             Some("/bin/ns-next 0123"),
         );
         assert_eq!(
@@ -281,6 +289,7 @@ mod tests {
              locals: count = 41, elements = an Array [ref 7]\n\
              stack: #0 Counter>>main:args: Counter.ns:4 · #1 newspeak.core.Kernel>>run Kernel.ns:120\n\
              output: \"start\\n\"\n\
+             trace: 1 KB, 2 events, 1 body, 0 listings\n\
              runtime: /bin/ns-next 0123"
         );
     }
@@ -308,7 +317,7 @@ mod tests {
                 .collect(),
             total_frames: STACK_LIMIT + 5,
         };
-        let summary = summary(&Situation::Stopped(Box::new(stop)), "", None);
+        let summary = summary(&Situation::Stopped(Box::new(stop)), "", None, None);
         let lines: Vec<&str> = summary.lines().collect();
         assert_eq!(lines[1], "exception: Error: boom");
         assert_eq!(
@@ -348,11 +357,11 @@ mod tests {
     #[test]
     fn running_and_ended_say_so() {
         assert_eq!(
-            summary(&Situation::Running { seconds: 1.04 }, "x", None),
+            summary(&Situation::Running { seconds: 1.04 }, "x", None, None),
             "running for 1.0 s\noutput: \"x\""
         );
         assert_eq!(
-            summary(&Situation::Ended { status: Some(0) }, "", None),
+            summary(&Situation::Ended { status: Some(0) }, "", None, None),
             "ended: exit status 0"
         );
     }

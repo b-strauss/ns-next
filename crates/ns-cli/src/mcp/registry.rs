@@ -53,7 +53,9 @@ impl SessionHandle {
         *self.state.lock().expect("a session's state") = state;
     }
 
-    fn description(&self) -> String {
+    /// `session <n> (<label>, <state>)`, as a refusal and the trace's
+    /// overview name it.
+    pub(crate) fn description(&self) -> String {
         let state = *self.state.lock().expect("a session's state");
         format!("session {} ({}, {})", self.number, self.label, state.word())
     }

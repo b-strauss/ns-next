@@ -250,7 +250,7 @@ fn wait_of(seconds: Option<f64>) -> Result<Duration, String> {
 }
 
 /// A tool's arguments as `T`, or why they are not.
-fn parse<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, String> {
+pub(crate) fn parse<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, String> {
     let arguments = if arguments.is_null() {
         json!({})
     } else {
@@ -555,6 +555,16 @@ pub(crate) fn list() -> Value {
             "debug_stop",
             "Ends the debugged program, its ensure: blocks run, answers its exit status and its last output, and closes its session, whose number no later call names.",
             json!({}),
+            &[],
+        ),
+        tool(
+            "debug_trace",
+            "Answers the overview of a traced session's trace file, which debug_start's trace and listings have the program write: its size and counts, what it traces and lists, the events by category, then five lists ranked by their first number, each entry a body by name and #number with the call that tells more: installs (machine code installed, by tier), abandoned (with revivals), deoptimized (retired and invalidated copies, by reason), optimized (copies by key) and declined (callees the inlining declined, by reason). Readable while the program runs. Without list, each list's first entries; with list, that list alone, paged by start and count.",
+            json!({
+                "list": { "type": "string", "enum": ["installs", "abandoned", "deoptimized", "optimized", "declined"], "description": "One list alone, paged." },
+                "start": { "type": "integer", "minimum": 0, "description": "With list: how many of its entries to skip; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many entries of each list; 10 by default, 200 at most." }
+            }),
             &[],
         ),
     ];
