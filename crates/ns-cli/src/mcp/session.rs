@@ -26,7 +26,7 @@ use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
 use super::tools;
 use super::trace_files::TraceFile;
-use super::trace_index::{self, TraceIndex};
+use super::trace_index::Trace;
 use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -244,7 +244,7 @@ pub(crate) struct Session {
     /// The index of the file the child writes its trace into, which the
     /// session's handle shares with the trace tools; the file is closed
     /// and deleted with the session once the child is gone.
-    trace: Option<Arc<Mutex<TraceIndex>>>,
+    trace: Option<Arc<Trace>>,
 }
 
 /// What a start made before the session is: the child, connected.
@@ -269,21 +269,20 @@ impl Drop for Session {
     }
 }
 
-/// Closes the trace file `trace` indexes, which deletes it.
-fn close_trace(trace: Option<&Arc<Mutex<TraceIndex>>>) {
+/// Closes the trace file of `trace`, which deletes it.
+fn close_trace(trace: Option<&Arc<Trace>>) {
     if let Some(trace) = trace {
-        trace_index::lock(trace).close();
+        trace.close();
     }
 }
 
 /// The index of `file`, published in `handle` and followed from now on,
 /// so that the trace tools read the trace of a start still waiting.
-fn index_trace(file: TraceFile, handle: &SessionHandle) -> Arc<Mutex<TraceIndex>> {
-    let index = Arc::new(Mutex::new(TraceIndex::over(file)));
-    trace_index::spawn_follower(&index);
+fn index_trace(file: TraceFile, handle: &SessionHandle) -> Arc<Trace> {
+    let trace = Trace::over(file);
     // Set by this start alone: a session starts once.
-    let _ = handle.trace.set(Arc::clone(&index));
-    index
+    let _ = handle.trace.set(Arc::clone(&trace));
+    trace
 }
 
 impl Session {

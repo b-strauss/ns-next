@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::trace_index::TraceIndex;
+use super::trace_index::Trace;
 use super::worker::Input;
 
 /// What a session's program does, as its worker last published.
@@ -43,8 +43,8 @@ pub(crate) struct SessionHandle {
     pub(crate) state: Mutex<SessionState>,
     pub(crate) inbox: Sender<Input>,
     /// Set once, by the worker, when the start creates the trace file: the
-    /// trace tools lock the index alone and never wait on the worker.
-    pub(crate) trace: OnceLock<Arc<Mutex<TraceIndex>>>,
+    /// trace tools lock its index alone and never wait on the worker.
+    pub(crate) trace: OnceLock<Arc<Trace>>,
 }
 
 impl SessionHandle {

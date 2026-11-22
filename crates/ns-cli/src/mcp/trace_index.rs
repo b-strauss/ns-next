@@ -17,10 +17,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
-use std::io::{Read as _, Seek as _, SeekFrom};
+use std::fs::File;
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use ns_runtime::tool_names::KnownModule;
@@ -449,7 +448,8 @@ impl Interner {
     }
 }
 
-/// Where the reading of the file stands.
+/// Where the follower's reading of the file stands: its own, which no
+/// lock guards, since only the follower reads the file through it.
 struct LineReader {
     /// The bytes read past the last complete line, which wait for their
     /// `\n`: the writer's buffer may put a record's start on disk before
@@ -460,22 +460,47 @@ struct LineReader {
     /// Where the line not ended yet begins: the bytes of the complete
     /// lines.
     line_start: u64,
-    /// How many complete lines were taken.
+    /// How many complete lines were read.
     lines: u64,
+}
+
+/// A complete line the follower read and parsed, which the index takes
+/// under its lock.
+struct ParsedLine {
+    /// Its number in the file, from 1.
+    number: u64,
+    /// Where it begins in the file.
+    offset: u64,
+    /// Its length in bytes, without its newline.
+    length: u32,
+    head: Result<RecordHead<'static>, String>,
+}
+
+/// What one slice of the follower's reading made: its lines, and why the
+/// reading ended, if it did.
+struct Slice {
+    lines: Vec<ParsedLine>,
+    failure: Option<String>,
 }
 
 /// The index of a session's trace file, which holds the file open and
 /// deletes it when it is dropped or closed.
 pub(crate) struct TraceIndex {
-    /// The file; `None` once closed.
-    file: Option<TraceFile>,
-    reader: LineReader,
+    /// The file, shared with the follower for the length of each read;
+    /// `None` once closed.
+    file: Option<Arc<TraceFile>>,
     contents: Contents,
     failure: Option<String>,
-    /// Run after each read from the file, so that a test writes while a
-    /// reading goes on.
-    #[cfg(test)]
-    after_read: Option<Box<dyn FnMut() + Send>>,
+    /// The bytes of the complete lines taken.
+    line_start: u64,
+    /// A tool waits for the follower's next turn.
+    requested: bool,
+    /// How many turns the follower began, and how many it ended: a turn
+    /// reads the file to the length it had when the turn began.
+    turns_begun: u64,
+    turns_ended: u64,
+    /// The follower runs; a tool waits for it only while it does.
+    following: bool,
 }
 
 /// What the records read say.
@@ -502,23 +527,296 @@ fn count<T: PartialEq>(counts: &mut Vec<(T, u32)>, key: T, amount: u32) {
     }
 }
 
-/// Locks `index`; a trace tool that panicked holding it left the index as
-/// whole as any reading leaves it, every record taken or not.
-pub(crate) fn lock(index: &Mutex<TraceIndex>) -> MutexGuard<'_, TraceIndex> {
-    index.lock().unwrap_or_else(PoisonError::into_inner)
+/// Reads into `buffer` from `offset` of `file`, wherever another read of
+/// the same handle stands: the follower's and a tool's reads share the
+/// handle and never its position.
+#[cfg(unix)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+}
+
+#[cfg(windows)]
+fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+}
+
+/// Fills `buffer` from `offset` of `file`.
+fn read_exactly_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match read_at(file, &mut buffer[filled..], offset + filled as u64) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// How many bytes the follower reads and parses in one slice, after which
+/// it takes the index's lock to hand the slice's records over.
+const SLICE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A session's trace: its index, which the trace tools lock, and the
+/// follower, a thread that reads the file as it grows. The follower reads
+/// and parses without the index's lock and takes it only to hand over
+/// what a slice made -- no reading of the file, only the records' taking
+/// -- so that a tool, a summary or the session's close never waits on the
+/// file's reading, however much of it is still to read.
+pub(crate) struct Trace {
+    index: Mutex<TraceIndex>,
+    /// Signalled when a tool asks for the follower's next turn, and at the
+    /// close.
+    requested: Condvar,
+    /// Signalled whenever the follower handed over a slice, ended a turn or
+    /// ended.
+    applied: Condvar,
+}
+
+impl Trace {
+    /// The trace of `file`, which it holds from now on, followed by a
+    /// thread of its own: 50 ms after the file last grew, the wait
+    /// doubling to 500 ms while it does not, as the plugin's reader does,
+    /// so that the first question after a long run finds the file read.
+    pub(crate) fn over(file: TraceFile) -> Arc<Trace> {
+        Trace::following(file, SLICE_BYTES, |_| {})
+    }
+
+    /// `over` with slices of `slice` bytes, running `before_slice` with
+    /// each slice's number before it is read, no lock held.
+    fn following(
+        file: TraceFile,
+        slice: u64,
+        before_slice: impl Fn(u64) + Send + 'static,
+    ) -> Arc<Trace> {
+        let trace = Arc::new(Trace {
+            index: Mutex::new(TraceIndex::new(file)),
+            requested: Condvar::new(),
+            applied: Condvar::new(),
+        });
+        let followed = Arc::downgrade(&trace);
+        let started = std::thread::Builder::new()
+            .name("ns-next mcp trace follower".to_string())
+            .spawn(move || follow(&followed, slice, &before_slice));
+        if let Err(error) = started {
+            let mut index = trace.lock();
+            index.following = false;
+            index.failure = Some(format!("the trace file cannot be followed: {error}"));
+        }
+        trace
+    }
+
+    /// The index as it stands; a trace tool that panicked holding it left
+    /// it as whole as any hand-over leaves it, every record taken or not.
+    pub(crate) fn lock(&self) -> MutexGuard<'_, TraceIndex> {
+        self.index.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The index once the follower read the file to at least the length
+    /// it had at this call, so that an answer at a stop holds everything
+    /// the stop flushed: the follower's next turn, which begins after the
+    /// call, is waited for, the lock let go meanwhile.
+    pub(crate) fn caught_up(&self) -> MutexGuard<'_, TraceIndex> {
+        let mut index = self.lock();
+        if !index.following || index.file.is_none() || index.failure.is_some() {
+            return index;
+        }
+        let wanted = index.turns_begun + 1;
+        index.requested = true;
+        self.requested.notify_all();
+        while index.turns_ended < wanted
+            && index.following
+            && index.file.is_some()
+            && index.failure.is_none()
+        {
+            index = self
+                .applied
+                .wait(index)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        index
+    }
+
+    /// Closes the file and deletes it; the index keeps what it read. The
+    /// follower holds the file only for the length of one read, which this
+    /// waits for, so that the file is gone when the call returns.
+    pub(crate) fn close(&self) {
+        let mut index = self.lock();
+        if let Some(file) = index.file.take() {
+            let held = Arc::downgrade(&file);
+            drop(file);
+            while held.strong_count() > 0 {
+                std::thread::yield_now();
+            }
+        }
+        drop(index);
+        self.requested.notify_all();
+        self.applied.notify_all();
+    }
+}
+
+/// Tells a trace whose follower ended so, however it ended, so that no
+/// tool waits for it.
+struct FollowerEnded<'trace>(&'trace Weak<Trace>);
+
+impl Drop for FollowerEnded<'_> {
+    fn drop(&mut self) {
+        if let Some(trace) = self.0.upgrade() {
+            trace.lock().following = false;
+            trace.applied.notify_all();
+        }
+    }
+}
+
+/// The follower's loop: a turn at each poll or request, each reading the
+/// file to the length it had when the turn began, a slice at a time,
+/// read and parsed without the index's lock, each handed over under it.
+/// It ends once the trace is dropped, its file closed or its reading
+/// failed.
+fn follow(trace: &Weak<Trace>, slice: u64, before_slice: &dyn Fn(u64)) {
+    let _ended = FollowerEnded(trace);
+    let mut reader = LineReader {
+        tail: Vec::new(),
+        read: 0,
+        line_start: 0,
+        lines: 0,
+    };
+    let mut wait = POLL;
+    let mut slices = 0;
+    loop {
+        let (file, end) = {
+            let Some(trace) = trace.upgrade() else {
+                return;
+            };
+            let index = trace.lock();
+            let (mut index, _) = trace
+                .requested
+                .wait_timeout_while(index, wait, |index| {
+                    !index.requested && index.file.is_some()
+                })
+                .unwrap_or_else(PoisonError::into_inner);
+            index.requested = false;
+            index.turns_begun += 1;
+            let Some(end) = index.length() else {
+                return;
+            };
+            let Some(file) = index.file.as_ref() else {
+                return;
+            };
+            (Arc::downgrade(file), end)
+        };
+        let before = reader.read;
+        while reader.read < end {
+            before_slice(slices);
+            slices += 1;
+            let read = reader.read;
+            let made = reader.read_to(&file, end.min(read.saturating_add(slice)));
+            let Some(trace) = trace.upgrade() else {
+                return;
+            };
+            let mut index = trace.lock();
+            let going_on = index.take_slice(made);
+            trace.applied.notify_all();
+            // The file ended before its length, or its reading did.
+            if !going_on || reader.read == read {
+                if !going_on {
+                    return;
+                }
+                break;
+            }
+        }
+        let Some(trace) = trace.upgrade() else {
+            return;
+        };
+        trace.lock().turns_ended += 1;
+        trace.applied.notify_all();
+        wait = if reader.read > before {
+            POLL
+        } else {
+            (wait * 2).min(LONGEST_POLL)
+        };
+    }
+}
+
+impl LineReader {
+    /// Reads the file from where the reading stands up to `end`, holding
+    /// it only for the length of each read, and parses every line ended
+    /// by its `\n`; a line not ended yet waits in the tail.
+    fn read_to(&mut self, file: &Weak<TraceFile>, end: u64) -> Slice {
+        let mut slice = Slice {
+            lines: Vec::new(),
+            failure: None,
+        };
+        let mut buffer = vec![0; READ_BYTES];
+        while self.read < end {
+            let wanted =
+                usize::try_from(end - self.read).map_or(READ_BYTES, |left| left.min(READ_BYTES));
+            // Closed meanwhile: the reading ends with the file.
+            let Some(trace_file) = file.upgrade() else {
+                break;
+            };
+            let read = match read_at(trace_file.file(), &mut buffer[..wanted], self.read) {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    slice.failure = Some(format!("the trace file cannot be read: {error}"));
+                    break;
+                }
+            };
+            drop(trace_file);
+            self.take(&buffer[..read], &mut slice.lines);
+        }
+        slice
+    }
+
+    /// Takes `bytes`, the next read from the file, line by line into
+    /// `lines`.
+    fn take(&mut self, bytes: &[u8], lines: &mut Vec<ParsedLine>) {
+        let first = self.read;
+        self.read += bytes.len() as u64;
+        let mut start = 0;
+        while let Some(found) = bytes[start..].iter().position(|byte| *byte == b'\n') {
+            let end = start + found;
+            // Bytes, never characters: the offset is what a later read
+            // seeks to.
+            let newline_at = first + end as u64;
+            let offset = self.line_start;
+            let mut tail = std::mem::take(&mut self.tail);
+            let line: &[u8] = if tail.is_empty() {
+                &bytes[start..end]
+            } else {
+                tail.extend_from_slice(&bytes[start..end]);
+                &tail
+            };
+            self.lines += 1;
+            let length = u32::try_from(newline_at - offset);
+            let head = match length {
+                Ok(_) => serde_json::from_slice::<RecordHead<'static>>(line)
+                    .map_err(|error| error.to_string()),
+                Err(_) => Err("longer than 4 GiB".to_string()),
+            };
+            lines.push(ParsedLine {
+                number: self.lines,
+                offset,
+                length: length.unwrap_or(u32::MAX),
+                head,
+            });
+            tail.clear();
+            self.tail = tail;
+            self.line_start = newline_at + 1;
+            start = end + 1;
+        }
+        self.tail.extend_from_slice(&bytes[start..]);
+    }
 }
 
 impl TraceIndex {
     /// The index of `file`, which it holds from now on; nothing is read yet.
-    pub(crate) fn over(file: TraceFile) -> TraceIndex {
+    fn new(file: TraceFile) -> TraceIndex {
         TraceIndex {
-            file: Some(file),
-            reader: LineReader {
-                tail: Vec::new(),
-                read: 0,
-                line_start: 0,
-                lines: 0,
-            },
+            file: Some(Arc::new(file)),
             contents: Contents {
                 header: None,
                 interner: Interner::default(),
@@ -531,35 +829,16 @@ impl TraceIndex {
                 reasons: HashMap::new(),
             },
             failure: None,
-            #[cfg(test)]
-            after_read: None,
+            line_start: 0,
+            requested: false,
+            turns_begun: 0,
+            turns_ended: 0,
+            following: true,
         }
-    }
-
-    /// Reads the file from where the last reading stopped to the end it
-    /// had when the reading began, taking every line ended by its `\n`; a
-    /// line not ended yet waits for the next reading. Bounded so that it
-    /// ends however fast the child writes: what is written meanwhile is the
-    /// next reading's. A reading that failed stays failed.
-    pub(crate) fn catch_up(&mut self) {
-        if let Some(end) = self.end() {
-            self.read_to(end);
-        }
-    }
-
-    /// Reads at most `limit` bytes more of the file, as `catch_up` does,
-    /// and answers whether the file holds more: the follower's turn, which
-    /// holds the index's lock no longer than one slice takes.
-    pub(crate) fn catch_up_slice(&mut self, limit: u64) -> bool {
-        let Some(end) = self.end() else {
-            return false;
-        };
-        self.read_to(end.min(self.reader.read.saturating_add(limit)));
-        self.failure.is_none() && self.reader.read < end
     }
 
     /// The file's current length; `None` once closed or failed.
-    fn end(&mut self) -> Option<u64> {
+    fn length(&mut self) -> Option<u64> {
         if self.failure.is_some() {
             return None;
         }
@@ -573,46 +852,25 @@ impl TraceIndex {
         }
     }
 
-    /// Reads the file from where the last reading stopped up to `end`.
-    fn read_to(&mut self, end: u64) {
-        let Some(trace_file) = &self.file else {
-            return;
-        };
-        let mut file = trace_file.file();
-        if self.reader.read >= end {
-            return;
+    /// Takes what the follower's slice made; answers whether the reading
+    /// goes on.
+    fn take_slice(&mut self, slice: Slice) -> bool {
+        if self.failure.is_some() {
+            return false;
         }
-        if let Err(error) = file.seek(SeekFrom::Start(self.reader.read)) {
-            self.failure = Some(format!("the trace file cannot be read: {error}"));
-            return;
-        }
-        let mut buffer = vec![0; READ_BYTES];
-        while self.reader.read < end {
-            let wanted = usize::try_from(end - self.reader.read)
-                .map_or(READ_BYTES, |left| left.min(READ_BYTES));
-            let read = match file.read(&mut buffer[..wanted]) {
-                Ok(0) => return,
-                Ok(read) => read,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    self.failure = Some(format!("the trace file cannot be read: {error}"));
-                    return;
-                }
-            };
-            if let Err(failure) = self.reader.take(&buffer[..read], &mut self.contents) {
+        for line in slice.lines {
+            let end = line.offset + u64::from(line.length) + 1;
+            if let Err(failure) = self.contents.take_line(line) {
                 self.failure = Some(failure);
-                return;
+                return false;
             }
-            #[cfg(test)]
-            if let Some(after_read) = &mut self.after_read {
-                after_read();
-            }
+            self.line_start = end;
         }
-    }
-
-    /// Closes the file and deletes it; the index keeps what it read.
-    pub(crate) fn close(&mut self) {
-        self.file = None;
+        if let Some(failure) = slice.failure {
+            self.failure = Some(failure);
+            return false;
+        }
+        true
     }
 
     /// Whether the file is closed.
@@ -622,12 +880,12 @@ impl TraceIndex {
 
     /// The file's path, while it is open.
     pub(crate) fn path(&self) -> Option<&Path> {
-        self.file.as_ref().map(TraceFile::path)
+        self.file.as_deref().map(TraceFile::path)
     }
 
     /// The bytes of the complete lines read.
     pub(crate) fn bytes(&self) -> u64 {
-        self.reader.line_start
+        self.line_start
     }
 
     pub(crate) fn event_count(&self) -> usize {
@@ -655,18 +913,25 @@ impl TraceIndex {
         self.contents.header.as_ref()
     }
 
-    /// Whether the header says `category` is traced; `false` before it.
+    /// Whether the header says `category` is traced -- a header that
+    /// does not say is taken to trace every one --; `false` before it.
     pub(crate) fn traces(&self, category: TraceCategory) -> bool {
-        self.header()
-            .and_then(|header| header.categories)
-            .is_none_or(|categories| categories.contains(category))
+        self.header().is_some_and(|header| {
+            header
+                .categories
+                .is_none_or(|categories| categories.contains(category))
+        })
     }
 
-    /// Whether the header says `kind` is listed; `false` before it.
+    /// Whether the header says `kind` is listed -- a header that does not
+    /// say is taken to list every one --; `false` before it.
     pub(crate) fn lists(&self, kind: ListingKind) -> bool {
-        self.header()
-            .and_then(|header| header.listings.as_ref())
-            .is_none_or(|listings| listings.contains(&kind))
+        self.header().is_some_and(|header| {
+            header
+                .listings
+                .as_ref()
+                .is_none_or(|listings| listings.contains(&kind))
+        })
     }
 
     /// The text interned as `number`.
@@ -726,14 +991,22 @@ impl TraceIndex {
                 event.offset
             )
         };
-        let mut file = trace_file.file();
-        file.seek(SeekFrom::Start(event.offset))
-            .map_err(|error| unreadable(&error))?;
         let mut line = Vec::new();
-        std::io::BufRead::read_until(&mut std::io::BufReader::new(file), b'\n', &mut line)
-            .map_err(|error| unreadable(&error))?;
-        if line.pop() != Some(b'\n') {
-            return Err(unreadable(&"the record has no end"));
+        let mut buffer = vec![0; READ_BYTES];
+        loop {
+            let offset = event.offset + line.len() as u64;
+            let read = read_at(trace_file.file(), &mut buffer, offset)
+                .map_err(|error| unreadable(&error))?;
+            if read == 0 {
+                return Err(unreadable(&"the record has no end"));
+            }
+            match buffer[..read].iter().position(|byte| *byte == b'\n') {
+                Some(end) => {
+                    line.extend_from_slice(&buffer[..end]);
+                    break;
+                }
+                None => line.extend_from_slice(&buffer[..read]),
+            }
         }
         serde_json::from_slice(&line).map_err(|error| unreadable(&error))
     }
@@ -892,7 +1165,11 @@ impl TraceIndex {
     }
 
     /// The record of `length` bytes at `offset`, read again through the
-    /// server's own handle.
+    /// server's own handle. Read under the index's lock, which the caller
+    /// holds: the record is the one the caller's answer shows, read once
+    /// and bounded by its own length, the lock keeps the file from being
+    /// closed under the read, and the follower, which reads without the
+    /// lock, waits for it only to hand a slice over.
     pub(crate) fn read_record(&self, offset: u64, length: u32) -> Result<Value, String> {
         let Some(trace_file) = &self.file else {
             return Err("the trace file is closed".to_string());
@@ -900,112 +1177,10 @@ impl TraceIndex {
         let unreadable = |error: &dyn std::fmt::Display| {
             format!("the trace file no longer gives the record at byte {offset}: {error}")
         };
-        let mut file = trace_file.file();
-        file.seek(SeekFrom::Start(offset))
-            .map_err(|error| unreadable(&error))?;
         let mut bytes = vec![0; length as usize];
-        file.read_exact(&mut bytes)
+        read_exactly_at(trace_file.file(), &mut bytes, offset)
             .map_err(|error| unreadable(&error))?;
         serde_json::from_slice(&bytes).map_err(|error| unreadable(&error))
-    }
-}
-
-/// How many bytes the follower reads in one hold of the index's lock: a
-/// trace tool, a summary or the session's close waits for one slice at
-/// most, never for a backlog, nor for a child writing as fast as it is
-/// read.
-const SLICE_BYTES: u64 = 4 * 1024 * 1024;
-
-/// Follows `index`'s file on a thread of its own, catching up 50 ms after
-/// the file last grew, the wait doubling to 500 ms while it does not, so
-/// that the first question after a long run finds the file read. The
-/// thread reads a slice at a time, letting the lock go between slices,
-/// holds the index weakly and ends once the session dropped it or closed
-/// its file; `None` where no thread could be started, and the tools then
-/// catch up alone.
-pub(crate) fn spawn_follower(index: &Arc<Mutex<TraceIndex>>) -> Option<JoinHandle<()>> {
-    spawn_following(index, SLICE_BYTES, |_| {})
-}
-
-/// `spawn_follower` with slices of `slice` bytes, running `between_slices`
-/// after each, the lock let go.
-fn spawn_following(
-    index: &Arc<Mutex<TraceIndex>>,
-    slice: u64,
-    between_slices: impl Fn(&Arc<Mutex<TraceIndex>>) + Send + 'static,
-) -> Option<JoinHandle<()>> {
-    let index = Arc::downgrade(index);
-    std::thread::Builder::new()
-        .name("ns-next mcp trace follower".to_string())
-        .spawn(move || {
-            let mut wait = POLL;
-            loop {
-                std::thread::sleep(wait);
-                let mut grew = false;
-                loop {
-                    let Some(index) = index.upgrade() else {
-                        return;
-                    };
-                    let more = {
-                        let mut index = lock(&index);
-                        if index.closed() || index.failure().is_some() {
-                            return;
-                        }
-                        let before = index.reader.read;
-                        let more = index.catch_up_slice(slice);
-                        grew |= index.reader.read > before;
-                        more
-                    };
-                    between_slices(&index);
-                    if !more {
-                        break;
-                    }
-                }
-                wait = if grew {
-                    POLL
-                } else {
-                    (wait * 2).min(LONGEST_POLL)
-                };
-            }
-        })
-        .ok()
-}
-
-impl LineReader {
-    /// Takes `bytes`, the next read from the file, into `contents`, line
-    /// by line; answers why a line ended the reading.
-    fn take(&mut self, bytes: &[u8], contents: &mut Contents) -> Result<(), String> {
-        let first = self.read;
-        self.read += bytes.len() as u64;
-        let mut start = 0;
-        while let Some(found) = bytes[start..].iter().position(|byte| *byte == b'\n') {
-            let end = start + found;
-            // Bytes, never characters: the offset is what a later read
-            // seeks to.
-            let newline_at = first + end as u64;
-            let offset = self.line_start;
-            let length = u32::try_from(newline_at - offset).map_err(|_| {
-                format!(
-                    "line {} of the trace file is no record: longer than 4 GiB",
-                    self.lines + 1
-                )
-            })?;
-            let mut tail = std::mem::take(&mut self.tail);
-            let line: &[u8] = if tail.is_empty() {
-                &bytes[start..end]
-            } else {
-                tail.extend_from_slice(&bytes[start..end]);
-                &tail
-            };
-            self.lines += 1;
-            contents.take_line(line, self.lines, offset, length)?;
-            tail.clear();
-            self.tail = tail;
-            self.line_start = newline_at + 1;
-            start = end + 1;
-        }
-        self.tail.extend_from_slice(&bytes[start..]);
-        Ok(())
     }
 }
 
@@ -1042,7 +1217,6 @@ struct ListedBodyHead {
 /// One of `declined-no-body`'s reasons.
 #[derive(Deserialize)]
 struct ReasonHead<'line> {
-    #[serde(borrow)]
     reason: Cow<'line, str>,
     count: u32,
 }
@@ -1051,7 +1225,6 @@ struct ReasonHead<'line> {
 #[derive(Deserialize)]
 struct OutcomeHead<'line> {
     installed: Option<u64>,
-    #[serde(borrow)]
     refused: Option<Cow<'line, str>>,
 }
 
@@ -1061,17 +1234,13 @@ struct OutcomeHead<'line> {
 /// skipped unbuilt.
 #[derive(Deserialize)]
 struct RecordHead<'line> {
-    #[serde(borrow)]
     kind: Cow<'line, str>,
     // The header's.
-    #[serde(borrow)]
     format: Option<Cow<'line, str>>,
     /// The header's format version, and a `retired` event's version.
     version: Option<u64>,
     architecture: Option<String>,
-    #[serde(borrow)]
     categories: Option<Vec<Cow<'line, str>>>,
-    #[serde(borrow)]
     listings: Option<Vec<Cow<'line, str>>>,
     // A body's.
     body: Option<u32>,
@@ -1086,36 +1255,27 @@ struct RecordHead<'line> {
     // A bytecode listing's.
     bodies: Option<Vec<ListedBodyHead>>,
     // A code listing's, beside `body`, `key`, `entered` and `bytes`.
-    #[serde(borrow)]
     tier: Option<Cow<'line, str>>,
     // An inlining listing's.
-    #[serde(borrow)]
     outcome: Option<OutcomeHead<'line>>,
     // An event's.
-    #[serde(borrow)]
     category: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     event: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     trigger: Option<Cow<'line, str>>,
     bytes: Option<u64>,
-    #[serde(borrow)]
     reason: Option<Cow<'line, str>>,
     exits: Option<u64>,
-    #[serde(rename = "by", borrow)]
+    #[serde(rename = "by")]
     revival: Option<Cow<'line, str>>,
     /// An event's program counter or loop head.
     #[serde(rename = "at")]
     program_counter: Option<u32>,
-    #[serde(borrow)]
     key: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     entered: Option<Cow<'line, str>>,
     #[serde(rename = "spent-by")]
     spent_by: Option<u32>,
-    #[serde(rename = "walk-end", borrow)]
+    #[serde(rename = "walk-end")]
     walk_end: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     cause: Option<Cow<'line, str>>,
     #[serde(rename = "inlined-scopes")]
     inlined_scopes: Option<u64>,
@@ -1129,20 +1289,14 @@ struct RecordHead<'line> {
     in_body: Option<u32>,
     callee: Option<u32>,
     count: Option<u64>,
-    #[serde(borrow)]
     reasons: Option<Vec<ReasonHead<'line>>>,
-    #[serde(borrow)]
     freeing: Option<Cow<'line, str>>,
     #[serde(rename = "bodies-freed")]
     bodies_freed: Option<u64>,
-    #[serde(borrow)]
     before: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     after: Option<Cow<'line, str>>,
-    #[serde(borrow)]
     selector: Option<Cow<'line, str>>,
     site: Option<u32>,
-    #[serde(borrow)]
     receiver: Option<Cow<'line, str>>,
 }
 
@@ -1276,15 +1430,14 @@ fn required<T>(value: Option<T>, kind: &str, field: &str) -> Result<T, String> {
 }
 
 impl Contents {
-    /// Takes the line `number`, of `length` bytes at `offset`.
-    fn take_line(
-        &mut self,
-        line: &[u8],
-        number: u64,
-        offset: u64,
-        length: u32,
-    ) -> Result<(), String> {
-        let head = serde_json::from_slice::<RecordHead<'_>>(line);
+    /// Takes `line`, which the follower parsed.
+    fn take_line(&mut self, line: ParsedLine) -> Result<(), String> {
+        let ParsedLine {
+            number,
+            offset,
+            length,
+            head,
+        } = line;
         if number == 1 {
             let Ok(head) = head else {
                 return Err(NO_TRACE.to_string());
@@ -1725,7 +1878,7 @@ mod tests {
     struct Scratch {
         /// Dropped first: on Windows an open handle refuses the deletion.
         writer: File,
-        index: TraceIndex,
+        trace: Arc<Trace>,
         _directory: Arc<TraceDirectory>,
     }
 
@@ -1741,10 +1894,15 @@ mod tests {
                 .open(trace_file.path())
                 .expect("the writer's handle");
             Scratch {
-                index: TraceIndex::over(trace_file),
+                trace: Trace::over(trace_file),
                 writer,
                 _directory: directory,
             }
+        }
+
+        /// The index once the follower read what was written.
+        fn caught_up(&self) -> MutexGuard<'_, TraceIndex> {
+            self.trace.caught_up()
         }
 
         fn write(&mut self, text: &str) {
@@ -1812,8 +1970,7 @@ mod tests {
         for (event, _) in &events {
             scratch.record(&event_record(event));
         }
-        scratch.index.catch_up();
-        let index = &scratch.index;
+        let index = scratch.caught_up();
         assert_eq!(index.failure(), None);
         assert_eq!(index.event_count(), events.len());
         for ((event, line), indexed) in events.iter().zip(index.events()) {
@@ -1884,23 +2041,20 @@ mod tests {
         let record = record.replace("Demo>>run", "Demo>>rün").into_bytes();
         let cut = record.iter().position(|byte| *byte >= 0x80).unwrap() + 1;
         scratch.write_bytes(&record[..cut]);
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.body_count(), 0);
-        assert_eq!(scratch.index.failure(), None);
+        assert_eq!(scratch.caught_up().body_count(), 0);
+        assert_eq!(scratch.caught_up().failure(), None);
         scratch.write_bytes(&record[cut..]);
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.body_count(), 0);
-        assert_eq!(scratch.index.failure(), None);
+        assert_eq!(scratch.caught_up().body_count(), 0);
+        assert_eq!(scratch.caught_up().failure(), None);
         scratch.write("\n");
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.failure(), None);
-        assert_eq!(scratch.index.body_count(), 1);
-        assert_eq!(scratch.index.body_name(1), Some("Demo>>rün"));
+        assert_eq!(scratch.caught_up().failure(), None);
+        assert_eq!(scratch.caught_up().body_count(), 1);
+        assert_eq!(scratch.caught_up().body_name(1), Some("Demo>>rün"));
         // The bytes counted are every byte of the complete lines.
-        let size = std::fs::metadata(scratch.index.path().unwrap())
+        let size = std::fs::metadata(scratch.caught_up().path().unwrap())
             .unwrap()
             .len();
-        assert_eq!(scratch.index.bytes(), size);
+        assert_eq!(scratch.caught_up().bytes(), size);
         // A record after the multi-byte line stands where its bytes do,
         // and is read again from there.
         let compiled = event_record(&about(
@@ -1911,24 +2065,22 @@ mod tests {
             },
         ));
         scratch.record(&compiled);
-        scratch.index.catch_up();
-        let event = &scratch.index.events()[0];
-        assert_eq!(event.offset(), size);
-        assert_eq!(scratch.index.read_event(event), Ok(compiled.clone()));
+        {
+            let index = scratch.caught_up();
+            let event = &index.events()[0];
+            assert_eq!(event.offset(), size);
+            assert_eq!(index.read_event(event), Ok(compiled.clone()));
+        }
         // And so does one read in the same read as a multi-byte line.
-        let before = std::fs::metadata(scratch.index.path().unwrap())
+        let before = std::fs::metadata(scratch.caught_up().path().unwrap())
             .unwrap()
             .len();
         let second = body_record(2, "Demo>>rün", None).to_string();
-        scratch.write(&format!(
-            "{second}
-{compiled}
-"
-        ));
-        scratch.index.catch_up();
-        let event = &scratch.index.events()[1];
+        scratch.write(&format!("{second}\n{compiled}\n"));
+        let index = scratch.caught_up();
+        let event = &index.events()[1];
         assert_eq!(event.offset(), before + second.len() as u64 + 1);
-        assert_eq!(scratch.index.read_event(event), Ok(compiled));
+        assert_eq!(index.read_event(event), Ok(compiled));
     }
 
     /// A hundred instructions in the architecture this binary decodes,
@@ -2002,8 +2154,7 @@ mod tests {
         assert_eq!(record["instructions"].as_array().unwrap().len(), 100);
         let line = record.to_string();
         scratch.write(&format!("{line}\n"));
-        scratch.index.catch_up();
-        let index = &scratch.index;
+        let index = scratch.caught_up();
         assert_eq!(index.failure(), None);
         assert_eq!(index.listing_count(), 1);
         let entry = &index.listings()[0];
@@ -2033,24 +2184,21 @@ mod tests {
             "listings": [],
         }));
         scratch.body(1, "Demo>>run", None);
-        scratch.index.catch_up();
         assert_eq!(
-            scratch.index.failure(),
+            scratch.caught_up().failure(),
             Some("the trace file has version 2; this server reads version 1")
         );
-        assert_eq!(scratch.index.body_count(), 0);
+        assert_eq!(scratch.caught_up().body_count(), 0);
     }
 
     #[test]
     fn a_file_of_another_format_is_refused() {
         let mut scratch = Scratch::new("format");
         scratch.write("{\"kind\":\"header\",\"format\":\"other\",\"version\":1}\n");
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.failure(), Some(NO_TRACE));
+        assert_eq!(scratch.caught_up().failure(), Some(NO_TRACE));
         let mut scratch = Scratch::new("no-json");
         scratch.write("not a record\n");
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.failure(), Some(NO_TRACE));
+        assert_eq!(scratch.caught_up().failure(), Some(NO_TRACE));
     }
 
     /// A line that is no record ends the reading, naming it, and keeps
@@ -2062,15 +2210,17 @@ mod tests {
         scratch.body(1, "Demo>>run", None);
         scratch.write("{\"kind\":\"event\"\n");
         scratch.body(2, "Demo>>other", None);
-        scratch.index.catch_up();
-        let failure = scratch.index.failure().expect("a failure");
+        let failure = scratch
+            .caught_up()
+            .failure()
+            .expect("a failure")
+            .to_string();
         assert!(
             failure.starts_with("line 3 of the trace file is no record: "),
             "{failure}"
         );
-        assert_eq!(scratch.index.body_count(), 1);
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.body_count(), 1);
+        assert_eq!(scratch.caught_up().body_count(), 1);
+        assert_eq!(scratch.caught_up().body_count(), 1);
     }
 
     #[test]
@@ -2091,8 +2241,7 @@ mod tests {
                 scratch.record(&event_record(&about(7, kind)));
             }
         }
-        scratch.index.catch_up();
-        let index = &scratch.index;
+        let index = scratch.caught_up();
         assert_eq!(index.failure(), None);
         assert_eq!(
             index.installs(7),
@@ -2129,8 +2278,7 @@ mod tests {
         scratch.body(1, "Demo>>run", None);
         scratch.body(2, "[] in Demo>>run", Some(1));
         scratch.body(3, "Demo>>other", None);
-        scratch.index.catch_up();
-        let index = &scratch.index;
+        let index = scratch.caught_up();
         assert_eq!(index.bodies_named("Demo>>run"), Ok(vec![1, 2]));
         assert_eq!(index.bodies_named("#3"), Ok(vec![3]));
         assert_eq!(
@@ -2195,15 +2343,22 @@ mod tests {
         scratch.record(&optimized);
         scratch.record(&transition("vacant", "monomorphic", "Demo"));
         scratch.record(&transition("monomorphic", "polymorphic", "Other"));
-        scratch.index.catch_up();
-        let outcome = scratch.index.send_outcome(1, 0);
+        let outcome = scratch.caught_up().send_outcome(1, 0);
         assert_eq!(outcome.inlining, Some(0));
         let cache = outcome.cache.expect("a cache");
-        assert_eq!(scratch.index.text(cache.after), "polymorphic");
+        assert_eq!(scratch.caught_up().text(cache.after), "polymorphic");
         assert_eq!((cache.receivers, cache.event), (2, 3));
         // The block's site is its family's: the root's transitions name it.
-        assert_eq!(scratch.index.send_outcome(2, 0).cache, Some(cache));
-        assert_eq!(scratch.index.body(3).unwrap().declined_as_callee.len(), 1);
+        assert_eq!(scratch.caught_up().send_outcome(2, 0).cache, Some(cache));
+        assert_eq!(
+            scratch
+                .caught_up()
+                .body(3)
+                .unwrap()
+                .declined_as_callee
+                .len(),
+            1
+        );
         // The copy retired, its decision goes with it.
         scratch.record(&event(
             "deoptimize",
@@ -2211,17 +2366,18 @@ mod tests {
             json!({ "event": "retired", "key": "Demo", "entered": null, "reason": "exits",
                     "version": 2 }),
         ));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, None);
-        let tally = scratch.index.body(1).unwrap();
-        assert_eq!(tally.copies.len(), 1);
-        assert_eq!(tally.copies[0].last_bytes, 2304);
-        assert_eq!(tally.deoptimizations.len(), 1);
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, None);
+        {
+            let index = scratch.caught_up();
+            let tally = index.body(1).unwrap();
+            assert_eq!(tally.copies.len(), 1);
+            assert_eq!(tally.copies[0].last_bytes, 2304);
+            assert_eq!(tally.deoptimizations.len(), 1);
+        }
         // A compile whose outcome never came leaves no decision.
         scratch.record(&declined);
         scratch.record(&transition("polymorphic", "megamorphic", "Third"));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, None);
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, None);
     }
 
     /// The follower reads the file as it grows, and ends once the index
@@ -2230,25 +2386,29 @@ mod tests {
     fn the_follower_reads_as_the_file_grows() {
         let mut scratch = Scratch::new("follower");
         scratch.header(&["compile"], &[]);
-        let path: PathBuf = scratch.index.path().unwrap().to_path_buf();
+        let path: PathBuf = scratch.trace.lock().path().unwrap().to_path_buf();
         let Scratch {
-            index,
+            trace,
             mut writer,
             _directory,
         } = scratch;
-        let index = Arc::new(Mutex::new(index));
-        let follower = spawn_follower(&index).expect("a follower");
         let line = format!("{}\n", body_record(1, "Demo>>run", None));
         writer.write_all(line.as_bytes()).unwrap();
         writer.flush().unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while lock(&index).body_count() == 0 {
+        // No tool asks: the follower reads on its own.
+        while trace.lock().body_count() == 0 {
             assert!(std::time::Instant::now() < deadline, "never read");
             std::thread::sleep(Duration::from_millis(10));
         }
         drop(writer);
-        drop(index);
-        follower.join().expect("the follower ended");
+        let followed = Arc::downgrade(&trace);
+        drop(trace);
+        // The follower lets the trace go at its next look.
+        while followed.strong_count() > 0 {
+            assert!(std::time::Instant::now() < deadline, "never let go");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!path.exists(), "{} is still there", path.display());
     }
 
@@ -2256,14 +2416,12 @@ mod tests {
     fn a_closed_index_deletes_its_file() {
         let mut scratch = Scratch::new("closed");
         scratch.header(&[], &[]);
-        scratch.index.catch_up();
-        let path = scratch.index.path().unwrap().to_path_buf();
-        let Scratch {
-            mut index, writer, ..
-        } = scratch;
+        let path = scratch.caught_up().path().unwrap().to_path_buf();
+        let Scratch { trace, writer, .. } = scratch;
         drop(writer);
-        index.close();
+        trace.close();
         assert!(!path.exists());
+        let index = trace.caught_up();
         assert_eq!(
             index.read_record(0, 1),
             Err("the trace file is closed".to_string())
@@ -2323,24 +2481,20 @@ mod tests {
         scratch.record(&optimized("Demo"));
         scratch.record(&planned("inlined", "Other", 3));
         scratch.record(&optimized("Other"));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(2));
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, Some(2));
         // The later copy freed, the earlier one's decision stands again.
         scratch.record(&freed("Other", "optimized"));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(0));
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, Some(0));
         // Baseline code freed takes no copy's decision.
         scratch.record(&freed("Demo", "baseline"));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(0));
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, Some(0));
         // The zone replaced takes every copy's.
         scratch.record(&event_of(
             "code-zone",
             None,
             &json!({ "event": "replaced", "bodies-freed": 1 }),
         ));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).inlining, None);
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).inlining, None);
         let transition = |before: &str, after: &str, receiver: &str| {
             event_of(
                 "caches",
@@ -2351,21 +2505,18 @@ mod tests {
         };
         scratch.record(&transition("vacant", "monomorphic", "Demo"));
         scratch.record(&transition("monomorphic", "polymorphic", "Other"));
-        scratch.index.catch_up();
         let receivers =
             |index: &TraceIndex| index.send_outcome(1, 0).cache.map(|cache| cache.receivers);
-        assert_eq!(receivers(&scratch.index), Some(2));
+        assert_eq!(receivers(&scratch.caught_up()), Some(2));
         // A site vacant again counts its receivers afresh.
         scratch.record(&transition("vacant", "monomorphic", "Third"));
-        scratch.index.catch_up();
-        assert_eq!(receivers(&scratch.index), Some(1));
+        assert_eq!(receivers(&scratch.caught_up()), Some(1));
         scratch.record(&event_of(
             "caches",
             None,
             &json!({ "event": "vacated", "cause": "edit" }),
         ));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.send_outcome(1, 0).cache, None);
+        assert_eq!(scratch.caught_up().send_outcome(1, 0).cache, None);
     }
 
     /// What a later binary adds within the version -- a category the
@@ -2388,8 +2539,7 @@ mod tests {
                 bytes: 96,
             },
         )));
-        scratch.index.catch_up();
-        let index = &scratch.index;
+        let index = scratch.caught_up();
         assert_eq!(index.failure(), None);
         assert_eq!(index.event_count(), 1);
         assert_eq!(index.body(1).map(|tally| tally.events.len()), Some(1));
@@ -2402,95 +2552,139 @@ mod tests {
             "{}\n",
             json!({ "kind": "header", "format": FORMAT, "version": VERSION })
         ));
-        silent.index.catch_up();
-        assert_eq!(silent.index.failure(), None);
-        assert!(silent.index.traces(TraceCategory::Deoptimize));
-        assert!(silent.index.lists(ListingKind::Inlining));
-        assert!(silent.index.contents.sends.outcome_can_arrive);
+        let silent_index = silent.caught_up();
+        assert_eq!(silent_index.failure(), None);
+        assert!(silent_index.traces(TraceCategory::Deoptimize));
+        assert!(silent_index.lists(ListingKind::Inlining));
+        assert!(silent_index.contents.sends.outcome_can_arrive);
+        // Before its header a file says nothing is traced or listed.
+        let unwritten = Scratch::new("no-header");
+        let unwritten_index = unwritten.caught_up();
+        assert!(!unwritten_index.traces(TraceCategory::Compile));
+        assert!(!unwritten_index.lists(ListingKind::Code));
     }
 
-    /// A reading ends at the length the file had when it began, however
-    /// fast the child goes on writing: each read appends another record
-    /// here, which an unbounded reading would chase for ever.
+    /// A slice ends at the length it was given, whatever the file holds
+    /// past it, so that a turn ends however fast the child writes: what
+    /// is written meanwhile is the next turn's.
     #[test]
-    fn a_reading_ends_while_the_file_grows() {
-        let mut scratch = Scratch::new("growing");
+    fn a_slice_ends_at_the_length_it_was_given() {
+        let mut scratch = Scratch::new("bounded");
         scratch.header(&["compile"], &[]);
         for number in 1..=3 {
             scratch.body(number, "Demo>>run", None);
         }
-        let at_entry = std::fs::metadata(scratch.index.path().unwrap())
+        let end = std::fs::metadata(scratch.trace.lock().path().unwrap())
             .unwrap()
             .len();
-        let mut appender = scratch.writer.try_clone().expect("a second writer");
-        let mut appended = 0;
-        scratch.index.after_read = Some(Box::new(move || {
-            appended += 1;
-            assert!(appended < 1000, "the reading never ended");
-            let line = format!("{}\n", body_record(100 + appended, "Demo>>more", None));
-            appender.write_all(line.as_bytes()).expect("appended");
-        }));
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.failure(), None);
-        assert_eq!(scratch.index.bytes(), at_entry);
-        assert_eq!(scratch.index.body_count(), 3);
-        // What was written meanwhile is the next reading's.
-        scratch.index.after_read = None;
-        scratch.index.catch_up();
-        assert_eq!(scratch.index.body_count(), 4);
+        scratch.body(4, "Demo>>more", None);
+        let file = Arc::downgrade(scratch.trace.lock().file.as_ref().expect("open"));
+        let mut reader = LineReader {
+            tail: Vec::new(),
+            read: 0,
+            line_start: 0,
+            lines: 0,
+        };
+        let slice = reader.read_to(&file, end);
+        assert!(slice.failure.is_none());
+        assert_eq!(slice.lines.len(), 4);
+        assert_eq!(reader.read, end);
+        let rest = reader.read_to(&file, u64::MAX);
+        assert_eq!(rest.lines.len(), 1);
+        assert_eq!(rest.lines[0].offset, end);
     }
 
-    /// The follower reads a slice at a time and lets the lock go between
-    /// slices, so that a tool waits for one slice at most: here a tool
-    /// takes the lock at each pause and finds the file read in part.
+    /// A tool's catch-up returns while the child goes on writing, with
+    /// everything the file held at the call.
     #[test]
-    fn the_follower_lets_the_lock_go_between_slices() {
-        let mut scratch = Scratch::new("slices");
+    fn a_tool_catches_up_while_the_child_writes() {
+        let mut scratch = Scratch::new("writing");
         scratch.header(&["compile"], &[]);
-        for number in 1..=40 {
-            scratch.body(number, "Demo>>run", None);
+        let path = scratch.trace.lock().path().unwrap().to_path_buf();
+        let mut writer = scratch.writer.try_clone().expect("a second writer");
+        let writing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let still_writing = Arc::clone(&writing);
+        let child = std::thread::spawn(move || {
+            let mut number = 0;
+            while still_writing.load(std::sync::atomic::Ordering::Relaxed) {
+                number += 1;
+                // One line a write, as the child's flush of whole records.
+                let line = format!("{}\n", body_record(number, "Demo>>run", None));
+                writer.write_all(line.as_bytes()).expect("written");
+            }
+        });
+        for _ in 0..3 {
+            let length = std::fs::metadata(&path).unwrap().len();
+            let index = scratch.caught_up();
+            assert_eq!(index.failure(), None);
+            assert!(index.bytes() >= length, "{} < {length}", index.bytes());
         }
-        let size = std::fs::metadata(scratch.index.path().unwrap())
-            .unwrap()
-            .len();
-        let Scratch {
-            index,
-            writer,
-            _directory,
-        } = scratch;
+        writing.store(false, std::sync::atomic::Ordering::Relaxed);
+        child.join().expect("the child's writes");
+    }
+
+    /// The follower reads and parses without the index's lock, so that a
+    /// tool blocked on it gets it while the follower still reads its
+    /// backlog: here the follower is held in the middle of its reading,
+    /// and a waiter blocked on `lock` gets the lock with the file read in
+    /// part.
+    #[test]
+    fn a_waiter_gets_the_lock_while_the_follower_reads() {
+        let directory =
+            std::env::temp_dir().join(format!("ns-next-trace-index-{}-waiter", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let directory = TraceDirectory::scratch(directory);
+        let trace_file = directory.create(1).expect("the scratch trace file");
+        let mut writer = File::options()
+            .append(true)
+            .open(trace_file.path())
+            .expect("the writer's handle");
+        let mut backlog = format!(
+            "{}\n",
+            json!({ "kind": "header", "format": FORMAT, "version": VERSION,
+                    "architecture": null, "categories": [], "listings": [] })
+        );
+        for number in 1..=40 {
+            backlog.push_str(&format!("{}\n", body_record(number, "Demo>>run", None)));
+        }
+        writer.write_all(backlog.as_bytes()).expect("the backlog");
         drop(writer);
-        let index = Arc::new(Mutex::new(index));
+        let size = backlog.len() as u64;
         let (paused, pauses) = std::sync::mpsc::channel::<()>();
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let resumed = Mutex::new(resumed);
-        let follower = spawn_following(&index, 2048, move |_| {
-            // Once the test has stopped listening the follower goes on.
-            if paused.send(()).is_ok() {
-                let _ = resumed.lock().expect("the resumption").recv();
+        let trace = Trace::following(trace_file, 2048, move |slice| {
+            // Held before its second slice, the first handed over.
+            if slice == 1 && paused.send(()).is_ok() {
+                let _ = resumed
+                    .lock()
+                    .expect("the resumption")
+                    .recv_timeout(Duration::from_secs(30));
             }
-        })
-        .expect("a follower");
-        let mut seen = Vec::new();
-        loop {
-            pauses
-                .recv_timeout(Duration::from_secs(30))
-                .expect("a pause between slices");
-            // The follower is paused between slices: the lock is free.
-            let bytes = index
-                .try_lock()
-                .expect("the lock is free between slices")
-                .bytes();
-            seen.push(bytes);
-            if bytes == size {
-                break;
-            }
-            resume.send(()).expect("the follower waits");
-        }
-        assert!(seen.len() > 2, "{seen:?}");
-        assert!(seen[0] > 0 && seen[0] < size, "{seen:?}");
-        drop(pauses);
-        drop(resume);
-        drop(index);
-        follower.join().expect("the follower ended");
+        });
+        pauses
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the follower reads its second slice");
+        // The follower is held in its reading: the lock is free. Taken here,
+        // so that the waiter blocks on it until it is let go.
+        let held = trace
+            .index
+            .try_lock()
+            .expect("the lock is free while the follower reads");
+        let waiting = Arc::clone(&trace);
+        let (got, gets) = std::sync::mpsc::channel::<u64>();
+        let waiter = std::thread::spawn(move || {
+            let bytes = waiting.lock().bytes();
+            let _ = got.send(bytes);
+        });
+        drop(held);
+        let bytes = gets
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the waiter gets the lock while the follower reads");
+        assert!(bytes > 0 && bytes < size, "{bytes} of {size}");
+        resume.send(()).expect("the follower waits");
+        waiter.join().expect("the waiter");
+        assert_eq!(trace.caught_up().bytes(), size);
+        trace.close();
     }
 }
