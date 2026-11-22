@@ -244,7 +244,7 @@ impl Session {
             .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
         // Said for whoever watches the server: a test, or a person
         // looking for the program's process.
-        eprintln!(
+        report_line!(
             "ns-next mcp: {} runs as process {}",
             options.program.display(),
             child.id()
@@ -1277,7 +1277,7 @@ fn body_of(response: &Value) -> Result<Value, String> {
             .as_str()
             .unwrap_or("the debugger refused it")
             .to_string();
-        eprintln!(
+        report_line!(
             "ns-next mcp: the agent refused `{}` (request {}): {message}",
             response["command"].as_str().unwrap_or_default(),
             response["request_seq"]

@@ -759,7 +759,7 @@ impl Agent {
             "disconnect" => self.disconnect(connection, &request),
             command => {
                 #[cfg(debug_assertions)]
-                eprintln!(
+                report_line!(
                     "ns-next debugger: connection {connection} sent the unknown command \
                      {command:?} (seq {}), its message's keys {keys:?}",
                     request.seq
@@ -1292,7 +1292,7 @@ impl Agent {
             if let Some(client) = self.client.take() {
                 client.writer.finish(write_bound());
             }
-            eprintln!("{TERMINATED_LINE}");
+            report_line!("{TERMINATED_LINE}");
             std::process::exit(1);
         }
         self.leave();

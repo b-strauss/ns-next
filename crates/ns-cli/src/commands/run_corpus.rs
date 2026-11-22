@@ -39,7 +39,7 @@ fn load_whitelist(path: &Path) -> Result<Vec<RunnableEntry>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!(
+            report_line!(
                 "note: no whitelist at {} (treating as empty)",
                 path.display()
             );
@@ -235,7 +235,7 @@ fn without_jit_warning(stderr: String) -> String {
     };
     let (reason, after) = rest.split_once('\n').unwrap_or((rest, ""));
     if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("{}{}", crate::entry::JIT_OFF_WARNING, reason.trim_end());
+        report_line!("{}{}", crate::entry::JIT_OFF_WARNING, reason.trim_end());
     }
     after.to_string()
 }
@@ -372,14 +372,14 @@ pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {
     let entries = match load_whitelist(&whitelist_path) {
         Ok(entries) => entries,
         Err(error) => {
-            eprintln!("error: whitelist {}: {error}", whitelist_path.display());
+            report_line!("error: whitelist {}: {error}", whitelist_path.display());
             return ExitCode::FAILURE;
         }
     };
     let executable = match std::env::current_exe() {
         Ok(executable) => executable,
         Err(error) => {
-            eprintln!("error: cannot locate this executable to re-run modules with: {error}");
+            report_line!("error: cannot locate this executable to re-run modules with: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -405,7 +405,7 @@ pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {
         let file = directory.join(&entry.file);
         if !file.is_file() {
             failed += 1;
-            eprintln!(
+            report_line!(
                 "FAIL {}: no such file under {}",
                 entry.file,
                 directory.display()
@@ -419,7 +419,7 @@ pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {
         }
         if let Err(error) = result {
             failed += 1;
-            eprintln!("FAIL {}: {error}", entry.file);
+            report_line!("FAIL {}: {error}", entry.file);
         }
     }
     println!("ran {ran}, failed {failed}, skipped {skipped}");

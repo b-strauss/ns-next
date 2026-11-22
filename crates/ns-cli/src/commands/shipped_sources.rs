@@ -20,13 +20,13 @@ pub(crate) fn execute(directory: Option<&Path>, fingerprint: bool) -> ExitCode {
     }
     let Some(directory) = directory else {
         // clap's required group makes this unreachable.
-        eprintln!("error: shipped-sources needs a directory or --fingerprint");
+        report_line!("error: shipped-sources needs a directory or --fingerprint");
         return ExitCode::FAILURE;
     };
     match write(directory) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("error: {message}");
+            report_line!("error: {message}");
             ExitCode::FAILURE
         }
     }

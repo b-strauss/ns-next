@@ -8,6 +8,17 @@ use std::process::ExitCode;
 
 use clap::{ArgGroup, Parser, Subcommand};
 
+/// One line on standard error, as `eprintln!` writes it, but lost rather
+/// than a panic when the stream is closed: a host's report on a standard
+/// error nobody reads must not turn the run's own outcome into status 101.
+/// Every line the binary writes on standard error goes through it.
+macro_rules! report_line {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($argument)*);
+    }};
+}
+
 mod command_line;
 mod commands;
 mod debug;
@@ -279,7 +290,7 @@ fn main() -> ExitCode {
     // x86-64-v2, the precompiled standard library is not, so nothing before
     // this check executes a v2 instruction.
     if let Some(refusal) = ns_tooling::processor::refusal_for_missing_features("ns-next") {
-        eprintln!("{refusal}");
+        report_line!("{refusal}");
         return ExitCode::from(1);
     }
     let command = Cli::parse().command;

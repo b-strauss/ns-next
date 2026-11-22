@@ -1911,3 +1911,84 @@ fn a_leafless_body_pins_its_listing() {
         expected
     );
 }
+
+/// Writes `line` for as long as anyone reads it, and once more as its
+/// `ensure:` block runs.
+const AN_ENDLESS_WRITER: &str = indoc! {"
+    class Demo = Object new () (
+      public main: platform args: arguments = (
+        [[true] whileTrue: [platform transcript show: 'line'; newLine]]
+          ensure: [platform transcript show: 'ensured'; newLine].
+      )
+    )
+"};
+
+/// A run whose standard output is closed under it -- `ns-next run Spin.ns
+/// | head -1` -- ends as a terminated run does, with status 1 and the
+/// report line, its `ensure:` block run without raising it again, rather
+/// than panicking or writing to nobody for ever.
+#[test]
+fn a_closed_standard_output_ends_the_run() {
+    use std::io::BufRead;
+    let directory = ScratchDirectory::new("closed-standard-output");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, AN_ENDLESS_WRITER).unwrap();
+    let mut child = ns_next()
+        .arg("run")
+        .arg(&program)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    stdout.read_line(&mut first).unwrap();
+    assert_eq!(first, "line\n");
+    drop(stdout);
+    // Standard error is read on a thread of its own, so that a full pipe
+    // never holds the child up.
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut stderr, &mut text).unwrap();
+        text
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("the run went on after its standard output closed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stderr = reader.join().unwrap();
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Uncaught Newspeak error: the standard output is closed"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
+
+/// A run whose standard error is closed under it loses the trace, the
+/// listings and the statistics line, never the run: the program's output
+/// is whole and the status its own.
+#[test]
+fn a_closed_standard_error_loses_the_trace() {
+    let directory = ScratchDirectory::new("closed-standard-error");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let mut child = plain_run(&program)
+        .args(["--trace=all", "--print-bytecode", "--jit-statistics"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), A_HOT_METHOD_STDOUT);
+}

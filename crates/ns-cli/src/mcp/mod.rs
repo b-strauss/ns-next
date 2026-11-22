@@ -40,7 +40,7 @@ const INVALID_PARAMS: i64 = -32602;
 pub(crate) fn execute() -> ExitCode {
     shipped_sources::remove_stale_core_libraries();
     let default_runtime = std::env::current_exe().unwrap_or_else(|error| {
-        eprintln!("ns-next mcp: the executable's path is unknown: {error}");
+        report_line!("ns-next mcp: the executable's path is unknown: {error}");
         std::path::PathBuf::from("ns-next")
     });
     let mut debugger = tools::Debugger::new(default_runtime);

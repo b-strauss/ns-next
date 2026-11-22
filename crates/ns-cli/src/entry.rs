@@ -6,7 +6,7 @@ use std::process::ExitCode;
 /// `--cache-statistics`'s one line, shared by `run` and `bench` -- always to
 /// stderr, so it never lands where a fixture or a golden reads stdout.
 pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
-    eprintln!(
+    report_line!(
         "cache: {} site entries ({} filled, {} megamorphic), {}/{} polymorphic blocks, {}/{} \
          global entries; entry {} bytes, global entry {} bytes",
         statistics.site_entries,
@@ -27,7 +27,7 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
 /// runs, or when nothing asked for it (`NS_NEXT_NO_JIT=1`).
 pub(crate) fn report_jit_unavailable(interpreter: &ns_runtime::Interpreter) {
     if let Some(reason) = interpreter.jit_unavailable() {
-        eprintln!("{JIT_OFF_WARNING}{reason}");
+        report_line!("{JIT_OFF_WARNING}{reason}");
     }
 }
 
@@ -40,7 +40,7 @@ pub(crate) const JIT_OFF_WARNING: &str =
 /// `--collector-statistics`'s one line, always to stderr so that a golden's
 /// recorded stdout is untouched.
 pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStatistics) {
-    eprintln!(
+    report_line!(
         "collector: {} scavenges, {:.3} ms total pause, {:.3} ms longest; \
          {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects; \
          {} table collections",
@@ -60,7 +60,7 @@ pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStati
 /// became of the scopes and blocks they inlined. Both compile times are what a compiler
 /// thread of its own would take off the mutator.
 pub(crate) fn print_jit_statistics(statistics: &ns_runtime::JitStatistics) {
-    eprintln!(
+    report_line!(
         "jit: {} bodies, {} twins compiled in {:.3} ms; {} back-edge switches, \
          {} resumptions after a safepoint, {} exits; optimizer: {} requests, \
          {} bodies optimized ({} customized copies) in {:.3} ms, \
@@ -122,11 +122,11 @@ pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
     match result {
         Ok(_) => ExitCode::SUCCESS,
         Err(ns_runtime::HostSignal::Error(error)) => {
-            eprintln!("Uncaught Newspeak error: {}", error.message);
+            report_line!("Uncaught Newspeak error: {}", error.message);
             ExitCode::FAILURE
         }
         Err(ns_runtime::HostSignal::Return) => {
-            eprintln!("internal: non-local return escaped the entry send");
+            report_line!("internal: non-local return escaped the entry send");
             ExitCode::FAILURE
         }
     }
@@ -137,13 +137,13 @@ pub(crate) fn report_entry_send(result: ns_runtime::HostResult) -> ExitCode {
 pub(crate) fn report_instantiation(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
         ns_runtime::HostSignal::Error(error) => {
-            eprintln!(
+            report_line!(
                 "Uncaught Newspeak error during instantiation: {}",
                 error.message
             );
         }
         ns_runtime::HostSignal::Return => {
-            eprintln!("internal: non-local return escaped instantiation");
+            report_line!("internal: non-local return escaped instantiation");
         }
     }
     ExitCode::FAILURE

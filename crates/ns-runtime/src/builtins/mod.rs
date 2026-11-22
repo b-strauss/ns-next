@@ -115,7 +115,8 @@ pub(crate) fn execute<'gc>(
         }
         Primitive::Block(primitive) => block::execute(mutator, primitive, receiver),
         Primitive::Platform(primitive) => {
-            platform::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
+            platform::execute(mutator, primitive, receiver, selector, arguments)
+                .map(|result| result.map(Step::Value))
         }
         Primitive::Activation(primitive) => {
             activation::execute(mutator, primitive, receiver, arguments)
