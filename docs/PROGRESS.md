@@ -8736,7 +8736,21 @@ where the analyzer changed).
 - `3b2b32ee`, `4bd84b32` -- `debug_trace_events`, and a journal's place
   in an edited body's current text.
 - `9b329fe2` -- `debug_code`, `debug_stack` and `debug_variables` paged.
-- `925676cd`, `bbb133f2` -- the documentation, and CLAUDE.md.
+- `925676cd`, `bbb133f2`, `cff564a1`, `ab83be0a` -- the documentation,
+  and CLAUDE.md.
+- `e5e5b44b` -- the platform leaves out of the leaf dispatcher, for the
+  codegen budget.
+- `bcb99059` -- the final review's fixes: a line longer than an answer
+  cut and passed in every page, a stop's summary held to the budget,
+  `debug_stop`'s `trace:` line naming no call, labels with the
+  program's arguments, refusals naming the filters and the categories
+  not traced, a traced start not yet open told apart, an existing
+  `traces/` narrowed to `0700`.
+- `09f7ee01` -- a factory's interpreted push counts its entry, so that a
+  factory only interpreted code sends is compiled.
+- `7dafaa64` -- the follower's test waits for the file's deletion.
+- `05369649` -- a code record's scope carries the lines no bytecode
+  record lists.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
 stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
