@@ -44,6 +44,13 @@ use crate::{ArbitraryInteger, Mutator, Symbol};
 /// answers. It never declines: an argument `show:` cannot write is an
 /// error of its own, so the forwarder's failure block never runs, and a
 /// closed standard output is a termination.
+///
+/// Never inlined: `builtins::execute`, which every leaf enters, would
+/// take on the stack traffic of the writes and of the termination's boxed
+/// error, wide loads on the hottest leaves' path for a send that is an
+/// exit anyway (`builtins::execute`, whose budget `xtask/src/codegen.rs`
+/// holds).
+#[inline(never)]
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: PlatformPrimitive,
