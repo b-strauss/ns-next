@@ -5,6 +5,7 @@
 
 mod common;
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -54,26 +55,30 @@ const TOOLS: [(&str, &[&str], &[&str]); 17] = [
             "wait",
         ],
     ),
-    ("debug_breakpoints", &[], &["set", "clear"]),
-    ("debug_continue", &[], &["wait"]),
-    ("debug_step", &["kind"], &["target", "wait"]),
-    ("debug_step_targets", &[], &[]),
-    ("debug_run_to", &["location"], &["wait"]),
-    ("debug_pause", &[], &[]),
-    ("debug_wait", &["seconds"], &[]),
-    ("debug_stack", &[], &[]),
-    ("debug_code", &[], &["frame"]),
+    ("debug_breakpoints", &[], &["set", "clear", "session"]),
+    ("debug_continue", &[], &["wait", "session"]),
+    ("debug_step", &["kind"], &["target", "wait", "session"]),
+    ("debug_step_targets", &[], &["session"]),
+    ("debug_run_to", &["location"], &["wait", "session"]),
+    ("debug_pause", &[], &["session"]),
+    ("debug_wait", &["seconds"], &["session"]),
+    ("debug_stack", &[], &["session"]),
+    ("debug_code", &[], &["frame", "session"]),
     (
         "debug_variables",
         &[],
-        &["frame", "reference", "start", "count"],
+        &["frame", "reference", "start", "count", "session"],
     ),
-    ("debug_evaluate", &["expression"], &["frame"]),
-    ("debug_set_variable", &["name", "value"], &["frame"]),
-    ("debug_frame", &["action", "frame"], &["value"]),
-    ("debug_memory", &[], &["class", "referrers_of"]),
-    ("debug_mark", &["label"], &["reference"]),
-    ("debug_stop", &[], &[]),
+    ("debug_evaluate", &["expression"], &["frame", "session"]),
+    (
+        "debug_set_variable",
+        &["name", "value"],
+        &["frame", "session"],
+    ),
+    ("debug_frame", &["action", "frame"], &["value", "session"]),
+    ("debug_memory", &[], &["class", "referrers_of", "session"]),
+    ("debug_mark", &["label"], &["reference", "session"]),
+    ("debug_stop", &[], &["session"]),
 ];
 
 /// A running `ns-next mcp` and the lines it writes to its standard output.
@@ -87,6 +92,8 @@ struct McpServer {
     lines: Receiver<String>,
     stderr: Arc<Mutex<Vec<u8>>>,
     next_id: i64,
+    /// The responses read while another was looked for, by their id.
+    kept: HashMap<i64, Value>,
 }
 
 impl McpServer {
@@ -178,6 +185,7 @@ impl McpServer {
             lines,
             stderr,
             next_id: 1,
+            kept: HashMap::new(),
         };
         let initialized = server.request(
             "initialize",
@@ -220,26 +228,63 @@ impl McpServer {
         self.write(&json!({ "jsonrpc": "2.0", "method": method }));
     }
 
-    /// Sends a request and answers its response; every line the server
-    /// writes must be a JSON-RPC message.
-    fn request(&mut self, method: &str, params: Value) -> Value {
+    /// Sends a request and answers its id, without waiting for its
+    /// response.
+    fn send(&mut self, method: &str, params: Value) -> i64 {
         let id = self.next_id;
         self.next_id += 1;
         self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
-        loop {
-            let line = self.lines.recv_timeout(TIMEOUT).unwrap_or_else(|_| {
-                panic!(
-                    "no answer to `{method}` within {TIMEOUT:?}; stderr: {}",
-                    String::from_utf8_lossy(&self.stderr.lock().expect("stderr"))
-                )
-            });
-            let message: Value = serde_json::from_str(&line)
-                .unwrap_or_else(|error| panic!("not a JSON-RPC message ({error}): {line}"));
-            assert_eq!(message["jsonrpc"], "2.0", "{message}");
-            if message["id"] == id {
-                return message;
-            }
+        id
+    }
+
+    /// Sends a `tools/call` of `tool` without waiting; answers its id.
+    fn send_call(&mut self, tool: &str, arguments: Value) -> i64 {
+        self.send(
+            "tools/call",
+            json!({ "name": tool, "arguments": arguments }),
+        )
+    }
+
+    /// The response to the request `identifier`, waiting `within` at most;
+    /// every line the server writes must be a JSON-RPC message, and one
+    /// that answers another request is kept for it.
+    fn response(&mut self, identifier: i64, within: Duration) -> Option<Value> {
+        if let Some(message) = self.kept.remove(&identifier) {
+            return Some(message);
         }
+        let deadline = Instant::now() + within;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = self.lines.recv_timeout(remaining).ok()?;
+            let message = message_of(&line);
+            if message["id"] == identifier {
+                return Some(message);
+            }
+            let other = message["id"]
+                .as_i64()
+                .unwrap_or_else(|| panic!("a message answering no request: {message}"));
+            self.kept.insert(other, message);
+        }
+    }
+
+    /// Sends a request and answers its response.
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.send(method, params);
+        self.response(id, TIMEOUT).unwrap_or_else(|| {
+            panic!(
+                "no answer to `{method}` within {TIMEOUT:?}; stderr: {}",
+                String::from_utf8_lossy(&self.stderr.lock().expect("stderr"))
+            )
+        })
+    }
+
+    /// The next line the server writes, as a message.
+    fn next_message(&mut self) -> Value {
+        let line = self
+            .lines
+            .recv_timeout(TIMEOUT)
+            .unwrap_or_else(|_| panic!("no message within {TIMEOUT:?}"));
+        message_of(&line)
     }
 
     /// Calls `tool`; answers its text and whether it is an error.
@@ -248,15 +293,7 @@ impl McpServer {
             "tools/call",
             json!({ "name": tool, "arguments": arguments }),
         );
-        let result = &response["result"];
-        let content = result["content"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{response}"));
-        assert_eq!(content.len(), 1, "{response}");
-        assert_eq!(content[0]["type"], "text", "{response}");
-        let text = content[0]["text"].as_str().expect("a text").to_string();
-        let is_error = result["isError"].as_bool().expect("isError");
-        (text, is_error)
+        text_of(&response)
     }
 
     /// Calls `tool`, which must succeed; answers its text.
@@ -291,6 +328,45 @@ impl Drop for McpServer {
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+/// A line the server wrote, which must be a JSON-RPC message or a batch
+/// of them.
+fn message_of(line: &str) -> Value {
+    let message: Value = serde_json::from_str(line)
+        .unwrap_or_else(|error| panic!("not a JSON-RPC message ({error}): {line}"));
+    let members = match &message {
+        Value::Array(members) => members.clone(),
+        single => vec![single.clone()],
+    };
+    for member in members {
+        assert_eq!(member["jsonrpc"], "2.0", "{member}");
+    }
+    message
+}
+
+/// A `tools/call`'s response as its text and whether it is an error.
+fn text_of(response: &Value) -> (String, bool) {
+    let result = &response["result"];
+    let content = result["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{response}"));
+    assert_eq!(content.len(), 1, "{response}");
+    assert_eq!(content[0]["type"], "text", "{response}");
+    let text = content[0]["text"].as_str().expect("a text").to_string();
+    let is_error = result["isError"].as_bool().expect("isError");
+    (text, is_error)
+}
+
+/// The session a `debug_start`'s answer names on its first line, and the
+/// rest of the answer.
+fn started(answer: &str) -> (u32, &str) {
+    let (first, rest) = answer.split_once('\n').unwrap_or((answer, ""));
+    let number = first
+        .strip_prefix("session: ")
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("no session's number first:\n{answer}"));
+    (number, rest)
 }
 
 fn binary() -> &'static str {
@@ -394,7 +470,9 @@ fn a_start_stops_at_a_breakpoint_with_a_summary() {
             "breakpoints": [{ "location": location(&path, 5) }],
         }),
     );
-    let first = answer.lines().next().expect("a first line");
+    let (session, summary) = started(&answer);
+    assert_eq!(session, 1, "{answer}");
+    let first = summary.lines().next().expect("a second line");
     assert!(
         first.starts_with(&format!("stopped: breakpoint at {}:5:", path.display())),
         "{answer}"
@@ -503,7 +581,10 @@ fn an_endless_loop_answers_running_and_pauses_where_it_is() {
         "debug_start",
         json!({ "program": path, "stop_on_entry": true }),
     );
-    assert!(entry.starts_with("stopped: entry at "), "{entry}");
+    assert!(
+        started(&entry).1.starts_with("stopped: entry at "),
+        "{entry}"
+    );
     let running = server.succeed("debug_continue", json!({ "wait": 1 }));
     assert!(running.starts_with("running for "), "{running}");
     assert!(running.contains("output: \"spinning\\n\""), "{running}");
@@ -536,7 +617,7 @@ fn a_shipped_frame_names_a_file_with_the_binary_s_text() {
             "breakpoints": [{ "location": "newspeak.core.Kernel/Array>>do:" }],
         }),
     );
-    let first = answer.lines().next().expect("a first line");
+    let first = started(&answer).1.lines().next().expect("a stop");
     let place = first
         .strip_prefix("stopped: function breakpoint at ")
         .and_then(|rest| rest.split(" in ").next())
@@ -595,7 +676,7 @@ fn a_method_location_names_a_nested_class_with_a_slash() {
             "breakpoints": [{ "location": "Demo/Account>>deposit:" }],
         }),
     );
-    let first = answer.lines().next().expect("a first line");
+    let first = started(&answer).1.lines().next().expect("a stop");
     assert!(
         first.starts_with(&format!(
             "stopped: function breakpoint at {}:",
@@ -668,7 +749,10 @@ fn a_start_without_a_runtime_runs_the_server_s_own_executable() {
     let mut server = McpServer::start_with(&executable, &[]);
     let (_directory, path) = program("Counter", COUNTER);
     let ended = server.succeed("debug_start", json!({ "program": path }));
-    assert!(ended.starts_with("ended: exit status 0"), "{ended}");
+    assert!(
+        started(&ended).1.starts_with("ended: exit status 0"),
+        "{ended}"
+    );
     let runtime = line_starting(&ended, "runtime: ");
     assert!(
         runtime.contains(&executable.display().to_string()),
@@ -742,7 +826,7 @@ fn killing_the_server_ends_its_program() {
     let (_directory, path) = program("Spin", SPIN);
     let mut server = McpServer::start();
     let running = server.succeed("debug_start", json!({ "program": path, "wait": 0.5 }));
-    assert!(running.starts_with("running for "), "{running}");
+    assert!(started(&running).1.starts_with("running for "), "{running}");
     let process = server.program_process();
     assert!(process_runs(process), "the program does not run");
     {
@@ -881,7 +965,10 @@ fn a_trace_arrives_with_the_output() {
         "debug_start",
         json!({ "program": path, "trace": "compile" }),
     );
-    assert!(traced.starts_with("ended: exit status 0"), "{traced}");
+    assert!(
+        started(&traced).1.starts_with("ended: exit status 0"),
+        "{traced}"
+    );
     assert!(traced.contains("[compile] "), "{traced}");
     assert!(
         traced.contains("[compile] {Demo>>square:} compiled"),
@@ -910,4 +997,153 @@ fn a_trace_arrives_with_the_output() {
     assert!(!excluded.contains("{Demo>>square:}"), "{excluded}");
     let untraced = server.succeed("debug_start", json!({ "program": path }));
     assert!(!untraced.contains("[compile] "), "{untraced}");
+}
+
+/// The arguments of a start of `path`, a `COUNTER`, stopping at its line 5.
+fn counter_start(path: &Path) -> Value {
+    json!({
+        "program": path,
+        "breakpoints": [{ "location": location(path, 5) }],
+    })
+}
+
+/// Every start opens a session of its own, numbered from 1, and a second
+/// start leaves the first open.
+#[test]
+fn a_start_answers_its_session() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    let first = server.succeed("debug_start", counter_start(&path));
+    let (number, summary) = started(&first);
+    assert_eq!(number, 1, "{first}");
+    assert!(summary.starts_with("stopped: breakpoint at "), "{first}");
+    let second = server.succeed("debug_start", counter_start(&path));
+    assert_eq!(started(&second).0, 2, "{second}");
+    let stack = server.succeed("debug_stack", json!({ "session": 1 }));
+    assert!(
+        line_starting(&stack, "#0 ").contains("Counter>>main:args:"),
+        "{stack}"
+    );
+}
+
+/// With several sessions open a call names its own, and a refusal names
+/// the open sessions with their programs and states; a stopped session is
+/// closed, and the one left needs no number.
+#[test]
+fn several_sessions_need_their_number() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    server.succeed("debug_start", counter_start(&path));
+    server.succeed("debug_start", counter_start(&path));
+    assert_eq!(
+        server.fail("debug_stack", json!({})),
+        "2 sessions are open: session 1 (Counter.ns, stopped), \
+         session 2 (Counter.ns, stopped) — pass session"
+    );
+    assert_eq!(
+        server.fail("debug_stack", json!({ "session": 3 })),
+        "no session 3 is open: session 1 (Counter.ns, stopped), \
+         session 2 (Counter.ns, stopped)"
+    );
+    let stopped = server.succeed("debug_stop", json!({ "session": 1 }));
+    assert!(stopped.starts_with("ended: "), "{stopped}");
+    assert!(stopped.ends_with("\nsession 1 is closed"), "{stopped}");
+    assert_eq!(
+        server.fail("debug_stack", json!({ "session": 1 })),
+        "no session 1 is open: session 2 (Counter.ns, stopped)"
+    );
+    let stack = server.succeed("debug_stack", json!({}));
+    assert!(
+        line_starting(&stack, "#0 ").contains("Counter>>main:args:"),
+        "{stack}"
+    );
+    server.succeed("debug_stop", json!({}));
+    assert_eq!(
+        server.fail("debug_stack", json!({})),
+        "no program is being debugged; debug_start starts one"
+    );
+    assert_eq!(
+        server.fail("debug_stack", json!({ "session": 2 })),
+        "no session 2 is open; debug_start starts one"
+    );
+}
+
+/// A session waiting for its program holds neither another session's
+/// calls, its start included, nor a `ping`.
+#[test]
+fn a_wait_holds_no_other_session() {
+    let (_spin_directory, spin) = program("Spin", SPIN);
+    let (_counter_directory, counter) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
+    assert!(started(&running).1.starts_with("running for "), "{running}");
+    let wait = server.send_call("debug_wait", json!({ "session": 1, "seconds": 20 }));
+    let bound = Duration::from_secs(10);
+    let answered = |server: &mut McpServer, identifier: i64, what: &str| {
+        let response = server
+            .response(identifier, bound)
+            .unwrap_or_else(|| panic!("{what} was not answered within {bound:?}"));
+        assert!(
+            server.response(wait, Duration::ZERO).is_none(),
+            "the wait answered before {what}"
+        );
+        response
+    };
+    let start = server.send_call("debug_start", counter_start(&counter));
+    let (text, is_error) = text_of(&answered(&mut server, start, "the second start"));
+    assert!(!is_error, "{text}");
+    let (number, summary) = started(&text);
+    assert_eq!(number, 2, "{text}");
+    assert!(summary.starts_with("stopped: breakpoint at "), "{text}");
+    let stack = server.send_call("debug_stack", json!({ "session": 2 }));
+    let (text, is_error) = text_of(&answered(&mut server, stack, "the stack"));
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("#0 Counter>>main:args:"), "{text}");
+    let ping = server.send("ping", json!({}));
+    assert_eq!(answered(&mut server, ping, "the ping")["result"], json!({}));
+    let waited = server
+        .response(wait, TIMEOUT)
+        .unwrap_or_else(|| panic!("the wait was not answered"));
+    let (text, is_error) = text_of(&waited);
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("running for "), "{text}");
+    server.succeed("debug_stop", json!({ "session": 1 }));
+}
+
+/// A batch is answered as one array, in its members' order, once each
+/// member is answered, a tool call's from its session's worker; its
+/// notification is not answered.
+#[test]
+fn a_batch_is_answered_as_one_array_in_its_order() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::start();
+    server.write(&json!([
+        {
+            "jsonrpc": "2.0", "id": 101, "method": "tools/call",
+            "params": { "name": "debug_start", "arguments": counter_start(&path) }
+        },
+        { "jsonrpc": "2.0", "method": "notifications/initialized" },
+        { "jsonrpc": "2.0", "id": 102, "method": "ping" },
+        {
+            "jsonrpc": "2.0", "id": 103, "method": "tools/call",
+            "params": { "name": "debug_stack", "arguments": { "session": 7 } }
+        }
+    ]));
+    let answer = server.next_message();
+    let members = answer.as_array().unwrap_or_else(|| panic!("{answer}"));
+    let identifiers: Vec<&Value> = members.iter().map(|member| &member["id"]).collect();
+    assert_eq!(
+        identifiers,
+        [&json!(101), &json!(102), &json!(103)],
+        "{answer}"
+    );
+    let (text, is_error) = text_of(&members[0]);
+    assert!(!is_error && started(&text).0 == 1, "{text}");
+    assert_eq!(members[1]["result"], json!({}), "{answer}");
+    let (text, is_error) = text_of(&members[2]);
+    assert!(is_error, "{text}");
+    assert!(
+        text.starts_with("no session 7 is open: session 1 ("),
+        "{text}"
+    );
 }

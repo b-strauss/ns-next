@@ -4,22 +4,27 @@
 //! waiting for the next stop (`docs/design/debugger.md`, "The MCP
 //! server"). The program runs in the child, so that its output never
 //! reaches the stream the protocol owns and a crash ends the child, never
-//! the server. The child is killed when the session is dropped: at a
-//! `debug_start` that replaces it and when the server ends.
+//! the server. The child is killed when the session is dropped: at
+//! `debug_stop` and when the server ends. The session belongs to its
+//! worker (`worker.rs`), and reads its program's messages from the
+//! worker's inbox, where the calls made of it while it waits are queued.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::dap_client::{DapClient, Next};
+use super::registry::{SessionHandle, SessionState};
 use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
+use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
 
@@ -33,7 +38,7 @@ const CONNECT_BOUND: Duration = Duration::from_secs(30);
 
 /// The longest an ended program's process takes to exit, and its streams
 /// to close, before it is killed.
-const END_BOUND: Duration = Duration::from_secs(10);
+pub(crate) const END_BOUND: Duration = Duration::from_secs(10);
 
 /// The longest an aborted evaluation takes to answer.
 const ABORT_BOUND: Duration = Duration::from_secs(10);
@@ -196,6 +201,20 @@ pub(crate) struct Session {
     references: HashMap<i64, Reference>,
     /// The `runtime:` line of `debug_start`'s answer.
     runtime: String,
+    /// The worker's inbox, which the connection's messages arrive in.
+    inbox: Inbox,
+    /// Where the session publishes its state.
+    handle: Arc<SessionHandle>,
+}
+
+/// What a start made before the session is: the child, connected.
+struct Launched {
+    child: Child,
+    client: DapClient,
+    output: Written,
+    secret: String,
+    core_library: PathBuf,
+    fingerprint: String,
 }
 
 impl Drop for Session {
@@ -207,79 +226,24 @@ impl Drop for Session {
 }
 
 impl Session {
-    /// Starts `options.program` under the debugger and waits for its first
-    /// stop at most `options.wait`; answers the session and the start's
-    /// answer, or why it could not start.
-    pub(crate) fn start(options: StartOptions) -> Result<(Session, String), String> {
-        let (core_library, fingerprint) = shipped_sources::core_library(&options.runtime)?;
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
-        let address = listener
-            .local_addr()
-            .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
-        let secret = Token::generate()
-            .map_err(|error| format!("making the session's secret: {error}"))?
-            .hex();
-        let mut command = target_runner::target_command(&options.runtime);
-        command.arg("run").arg(format!("--debug-connect={address}"));
-        // Before the program, as `run` reads its options there; the lines
-        // arrive on the child's standard error with its other output.
-        if let Some(trace) = &options.trace {
-            command.arg(format!("--trace={trace}"));
-        }
-        for pattern in &options.trace_filter {
-            command.arg(format!("--trace-filter={pattern}"));
-        }
-        command.arg(&options.program);
-        if !options.arguments.is_empty() {
-            command.arg("--").args(&options.arguments);
-        }
-        command
-            .env(SECRET_VARIABLE, &secret)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
-        // Said for whoever watches the server: a test, or a person
-        // looking for the program's process.
-        report_line!(
-            "ns-next mcp: {} runs as process {}",
-            options.program.display(),
-            child.id()
-        );
-        let output: Written = Arc::new(Mutex::new(Vec::new()));
-        if let Some(stdout) = child.stdout.take() {
-            collect(stdout, Arc::clone(&output));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            collect(stderr, Arc::clone(&output));
-        }
-        let stream = match accept(&listener, &mut child) {
-            Ok(stream) => stream,
-            Err(reason) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                wait_for_readers(&output);
-                let written =
-                    String::from_utf8_lossy(&output.lock().expect("the output")).to_string();
-                return Err(summary::output_line(&written)
-                    .map_or(reason.clone(), |line| format!("{reason}\n{line}")));
-            }
-        };
-        let client = match DapClient::over(stream) {
-            Ok(client) => client,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("the connection: {error}"));
-            }
+    /// Starts `options.program` under the debugger as the session
+    /// `handle`, its connection's messages arriving in `inbox`, and waits
+    /// for its first stop at most `options.wait`; answers the session and
+    /// the start's answer, or why it could not start and the inbox, with
+    /// the calls queued meanwhile.
+    pub(crate) fn start(
+        options: StartOptions,
+        handle: Arc<SessionHandle>,
+        inbox: Inbox,
+    ) -> Result<(Session, String), (String, Inbox)> {
+        let launched = match launch(&options, &handle) {
+            Ok(launched) => launched,
+            Err(reason) => return Err((reason, inbox)),
         };
         let mut session = Session {
-            child,
-            client,
-            output,
+            child: launched.child,
+            client: launched.client,
+            output: launched.output,
             shown: 0,
             state: State::Running {
                 since: Instant::now(),
@@ -289,27 +253,90 @@ impl Session {
             lines: BTreeMap::new(),
             methods: Vec::new(),
             references: HashMap::new(),
-            runtime: format!("{} {fingerprint}", options.runtime.display()),
+            runtime: format!("{} {}", options.runtime.display(), launched.fingerprint),
+            inbox,
+            handle,
         };
-        session.attach(&secret, &core_library, options.stop_on_entry)?;
+        match session.configure(&options, &launched.secret, &launched.core_library) {
+            Ok(answer) => Ok((session, answer)),
+            Err(reason) => Err((reason, session.take_inbox())),
+        }
+    }
+
+    /// Attaches to the started child, sets the breakpoints and lets the
+    /// program run; answers the start's answer.
+    fn configure(
+        &mut self,
+        options: &StartOptions,
+        secret: &str,
+        core_library: &Path,
+    ) -> Result<String, String> {
+        self.attach(secret, core_library, options.stop_on_entry)?;
         let breakpoints = (!options.breakpoints.is_empty())
-            .then(|| session.change_breakpoints(&options.breakpoints, &[]).0);
-        session.request(
+            .then(|| self.change_breakpoints(&options.breakpoints, &[]).0);
+        self.request(
             "setExceptionBreakpoints",
             json!({ "filters": ["uncaught", "halt"] }),
         )?;
         // The program runs from the configuration's end: a stop it makes
         // at once may come before the response, and is kept.
-        session.state = State::Running {
+        self.state = State::Running {
             since: Instant::now(),
         };
-        session.request("configurationDone", json!({}))?;
-        session.wait_for_stop(options.wait);
-        let mut answer = session.summary(true);
+        self.request("configurationDone", json!({}))?;
+        self.wait_for_stop(options.wait);
+        self.publish();
+        let mut answer = self.summary(true);
         if let Some(breakpoints) = breakpoints {
             answer.push_str(&format!("\nbreakpoints:\n{breakpoints}"));
         }
-        Ok((session, answer))
+        Ok(answer)
+    }
+
+    /// The worker's inbox, taken out of a session about to be dropped.
+    pub(crate) fn take_inbox(&mut self) -> Inbox {
+        let (_, detached) = mpsc::channel();
+        std::mem::replace(&mut self.inbox, Inbox::new(detached))
+    }
+
+    /// The next call to serve: the one queued first, or the next to
+    /// arrive. What the connection says meanwhile is taken as it comes,
+    /// the program's end finished at once, so that the state the session
+    /// publishes is current. `None` once the server ends.
+    pub(crate) fn next_call(&mut self) -> Option<Call> {
+        loop {
+            if let Some(call) = self.inbox.next_pending() {
+                return Some(call);
+            }
+            if self.inbox.ended() {
+                return None;
+            }
+            match self.inbox.receive(None) {
+                Ok(Input::Call(call)) => return Some(call),
+                Ok(Input::Dap(message)) => {
+                    match self.client.received(message) {
+                        Next::Message(message) if message["type"] == "event" => {
+                            self.handle_event(&message);
+                        }
+                        Next::Closed => self.ending = true,
+                        _ => {}
+                    }
+                    if self.ending {
+                        self.finish();
+                    }
+                }
+                Ok(Input::End) | Err(_) => self.inbox.end(),
+            }
+        }
+    }
+
+    /// Publishes the program's state in the session's handle.
+    fn publish(&self) {
+        self.handle.publish(match self.state {
+            State::Running { .. } => SessionState::Running,
+            State::Stopped(_) => SessionState::Stopped,
+            State::Ended { .. } => SessionState::Ended,
+        });
     }
 
     /// `initialize` and `attach`, then the `process` event, which must name
@@ -374,7 +401,7 @@ impl Session {
     /// `deadline` at the latest.
     fn response(&mut self, seq: i64, deadline: Instant) -> Result<Value, Unanswered> {
         loop {
-            match self.client.next(deadline) {
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "response" && message["request_seq"] == seq {
                         return Ok(message);
@@ -388,6 +415,8 @@ impl Session {
                     return Err(Unanswered::Ended);
                 }
                 Next::TimedOut => return Err(Unanswered::TimedOut),
+                Next::Call(call) => self.inbox.queue(call),
+                Next::End => self.inbox.end(),
             }
         }
     }
@@ -396,7 +425,7 @@ impl Session {
     fn event(&mut self, name: &str) -> Result<Value, String> {
         let deadline = Instant::now() + REQUEST_BOUND;
         loop {
-            match self.client.next(deadline) {
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
                         if message["event"] == name {
@@ -412,6 +441,8 @@ impl Session {
                 Next::TimedOut => {
                     return Err(format!("the debugger sent no `{name}` event"));
                 }
+                Next::Call(call) => self.inbox.queue(call),
+                Next::End => self.inbox.end(),
             }
         }
     }
@@ -426,6 +457,7 @@ impl Session {
                     description: body["description"].as_str().map(str::to_string),
                     text: body["text"].as_str().map(str::to_string),
                 });
+                self.publish();
             }
             Some("output") => {
                 if let Some(text) = body["output"].as_str() {
@@ -468,6 +500,7 @@ impl Session {
         self.state = State::Ended {
             status: self.exit_code.or(status.map(i64::from)),
         };
+        self.publish();
     }
 
     fn ended_refusal(&self) -> String {
@@ -480,7 +513,7 @@ impl Session {
     fn wait_for_stop(&mut self, wait: Duration) {
         let deadline = Instant::now() + wait;
         while matches!(self.state, State::Running { .. }) && !self.ending {
-            match self.client.next(deadline) {
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
                         self.handle_event(&message);
@@ -488,6 +521,8 @@ impl Session {
                 }
                 Next::Closed => self.ending = true,
                 Next::TimedOut => break,
+                Next::Call(call) => self.inbox.queue(call),
+                Next::End => self.inbox.end(),
             }
         }
         if self.ending {
@@ -531,10 +566,12 @@ impl Session {
                 since: Instant::now(),
             },
         );
+        self.publish();
         if let Err(reason) = self.request(command, arguments) {
             // Refused, the program is still at its stop.
             if matches!(self.state, State::Running { .. }) && !self.ending {
                 self.state = stopped;
+                self.publish();
             }
             return Err(reason);
         }
@@ -568,10 +605,11 @@ impl Session {
                 self.state = State::Running {
                     since: Instant::now(),
                 };
+                self.publish();
             }
             let deadline = Instant::now() + wait;
             while !self.ending && Instant::now() < deadline {
-                match self.client.next(deadline) {
+                match self.client.next(deadline, &self.inbox) {
                     Next::Message(message) => {
                         if message["type"] == "event" {
                             self.handle_event(&message);
@@ -579,6 +617,8 @@ impl Session {
                     }
                     Next::Closed => self.ending = true,
                     Next::TimedOut => break,
+                    Next::Call(call) => self.inbox.queue(call),
+                    Next::End => self.inbox.end(),
                 }
             }
             if !self.ending {
@@ -1277,11 +1317,11 @@ fn body_of(response: &Value) -> Result<Value, String> {
             .as_str()
             .unwrap_or("the debugger refused it")
             .to_string();
-        report_line!(
+        super::say(&format!(
             "ns-next mcp: the agent refused `{}` (request {}): {message}",
             response["command"].as_str().unwrap_or_default(),
             response["request_seq"]
-        );
+        ));
         Err(message)
     }
 }
@@ -1301,6 +1341,85 @@ fn frame_of(frame: &Value) -> Frame {
         column: number("column"),
         shipped: frame["nsNext/shipped"] == true,
     }
+}
+
+/// Starts the child `options` asks for and waits for its agent to
+/// connect; answers it connected, its messages arriving in the inbox of
+/// `handle`, or why it did not start.
+fn launch(options: &StartOptions, handle: &SessionHandle) -> Result<Launched, String> {
+    let (core_library, fingerprint) =
+        shipped_sources::core_library(&options.runtime, handle.number)?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
+    let secret = Token::generate()
+        .map_err(|error| format!("making the session's secret: {error}"))?
+        .hex();
+    let mut command = target_runner::target_command(&options.runtime);
+    command.arg("run").arg(format!("--debug-connect={address}"));
+    // Before the program, as `run` reads its options there; the lines
+    // arrive on the child's standard error with its other output.
+    if let Some(trace) = &options.trace {
+        command.arg(format!("--trace={trace}"));
+    }
+    for pattern in &options.trace_filter {
+        command.arg(format!("--trace-filter={pattern}"));
+    }
+    command.arg(&options.program);
+    if !options.arguments.is_empty() {
+        command.arg("--").args(&options.arguments);
+    }
+    command
+        .env(SECRET_VARIABLE, &secret)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
+    // Said for whoever watches the server: a test, or a person looking
+    // for the program's process.
+    super::say(&format!(
+        "ns-next mcp: {} runs as process {}",
+        options.program.display(),
+        child.id()
+    ));
+    let output: Written = Arc::new(Mutex::new(Vec::new()));
+    if let Some(stdout) = child.stdout.take() {
+        collect(stdout, Arc::clone(&output));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        collect(stderr, Arc::clone(&output));
+    }
+    let stream = match accept(&listener, &mut child) {
+        Ok(stream) => stream,
+        Err(reason) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            wait_for_readers(&output);
+            let written = String::from_utf8_lossy(&output.lock().expect("the output")).to_string();
+            return Err(summary::output_line(&written)
+                .map_or(reason.clone(), |line| format!("{reason}\n{line}")));
+        }
+    };
+    let client = match DapClient::over(stream, handle.inbox.clone()) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("the connection: {error}"));
+        }
+    };
+    Ok(Launched {
+        child,
+        client,
+        output,
+        secret,
+        core_library,
+        fingerprint,
+    })
 }
 
 /// Waits for the child's agent to connect to `listener`, at most

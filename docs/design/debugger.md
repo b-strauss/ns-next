@@ -5625,10 +5625,15 @@ the way not taken: every question would run the program from its start.
   reaches `ns-next`. Nothing but protocol messages goes to the standard
   output; the server's own words go to the standard error -- the
   process each program runs as, and every request the agent refused.
-  The server ends when the client closes its standard input, and its
-  program with it. It serves one message at a time: a tool call holds
-  the loop for as long as it waits, so a `ping` sent meanwhile is
-  answered after it.
+  The server ends when the client closes its standard input, and every
+  session's program with it. The thread that reads the input answers
+  `initialize`, `ping`, `tools/list` and a refusal at once and hands a
+  tool call to its session's worker (`worker.rs`), a thread of its own
+  that serves the session's calls in their order of arrival; one writer
+  thread owns the standard output (`responses.rs`), and a batch is
+  answered once each of its members is. So a wait in one session holds
+  neither another session's calls nor a `ping`
+  (`a_wait_holds_no_other_session`).
 - **The program runs in a child** (`session.rs`, `dap_client.rs`). Each
   `debug_start` starts `ns-next run --debug-connect` against a socket the
   server listens on, as the plugin does, hands the child a one-time secret
@@ -5638,16 +5643,22 @@ the way not taken: every question would run the program from its start.
   (`wire.rs`), with the requests the plugin uses, and asks it to stop at
   uncaught exceptions and at `halt`. The program writes to its own
   standard streams, which the server reads; a crash ends the child, never
-  the server; and the child is killed when its session ends -- at the next
-  `debug_start`, at `debug_stop` past its wait, and when the server ends.
+  the server; and the child is killed when its session ends -- at
+  `debug_stop` past its wait, and when the server ends.
   A server killed outright drops the child's connection, and the child's
   agent, whose launcher is gone, ends the program as a `terminate` does
   ("Launching, the start and the end";
   `killing_the_server_ends_its_program`). Running the program inside the
   server would put the program's output on the stream the protocol owns
   and take the server down with a crash.
-- **The tools** (`tools.rs`). One session at a time; a new `debug_start`
-  ends the last. `debug_start(program, breakpoints?, stop_on_entry?,
+- **The tools** (`tools.rs`). Each `debug_start` opens a session of its
+  own, numbered from 1, a number never given twice, and answers
+  `session: <n>` on its first line; every other tool takes `session`,
+  which may be left out while one session is open, and is refused naming
+  the open sessions, each with its program and state, when it names none
+  open or is left out among several (`registry.rs`). A session lasts
+  until `debug_stop` closes it or the server ends, after its program
+  ended too. `debug_start(program, breakpoints?, stop_on_entry?,
   arguments?, runtime?, trace?, trace_filter?, wait?)` (`trace` is `ns-next
   run --trace`'s value, `trace_filter` an array of patterns, each passed as
   one `--trace-filter=<pattern>`, a prefix ending in `...`; both go before
@@ -5729,7 +5740,7 @@ the way not taken: every question would run the program from its start.
   temporary directory, where another user could put a file of their own
   at the path first, which the server would show (decided on
   2026-11-17). A directory is written under a name of its process's and
-  renamed into place, so that no session reads a half written one. A
+  its session's and renamed into place, so that no session reads a half written one. A
   server that starts removes a directory of shipped sources untouched
   for a day -- its `fingerprint` file's time, which a `debug_start` that
   reuses the directory touches, or the directory's own without one --

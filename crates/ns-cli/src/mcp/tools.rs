@@ -1,15 +1,19 @@
 //! The MCP server's tools: their names, descriptions and input schemas,
-//! which `tools/list` answers, and their dispatch onto the one session
-//! (`docs/design/debugger.md`, "The MCP server", "The tools"). Every tool
-//! answers text; a refused or failed call is an error with its reason.
+//! which `tools/list` answers, and their dispatch onto a session, which
+//! its worker serves (`docs/design/debugger.md`, "The MCP server", "The
+//! tools"). Every tool answers text; a refused or failed call is an error
+//! with its reason.
 
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::registry::SessionHandle;
 use super::session::{Breakpoint, Session, StartOptions};
+use super::worker::Inbox;
 
 /// How long a tool that lets the program go on waits for its next stop
 /// when not told, and how long an evaluation may run before it is
@@ -17,12 +21,12 @@ use super::session::{Breakpoint, Session, StartOptions};
 const DEFAULT_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest wait a tool takes, whatever it is asked: a client that
-/// waits longer holds the server's one session for nothing.
+/// waits longer holds its session's calls for nothing.
 const MAXIMUM_WAIT: Duration = Duration::from_secs(600);
 
 /// How long `debug_stop` waits for the program to run its `ensure:` blocks
 /// and end before it kills it.
-const STOP_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The variable a debug build reads the evaluation's wait from, in
 /// milliseconds, so that a test of the abort takes a fraction of a second.
@@ -41,167 +45,152 @@ fn evaluation_wait() -> Duration {
     DEFAULT_WAIT
 }
 
-/// The server's debugging state: the one session, and the binary a
-/// `debug_start` runs unless told otherwise -- the server's own.
-pub(crate) struct Debugger {
-    session: Option<Session>,
-    default_runtime: PathBuf,
-}
-
 /// A tool's answer: its text, or the reason it was refused.
 pub(crate) type Answer = Result<String, String>;
 
-impl Debugger {
-    pub(crate) fn new(default_runtime: PathBuf) -> Debugger {
-        Debugger {
-            session: None,
-            default_runtime,
-        }
-    }
+/// Whether a tool is named `name`.
+pub(crate) fn exists(name: &str) -> bool {
+    list()["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == name))
+}
 
-    /// Calls the tool `name`; `None` for a tool there is not.
-    pub(crate) fn call(&mut self, name: &str, arguments: Value) -> Option<Answer> {
-        let answer = match name {
-            "debug_start" => self.start(arguments),
-            "debug_breakpoints" => parse(arguments).and_then(|arguments: BreakpointsArguments| {
-                let (text, refused) = self
-                    .session()?
-                    .change_breakpoints(&arguments.set, &arguments.clear);
-                if refused { Err(text) } else { Ok(text) }
-            }),
-            "debug_continue" => parse(arguments).and_then(|arguments: WaitArguments| {
-                let wait = wait_of(arguments.wait)?;
-                self.session()?
-                    .resume("continue", json!({ "threadId": 1 }), wait)
-            }),
-            "debug_step" => self.step(arguments),
-            "debug_step_targets" => self.session().and_then(Session::step_targets),
-            "debug_run_to" => self.run_to(arguments),
-            "debug_pause" => self
-                .session()
-                .and_then(|session| session.pause(DEFAULT_WAIT)),
-            "debug_wait" => parse(arguments).and_then(|arguments: SecondsArguments| {
-                let wait = wait_of(Some(arguments.seconds))?;
-                Ok(self.session()?.wait(wait))
-            }),
-            "debug_stack" => self.session().and_then(Session::stack),
-            "debug_code" => parse(arguments).and_then(|arguments: CodeArguments| {
-                self.session()?.code(arguments.frame.unwrap_or(0))
-            }),
-            "debug_variables" => parse(arguments).and_then(|arguments: VariablesArguments| {
-                self.session()?.variables(
-                    arguments.frame,
-                    arguments.reference,
-                    arguments.start.unwrap_or(0),
-                    arguments.count.filter(|count| *count > 0),
-                )
-            }),
-            "debug_evaluate" => parse(arguments).and_then(|arguments: EvaluateArguments| {
-                self.session()?
-                    .evaluate(&arguments.expression, arguments.frame, evaluation_wait())
-            }),
-            "debug_set_variable" => parse(arguments).and_then(|arguments: SetVariableArguments| {
-                self.session()?
-                    .set_variable(&arguments.name, &arguments.value, arguments.frame)
-            }),
-            "debug_frame" => parse(arguments).and_then(|arguments: FrameArguments| {
-                let restart = match arguments.action.as_str() {
-                    "restart" => true,
-                    "return" => false,
-                    other => return Err(format!("{other:?} is no action: restart or return")),
-                };
-                if restart && arguments.value.is_some() {
-                    return Err("a restart takes no value".to_string());
-                }
-                self.session()?.frame_action(
-                    restart,
-                    arguments.frame,
-                    arguments.value.as_deref(),
-                    DEFAULT_WAIT,
-                )
-            }),
-            "debug_memory" => parse(arguments).and_then(|arguments: MemoryArguments| {
-                self.session()?
-                    .memory(arguments.class.as_deref(), arguments.referrers_of)
-            }),
-            "debug_mark" => parse(arguments).and_then(|arguments: MarkArguments| {
-                self.session()?.mark(arguments.reference, &arguments.label)
-            }),
-            "debug_stop" => self.session().map(|session| session.stop(STOP_WAIT)),
-            _ => return None,
-        };
-        Some(answer)
-    }
-
-    fn session(&mut self) -> Result<&mut Session, String> {
-        self.session
-            .as_mut()
-            .ok_or_else(|| "no program is being debugged; debug_start starts one".to_string())
-    }
-
-    fn start(&mut self, arguments: Value) -> Answer {
-        let arguments: StartArguments = parse(arguments)?;
-        let wait = wait_of(arguments.wait)?;
-        let program = std::path::absolute(&arguments.program)
-            .map_err(|error| format!("{}: {error}", arguments.program))?;
-        if !program.exists() {
-            return Err(format!("{} does not exist", program.display()));
-        }
-        let runtime = match &arguments.runtime {
-            Some(runtime) => {
-                std::path::absolute(runtime).map_err(|error| format!("{runtime}: {error}"))?
+/// Calls the tool `name` of `session`, every tool's but `debug_start`'s
+/// and `debug_stop`'s, which make and end the session.
+pub(crate) fn call(session: &mut Session, name: &str, arguments: Value) -> Answer {
+    match name {
+        "debug_breakpoints" => parse(arguments).and_then(|arguments: BreakpointsArguments| {
+            let (text, refused) = session.change_breakpoints(&arguments.set, &arguments.clear);
+            if refused { Err(text) } else { Ok(text) }
+        }),
+        "debug_continue" => parse(arguments).and_then(|arguments: WaitArguments| {
+            let wait = wait_of(arguments.wait)?;
+            session.resume("continue", json!({ "threadId": 1 }), wait)
+        }),
+        "debug_step" => step(session, arguments),
+        "debug_step_targets" => session.step_targets(),
+        "debug_run_to" => run_to(session, arguments),
+        "debug_pause" => session.pause(DEFAULT_WAIT),
+        "debug_wait" => parse(arguments).and_then(|arguments: SecondsArguments| {
+            let wait = wait_of(Some(arguments.seconds))?;
+            Ok(session.wait(wait))
+        }),
+        "debug_stack" => session.stack(),
+        "debug_code" => parse(arguments)
+            .and_then(|arguments: CodeArguments| session.code(arguments.frame.unwrap_or(0))),
+        "debug_variables" => parse(arguments).and_then(|arguments: VariablesArguments| {
+            session.variables(
+                arguments.frame,
+                arguments.reference,
+                arguments.start.unwrap_or(0),
+                arguments.count.filter(|count| *count > 0),
+            )
+        }),
+        "debug_evaluate" => parse(arguments).and_then(|arguments: EvaluateArguments| {
+            session.evaluate(&arguments.expression, arguments.frame, evaluation_wait())
+        }),
+        "debug_set_variable" => parse(arguments).and_then(|arguments: SetVariableArguments| {
+            session.set_variable(&arguments.name, &arguments.value, arguments.frame)
+        }),
+        "debug_frame" => parse(arguments).and_then(|arguments: FrameArguments| {
+            let restart = match arguments.action.as_str() {
+                "restart" => true,
+                "return" => false,
+                other => return Err(format!("{other:?} is no action: restart or return")),
+            };
+            if restart && arguments.value.is_some() {
+                return Err("a restart takes no value".to_string());
             }
-            None => self.default_runtime.clone(),
-        };
-        // One session at a time: the last one's program ends here, once
-        // the arguments are known to be good.
-        self.session = None;
-        let (session, answer) = Session::start(StartOptions {
-            program,
-            runtime,
-            arguments: arguments.arguments,
-            stop_on_entry: arguments.stop_on_entry,
-            trace: arguments.trace,
-            trace_filter: arguments.trace_filter,
-            breakpoints: arguments.breakpoints,
-            wait,
-        })?;
-        self.session = Some(session);
-        Ok(answer)
+            session.frame_action(
+                restart,
+                arguments.frame,
+                arguments.value.as_deref(),
+                DEFAULT_WAIT,
+            )
+        }),
+        "debug_memory" => parse(arguments).and_then(|arguments: MemoryArguments| {
+            session.memory(arguments.class.as_deref(), arguments.referrers_of)
+        }),
+        "debug_mark" => parse(arguments).and_then(|arguments: MarkArguments| {
+            session.mark(arguments.reference, &arguments.label)
+        }),
+        _ => Err(format!("no tool is named {name}")),
     }
+}
 
-    fn step(&mut self, arguments: Value) -> Answer {
-        let arguments: StepArguments = parse(arguments)?;
-        let wait = wait_of(arguments.wait)?;
-        let (command, mut request) = match arguments.kind.as_str() {
-            "over" => ("next", json!({ "threadId": 1 })),
-            "into" => ("stepIn", json!({ "threadId": 1 })),
-            "out" => ("stepOut", json!({ "threadId": 1 })),
-            other => return Err(format!("{other:?} is no kind of step: over, into or out")),
-        };
-        if let Some(target) = arguments.target {
-            if command != "stepIn" {
-                return Err("a target is stepped into: kind into".to_string());
-            }
-            request["targetId"] = json!(target);
+/// `debug_start`: starts the program `arguments` names as the session
+/// `handle`, whose worker's inbox is `inbox`; answers the session and the
+/// start's answer, or why it did not start and the inbox back.
+pub(crate) fn start(
+    arguments: Value,
+    default_runtime: &Path,
+    handle: Arc<SessionHandle>,
+    inbox: Inbox,
+) -> Result<(Session, String), (String, Inbox)> {
+    let options = match start_options(arguments, default_runtime) {
+        Ok(options) => options,
+        Err(reason) => return Err((reason, inbox)),
+    };
+    Session::start(options, handle, inbox)
+}
+
+fn start_options(arguments: Value, default_runtime: &Path) -> Result<StartOptions, String> {
+    let arguments: StartArguments = parse(arguments)?;
+    let wait = wait_of(arguments.wait)?;
+    let program = std::path::absolute(&arguments.program)
+        .map_err(|error| format!("{}: {error}", arguments.program))?;
+    if !program.exists() {
+        return Err(format!("{} does not exist", program.display()));
+    }
+    let runtime = match &arguments.runtime {
+        Some(runtime) => {
+            std::path::absolute(runtime).map_err(|error| format!("{runtime}: {error}"))?
         }
-        self.session()?.resume(command, request, wait)
-    }
+        None => default_runtime.to_path_buf(),
+    };
+    Ok(StartOptions {
+        program,
+        runtime,
+        arguments: arguments.arguments,
+        stop_on_entry: arguments.stop_on_entry,
+        trace: arguments.trace,
+        trace_filter: arguments.trace_filter,
+        breakpoints: arguments.breakpoints,
+        wait,
+    })
+}
 
-    fn run_to(&mut self, arguments: Value) -> Answer {
-        let arguments: RunToArguments = parse(arguments)?;
-        let wait = wait_of(arguments.wait)?;
-        let super::session::Location::Line { path, line } =
-            super::session::Location::parse(&arguments.location)?
-        else {
-            return Err("debug_run_to runs to a line: <absolute path>:<line>".to_string());
-        };
-        self.session()?.resume(
-            "nsNext/runToPosition",
-            json!({ "source": { "path": path }, "line": line }),
-            wait,
-        )
+fn step(session: &mut Session, arguments: Value) -> Answer {
+    let arguments: StepArguments = parse(arguments)?;
+    let wait = wait_of(arguments.wait)?;
+    let (command, mut request) = match arguments.kind.as_str() {
+        "over" => ("next", json!({ "threadId": 1 })),
+        "into" => ("stepIn", json!({ "threadId": 1 })),
+        "out" => ("stepOut", json!({ "threadId": 1 })),
+        other => return Err(format!("{other:?} is no kind of step: over, into or out")),
+    };
+    if let Some(target) = arguments.target {
+        if command != "stepIn" {
+            return Err("a target is stepped into: kind into".to_string());
+        }
+        request["targetId"] = json!(target);
     }
+    session.resume(command, request, wait)
+}
+
+fn run_to(session: &mut Session, arguments: Value) -> Answer {
+    let arguments: RunToArguments = parse(arguments)?;
+    let wait = wait_of(arguments.wait)?;
+    let super::session::Location::Line { path, line } =
+        super::session::Location::parse(&arguments.location)?
+    else {
+        return Err("debug_run_to runs to a line: <absolute path>:<line>".to_string());
+    };
+    session.resume(
+        "nsNext/runToPosition",
+        json!({ "source": { "path": path }, "line": line }),
+        wait,
+    )
 }
 
 /// A wait in seconds as a duration, `DEFAULT_WAIT` when none is given.
@@ -381,10 +370,10 @@ fn breakpoint_schema() -> Value {
 pub(crate) fn list() -> Value {
     let frame = || json!({ "type": "integer", "minimum": 0, "description": "A frame's index on the stack, 0 the top; 0 by default." });
     let reference = || json!({ "type": "integer", "description": "A value's reference, the n of [ref n] in an answer of this stop." });
-    let tools = [
+    let mut tools = [
         tool(
             "debug_start",
-            "Starts a Newspeak program (a .ns file or a project) under the debugger, ending any program debugged before, and answers its first stop, its end, or that it runs.",
+            "Starts a Newspeak program (a .ns file or a project) under the debugger as a new session, and answers the session's number on its first line (session: <n>), then the program's first stop, its end, or that it runs. Several sessions can be open at once, each named by its number in the other tools' session; a session lasts until debug_stop closes it or the server ends, also after its program ended.",
             json!({
                 "program": { "type": "string", "description": "The program: a .ns file, a project directory or its newspeak.json." },
                 "breakpoints": { "type": "array", "items": breakpoint_schema(), "description": "Breakpoints set before the program starts." },
@@ -515,11 +504,19 @@ pub(crate) fn list() -> Value {
         ),
         tool(
             "debug_stop",
-            "Ends the debugged program, its ensure: blocks run, and answers its exit status and its last output.",
+            "Ends the debugged program, its ensure: blocks run, answers its exit status and its last output, and closes its session, whose number no later call names.",
             json!({}),
             &[],
         ),
     ];
+    // Every tool but the one that opens a session names the session.
+    for tool in tools.iter_mut().skip(1) {
+        tool["inputSchema"]["properties"]["session"] = json!({
+            "type": "integer",
+            "minimum": 1,
+            "description": "The session, by the number debug_start answered; may be left out while one session is open."
+        });
+    }
     json!({ "tools": tools })
 }
 
