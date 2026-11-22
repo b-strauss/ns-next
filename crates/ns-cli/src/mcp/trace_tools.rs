@@ -21,7 +21,7 @@ use super::pages::{
 use super::registry::SessionHandle;
 use super::tools::{Answer, parse};
 use super::trace_index::{
-    BodyRecord, BodySource, CopyKey, ListingEntry, ListingKind, PlanOutcome, TraceIndex,
+    BodyRecord, BodySource, CopyKey, ListingEntry, ListingKind, Placed, PlanOutcome, TraceIndex,
 };
 use super::trace_listings;
 
@@ -1038,6 +1038,13 @@ fn part_fixed(head: &str, total: usize, next: &dyn Fn(usize) -> (&'static str, V
     characters(head) + 1 + characters(&showing_line(total, total, total, Some(next(total)))) + 1
 }
 
+/// ` (edited, line <n> of its current text)`: where a body an edit
+/// compiled stands, in the module's current text, which no file holds --
+/// the file's line `<n>` may be another member's or none.
+fn edited_line(range: [u32; 4]) -> String {
+    format!(" (edited, line {} of its current text)", range[0] + 1)
+}
+
 /// The journal's first line: the method, its module and place, the
 /// session, and the failure that ended the reading early, if one did; for
 /// a name of several methods, the name and how many.
@@ -1067,8 +1074,10 @@ fn first_line(index: &TraceIndex, session: &SessionHandle, method: &str, bodies:
                 BodySource::Library(path) => format!("core library {path}"),
                 BodySource::Nowhere => "no file".to_string(),
             };
-            if let Some(range) = described.range {
-                place.push_str(&format!(":{}", range[0] + 1));
+            match (described.range, described.placed) {
+                (Some(range), Placed::Source) => place.push_str(&format!(":{}", range[0] + 1)),
+                (Some(range), Placed::Current) => place.push_str(&edited_line(range)),
+                _ => {}
             }
             format!(
                 "{} — {}, {place} — session {}",
@@ -1145,8 +1154,12 @@ fn journal_head(
                 {
                     item.push_str(&format!(" of {}", module_text(&described.module)));
                 }
-                if let Some(range) = described.range {
-                    item.push_str(&format!(" (line {})", range[0] + 1));
+                match (described.range, described.placed) {
+                    (Some(range), Placed::Source) => {
+                        item.push_str(&format!(" (line {})", range[0] + 1));
+                    }
+                    (Some(range), Placed::Current) => item.push_str(&edited_line(range)),
+                    _ => {}
                 }
                 item
             }
@@ -1672,10 +1685,13 @@ fn journal_sends(index: &TraceIndex, bodies: &[u32]) -> Vec<String> {
             continue;
         };
         for send in &described.sends {
-            let place = send.call.map_or_else(
-                || "(unplaced)".to_string(),
-                |call| format!("{}:{}", call[0] + 1, call[1] + 1),
-            );
+            let place = match (send.call, described.placed) {
+                (Some(call), Placed::Source) => format!("{}:{}", call[0] + 1, call[1] + 1),
+                (Some(call), Placed::Current) => {
+                    format!("{}:{} of its current text", call[0] + 1, call[1] + 1)
+                }
+                _ => "(unplaced)".to_string(),
+            };
             let name = send.name.as_deref().unwrap_or("send");
             let outcome = index.send_outcome(number, send.instruction);
             let mut said = Vec::new();
@@ -3174,6 +3190,56 @@ mod tests {
             Some(
                 "    [compile] held trigger=entry reason=zone-full ×5 — held trigger=entry ×3, trigger=call ×1, absent ×1"
             ),
+            "{answer}"
+        );
+    }
+
+    /// A body an edit compiled is placed in the module's current text,
+    /// which no file holds: the journal names its line as that text's,
+    /// never as the file's, and a body placed nowhere has no line. A record
+    /// without `placed` is placed in its source.
+    #[test]
+    fn a_body_an_edit_compiled_is_placed_in_its_current_text() {
+        let mut scratch = Scratch::new("placed");
+        scratch.header(&["compile"], &[]);
+        let sends = json!([{ "at": 0, "site": 0, "call": [14, 8, 14, 12], "selector": [],
+                             "name": "x:" }]);
+        let mut edited = bounce_body(12, "Bounce/Ball>>bounce", None, 13, sends.clone());
+        edited["placed"] = json!("current");
+        scratch.record(&edited);
+        let mut block = bounce_body(13, "[] in Bounce/Ball>>bounce", Some(12), 15, json!([]));
+        block["placed"] = json!(null);
+        block["range"] = json!(null);
+        scratch.record(&block);
+        let mut unsaid = bounce_body(30, "Bounce/Ball>>x", None, 30, sends);
+        unsaid.as_object_mut().expect("a record").remove("placed");
+        scratch.record(&unsaid);
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        let answer =
+            journal(&index, &handle, "Bounce/Ball>>bounce", None, None, None).expect("a journal");
+        assert_eq!(
+            answer.lines().collect::<Vec<_>>(),
+            [
+                r"Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns (edited, line 14 of its current text) — session 1",
+                "bodies: #12 method (edited, line 14 of its current text), #13 [] in Bounce/Ball>>bounce",
+                "events: none",
+                "sends (1 of 1)",
+                "  #12 15:9 of its current text x:",
+            ],
+            "{answer}"
+        );
+        let answer = journal(&index, &handle, "#30", None, None, None).expect("a journal");
+        assert_eq!(
+            answer.lines().collect::<Vec<_>>(),
+            [
+                r"Bounce/Ball>>x — Bounce@1.0.0, D:\work\Bounce.ns:31 — session 1",
+                "bodies: #30 method (line 31)",
+                "events: none",
+                "sends (1 of 1)",
+                "  #30 15:9 x:",
+            ],
             "{answer}"
         );
     }

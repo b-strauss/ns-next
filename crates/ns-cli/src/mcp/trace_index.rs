@@ -106,10 +106,24 @@ pub(crate) struct BodyRecord {
     pub(crate) family: Option<u32>,
     pub(crate) module: ModuleName,
     pub(crate) source: BodySource,
-    /// Lines and UTF-16 columns from 0, in the text the record's
-    /// `placed` names.
+    /// Lines and UTF-16 columns from 0, in the text `placed` names, as
+    /// its sends' calls are.
     pub(crate) range: Option<[u32; 4]>,
+    pub(crate) placed: Placed,
     pub(crate) sends: Vec<DescribedSend>,
+}
+
+/// The text a body's ranges count in, as its record's `placed` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Placed {
+    /// The text its `source` names: the program's file as read, or the
+    /// core library's file. A record without `placed` says so.
+    Source,
+    /// The module's current text, which an edit made and no file holds.
+    Current,
+    /// No text: its ranges are `null`. A word this reader does not know
+    /// places nothing either, so that no answer points at a wrong place.
+    Nowhere,
 }
 
 /// What an `IndexedEvent` stores for a number it does not have.
@@ -1208,6 +1222,9 @@ struct RecordHead<'line> {
     module: Option<ModuleHead>,
     source: Option<SourceHead>,
     range: Option<[u32; 4]>,
+    /// `None` for a record without `placed`, `Some(None)` for its `null`.
+    #[serde(default, deserialize_with = "present")]
+    placed: Option<Option<String>>,
     sends: Option<Vec<SendHead>>,
     // A bytecode listing's.
     bodies: Option<Vec<ListedBodyHead>>,
@@ -1381,6 +1398,16 @@ impl RecordHead<'_> {
     }
 }
 
+/// A field that may be `null`, told from one that is absent: present,
+/// it is `Some`, its `null` `Some(None)`.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 /// The field `field` a record of `kind` cannot do without.
 fn required<T>(value: Option<T>, kind: &str, field: &str) -> Result<T, String> {
     value.ok_or_else(|| format!("a `{kind}` record without `{field}`"))
@@ -1491,6 +1518,12 @@ impl Contents {
             },
             source,
             range: head.range,
+            placed: match head.placed {
+                None => Placed::Source,
+                Some(Some(placed)) if placed == "source" => Placed::Source,
+                Some(Some(placed)) if placed == "current" => Placed::Current,
+                Some(_) => Placed::Nowhere,
+            },
             sends,
         };
         if let Some(family) = description.family {

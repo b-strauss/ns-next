@@ -692,11 +692,6 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
     json!({ "kind": "bytecode", "body": number(body), "bodies": bodies })
 }
 
-/// A `code` record: `code`'s instructions decoded as its text listing
-/// decodes them, each with the scope and program counter of the stretch
-/// it stands in, or that it stands out of line, and what a call or jump
-/// out of it reaches; and the address the code was installed at, as the
-/// text listing's `base=` writes it.
 /// The separator of an instruction's annotations in its record.
 const ANNOTATION_SEPARATOR: &str = "; ";
 
@@ -716,6 +711,11 @@ fn joined_annotations(texts: impl Iterator<Item = String>) -> String {
     texts.join(ANNOTATION_SEPARATOR)
 }
 
+/// A `code` record: `code`'s instructions decoded as its text listing
+/// decodes them, each with the scope and program counter of the stretch
+/// it stands in, or that it stands out of line, and what a call or jump
+/// out of it reaches; and the address the code was installed at, as the
+/// text listing's `base=` writes it.
 fn code_record(code: &CodeListing) -> Value {
     let CodeListing {
         body,
