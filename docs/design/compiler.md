@@ -1249,9 +1249,11 @@ For every body at once rather than one, `ns-next-analyzer inspect <artifact> --f
 disassembles the whole code table with each body attributed to the declaration
 that owns it. `disasm` is the way in when you know which body you want;
 `inspect` is the way in when you do not. `disasm --initializer` prints a
-mixin's three initializer bodies -- the full one, `<Name> own part` and
-`<Name> standalone` when it has one -- and the factory entry's body, as
-`method <Name> factory <selector>`.
+mixin's three initializer bodies, each headed by the name the trace and
+the debugger give it -- `<Name> initializer`, `<Name> initializer, own
+part` unless the own part is the full body itself, and `<Name>
+initializer, standalone` when it has one -- and the factory entry's body,
+as `method <Name> factory <selector>`.
 
 These are the static half of the VM's own introspection tooling, the
 equivalent of `d8` ([developer-tool.md](developer-tool.md)). What a run

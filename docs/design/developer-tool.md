@@ -23,7 +23,11 @@ tab and through a project-wide list of watched methods, reads the file
 live in Run and Debug, and shows it in the "Newspeak JIT" tool window
 -- Methods, Events, Code, Inlining --, as state icons in the gutter,
 inlay hints at the sends, editor tabs of the code and, at a stop, the
-frame's code. The shell is stage 4 ("Planned: the stages"). The profiler
+frame's code. The MCP server reads the same file for an agent: a traced
+`debug_start` has its child write one the server owns, and four tools
+answer it bounded, as the tool window's four tabs show it (decisions 36
+to 39; [debugger.md](debugger.md), "The MCP server"). The shell is
+stage 4 ("Planned: the stages"). The profiler
 is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## What exists
@@ -47,7 +51,7 @@ is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
   (`ns_runtime::trace_events`), written as one line each by `ns-next run
   --trace`, and as one record each into the file of `--trace-file`,
   which the plugin reads and `debug_start`'s `trace` has the MCP
-  server's child write.
+  server's child write, which the server's trace tools answer.
 - `ns_runtime::tool_names` is the one grammar of the tools' names,
   `<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`, and
   `tool_names::KnownModule::resolve` the one lookup of a module a name
@@ -80,7 +84,9 @@ is not part of it ([OPEN-WORK.md](../OPEN-WORK.md), "A profiler").
 
 ## The decisions
 
-Decided with the user on 2026-11-18.
+Decisions 1 to 9 were decided with the user on 2026-11-18, and the later
+groups, each introduced where it begins, on 2026-11-20 (10 to 16),
+2026-11-21 (17 to 35) and 2026-11-22 (36 to 39).
 
 **1. One design, three stages: tracing, then printing code, then the
 shell.** Tracing first, because it turns the reasons above into types,
@@ -172,8 +178,9 @@ expressions and statements beside them, and §8.3 (PDF p. 47) names
 expression, so it deviates from nothing.
 
 **7. Each stage reaches the agent and the IDE as it is built.**
-`debug_start` takes the trace categories and answers their lines with the
-program's output (decision 9); a new MCP tool answers a stopped frame's
+`debug_start` takes the trace categories and the listings, which the
+agent reads through tools of their own from a file the server owns
+(decision 36); a new MCP tool answers a stopped frame's
 bytecode and machine code through a request of the agent; the shell needs
 no tool of its own, since `debug_evaluate` evaluates at a stop
 ([debugger.md](debugger.md), "The MCP server").
@@ -197,11 +204,10 @@ first; HotSpot's `PrintCompilation` columns
 kind, not seven, and JSON lines, V8's `--log-*` kind, are for a tool the
 typed event already serves (decided with the user on 2026-11-18).
 
-**9. The lines reach the command line and the agent as the process's
-standard error.** `--trace` is a flag of `run`, as the statistics are;
-the MCP server collects a child's standard error with its output
-already, so `debug_start` passes the flag on. The IDE reads the same
-events from a file of its own instead (decision 17). The DAP agent is
+**9. The lines reach the command line as the process's standard
+error.** `--trace` is a flag of `run`, as the statistics are. The IDE
+reads the same events from a file of its own instead (decision 17), and
+so does the agent, from a file the MCP server owns (decision 36). The DAP agent is
 not involved: it still writes nothing to the program's streams, and no
 trace line is dropped by its bounded connection. A channel of their own
 over DAP stays possible, since the events are typed (decided with the
@@ -253,7 +259,7 @@ it keeps every stretch of a callee found by its name.
 listing follows the trace line of the event it belongs to, in one
 stream, and standard output stays the program's; a host reading
 standard error receives it as it receives the trace (decision 9), and
-the IDE reads both from its file (decision 20). V8's code
+the IDE and the agent read both from a file (decisions 20 and 36). V8's code
 tracer writes to standard output or a file
 (`v8/src/diagnostics/code-tracer.h:31-36`), HotSpot's listings to its
 `tty`; neither keeps the program's output apart.
@@ -292,7 +298,8 @@ frame goes on in its body's baseline code or, reified, in its twin,
 never in an optimized copy, since a frame that goes on mid-body goes on
 in the baseline code ([execution.md](execution.md), "The optimizing
 tier's foundation"); so the listing is one of those two. The MCP
-server's tool `debug_code` passes the text on. DAP's `disassemble`
+server's tool `debug_code` passes the text on, a window of its lines
+(decision 38). DAP's `disassemble`
 request is built on memory addresses
 (`instructionPointerReference`), in which bytecode has no place, the
 scopes of decision 11 only a `symbol`, and the offsets of decision 14
@@ -508,15 +515,132 @@ tab of the configuration qualifies the platform takes another's ended
 one, which the tool window does not, since a traced run is kept to be
 compared.
 
+Decisions 36 to 39, the agent's way to the trace through the MCP
+server, were decided with the user on 2026-11-22, one at a time, after
+the MCP specification, Claude Code's limits on a tool's answer and the
+MCP servers of Chrome DevTools, mcp-debugger, LLDB, Perfetto, Datadog
+and Grafana, beside the JIT tools stage 3 rests on
+([debugger.md](debugger.md), "The MCP server", decisions 18 and 19).
+
+**36. The agent reads the trace from a file the server owns.**
+`debug_start` takes `trace` and `trace_filter`, and `listings` -- any of
+`bytecode`, `code` and `inlining` -- and `listing_filter`, passed as
+`--trace`, `--trace-filter`, `--print-<kind>` and `--print-filter`, and
+the server has the child write them through `--trace-file` into a file
+of the server's, one per session ([debugger.md](debugger.md), "The
+trace file"); no trace line enters the output the server's answers show,
+so that the program's output stays the program's. Every summary of a
+traced session carries one `trace:` line, how much the file holds and
+the call that answers an overview: `trace: 412 MB, 16,636 events, 78
+bodies, 4,692 listings — debug_trace {"session":1} for an overview`.
+This replaces decision 9's path for the agent, the lines on standard
+error, which the server collected with the program's output: a trace
+there pushes the program's own output out of the summary's last 2,000
+characters, a program could write a line that reads as the trace's, and
+a listing a few MiB long swells whatever answer it falls into, which is
+why the listings did not reach the agent at all. The file is decision
+17's, typed, dropping nothing and held by tests, so that the server
+reads records rather than lines and the agent and the IDE read one
+format; Chrome DevTools' MCP server keeps a trace it records server-side
+and answers its summary and its insights from it, never the raw trace.
+
+**37. The agent's tools are a staircase and a query.** Four tools
+mirror decision 29's four tabs. `debug_trace` is the overview, as
+Methods is the way into a run without a filter: the counts per category
+and five ranked lists -- `installs`, a body's installs by tier;
+`abandoned`, its abandonments and revivals; `deoptimized`, its
+retirements and invalidations with their reasons; `optimized`, its
+copies by key; `declined`, the callees the plans declined, by reason --
+each entry a method's name and body number and the exact call that goes
+on from it. `debug_trace_method` is one method's journal: its bodies
+with their numbers, its copies, its events in order with repetitions
+folded, and its sends with their inlining decision and cache state, as
+Events grouped by method and the editor's hints show them.
+`debug_trace_listing` is a window of one listing, as Code and Inlining
+show one: a body's bytecode, a copy's machine code or a plan, by its
+index among the body's. `debug_trace_events` is the query: the events,
+in the run's order, that a category, an event, a reason and a method
+select, as Events filters them. The first answer is a menu and every
+entry names its next call, so that an agent walks down from the run to
+a method to a listing without guessing an argument: the shape JITWatch's
+top lists, journal and TriView have, and Chrome DevTools' trace summary,
+whose insights each name the id to drill into; the query covers what
+the staircase leaves out -- the run-wide order, a cache's transitions,
+one reason across the run --, as the Perfetto servers' SQL and Grafana's
+bounded queries do beside their fixed tools. A journal folds each body's
+events apart, and only its lifecycle -- `compile`, `osr`, `optimize`,
+`deoptimize`, `code-zone` --, since a body's churn, compiled, abandoned,
+revived, five hundred times over, reads as one line only where no other
+body's events fall between its rounds, and a cache's transitions belong
+to the send they happen at, which the sends part shows; a cycle of up to
+eight steps is matched on its steps' category and event word, the
+fields that differ between its rounds summarized beside it (`revived
+by=entries ×229, by=decay ×49`, `bytes 6,208–6,400`), so that `compiled →
+abandoned → revived ×554` is one entry where exact fields would break it
+at every round whose counts differ. Every round's own fields, and the
+order across bodies, are `debug_trace_events`', which the journal's head
+names. The selector a send shows is the trace file's (`name`, decision
+19's `sends`), so that no tool reads source.
+
+**38. Every answer is bounded and says where it stopped.** The bounds
+are fixed, as the other debugging tools' are: the overview's lists 10
+entries each, a journal's parts and the events 50 an answer, a listing
+window 150 lines, and at most 200 entries or 500 lines on request, a
+larger `count` capped; `debug_code`'s window is a listing window too.
+Every answer is text, as every tool's of the server is, without
+`structuredContent`: it is what an agent reads, in fewer tokens. Every
+page also stops at the entry or line that would take its answer past
+`ANSWER_BUDGET`, 20,000 characters (`mcp/pages.rs`): Claude Code warns
+at a tool answer of 10,000 tokens and cuts one at 25,000 by default, and
+20,000 characters stay at the warning even at two characters a token,
+the density machine code's hex and registers might have, which nothing
+measured, so that the budget assumes the worst plausible one. A cut
+answer ends in `Showing <first>–<last> of <total> — next: <exact call>`,
+the tool's name and its arguments as one JSON object, `session` always
+among them, then the tool's arguments in its signature's order, then
+`start` and `count`, as Chrome DevTools' pages end in their range and
+the next page's call; a page that is the whole needs no such line, and
+`debug_trace_listing` writes it always, since a listing's window is a
+place in a text the agent reads in parts. A fixed bound is chosen over a
+`max_tokens` argument, which Datadog's tools take: an agent asks for a
+page as easily as for a size, and a fixed page is the same for every
+agent.
+
+**39. A body is named distinctly and asked for by name or number.** A
+class's three initializer bodies have names of their own everywhere --
+the trace's lines, the listings' heads, the trace file's `name`, the
+debugger's frames, `disasm`, and so the plugin: `Demo/Account
+initializer`, the full body; `Demo/Account initializer, own part`, the
+part a level a `<:` clause adds runs; and `Demo/Account initializer,
+standalone`, the body such a level runs when a program reaches it
+through a mirror ([compiler.md](compiler.md), "The three initializer
+bodies"). The spellings are written in one place,
+`interpreter/instantiate.rs`'s `initializer_name` and the suffixes
+beside it, which `trace_events/names.rs`, `debugger/stack.rs`'s
+`frame_name`, the metadata's check and the analyzer's `disasm` and
+`inspect` write through, and which the trace filter reads back
+(`trace_events/filter.rs`'s `body_parts`), so that `Demo/Account...`
+still selects every initializer body; one body that serves as both the
+full body and the own part, as a class side's does, is named as the
+full one (`InitializerBody::named_as`). Every trace tool
+takes a method in the tools' grammar, a trailing `...` a prefix and a
+method's name covering its blocks, or `#<n>`, a body by the number the
+file gives it, described or not, since a name does not identify a body:
+every block of a method is `[] in <method>`, and a body the file never
+described has its number alone. A name that matches several bodies is
+shown whole by `debug_trace_method`, every body with its number, and
+asked back by `debug_trace_listing`, which names each candidate with its
+listings and the call that picks it.
+
 ## Stage 1: tracing
 
 **Built** (2026-11-18 to 2026-11-20;
 `docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`).
 `ns-next run --trace=<categories>` writes one line on standard error for
 every decision of the tiers and the caches in the categories named, with
-its reasons; `debug_start` passes the same flags on, and the plugin's
-run configuration passes them with a trace file ("Stage 3: the
-developer tool in the IDE").
+its reasons; `debug_start` and the plugin's run configuration pass the
+same flags on with a trace file, which the MCP server's trace tools and
+the plugin read ("Stage 3: the developer tool in the IDE"; decision 36).
 
 ### The runtime's half
 
@@ -590,7 +714,9 @@ it had not received; no category and no printing is no tracing.
   the classes inside it ([modules.md](modules.md), decision 8):
   `Demo>>factorial:`, `Demo/Account>>deposit:`, `Demo/Account
   class>>named:` (a factory's too), `[] in Demo>>main:args:`,
-  `Demo/Account initializer`, `Demo/Account superclass clause`,
+  `Demo/Account initializer`, `Demo/Account initializer, own part`,
+  `Demo/Account initializer, standalone` (decision 39),
+  `Demo/Account superclass clause`,
   `com.acme.util.Util@1.0.0/Inner>>run`,
   `newspeak.core.Kernel/Array>>do:`. `BodyNames`
   (`trace_events/names.rs`) caches each name beside a `Weak` of its body
@@ -628,7 +754,10 @@ Each event is one line (decision 8; `crates/ns-cli/src/trace.rs`'s
 `[<category>] {<body>} <event>`, then its fields in a fixed order --
 `key=` and `entered=` first where present, `at=` last for the inlining
 plan's -- every name in braces, every reason in kebab case, `{}` for an
-event about no body.
+event about no body. A class's three initializer bodies are told apart by
+their names, `{Demo/Account initializer}`, `{Demo/Account initializer,
+own part}` and `{Demo/Account initializer, standalone}` (decision 39),
+the braces holding the comma and the spaces.
 
 | Category | Line after the body | What it says |
 |---|---|---|
@@ -743,8 +872,9 @@ breakpoint's name; each refusal names the pattern.
 - **`debug_start`** takes `trace`, `--trace`'s value, and `trace_filter`,
   an array of patterns, each passed as one `--trace-filter`, both before
   the program, which writes the events through `--trace-file` into a
-  file of the server's, never into its output ([debugger.md](debugger.md),
-  "The MCP server").
+  file of the server's, never into its output, and the server's four
+  trace tools answer them from it (decisions 36 to 39;
+  [debugger.md](debugger.md), "The MCP server").
 - **The plugin's run configuration** passes `--trace` and
   `--trace-filter` from its "Developer Tool" tab and the watched
   methods, always with `--trace-file`, after the subcommand and
@@ -780,8 +910,9 @@ declaration order `trace_events.rs`'s unit tests. The line format is pinned by
 `trace_inlining_folds_the_declines_of_no_body`), `debug_start`'s trace by
 `crates/ns-cli/tests/mcp.rs` (`a_traced_session_writes_its_own_file`) and the
 plugin's options by its `NewspeakRunConfigurationTest`; the
-CLI's and the MCP server's tests strip every stress mode from the child
-and answer nothing on a target without a JIT.
+CLI's and the MCP server's tests strip every stress mode from the child,
+and on a target without a JIT the MCP server's assert what the answer
+says there (`installs: none`) while the CLI's assert nothing.
 
 ## Stage 2: printing code
 
@@ -792,7 +923,8 @@ print, on standard error, every body's bytecode when its mixin is made,
 every install's machine code and every optimizing compile's inlining
 plan, selected by `--print-filter`; the debugger answers a stopped
 frame's code, which the agent's `nsNext/frameCode` and the MCP server's
-`debug_code` pass on.
+`debug_code` pass on, and the MCP server's `debug_trace_listing` answers
+a window of any listing a traced session's file holds.
 
 ### The runtime's half
 
@@ -895,7 +1027,9 @@ values, and the host formats it.
 
 `crates/ns-cli/src/listing.rs` writes each listing between a head line
 `--- <kind> {<body>} …` and `--- end`, the body named as the trace names
-it, so that a script cuts a listing out of standard error. The sink
+it -- an initializer body as `{Demo initializer}`, `{Demo initializer, own
+part}` or `{Demo initializer, standalone}` (decision 39) --, so that a
+script cuts a listing out of standard error. The sink
 writes a listing in one `write_all` on the locked standard error, so
 that neither the program's output nor a trace line tears it.
 
@@ -1041,10 +1175,17 @@ top frame of a stop runs in the interpreter, so its machine code is
   without; an unknown frame id is refused, and so is a stop the program
   has left meanwhile, with "the program went on"
   ([debugger.md](debugger.md), "Launching, the start and the end").
-- **`debug_code(frame?)`**, the MCP server's tool (`mcp/tools.rs`,
-  `mcp/session.rs`), asks it for frame `frame`, the top one by default,
-  and answers the bytecode listing, then the machine code's listing or
-  `the frame goes on in the interpreter` ([debugger.md](debugger.md),
+- **`debug_code(frame?, start?, count?)`**, the MCP server's tool
+  (`mcp/tools.rs`, `mcp/session.rs`), asks it for frame `frame`, the top
+  one by default, and answers a window of the bytecode listing followed
+  by the machine code's listing or `the frame goes on in the
+  interpreter`, 150 lines by default and 500 at most, a cut window ending
+  in its `Showing` line (decision 38; [debugger.md](debugger.md), "The
+  MCP server").
+- **`debug_trace_listing`**, the MCP server's window of a listing in a
+  traced session's file, writes it as `--print-*` does, through the same
+  `listing::View` (`listing.rs`, `mcp/trace_listings.rs`), its first line
+  naming the listing in place of the head ([debugger.md](debugger.md),
   "The MCP server").
 - **The plugin's run configuration** passes the print options and
   `--print-filter` as it passes `--trace`, with `--trace-file` ("Stage
@@ -1077,11 +1218,14 @@ each kind's text, the mark and, on x64, the decoder's names;
 their refusals, one write per listing beside the program's standard
 error, and the whole listing of a body without a send on Windows x64
 (`a_leafless_body_pins_its_listing`, its base masked);
-`tests/debug_adapter.rs` `nsNext/frameCode`; and `tests/mcp.rs`
-`debug_code`. A test of machine code asserts the lines that must occur,
+`tests/debug_adapter.rs` `nsNext/frameCode`; `tests/mcp.rs`
+`debug_code` and `debug_trace_listing`; and `mcp/trace_listings.rs`'s
+unit tests every kind of record rendered as `--print-*` prints it, and
+every listing of a whole run so (`every_listing_of_a_run_is_rendered_as_it_is_printed`).
+A test of machine code asserts the lines that must occur,
 never a whole listing but that one, and the CLI's and the MCP server's
-tests strip every stress mode from the child and answer nothing without
-a JIT.
+tests strip every stress mode from the child; without a JIT the MCP
+server's assert what the answer says there, the CLI's nothing.
 
 ## Stage 3: the developer tool in the IDE
 
@@ -1101,7 +1245,7 @@ of the code, and at a stop as the frame's code.
 Every body a delivery names carries a `BodyName` (`trace_events.rs`):
 its name as the debugger names a frame and its number, which tells apart
 the bodies one name covers -- every block of a method is `[] in
-<method>`, a class's three initializer bodies share a name. The numbers
+<method>`. The numbers
 are minted at the flush by `BodyNames` (`trace_events/names.rs`), from
 1 in the order the trace first names the bodies, keyed by each body's
 `Rc` address with a `Weak` beside it, so that a body that died and the
@@ -1209,6 +1353,15 @@ file, the trace's settings set `describe_bodies`, so that the runtime
 hands the sink each body's description (decision 18,
 `trace_events/descriptions.rs`).
 
+The file has two readers: the plugin, which a traced Run or Debug hands
+a file of its own ("The plugin's half"), and the MCP server, whose
+traced sessions' children write into a file the server owns and indexes
+as it grows (decision 36; [debugger.md](debugger.md), "The MCP server",
+"The trace file"). Both accept what they do not know of version 1 --
+an unknown record, an unknown category's event, a header without its
+categories or listings, taken to trace and list everything -- and refuse
+another format or version.
+
 Each record is one JSON object on one line, ended by a newline and
 written with one `write_all`; the file is flushed at the end of every
 flush's deliveries (`TraceSink::flushed`), so that a reader following
@@ -1302,11 +1455,17 @@ The records:
   the file at its span inside the file's other version of a method an
   edit replaced around it, or at another place altogether. A reader of a record without
   `placed` takes `"source"`.
-  Three kinds of
+  A body the compiler synthesizes -- every factory, and the
+  initializer bodies of a declaration that writes none, a class without
+  slots among them -- is described where its metadata places it, its
+  factory pattern or its declaration's header, and placed only where its
+  own version declared it ("The runtime's half"). Three kinds of
   body take a number and no `body` record -- one no mixin holds, one
-  whose source no text holds, and a block's family root whose code was
-  gone by the flush --, so a reader accepts a number it has no
-  description of.
+  whose source no text holds, as `VmMirror class>>new`, the factory of
+  the VM mirror's class, which has no declaration, and a block's family
+  root whose code was gone by the flush --, so a reader accepts a number
+  it has no description of, and the MCP server's tools write it
+  `#<n> (not described)`.
 - `{"kind":"event","category":…,"body":N|null,"event":…,…}`, an event:
   its category, its body, `null` for an event about none, its name as
   `TraceEventKind::name` answers it, and every value its line writes as a
@@ -1344,7 +1503,10 @@ The records:
   listing does --, a reader taking a record without it as `false`,
   what a call or jump out of it reaches as the text listing's
   annotation writes it (`leaf miss`, `cell site 3`; two on one
-  instruction joined by `; `), and, only where instructions before it
+  instruction joined by `; `, which no annotation holds -- the macro
+  assembler's annotations are a closed set, and a debug build asserts
+  it where they are joined (`trace_file.rs`'s `joined_annotations`) --,
+  so that a reader splits them there), and, only where instructions before it
   emitted no code, `"passed":[{"scope":s,"at":pc}|{"out-of-line":true}]`,
   the positions they left beside its own, in order, each of which the
   text listing names on a line of its own; each data word `{"offset":o,"word":…}`,
@@ -1673,7 +1835,12 @@ code or a plan of but says no state of (`TraceRun.isListed`), its
 tooltip naming the categories the run lacks (`TraceRun.missingTierCategories`)
 where the run traced events of the method but could not say whether
 its tiers are over; the eye
-otherwise if it is watched -- and a hint after each send the run says something of
+otherwise if it is watched; the methods whose roots stand at one
+offset -- a class's factory and its synthesized initializers at its
+header -- one icon between them (decision 28; `sharedIcon`), drawn with
+the state of the body of the lowest number, badged if any is watched,
+its tooltip a line per body, `<name>: <that body's tooltip>`, and its
+menu a submenu of each body's actions -- and a hint after each send the run says something of
 (`SendInlayRenderer`), `inlined` or `declined: <reason>` and the cache's
 state, the events' fields on hover; each block at its own range. A
 watched method the run has no body of shows an eye. Both icons and
@@ -1714,7 +1881,10 @@ text, a body whose counterpart differs only in a comment with its
 statements and sends, a body a later edit moved where it stands
 now, and every initializer body -- of a plain class and of one a
 superclass and a `<:` clause make -- with its slots' statements and
-sends, and `debugger/metadata/cache.rs`'s unit test the place of a span
+sends, every factory and synthesized initializer at its metadata's
+place (`every_factory_body_is_described`), each send's `name`, and
+`debugger/metadata/cache.rs`'s unit tests a synthesized body placed
+where its own version declared it and the place of a span
 outside a body's source: moved onto the same bytes, and none where the
 bytes differ, the place lies outside the declaration's text or across a
 hole in it;
@@ -1740,8 +1910,12 @@ installed during the run and the bodies it superseded or moved each
 described in the text it was compiled from and said placed there, a
 library method's blocks placed in the library inside their root, a recommented body's
 statements at their file lines and a body a later edit moved where it
-stands -- and the two
-refusals. The analyzer's `tests/protocol.rs` pins
+stands, and a whole run of the benchmarks with every listing describing
+every body it numbers but `VmMirror class>>new`
+(`a_whole_run_describes_every_body_it_numbers`) -- and the two
+refusals; `trace_file.rs`'s unit tests also the annotations' separator,
+and `mcp/trace_listings.rs`'s a `code` record's `passed` written back as
+the text listing's position lines. The analyzer's `tests/protocol.rs` pins
 `newspeak/methodNames` and `newspeak/moduleIdentity`. In the plugin,
 under `test`: `NewspeakRunConfigurationTest` the tab's options on the
 command line, its greying and the free field's refusal, and the bound
@@ -1786,8 +1960,12 @@ tiers cannot be heard, the categories an optimized method
 shown as its baseline tier needs, none for a body placed in the
 runtime's current text, none for a method a caches-only run
 or a filtered-out callee says nothing of, the hints, the eyes,
-staleness, the checksum over an emoji and over CRLF line ends, and a
-library file; `CodeTabTest` the caret's body, the chooser, a listing
+staleness, the checksum over an emoji and over CRLF line ends, a
+library file, and one icon for the bodies at one header, naming each
+with its state; `ListingsFixtureTest` the plugin's bytecode and code
+listings, a passed position and two annotations on one instruction
+among them, equal to the CLI's text for the same records, from the
+fixture `src/test/resources/devtool/listings.jsonl`; `CodeTabTest` the caret's body, the chooser, a listing
 built once per choice and read on a pooled thread, the text before it
 kept, linking nothing and opening nothing, and the notice of a slow read, a batch that keeps the chosen install
 leaving the viewer alone, a read for a copy no longer chosen dropped, a

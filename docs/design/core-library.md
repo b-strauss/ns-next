@@ -998,6 +998,31 @@ rather than on a corpus module's demand. `show:` does not send
 (`goldens/library/platform/the_transcript_prints_any_object`,
 `goldens/library/platform/show_of_something_that_is_no_string_is_an_error`).
 
+**A closed standard output ends the run with status 1** (decided with
+the user on 2026-11-22). The first `show:` or `newLine` that finds the
+standard output closed -- a pipeline's consumer gone, as `ns-next run
+Spin.ns | head -1` leaves it, `BrokenPipe`, which Windows' error 232
+maps to as well -- ends the run as `terminate` does, every pending
+`ensure:` block run, with `the standard output is closed`, and every
+later write of the process is dropped (`platform.rs`,
+`STANDARD_OUTPUT_CLOSED`): nobody reads, so a program that went on
+would compute for nobody, and an `Error` a program could catch would let
+it go on. The host reports it as every terminated run, with status 1,
+which `set -o pipefail` sees as it sees a producer a SIGPIPE ended, and
+never panics. Any other
+write error is ignored, as a failed flush always was. The two rows stay
+exits in machine code, never leaves: a leaf's signal hands the send to
+the interpreter, which runs it again, finds the flag set and drops it,
+so the run would never end. The host's own words go the same way:
+`ns-next`'s report lines on standard error ignore a failed write, and
+its own standard output -- `load --print-source`, `build`'s `wrote`,
+`bench`'s lines, `run-corpus`'s summary, `shipped-sources
+--fingerprint` -- stops the command with status 1 and
+`error: the standard output is closed` (`entry::print_output`;
+`crates/ns-cli/tests/cli.rs`'s `a_closed_standard_output_ends_the_run`,
+`a_closed_standard_error_loses_the_trace`,
+`tests/build_load.rs`'s `a_closed_standard_output_ends_print_source`).
+
 **The namespace members are ordinary methods.** `KernelNamespace`'s
 methods answer the kernel instance's nested classes. The class-accessor fast path
 ("The predefined classes are accessors on `Object`" below) is recognized

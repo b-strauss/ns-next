@@ -68,6 +68,7 @@ first.
 | Rust 1.100.0 and edition 2024 -- the toolchain, the edition and resolver 3, the migration on every target, the formatting in style edition 2024, let chains and the APIs 1.99 and 1.100 added, the leaf dispatcher kept free of heavy leaves under LLVM 23 | Complete | 2026-11-16 | [toolchain-and-edition](superpowers/plans/2026-11-16-0025-toolchain-and-edition.md) |
 
 | The developer tool: designed in thirty-five decisions and four stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace`; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code`; stage 3, the IDE -- bodies numbered and described with their source positions, `ns-next run --trace-file`'s typed JSON lines, the analyzer's `newspeak/methodNames` and `newspeak/moduleIdentity`, and in the plugin the "Developer Tool" tab, watched methods, the "Newspeak JIT" tool window (Methods, Events, Code, Inlining), gutter state icons, inlay hints at the sends, code editor tabs linked to the source and Show Frame Code; then what the user met in the IDE -- closable run tabs that drop their data, the Code tab shown at once, its chooser's labels whole, its scroll with the editor in both directions on request, the frame's line coloured as the execution point, and a restored line breakpoint that keeps its properties; then what a run keeps -- its machine-code listings and plans as places in the trace file, read back when a view shows one, and a rerun replacing its configuration's ended, unpinned tab under the same executor, as the Run window does | Partial (stages 1 to 3 of 4) | 2026-11-21 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md), [developer-tool-stage-3-the-ide](superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md) |
+| The MCP server's sessions and trace tools -- numbered sessions served concurrently, each by a worker thread a pause, a stop, a cancellation and the server's end reach during a wait; a traced session's `--trace-file` written into a file the server owns in the user's own directory, claimed by a held lock, and indexed as it grows; the `trace:` line and four bounded tools, `debug_trace`, `debug_trace_method`, `debug_trace_listing` and `debug_trace_events`, every cut answer ending in its exact next call, and `debug_code`, `debug_stack` and `debug_variables` paged alike; a class's three initializer bodies named apart; every body the compiler synthesizes described; and a closed standard output ending the run with status 1 | Complete | 2026-11-22 | [mcp-trace](superpowers/plans/2026-11-22-0310-mcp-trace.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8639,4 +8640,104 @@ code of `ns-memory` or `ns-assembler` and no decoder.
   no place for written `null`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 4, the
-shell, next; and the MCP server and the trace file.
+shell. The MCP server and the trace file came next (the section after
+this one).
+
+## The MCP server's sessions and trace tools (2026-11-22)
+
+[debugger.md](design/debugger.md), "The MCP server", decisions 18 and
+19; [developer-tool.md](design/developer-tool.md), decisions 36 to 39,
+"The trace file"; [core-library.md](design/core-library.md), "The
+platform".
+
+Decided with the user on 2026-11-22, in six decisions, one at a time:
+an agent reaches through `ns-next mcp` what the plugin reads from
+`--trace-file`. A traced `debug_start` -- `trace` and `trace_filter` as
+before, and now `listings` and `listing_filter` -- has its child write
+the trace and the listings into a file the server owns, so that the
+program's output stays the program's, and every summary of a traced
+session says in one `trace:` line how much the file holds. Four tools
+answer the file as the tool window's four tabs show it: `debug_trace`,
+an overview of ranked lists each entry of which names its next call;
+`debug_trace_method`, a method's journal of bodies, copies, lifecycle
+events folded per body by their shapes and sends; `debug_trace_listing`,
+a window of one listing, written as `--print-*` writes it; and
+`debug_trace_events`, the events a category, an event, a reason and a
+method select. Every answer is bounded by fixed pages and by
+`ANSWER_BUDGET`, 20,000 characters, below Claude Code's 10,000-token
+warning, and a cut one ends in `Showing … — next:` and the exact call;
+`debug_code` answers a window of a frame's code, and `debug_stack` and
+`debug_variables` page in the same form.
+
+The server serves several numbered sessions at once, so that subagents
+sharing one server never wait on each other's waits: the main thread
+answers `initialize`, `ping` and `tools/list` at once, one writer thread
+owns the standard output, each session's worker owns its DAP state, and
+a `debug_pause`, a `debug_stop`, a cancellation and the server's end
+reach a wait in progress. A session lasts until `debug_stop` or the
+server's end, with no limit. The trace files lie under
+`ns-next/traces/` in the user's own directory, each server's directory
+claimed by an exclusive lock it holds for its life, so that a starting
+server removes exactly the files of the servers that are gone; the
+server keeps each file open, on Windows refusing its deletion, and an
+index follows it as it grows, read and parsed outside its lock, keeping
+no listing. The tests' servers keep their own cache directory, under
+`CARGO_TARGET_TMPDIR`.
+
+On the way, a class's three initializer bodies got names of their own
+everywhere -- `Demo initializer`, `Demo initializer, own part`, `Demo
+initializer, standalone` --, spelled in one place and read back by the
+trace filter; the trace file's sends carry the selector their
+instruction names (`name`), so that no tool reads source, and a code
+record's instruction the positions passed without code (`passed`),
+which the plugin now writes as the CLI does; every body the compiler
+synthesizes -- a factory, the initializers of a class without slots --
+is described at its metadata's place and placed only where its own
+version declared it, `VmMirror class>>new` the one body a whole run
+leaves undescribed; methods at one class header share one gutter icon
+naming each; and a program that writes to a closed standard output, as
+`ns-next run … | head` leaves it, ends its run with status 1, its
+`ensure:` blocks run, where it panicked before, the host's own output
+alike.
+
+No golden, `run-corpus` outcome, image or instruction encoding changed.
+`crates/ns-cli/tests/mcp.rs` pins the sessions, the waits, the trace
+files and each tool over real traced runs, the `mcp/` modules' unit
+tests the index, the fold, the pages and every answer's text;
+`crates/ns-cli/tests/cli.rs` and `build_load.rs` the closed streams;
+`crates/ns-runtime/tests/trace.rs`, `debugger.rs` and
+`trace_events/names.rs` the initializer names and the synthesized
+bodies' descriptions; and the plugin's `DecorationsTest` and
+`ListingsFixtureTest` the shared icon and the listings.
+
+The commit gates passed on every commit (`commit`, with `analyzer`
+where the analyzer changed).
+
+- `8f58bb74` -- the plan
+  (`docs/superpowers/plans/2026-11-22-0310-mcp-trace.md`).
+- `5a1e83f2`, `07bc09aa` -- a closed standard output ends the run, and
+  the host's own output stops at it.
+- `1c1c6455`, `9fd9b12d` -- the three initializer bodies named apart,
+  one spelling in every tool.
+- `a97f7a01`, `35c38d82` -- numbered sessions served concurrently, the
+  server's end ending every wait.
+- `7774bd4e`, `f19db0df` -- a wait answers to pause, stop, cancellation
+  and the server's end.
+- `fa8cde29`, `f4e586d6`, `b1df4758` -- the server's trace files.
+- `4ec1c8b7`, `f471a5e2`, `24504514`, `45029aa9` -- the index that
+  follows the file.
+- `e26390e9`, `a1630587` -- the `trace:` line and `debug_trace`.
+- `266da835`, `427cbfb4` -- every synthesized body described, where its
+  own version declared it.
+- `b510c1a9` -- one gutter icon per class header.
+- `406094d9`, `433b10bf`, `aebc4322`, `ebd6037f` -- `debug_trace_method`.
+- `ebc6155e`, `fff7c58b` -- `debug_trace_listing`, and the plugin's
+  `passed` positions.
+- `3b2b32ee`, `4bd84b32` -- `debug_trace_events`, and a journal's place
+  in an edited body's current text.
+- `9b329fe2` -- `debug_code`, `debug_stack` and `debug_variables` paged.
+- the last commit -- the documentation.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
+stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
+developer tool's stage 4, the shell.

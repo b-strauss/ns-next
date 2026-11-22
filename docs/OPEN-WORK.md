@@ -15,13 +15,7 @@ when they were written.
 
 ## Next
 
-**The MCP server and the trace file** (decided with the user on
-2026-11-21, after the developer tool's stage 3): an agent reaches through
-MCP what the plugin reads from `--trace-file` -- a method's events, its
-listings and its inlining plan, bounded -- as the item of that name below
-describes. It needs its questions decided and a plan of its own.
-
-Then **the debugger's stage 6: hot swap, then edit-and-continue of running
+**The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
 [debugger.md](design/debugger.md), "Planned: the order of building
@@ -45,8 +39,11 @@ server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
 variables, decides conditions and logpoints, restarts frames and forces
 returns, smart-steps into a chosen send, marks objects, shows the memory
 view and folds the shipped frames, in the VM, the DAP agent and the
-plugin, and `ns-next mcp` lets an agent debug a program. It needs its
-questions decided and a plan of its own.
+plugin, and `ns-next mcp` lets an agent debug a program, several
+numbered sessions served at once, and read a traced session's trace
+file through four tools of its own (2026-11-22; "The MCP server",
+decisions 18 and 19). It needs its questions decided and a plan of its
+own.
 
 The developer tool (the item "A developer tool like V8's `d8`" below)
 has its stages 1 to 3 built: `ns-next run --trace=<categories>` writes
@@ -61,10 +58,13 @@ with each body's source positions, are switched on in the run
 configuration's "Developer Tool" tab and through the project's watched
 methods, read live in Run and Debug, and shown in the "Newspeak JIT"
 tool window, as state icons in the gutter, as inlay hints at the sends,
-in editor tabs of the code and, at a stop, as the frame's code
+in editor tabs of the code and, at a stop, as the frame's code; and
+the MCP server has a traced session's child write that file and answers
+it through `debug_trace`, `debug_trace_method`, `debug_trace_listing`
+and `debug_trace_events`, every answer bounded
 ([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
-"Stage 2: printing code", "Stage 3: the developer tool in the IDE";
-[modules.md](design/modules.md), decision 8). Its stage 4, the shell,
+"Stage 2: printing code", "Stage 3: the developer tool in the IDE",
+decisions 36 to 39; [modules.md](design/modules.md), decision 8). Its stage 4, the shell,
 is next for it: it needs a plan of its own, which decides its open
 questions -- how an input is compiled, how a workspace variable becomes
 a slot, whether results are named, how an interrupt stops an input,
@@ -2450,7 +2450,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   is built: typed events with their reasons reported to a sink the host
   installs (`ns_runtime::trace_events`), written by `ns-next run
   --trace=<categories>`, narrowed by `--trace-filter`, passed on by
-  `debug_start`. Stage 2, printing code, is built: bytecode, baseline,
+  `debug_start` into a trace file of the MCP server's. Stage 2, printing code, is built: bytecode, baseline,
   twin and optimized machine code at install and the inlining plan,
   written by `--print-bytecode`, `--print-code` and `--print-inlining`,
   machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and
@@ -2460,23 +2460,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   each body described with its source positions, switched on in the run
   configuration's "Developer Tool" tab and by watched methods, read live
   and shown in the "Newspeak JIT" tool window, the gutter, inlay hints,
-  editor tabs of the code and Show Frame Code. Open: stage 4,
+  editor tabs of the code and Show Frame Code; and the MCP server
+  answers a traced session's file through four bounded tools
+  (decisions 36 to 39, built 2026-11-22). Open: stage 4,
   `ns-next shell`, evaluating against a workspace object as the
   Newspeak IDE does; it matters because an expression is still
   evaluated only at a stop. Its open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
-- **The MCP server and the trace file** (noted 2026-11-21, with the
-  developer tool's stage 3's design; not designed yet): `debug_start`
-  passes `--trace` and the lines arrive with the program's output, and
-  no MCP tool reaches `--print-bytecode`, `--print-code` or
-  `--print-inlining`, whose listings would swell an answer. The file of
-  decision 17 could serve an agent too -- a `debug_start` that writes
-  one, and tools that answer from it a method's events, listings and
-  inlining plan, bounded, as the tool window's tabs do. It matters
-  because an agent with MCP alone sees no optimized code and no plan
-  ([developer-tool.md](design/developer-tool.md), decisions 17 to 19;
-  [debugger.md](design/debugger.md), "The MCP server").
 - **The IDE's debug session as MCP tools** (asked for by the user on
   2026-11-17; after the debugger's stage 5, not designed yet): the
   plugin contributes the tools of `ns-next mcp` -- `debug_step`,
@@ -3178,11 +3169,6 @@ classes and a class from source with no predecessor are not edited
 
 ## Known defects and gaps
 
-- **A class's three initializer bodies print under one name** (noted
-  2026-11-20, in the final review): the full initializer, its own part
-  and the standalone body of `Demo` all head their listings and trace
-  lines `{Demo initializer}`, so they cannot be told apart (stage 1's
-  naming, `trace_events/names.rs`).
 - **A plugin debugger test timed out once under load** (noted
   2026-11-18, with the trace's stage 1): `NewspeakBreakpointTypesTest`'s
   `testATemporaryBreakpointIsRemovedAfterItsStop` failed with a
@@ -3224,8 +3210,8 @@ classes and a class from source with no predecessor are not edited
   character". Only the program's own string reaches the message.
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first four, which a
-program can reach and which end the process, and seven a program meets as
-a gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
+program can reach and which end the process, and six a program meets as
+a gap: `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
 that only answers `isKindOfArray` or `isKindOfString`, the refusals of a
 program's subclass of `String` as an argument, the error of a
@@ -3335,11 +3321,6 @@ program's subclass of `String` as an argument, the error of a
 - **The image encoder does not refuse a module class handed twice** among
   the modules it writes; the artifact it writes then fails to load. No
   command hands it one: `program.rs` hands each module once.
-- **`ns-next run` panics when its stdout pipe closes early** (`ns-next run
-  … | head`): the transcript's `print!` reports "failed printing to
-  stdout" (os error 232 on Windows) instead of ending quietly
-  (`crates/ns-runtime/src/platform.rs`). Found 2026-10-01 while checking
-  the Json port.
 - **`Object>>printString` answers `an Object` for every object whose class
   does not override it**, whatever its class: the leaf
   (`crates/ns-runtime/src/builtins/object_class.rs`, `PrintString`) reads
@@ -3730,8 +3711,11 @@ program's subclass of `String` as an argument, the error of a
   safepoint that compiles it. These are pinned only by the line
   format's unit test. Nor does a plugin test cover the runtime options
   with the Benchmark command, or a blank field stored as none.
-  On a target without a JIT the CLI's and the MCP server's trace tests
-  return without asserting anything and without saying so
+  On a target without a JIT the CLI's trace tests return without
+  asserting anything and without saying so; the MCP server's assert
+  what a binary without a JIT answers there (`installs: none`), but no
+  gate runs a target without a JIT, so those branches have run in no
+  gate, one of them only once, forced, while it was written
   ([developer-tool.md](design/developer-tool.md), "Tests").
 - **The core library as the IDE draws it** (noted 2026-11-15, with the
   header stops and the library). No `runIde` check was made of the
