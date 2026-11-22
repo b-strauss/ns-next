@@ -78,6 +78,103 @@ class TabsTest : BasePlatformTestCase() {
         assertEquals("#41", MethodsTab(project, planned, testRootDisposable).model.items.single { row -> row.body == 41 }.name)
     }
 
+    fun testTheClassOfABodyIsTheClassItsNameGives() {
+        assertEquals("CD/RedBlackTree", classOf("CD/RedBlackTree>>treeAt:insert:"))
+        assertEquals("CD/RedBlackTree", classOf("[] in [] in CD/RedBlackTree>>treeAt:insert:"))
+        assertEquals("CD/RedBlackTree", classOf("CD/RedBlackTree class>>new"))
+        assertEquals("CD/RedBlackTree", classOf("CD/RedBlackTree initializer"))
+        assertEquals("CD/RedBlackTree", classOf("CD/RedBlackTree initializer, own part"))
+        assertEquals("CD/RedBlackTree", classOf("CD/RedBlackTree initializer, standalone"))
+        assertEquals("Som/Vector", classOf("Som/Vector class initializer"))
+        assertEquals("Som/IdentitySet", classOf("Som/IdentitySet superclass clause"))
+        assertEquals("CD", classOf("CD initializer"))
+        assertEquals("CD/Simulator", classOf("[] in CD/Simulator initializer"))
+        assertEquals("#40", classOf("#40"))
+    }
+
+    fun testMethodsFilterByAPartOfTheNameInAnyCase() {
+        val tab = MethodsTab(project, fixtureRun(), testRootDisposable)
+        tab.nameFilter.text = "circle"
+        assertEquals(listOf("Demo/Circle>>area"), tab.model.items.map { row -> row.name })
+        tab.nameFilter.text = ""
+        assertEquals(6, tab.model.items.size)
+    }
+
+    private fun children(node: Any): List<MethodNode> =
+        (node as MethodNode).children().toList().map { child -> child as MethodNode }
+
+    fun testMethodsGroupByClassAndKeepTheExpansionAcrossABatch() {
+        val run = fixtureRun()
+        val tab = MethodsTab(project, run, testRootDisposable)
+        tab.grouping.selectedItem = Grouping.CLASS
+        val classes = children(tab.treeRoot)
+        assertEquals(listOf("Demo", "Demo/Circle", "Demo/Square", "newspeak.core.Kernel/Number"), classes.map { node -> node.label })
+        assertEquals(listOf("Demo>>main:args:", "Demo>>measure:", "Demo>>square:"), children(classes.first()).map { node -> node.label })
+        assertNull("a class has no values of its own", classes.first().row)
+        val demo = TreePath(classes.first().path)
+        tab.treeTable.tree.expandPath(demo)
+        tab.select(3)
+        run.add(records(listOf(eventLine(3, "compile", "abandoned", ""","exits":3"""))))
+        val again = children(tab.treeRoot).first()
+        assertTrue("the expanded class stays expanded", tab.treeTable.tree.isExpanded(TreePath(again.path)))
+        val selected = tab.treeTable.tree.lastSelectedPathComponent as MethodNode
+        assertEquals("the selection stays on its method", 3, selected.row?.body)
+        assertEquals(MethodState.ABANDONED, selected.row?.state)
+        // The filter keeps the classes that hold a match, expanded.
+        tab.nameFilter.text = "AREA"
+        val found = children(tab.treeRoot)
+        assertEquals(listOf("Demo/Circle", "Demo/Square"), found.map { node -> node.label })
+        assertTrue(found.all { node -> tab.treeTable.tree.isExpanded(TreePath(node.path)) })
+        tab.nameFilter.text = ""
+        tab.grouping.selectedItem = Grouping.NONE
+        assertEquals(6, tab.table.rowCount)
+    }
+
+    fun testMethodsGroupByMethodShowEachBodyOfAMethodWithBlocks() {
+        val run = fixtureRun(eventLine(5, "optimize", "optimized", ""","key":null,"entered":null,"bytes":100"""))
+        val tab = MethodsTab(project, run, testRootDisposable)
+        tab.grouping.selectedItem = Grouping.METHOD
+        val methods = children(tab.treeRoot)
+        assertEquals(6, methods.size)
+        val main = methods.single { node -> node.label == "Demo>>main:args:" }
+        // The method's row counts its block; under it, each body has its own.
+        assertEquals(3601, main.row?.optimizedBytes)
+        val bodies = children(main)
+        assertEquals(listOf("Demo>>main:args:", "[] in Demo>>main:args:"), bodies.map { node -> node.label })
+        assertEquals(0, bodies.first().row?.optimizedBytes)
+        assertEquals(3601, bodies.last().row?.optimizedBytes)
+        assertTrue("a method of one body has no rows under it", children(methods.single { node -> node.label == "Demo>>square:" }).isEmpty())
+        // A filter matching a block alone keeps its method and that block.
+        tab.nameFilter.text = "[] in"
+        val filtered = children(tab.treeRoot)
+        assertEquals(listOf("Demo>>main:args:"), filtered.map { node -> node.label })
+        assertEquals(listOf("[] in Demo>>main:args:"), children(filtered.single()).map { node -> node.label })
+        tab.nameFilter.text = ""
+        tab.select(4)
+        assertEquals("the method's own node is selected", 4, (tab.treeTable.tree.lastSelectedPathComponent as MethodNode).row?.body)
+        assertEquals(tab.treeRoot, (tab.treeTable.tree.lastSelectedPathComponent as MethodNode).parent)
+    }
+
+    fun testEventsGroupByClassThenMethod() {
+        val tab = EventsTab(project, fixtureRun(), testRootDisposable)
+        tab.grouping.selectedItem = Grouping.CLASS
+        val root = tab.treeModel.root as DefaultMutableTreeNode
+        val classes = root.children().toList().map { node -> node.toString() }
+        assertTrue(classes.toString(), "Demo" in classes && "Demo/Circle" in classes)
+        val demo = root.children().toList().single { node -> node.toString() == "Demo" }
+        val methods = demo.children().toList().map { node -> node.toString() }
+        assertTrue(methods.toString(), "Demo>>main:args:" in methods && "[] in Demo>>main:args:" !in methods)
+        val events = (0 until root.childCount).sumOf { index -> (0 until root.getChildAt(index).childCount).sumOf { inner -> root.getChildAt(index).getChildAt(inner).childCount } }
+        assertEquals("every event under its class and method", tab.visibleRows.size, events)
+        // The filter applies to the tree too, in any case.
+        tab.bodyFilter.text = "CIRCLE"
+        assertEquals(listOf("Demo/Circle"), root.children().toList().map { node -> node.toString() })
+        tab.bodyFilter.text = ""
+        tab.grouping.selectedItem = Grouping.METHOD
+        val groups = root.children().toList().map { node -> node.toString() }
+        assertTrue(groups.toString(), "Demo>>main:args:" in groups && "Demo" !in groups)
+    }
+
     fun testMethodsSortByCopies() {
         val tab = MethodsTab(project, fixtureRun(), testRootDisposable)
         val copies = 2
@@ -126,7 +223,7 @@ class TabsTest : BasePlatformTestCase() {
         val run = trace.run()
         val inlining = InliningTab(project, run, testRootDisposable, immediateReads())
         val events = EventsTab(project, run, testRootDisposable)
-        events.groupByMethod.isSelected = true
+        events.grouping.selectedItem = Grouping.METHOD
         val lines = checkNotNull(javaClass.getResource("/devtool/trace.jsonl")).readText().lines().filter { line -> line.isNotEmpty() }
         run.add(records(lines))
         assertTrue(run.plans.isNotEmpty())
@@ -302,7 +399,7 @@ class TabsTest : BasePlatformTestCase() {
     fun testEventsGroupABlockUnderItsMethodAndGrowWithTheRun() {
         val run = fixtureRun()
         val tab = EventsTab(project, run, testRootDisposable)
-        tab.groupByMethod.isSelected = true
+        tab.grouping.selectedItem = Grouping.METHOD
         val root = tab.treeModel.root as DefaultMutableTreeNode
         val groups = root.children().toList().map { node -> node.toString() }
         assertTrue(groups.toString(), "Demo>>main:args:" in groups && "[] in Demo>>main:args:" !in groups)
@@ -332,7 +429,7 @@ class TabsTest : BasePlatformTestCase() {
         run.add(events(0, KEPT_EVENTS))
         val tab = EventsTab(project, run, testRootDisposable)
         assertFalse("nothing was dropped yet", tab.droppedLabel.isVisible)
-        tab.groupByMethod.isSelected = true
+        tab.grouping.selectedItem = Grouping.METHOD
         tab.textView.isSelected = true
         val root = tab.treeModel.root as DefaultMutableTreeNode
         tab.table.setRowSelectionInterval(10, 10)
