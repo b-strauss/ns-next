@@ -456,10 +456,12 @@ are decorated as a program's are.
 Inlining.** Methods is a sortable overview of every traced method --
 state, copies, deoptimizations, abandonments, code size, declined
 callees --, the way into a run without a filter, as JITWatch's "Tops"
-and jitwatch-intellij's table of failed inlinings are; Events the trace
-as a table, filtered by category and body, grouped by method, a double
-click going to its place in the source, and a switch to the text
-trace's lines; Code the bytecode and machine code of the method at the
+and jitwatch-intellij's table of failed inlinings are, filtered by a part
+of the name and grouped on request by method, each body of a method
+with blocks a row under it, or by class; Events the trace as a table,
+filtered by category and body, grouped on request by method or by class
+and then method, a double click going to its place in the source, and a
+switch to the text trace's lines; Code the bytecode and machine code of the method at the
 caret, a chooser for its copies -- baseline, twin, optimized per
 receiver --, source, bytecode and machine code highlighted together
 through decision 18's positions, as JITWatch's TriView and Compiler
@@ -1739,8 +1741,24 @@ column each for baseline, twin and optimized, from the installs'
 events and listings alike, and the callees declined in it by the
 compiles whose copy was heard installed, sortable, a double click
 opening it; a block whose root's code was gone by the flush counts as
-that root's method, named by its blocks' name. Events is the trace as a table, filtered by category and by a part
-of the method's name, grouped by method on request, a double click
+that root's method, named by its blocks' name. Its rows are filtered by
+a part of the name in any case, and a chooser groups them as a tree of
+the same columns (`Grouping`, `ui/Grouping.kt`): by method, a method
+with blocks holding a row of each of its bodies, the block's own values
+apart, or by class, the class a body's name gives (`classOf`: the part
+before `>>`, or before an initializer's or superclass clause's first
+space, the class side's ` class` and a block's `[] in` left out), so
+that a class's factory, its initializers and both sides' methods stand
+together; the tree is made afresh at every batch, its expanded groups
+and its selection kept, a filter being typed expanding every group, and
+sorted by the column whose header is clicked, a second click turning
+the order round. Events is the trace as a table, filtered by category and by a part
+of the method's name in any case, grouped on request by method or by
+class and then method, the same chooser and the same `classOf`, the
+filter applying to the tree as to the table, the categories chosen in a
+popup of boxes under a button that says how many are shown, after the
+name, the grouping and "Text" -- both tabs' name fields search fields
+a button clears --, a double click
 going to the event's place in the source, and with "Text" the same rows
 as the text trace's lines; it shows the events the run keeps, and says
 how many earlier ones were dropped. Code shows the bytecode and machine code of
@@ -1961,7 +1979,10 @@ tab under its executor and deleting its file, the selected one first,
 then the first in the tabs' order, the selection going to the new run
 alone, but neither a pinned one, one the setting started pinned, a
 running one, another configuration's nor the other executor's;
-`TabsTest` the four views, a dead root's blocks counted as its method's, the bytes of
+`TabsTest` the four views, a dead root's blocks counted as its method's,
+the class of every kind of body's name, the Methods tab's filter and
+both its groupings, the expansion and selection kept across a batch,
+the Events tab's grouping by class and then method, filtered, the bytes of
 every tier and a body the run did not describe, the run's line of
 missing categories, the plans and the grouped events that arrive after
 their tab was made shown a row each, the inlining tree kept across a batch, a plan read

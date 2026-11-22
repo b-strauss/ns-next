@@ -2,13 +2,15 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.components.JBTextField
 import com.intellij.ui.table.TableView
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.ColumnInfo
@@ -22,11 +24,12 @@ import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.FlowLayout
+import java.awt.GridLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.JButton
 import javax.swing.JPanel
-import javax.swing.event.DocumentEvent
-import javax.swing.event.DocumentListener
+import javax.swing.SwingConstants
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 
@@ -95,37 +98,39 @@ data class EventRow(val order: Long, val event: Event, val body: String, val fie
 
 /**
  * The Events tab (`docs/design/developer-tool.md`, decision 29): the run's
- * events in time order, filtered by category and by a substring of the body's
- * name, as a table, grouped under their methods, or as the text trace's own
- * lines. A double click opens the source an event with a position names.
+ * events in time order, filtered by category and by a part of the body's
+ * name in any case, as a table, grouped under their methods or under their
+ * classes and then their methods, or as the text trace's own lines. A double click opens the source an event with a position names.
  * It shows the events the run keeps, the last [KEPT_EVENTS], and says how
  * many earlier ones were dropped.
  */
 class EventsTab(private val project: Project, private val run: TraceRun, parent: Disposable) : JPanel(BorderLayout()) {
-    /** One box per category, by its name, all selected: an event of a category unchecked is hidden. */
+    /**
+     * One box per category, by its name, all selected: an event of a
+     * category unchecked is hidden. The boxes are shown in the popup
+     * [categoriesButton] opens.
+     */
     val categoryBoxes: Map<String, JBCheckBox> = TRACE_CATEGORIES.associateWith { name ->
         JBCheckBox(NewspeakBundle.message("devtool.category.$name"), true).apply {
             toolTipText = NewspeakBundle.message("devtool.category.$name.tooltip")
-            addItemListener { refilter() }
+            addItemListener {
+                nameCategories()
+                refilter()
+            }
         }
     }
 
-    /** The substring a body's name must have for its events to show. */
-    val bodyFilter = JBTextField(20).apply {
-        emptyText.text = NewspeakBundle.message("devtool.events.filter.body")
-        document.addDocumentListener(
-            object : DocumentListener {
-                override fun insertUpdate(event: DocumentEvent) = refilter()
-
-                override fun removeUpdate(event: DocumentEvent) = refilter()
-
-                override fun changedUpdate(event: DocumentEvent) = refilter()
-            },
-        )
+    /** Opens the category boxes in a popup below it, which stays open while boxes are clicked; it says how many are shown. */
+    val categoriesButton = JButton(AllIcons.General.ArrowDown).apply {
+        horizontalTextPosition = SwingConstants.LEADING
+        addActionListener { showCategories() }
     }
 
-    /** Whether the events show under their methods. */
-    val groupByMethod = JBCheckBox(NewspeakBundle.message("devtool.events.group")).apply { addItemListener { showView() } }
+    /** The part a body's name must hold, in any case, for its events to show, in the table, the tree and the text alike. */
+    val bodyFilter: SearchTextField = nameFilterField(NewspeakBundle.message("devtool.events.filter.body")) { refilter() }
+
+    /** Whether the events show in a tree, under their methods, or under their classes and then their methods. */
+    val grouping = groupingChooser { regroup() }
 
     /** Whether the events show as the text trace's lines. */
     val textView = JBCheckBox(NewspeakBundle.message("devtool.events.text")).apply { addItemListener { showView() } }
@@ -152,7 +157,11 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
 
     val table = TableView(model)
 
-    /** The events under their methods, a node a method, in the order of its first event. */
+    /**
+     * The events under their methods, a node a method, or under their
+     * classes, a node a class holding a node a method, each node in the
+     * order of its first event.
+     */
     private val treeRoot = DefaultMutableTreeNode()
     val treeModel = DefaultTreeModel(treeRoot)
     val tree = Tree(treeModel).apply { isRootVisible = false }
@@ -167,7 +176,11 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
     private var taken = 0L
     private var textFed = 0
     private var treeFed = 0
+    /** The tree's node of each method, by its name, under the root or under its class's node. */
     private val groups = HashMap<String, DefaultMutableTreeNode>()
+
+    /** The tree's node of each class, by its name, while the events are grouped by class. */
+    private val classGroups = HashMap<String, DefaultMutableTreeNode>()
 
     /** The text view's lines. */
     val text = JBTextArea().apply { isEditable = false }
@@ -180,10 +193,12 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
 
     init {
         val filters = JPanel(FlowLayout(FlowLayout.LEFT))
-        for (box in categoryBoxes.values) filters.add(box)
         filters.add(bodyFilter)
-        filters.add(groupByMethod)
+        filters.add(JBLabel(NewspeakBundle.message("devtool.group")))
+        filters.add(grouping)
         filters.add(textView)
+        filters.add(categoriesButton)
+        nameCategories()
         val head = JPanel(BorderLayout())
         head.add(filters, BorderLayout.NORTH)
         head.add(droppedLabel, BorderLayout.SOUTH)
@@ -209,6 +224,28 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         run.onChanged(parent) { takeNew() }
     }
 
+    /** Names on [categoriesButton] how many categories are shown: all, or so many of all. */
+    private fun nameCategories() {
+        val shown = categoryBoxes.values.count { box -> box.isSelected }
+        categoriesButton.text = if (shown == categoryBoxes.size) {
+            NewspeakBundle.message("devtool.events.categories.all")
+        } else {
+            NewspeakBundle.message("devtool.events.categories.some", shown, categoryBoxes.size)
+        }
+    }
+
+    /** Shows the category boxes below [categoriesButton], in a popup that closes as the focus leaves it. */
+    private fun showCategories() {
+        val boxes = JPanel(GridLayout(0, 1)).apply { border = JBUI.Borders.empty(4, 8) }
+        // A box has one parent: each popup takes them from the last.
+        for (box in categoryBoxes.values) boxes.add(box)
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(boxes, categoryBoxes.values.first())
+            .setRequestFocus(true)
+            .createPopup()
+            .showUnderneathOf(categoriesButton)
+    }
+
     /** The rows that pass the filters. */
     val visibleRows: List<EventRow> get() = model.items
 
@@ -225,7 +262,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
             views,
             when {
                 textView.isSelected -> TEXT
-                groupByMethod.isSelected -> TREE
+                grouping.selectedItem != Grouping.NONE -> TREE
                 else -> TABLE
             },
         )
@@ -239,10 +276,22 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         rowItems = ArrayList()
         model.items = rowItems
         text.text = ""
+        clearTree()
+        takeNew()
+    }
+
+    /** Another grouping was chosen: the tree is made afresh from the rows, which stay. */
+    private fun regroup() {
+        treeFed = 0
+        clearTree()
+        showView()
+    }
+
+    private fun clearTree() {
         treeRoot.removeAllChildren()
         groups.clear()
+        classGroups.clear()
         treeModel.reload()
-        takeNew()
     }
 
     /** A batch arrived: the events after the last taken are appended, which leaves the table's selection and scroll and the tree's expansion where they are. */
@@ -256,7 +305,7 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         for (order in maxOf(taken, first) until run.eventCount) {
             val event = events[(order - first).toInt()]
             if (event.category !in shown) continue
-            if (needle.isNotEmpty() && event.body?.let { body -> needle in bodyName(run, body) } != true) continue
+            if (needle.isNotEmpty() && event.body?.let { body -> nameMatches(bodyName(run, body), needle) } != true) continue
             added.add(EventRow(order, event, event.body?.let { body -> bodyName(run, body) }.orEmpty(), eventFields(run, event)))
         }
         taken = run.eventCount
@@ -294,8 +343,14 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
             val group = groups[name] ?: continue
             if (group.childCount > 0) treeModel.removeNodeFromParent(group.getChildAt(0) as DefaultMutableTreeNode)
             if (group.childCount == 0) {
+                val parent = group.parent as DefaultMutableTreeNode
                 treeModel.removeNodeFromParent(group)
                 groups.remove(name)
+                // A class's node goes with its last method's.
+                if (parent !== treeRoot && parent.childCount == 0) {
+                    treeModel.removeNodeFromParent(parent)
+                    classGroups.remove(parent.userObject as String)
+                }
             }
         }
         treeFed -= treeDropped
@@ -312,12 +367,21 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
                 text.append(traceLine(run, rows[index].event))
             }
             textFed = rows.size
-        } else if (groupByMethod.isSelected) {
+        } else if (grouping.selectedItem != Grouping.NONE) {
+            val byClass = grouping.selectedItem == Grouping.CLASS
             for (index in treeFed until rows.size) {
                 val row = rows[index]
                 val name = groupName(row)
                 val group = groups.getOrPut(name) {
-                    DefaultMutableTreeNode(name).also { node -> treeModel.insertNodeInto(node, treeRoot, treeRoot.childCount) }
+                    val parent = if (byClass) {
+                        val className = classOf(name)
+                        classGroups.getOrPut(className) {
+                            DefaultMutableTreeNode(className).also { node -> treeModel.insertNodeInto(node, treeRoot, treeRoot.childCount) }
+                        }
+                    } else {
+                        treeRoot
+                    }
+                    DefaultMutableTreeNode(name).also { node -> treeModel.insertNodeInto(node, parent, parent.childCount) }
                 }
                 treeModel.insertNodeInto(DefaultMutableTreeNode(row), group, group.childCount)
             }
