@@ -8747,8 +8747,10 @@ where the analyzer changed).
   not traced, a traced start not yet open told apart, an existing
   `traces/` narrowed to `0700`.
 - `7dafaa64` -- the follower's test waits for the file's deletion.
-- `05369649` -- a code record's scope carries the lines no bytecode
-  record lists.
+- `05369649`, `3782f12c` -- in a file that lists bytecode, a code
+  record's scope carries the lines no bytecode record lists.
+- `1520120d` -- the factory test reads its bodies from the bytecode
+  listing, whether or not the run compiles them.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
 stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
