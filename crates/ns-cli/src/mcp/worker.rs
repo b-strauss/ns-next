@@ -219,14 +219,14 @@ fn serve(
     inbox.serve(Some(&start));
     let mut session = match tools::start(start.arguments, default_runtime, handle, inbox) {
         Ok((mut session, answer)) => {
-            // A cancelled start keeps its session; only its answer, which
-            // the cancelled set drops, goes unseen, and its output with it.
-            if session.call_cancelled() {
-                session.show_again_from(0);
-            }
-            start
+            // A cancelled start keeps its session; only its answer goes
+            // unseen, and the output it carried is shown by the next.
+            let written = start
                 .reply
                 .answer(Ok(format!("session: {number}\n{answer}")));
+            if !written {
+                session.show_again_from(0);
+            }
             session
         }
         Err((reason, inbox)) => {
@@ -253,12 +253,12 @@ fn serve(
         }
         let shown = session.shown_output();
         let answer = tools::call(&mut session, &call.tool, call.arguments);
-        // A cancelled call answers nothing -- the cancelled set drops what
-        // it answers -- so the output it took is shown by the next answer.
-        if session.call_cancelled() {
+        // An answer the client cancelled is not written -- the cancelled
+        // set decides it, whether or not the call heard of the
+        // cancellation -- so the output it took is shown by the next.
+        if !call.reply.answer(answer) {
             session.show_again_from(shown);
         }
-        call.reply.answer(answer);
     }
     // The server ends: the session's program with it, and what is still
     // queued is answered so.

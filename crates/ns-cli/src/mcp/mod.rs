@@ -161,6 +161,7 @@ impl Server {
             let destination = ReplyDestination::Batch {
                 place,
                 collector: collector.clone(),
+                responses: self.responses.clone(),
             };
             self.serve_message(message, destination);
         }

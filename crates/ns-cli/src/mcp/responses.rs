@@ -4,7 +4,7 @@
 //! answers never interleave on the stream the protocol owns and no
 //! answer waits for another session's.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
@@ -19,15 +19,29 @@ use super::tools::Answer;
 /// server's end -- with the call still queued.
 const UNANSWERED: &str = "the session closed before it served the call";
 
+/// The most cancellations kept for an answer still to come. A request
+/// answered before its cancellation arrived leaves one no answer takes;
+/// MCP forbids a client to use an identifier twice, so the oldest such
+/// entries are let go rather than kept for the server's life.
+const CANCELLATIONS_KEPT: usize = 1024;
+
 /// The way to the writer thread.
 #[derive(Clone)]
 pub(crate) struct Responses {
     sender: Sender<Value>,
-    /// The requests the client cancelled, by their identifiers' JSON
-    /// text: MCP's cancellation asks for no response, so whatever answers
-    /// one later -- the session that served it, a reply dropped
-    /// unanswered -- writes nothing.
-    cancelled: Arc<Mutex<HashSet<String>>>,
+    /// The requests the client cancelled: MCP's cancellation asks for no
+    /// response, so whatever answers one later -- the session that served
+    /// it, a reply dropped unanswered, a batch's member -- writes nothing,
+    /// and this set alone decides it.
+    cancelled: Arc<Mutex<Cancellations>>,
+}
+
+/// Cancelled requests by their identifiers' JSON text, and the order they
+/// were cancelled in, by which the oldest are let go.
+#[derive(Default)]
+struct Cancellations {
+    identifiers: HashSet<String>,
+    order: VecDeque<String>,
 }
 
 impl Responses {
@@ -54,31 +68,33 @@ impl Responses {
                         .is_err();
                 }
             })?;
-        let responses = Responses {
-            sender,
-            cancelled: Arc::new(Mutex::new(HashSet::new())),
-        };
-        Ok((responses, writer))
+        Ok((Responses::over(sender), writer))
     }
 
-    /// Writes `message` as one line, unless it answers a cancelled request.
-    pub(crate) fn send(&self, message: Value) {
+    /// The way to the writer reading `sender`'s channel.
+    fn over(sender: Sender<Value>) -> Responses {
+        Responses {
+            sender,
+            cancelled: Arc::new(Mutex::new(Cancellations::default())),
+        }
+    }
+
+    /// Writes `message` as one line, unless it answers a cancelled
+    /// request; answers whether it is written, so that whoever answered
+    /// knows whether the client sees what the answer carried.
+    pub(crate) fn send(&self, message: Value) -> bool {
         if self.answers_cancelled(&message) {
-            return;
+            return false;
         }
         // The writer ends only once every sender is gone.
         let _ = self.sender.send(message);
+        true
     }
 
     /// Writes a batch's answers, in their order, as one array, and
-    /// nothing for none. Each member's response passes here as itself,
-    /// so that whatever decides whether a response is written decides it
-    /// for a batch's member as for a single answer.
+    /// nothing for none. Each member was decided written as it was handed
+    /// to the batch's collector (`deliver`).
     pub(crate) fn send_batch(&self, members: Vec<Value>) {
-        let members: Vec<Value> = members
-            .into_iter()
-            .filter(|member| !self.answers_cancelled(member))
-            .collect();
         if !members.is_empty() {
             let _ = self.sender.send(Value::Array(members));
         }
@@ -87,10 +103,16 @@ impl Responses {
     /// Notes that the client cancelled its request `identifier`, whose
     /// response is dropped from now on.
     pub(crate) fn cancel(&self, identifier: &Value) {
-        self.cancelled
-            .lock()
-            .expect("the cancelled requests")
-            .insert(identifier.to_string());
+        let mut cancelled = self.cancelled.lock().expect("the cancelled requests");
+        let key = identifier.to_string();
+        if cancelled.identifiers.insert(key.clone()) {
+            cancelled.order.push_back(key);
+        }
+        while cancelled.order.len() > CANCELLATIONS_KEPT {
+            if let Some(oldest) = cancelled.order.pop_front() {
+                cancelled.identifiers.remove(&oldest);
+            }
+        }
     }
 
     /// Whether `message` is the response to a cancelled request. A request
@@ -99,10 +121,13 @@ impl Responses {
         let Some(identifier) = message.get("id") else {
             return false;
         };
-        self.cancelled
-            .lock()
-            .expect("the cancelled requests")
-            .remove(&identifier.to_string())
+        let key = identifier.to_string();
+        let mut cancelled = self.cancelled.lock().expect("the cancelled requests");
+        if !cancelled.identifiers.remove(&key) {
+            return false;
+        }
+        cancelled.order.retain(|kept| *kept != key);
+        true
     }
 }
 
@@ -110,9 +135,12 @@ impl Responses {
 /// collector of the batch it is a member of, at its member's place.
 pub(crate) enum ReplyDestination {
     Responses(Responses),
+    /// A batch's member, decided written or dropped by `responses` as it
+    /// is handed over: an answer the collector holds is written.
     Batch {
         place: usize,
         collector: Sender<(usize, Value)>,
+        responses: Responses,
     },
 }
 
@@ -133,8 +161,9 @@ impl Reply {
     }
 
     /// Answers a `tools/call`: its text as the one content, and whether
-    /// it is an error.
-    pub(crate) fn answer(self, answer: Answer) {
+    /// it is an error; answers whether the answer is written, which it is
+    /// not for a request the client cancelled.
+    pub(crate) fn answer(self, answer: Answer) -> bool {
         let (text, is_error) = match answer {
             Ok(text) => (text, false),
             Err(reason) => (reason, true),
@@ -144,7 +173,7 @@ impl Reply {
             "isError": is_error,
         });
         let response = result_response(&self.request_identifier, result);
-        self.respond(response);
+        self.respond(response)
     }
 
     /// The identifier of the request this reply answers.
@@ -164,10 +193,10 @@ impl Reply {
         self.respond(response);
     }
 
-    fn respond(mut self, response: Value) {
-        if let Some(destination) = self.destination.take() {
-            deliver(destination, response);
-        }
+    fn respond(mut self, response: Value) -> bool {
+        self.destination
+            .take()
+            .is_some_and(|destination| deliver(destination, response))
     }
 }
 
@@ -186,12 +215,21 @@ impl Drop for Reply {
     }
 }
 
-fn deliver(destination: ReplyDestination, response: Value) {
+/// Hands `response` on to `destination`; answers whether it is written.
+fn deliver(destination: ReplyDestination, response: Value) -> bool {
     match destination {
         ReplyDestination::Responses(responses) => responses.send(response),
-        ReplyDestination::Batch { place, collector } => {
+        ReplyDestination::Batch {
+            place,
+            collector,
+            responses,
+        } => {
+            if responses.answers_cancelled(&response) {
+                return false;
+            }
             // A collector outlives every member's sender.
             let _ = collector.send((place, response));
+            true
         }
     }
 }
@@ -219,4 +257,57 @@ pub(crate) fn result_response(identifier: &Value, result: Value) -> Value {
 
 pub(crate) fn error_response(identifier: &Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": identifier, "error": { "code": code, "message": message } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn answer(identifier: i64, destination: ReplyDestination) -> bool {
+        Reply::new(json!(identifier), destination).answer(Ok("an answer".to_string()))
+    }
+
+    #[test]
+    fn a_cancelled_request_s_answer_is_not_written() {
+        let (sender, written) = mpsc::channel();
+        let responses = Responses::over(sender);
+        responses.cancel(&json!(7));
+        assert!(!answer(7, ReplyDestination::Responses(responses.clone())));
+        assert!(answer(8, ReplyDestination::Responses(responses.clone())));
+        let identifiers: Vec<Value> = written
+            .try_iter()
+            .map(|message| message["id"].clone())
+            .collect();
+        assert_eq!(identifiers, [json!(8)]);
+    }
+
+    #[test]
+    fn a_batch_member_cancelled_before_its_hand_over_is_left_out() {
+        let (sender, _written) = mpsc::channel();
+        let responses = Responses::over(sender);
+        let (collector, collected) = mpsc::channel();
+        let member = |place: usize| ReplyDestination::Batch {
+            place,
+            collector: collector.clone(),
+            responses: responses.clone(),
+        };
+        responses.cancel(&json!(1));
+        assert!(!answer(1, member(0)));
+        assert!(answer(2, member(1)));
+        let places: Vec<usize> = collected.try_iter().map(|(place, _)| place).collect();
+        assert_eq!(places, [1]);
+    }
+
+    #[test]
+    fn the_oldest_cancellations_no_answer_took_are_let_go() {
+        let (sender, _written) = mpsc::channel();
+        let responses = Responses::over(sender);
+        let kept = i64::try_from(CANCELLATIONS_KEPT).expect("a small count");
+        for identifier in 0..=kept {
+            responses.cancel(&json!(identifier));
+        }
+        assert!(answer(0, ReplyDestination::Responses(responses.clone())));
+        assert!(!answer(1, ReplyDestination::Responses(responses.clone())));
+        assert!(!answer(kept, ReplyDestination::Responses(responses)));
+    }
 }

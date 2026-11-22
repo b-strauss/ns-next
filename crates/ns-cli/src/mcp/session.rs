@@ -367,11 +367,6 @@ impl Session {
         }
     }
 
-    /// Whether the client cancelled the call served.
-    pub(crate) fn call_cancelled(&self) -> bool {
-        self.inbox.cancelled()
-    }
-
     /// How much of the program's output answers have shown.
     pub(crate) fn shown_output(&self) -> usize {
         self.shown

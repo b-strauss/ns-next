@@ -1491,3 +1491,92 @@ fn a_cancelled_member_of_a_batch_is_left_out() {
         "{answer}"
     );
 }
+
+/// Calls `debug_wait` without waiting until the output the answers since
+/// `first` showed holds `text`; fails past `TIMEOUT`. The program's output
+/// reaches the server through a pipe, so a later answer may be the one to
+/// show it; an output an answer lost is never shown.
+fn shown_eventually(server: &mut McpServer, first: &str, text: &str) {
+    let started = Instant::now();
+    let mut shown = first.to_string();
+    while !shown.contains(text) {
+        assert!(
+            started.elapsed() < TIMEOUT,
+            "no answer showed {text:?}: {shown}"
+        );
+        shown.push_str(&server.succeed("debug_wait", json!({ "seconds": 0 })));
+    }
+}
+
+/// An answer the cancelled set drops gives its output to the next answer,
+/// also when the call never heard of the cancellation: here the start was
+/// cancelled before it was made, when no session could hear of it, so
+/// that only the set knows. The program prints `start` before it stops at
+/// its breakpoint.
+#[test]
+fn output_a_dropped_answer_took_is_shown_by_the_next() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::start_plain();
+    let next = server.next_id;
+    server.cancel(next);
+    let start = server.send_call("debug_start", counter_start(&path));
+    assert_eq!(start, next);
+    let stopped = server.succeed("debug_wait", json!({ "seconds": 0 }));
+    assert!(stopped.starts_with("stopped: breakpoint at "), "{stopped}");
+    assert!(
+        server.response(start, Duration::ZERO).is_none(),
+        "the cancelled start was answered"
+    );
+    shown_eventually(&mut server, &stopped, "output: \"start\\n");
+}
+
+/// A cancelled start ends its wait at once and answers nothing, but keeps
+/// its session, whose next answers show the output the start took.
+#[test]
+fn a_cancelled_start_keeps_its_session() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    let start = server.send_call("debug_start", json!({ "program": spin, "wait": 600 }));
+    server.cancel(start);
+    let waited = server.succeed("debug_wait", json!({ "seconds": 0 }));
+    assert!(waited.starts_with("running for "), "{waited}");
+    assert!(
+        server.response(start, Duration::ZERO).is_none(),
+        "the cancelled start was answered"
+    );
+    shown_eventually(&mut server, &waited, "output: \"spinning\\n");
+}
+
+/// A `debug_pause` made while a start waits for its program's first stop
+/// pauses the program, and both answer the pause.
+#[test]
+fn a_pause_reaches_a_waiting_start() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    let start = server.send_call("debug_start", json!({ "program": spin, "wait": 600 }));
+    let pause = server.send_call("debug_pause", json!({}));
+    let (paused, is_error) = server.answered(pause, "the pause");
+    assert!(
+        !is_error && paused.starts_with("stopped: pause at "),
+        "{paused}"
+    );
+    let (text, is_error) = server.answered(start, "the start");
+    assert!(!is_error, "{text}");
+    assert!(started(&text).1.starts_with("stopped: pause at "), "{text}");
+}
+
+/// A `debug_stop` made while a start waits ends the program and closes the
+/// session; the start answers the end.
+#[test]
+fn a_stop_reaches_a_waiting_start() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    let start = server.send_call("debug_start", json!({ "program": spin, "wait": 600 }));
+    let stop = server.send_call("debug_stop", json!({}));
+    let (stopped, is_error) = server.answered(stop, "the stop");
+    assert!(!is_error, "{stopped}");
+    assert!(stopped.ends_with("\nsession 1 is closed"), "{stopped}");
+    let (text, is_error) = server.answered(start, "the start");
+    assert!(!is_error, "{text}");
+    assert!(started(&text).1.starts_with("ended: "), "{text}");
+}
