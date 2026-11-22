@@ -76,8 +76,11 @@ pub(crate) struct Header {
     /// The architecture its `code` records are instructions of; `None`
     /// for a binary without a JIT.
     pub(crate) architecture: Option<String>,
-    pub(crate) categories: TraceCategories,
-    pub(crate) listings: Vec<ListingKind>,
+    /// The categories traced; `None` for a header that does not say,
+    /// which is taken to trace every one, as the plugin takes it.
+    pub(crate) categories: Option<TraceCategories>,
+    /// The listings printed; `None` for a header that does not say.
+    pub(crate) listings: Option<Vec<ListingKind>>,
 }
 
 /// Where a body's source is, as its record says.
@@ -117,33 +120,106 @@ pub(crate) struct BodyRecord {
     pub(crate) sends: Vec<DescribedSend>,
 }
 
-/// One event of the file, compact: its texts interned (`TraceIndex::text`).
+/// What an `IndexedEvent` stores for a number it does not have.
+const ABSENT: u32 = u32::MAX;
+
+/// `value` as an event stores it.
+fn stored(value: Option<u32>) -> u32 {
+    value.unwrap_or(ABSENT)
+}
+
+/// A number an event stores, `None` where it has none.
+fn optional(value: u32) -> Option<u32> {
+    (value != ABSENT).then_some(value)
+}
+
+/// One event of the file, compact -- a long run writes millions -- and
+/// so 40 bytes: what the overview, the journal's fold and the events
+/// filter decide by, its numbers stored without an `Option`'s word each,
+/// and its text interned. Its fields are its text's after the word; its
+/// record, should an answer need more, is read again from `offset`
+/// (`TraceIndex::read_event`), as a listing is.
 pub(crate) struct IndexedEvent {
     /// Where its record begins in the file.
-    pub(crate) offset: u64,
-    pub(crate) category: TraceCategory,
-    /// The record's event word: `transition` for a cache transition.
-    pub(crate) event: u32,
-    /// The word the text line writes: a transition's two states,
-    /// `monomorphic->polymorphic`, the event word otherwise.
-    pub(crate) word: u32,
-    /// Its `reason`, `cause`, `by` or `walk-end`.
-    pub(crate) reason: Option<u32>,
-    /// `declined-no-body`'s reasons with their counts.
-    pub(crate) reasons: Option<Box<[(u32, u32)]>>,
-    pub(crate) body: Option<u32>,
-    pub(crate) spent_by: Option<u32>,
-    pub(crate) in_body: Option<u32>,
-    pub(crate) callee: Option<u32>,
-    pub(crate) key: Option<u32>,
-    pub(crate) entered: Option<u32>,
-    /// Its fields as the text line writes them after the word, each body
-    /// field `{#<n>}`: ` trigger=call bytes=1216`, empty for none.
-    pub(crate) fields: u32,
-    /// The whole entry, `#<n> [<category>] <word><fields>`, the body's
-    /// number left out for an event about none: two events with one text
+    offset: u64,
+    /// The whole entry, `#<n> [<category>] <word><fields>` -- the body's
+    /// number left out for an event about none, every body field
+    /// `{#<n>}` -- as its text line writes it: two events with one text
     /// are the same event, which a fold compares by this number alone.
-    pub(crate) text: u32,
+    text: u32,
+    /// The word the text line writes: a transition's two states,
+    /// `monomorphic->polymorphic`, the record's event word otherwise.
+    word: u32,
+    /// Its `reason`, `cause`, `by` or `walk-end`.
+    reason: u32,
+    body: u32,
+    spent_by: u32,
+    in_body: u32,
+    callee: u32,
+    category: TraceCategory,
+}
+
+impl IndexedEvent {
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) fn category(&self) -> TraceCategory {
+        self.category
+    }
+
+    /// The whole entry's text, interned.
+    pub(crate) fn text(&self) -> u32 {
+        self.text
+    }
+
+    /// The text line's word, interned.
+    pub(crate) fn word(&self) -> u32 {
+        self.word
+    }
+
+    pub(crate) fn reason(&self) -> Option<u32> {
+        optional(self.reason)
+    }
+
+    pub(crate) fn body(&self) -> Option<u32> {
+        optional(self.body)
+    }
+
+    pub(crate) fn spent_by(&self) -> Option<u32> {
+        optional(self.spent_by)
+    }
+
+    pub(crate) fn in_body(&self) -> Option<u32> {
+        optional(self.in_body)
+    }
+
+    pub(crate) fn callee(&self) -> Option<u32> {
+        optional(self.callee)
+    }
+
+    /// Every body it names: its own and its body fields'.
+    pub(crate) fn bodies(&self) -> impl Iterator<Item = u32> {
+        [self.body, self.spent_by, self.in_body, self.callee]
+            .into_iter()
+            .filter_map(optional)
+    }
+}
+
+/// What an event's record says that its tallies and the sends are
+/// counted by while it is taken, kept no longer.
+struct EventFacts<'head> {
+    category: TraceCategory,
+    /// The record's event word.
+    word: &'head str,
+    /// `word`, interned.
+    event: u32,
+    reason: Option<u32>,
+    reasons: Option<Vec<(u32, u32)>>,
+    body: Option<u32>,
+    in_body: Option<u32>,
+    callee: Option<u32>,
+    key: CopyKey,
 }
 
 /// What an inlining plan's compile came to.
@@ -396,6 +472,10 @@ pub(crate) struct TraceIndex {
     reader: LineReader,
     contents: Contents,
     failure: Option<String>,
+    /// Run after each read from the file, so that a test writes while a
+    /// reading goes on.
+    #[cfg(test)]
+    after_read: Option<Box<dyn FnMut() + Send>>,
 }
 
 /// What the records read say.
@@ -409,6 +489,9 @@ struct Contents {
     /// `declined-no-body`'s reasons over the run, with their counts.
     no_body_declines: Vec<(u32, u32)>,
     sends: SendStates,
+    /// `declined-no-body`'s reasons with their counts, by its event's
+    /// index: few events have them, so they stand beside the events.
+    reasons: HashMap<u32, Box<[(u32, u32)]>>,
 }
 
 /// Counts one more `key` in `counts`.
@@ -445,29 +528,69 @@ impl TraceIndex {
                 bodies: BTreeMap::new(),
                 no_body_declines: Vec::new(),
                 sends: SendStates::new(),
+                reasons: HashMap::new(),
             },
             failure: None,
+            #[cfg(test)]
+            after_read: None,
         }
     }
 
-    /// Reads the file from where the last reading stopped to its current
-    /// end, taking every line ended by its `\n`; a line not ended yet
-    /// waits for the next reading. A reading that failed stays failed.
+    /// Reads the file from where the last reading stopped to the end it
+    /// had when the reading began, taking every line ended by its `\n`; a
+    /// line not ended yet waits for the next reading. Bounded so that it
+    /// ends however fast the child writes: what is written meanwhile is the
+    /// next reading's. A reading that failed stays failed.
     pub(crate) fn catch_up(&mut self) {
-        if self.failure.is_some() {
-            return;
+        if let Some(end) = self.end() {
+            self.read_to(end);
         }
+    }
+
+    /// Reads at most `limit` bytes more of the file, as `catch_up` does,
+    /// and answers whether the file holds more: the follower's turn, which
+    /// holds the index's lock no longer than one slice takes.
+    pub(crate) fn catch_up_slice(&mut self, limit: u64) -> bool {
+        let Some(end) = self.end() else {
+            return false;
+        };
+        self.read_to(end.min(self.reader.read.saturating_add(limit)));
+        self.failure.is_none() && self.reader.read < end
+    }
+
+    /// The file's current length; `None` once closed or failed.
+    fn end(&mut self) -> Option<u64> {
+        if self.failure.is_some() {
+            return None;
+        }
+        let trace_file = self.file.as_ref()?;
+        match trace_file.file().metadata() {
+            Ok(metadata) => Some(metadata.len()),
+            Err(error) => {
+                self.failure = Some(format!("the trace file cannot be read: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Reads the file from where the last reading stopped up to `end`.
+    fn read_to(&mut self, end: u64) {
         let Some(trace_file) = &self.file else {
             return;
         };
         let mut file = trace_file.file();
+        if self.reader.read >= end {
+            return;
+        }
         if let Err(error) = file.seek(SeekFrom::Start(self.reader.read)) {
             self.failure = Some(format!("the trace file cannot be read: {error}"));
             return;
         }
         let mut buffer = vec![0; READ_BYTES];
-        loop {
-            let read = match file.read(&mut buffer) {
+        while self.reader.read < end {
+            let wanted = usize::try_from(end - self.reader.read)
+                .map_or(READ_BYTES, |left| left.min(READ_BYTES));
+            let read = match file.read(&mut buffer[..wanted]) {
                 Ok(0) => return,
                 Ok(read) => read,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -479,6 +602,10 @@ impl TraceIndex {
             if let Err(failure) = self.reader.take(&buffer[..read], &mut self.contents) {
                 self.failure = Some(failure);
                 return;
+            }
+            #[cfg(test)]
+            if let Some(after_read) = &mut self.after_read {
+                after_read();
             }
         }
     }
@@ -531,13 +658,15 @@ impl TraceIndex {
     /// Whether the header says `category` is traced; `false` before it.
     pub(crate) fn traces(&self, category: TraceCategory) -> bool {
         self.header()
-            .is_some_and(|header| header.categories.contains(category))
+            .and_then(|header| header.categories)
+            .is_none_or(|categories| categories.contains(category))
     }
 
     /// Whether the header says `kind` is listed; `false` before it.
     pub(crate) fn lists(&self, kind: ListingKind) -> bool {
         self.header()
-            .is_some_and(|header| header.listings.contains(&kind))
+            .and_then(|header| header.listings.as_ref())
+            .is_none_or(|listings| listings.contains(&kind))
     }
 
     /// The text interned as `number`.
@@ -553,6 +682,60 @@ impl TraceIndex {
     /// Every event, in file order.
     pub(crate) fn events(&self) -> &[IndexedEvent] {
         &self.contents.events
+    }
+
+    /// The fields of `event` as its text line writes them after the
+    /// word, each body field `{#<n>}`: ` trigger=call bytes=1216`, empty
+    /// for none.
+    pub(crate) fn fields(&self, event: &IndexedEvent) -> &str {
+        let text = self.text(event.text);
+        let word = self.text(event.word);
+        // The text is `[#<n> ][<category>] <word><fields>`.
+        let after_category = text.find("] ").map_or(0, |position| position + 2);
+        text.get(after_category + word.len()..).unwrap_or("")
+    }
+
+    /// The record's event word of `event`: `transition` for a cache
+    /// transition, whose line writes its two states.
+    pub(crate) fn event_word(&self, event: &IndexedEvent) -> &str {
+        let word = self.text(event.word);
+        if event.category == TraceCategory::Caches && word.contains("->") {
+            "transition"
+        } else {
+            word
+        }
+    }
+
+    /// `declined-no-body`'s reasons of the event `index`, with their
+    /// counts; empty for any other event.
+    pub(crate) fn reasons(&self, index: u32) -> &[(u32, u32)] {
+        self.contents
+            .reasons
+            .get(&index)
+            .map_or(&[], |reasons| &reasons[..])
+    }
+
+    /// The record of `event`, read again from the file to its newline.
+    pub(crate) fn read_event(&self, event: &IndexedEvent) -> Result<Value, String> {
+        let Some(trace_file) = &self.file else {
+            return Err("the trace file is closed".to_string());
+        };
+        let unreadable = |error: &dyn std::fmt::Display| {
+            format!(
+                "the trace file no longer gives the record at byte {}: {error}",
+                event.offset
+            )
+        };
+        let mut file = trace_file.file();
+        file.seek(SeekFrom::Start(event.offset))
+            .map_err(|error| unreadable(&error))?;
+        let mut line = Vec::new();
+        std::io::BufRead::read_until(&mut std::io::BufReader::new(file), b'\n', &mut line)
+            .map_err(|error| unreadable(&error))?;
+        if line.pop() != Some(b'\n') {
+            return Err(unreadable(&"the record has no end"));
+        }
+        serde_json::from_slice(&line).map_err(|error| unreadable(&error))
     }
 
     /// How many events of `category` were read.
@@ -727,13 +910,30 @@ impl TraceIndex {
     }
 }
 
+/// How many bytes the follower reads in one hold of the index's lock: a
+/// trace tool, a summary or the session's close waits for one slice at
+/// most, never for a backlog, nor for a child writing as fast as it is
+/// read.
+const SLICE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Follows `index`'s file on a thread of its own, catching up 50 ms after
 /// the file last grew, the wait doubling to 500 ms while it does not, so
 /// that the first question after a long run finds the file read. The
-/// thread holds the index weakly and ends once the session dropped it or
-/// closed its file; `None` where no thread could be started, and the
-/// tools then catch up alone.
+/// thread reads a slice at a time, letting the lock go between slices,
+/// holds the index weakly and ends once the session dropped it or closed
+/// its file; `None` where no thread could be started, and the tools then
+/// catch up alone.
 pub(crate) fn spawn_follower(index: &Arc<Mutex<TraceIndex>>) -> Option<JoinHandle<()>> {
+    spawn_following(index, SLICE_BYTES, |_| {})
+}
+
+/// `spawn_follower` with slices of `slice` bytes, running `between_slices`
+/// after each, the lock let go.
+fn spawn_following(
+    index: &Arc<Mutex<TraceIndex>>,
+    slice: u64,
+    between_slices: impl Fn(&Arc<Mutex<TraceIndex>>) + Send + 'static,
+) -> Option<JoinHandle<()>> {
     let index = Arc::downgrade(index);
     std::thread::Builder::new()
         .name("ns-next mcp trace follower".to_string())
@@ -741,16 +941,27 @@ pub(crate) fn spawn_follower(index: &Arc<Mutex<TraceIndex>>) -> Option<JoinHandl
             let mut wait = POLL;
             loop {
                 std::thread::sleep(wait);
-                let Some(index) = index.upgrade() else {
-                    return;
-                };
-                let mut index = lock(&index);
-                if index.closed() || index.failure().is_some() {
-                    return;
+                let mut grew = false;
+                loop {
+                    let Some(index) = index.upgrade() else {
+                        return;
+                    };
+                    let more = {
+                        let mut index = lock(&index);
+                        if index.closed() || index.failure().is_some() {
+                            return;
+                        }
+                        let before = index.reader.read;
+                        let more = index.catch_up_slice(slice);
+                        grew |= index.reader.read > before;
+                        more
+                    };
+                    between_slices(&index);
+                    if !more {
+                        break;
+                    }
                 }
-                let before = index.reader.read;
-                index.catch_up();
-                wait = if index.reader.read > before {
+                wait = if grew {
                     POLL
                 } else {
                     (wait * 2).min(LONGEST_POLL)
@@ -1103,20 +1314,27 @@ impl Contents {
                 "the trace file has version {version}; this server reads version {VERSION}"
             ));
         }
-        let mut categories = TraceCategories::default();
-        for name in head.categories.iter().flatten() {
-            let category = TraceCategory::from_name(name)
-                .ok_or_else(|| format!("line 1 of the trace file names no category `{name}`"))?;
-            categories = categories.with(category);
-        }
-        let listings: Vec<ListingKind> = head
-            .listings
-            .iter()
-            .flatten()
-            .filter_map(|name| ListingKind::from_name(name))
-            .collect();
-        self.sends.outcome_can_arrive = categories.contains(TraceCategory::Optimize)
-            || listings.contains(&ListingKind::Inlining);
+        // A category or listing this reader does not know -- a later
+        // binary's -- is passed over, as the plugin's reader passes it.
+        let categories = head.categories.as_ref().map(|names| {
+            names
+                .iter()
+                .filter_map(|name| TraceCategory::from_name(name))
+                .fold(TraceCategories::default(), TraceCategories::with)
+        });
+        let listings: Option<Vec<ListingKind>> = head.listings.as_ref().map(|names| {
+            names
+                .iter()
+                .filter_map(|name| ListingKind::from_name(name))
+                .collect()
+        });
+        self.sends.outcome_can_arrive = match (&categories, &listings) {
+            (Some(categories), Some(listings)) => {
+                categories.contains(TraceCategory::Optimize)
+                    || listings.contains(&ListingKind::Inlining)
+            }
+            _ => true,
+        };
         self.header = Some(Header {
             architecture: head.architecture.clone(),
             categories,
@@ -1249,9 +1467,14 @@ impl Contents {
 
     fn take_event(&mut self, head: &RecordHead<'_>, offset: u64) -> Result<(), String> {
         let category_name = required(head.category.as_deref(), "event", "category")?;
-        let category = TraceCategory::from_name(category_name)
-            .ok_or_else(|| format!("no category `{category_name}`"))?;
         let word = required(head.event.as_deref(), "event", "event")?;
+        // A category this reader does not know -- a later binary's, which
+        // adds what no reader of the version misreads -- is skipped and
+        // counted nowhere, as the plugin's reader skips what it does not
+        // know.
+        let Some(category) = TraceCategory::from_name(category_name) else {
+            return Ok(());
+        };
         let index = u32::try_from(self.events.len()).expect("fewer than 2^32 events");
         let line_word = match (word, &head.before, &head.after) {
             ("transition", Some(before), Some(after)) => format!("{before}->{after}"),
@@ -1273,23 +1496,32 @@ impl Contents {
             reasons
                 .iter()
                 .map(|reason| (self.interner.intern(&reason.reason), reason.count))
-                .collect::<Box<[(u32, u32)]>>()
+                .collect::<Vec<(u32, u32)>>()
         });
-        let event = IndexedEvent {
-            offset,
+        let facts = EventFacts {
             category,
+            word,
             event: self.interner.intern(word),
-            word: self.interner.intern(&line_word),
             reason: self.intern_optional(reason_text),
             reasons,
             body: head.body,
-            spent_by: head.spent_by,
             in_body: head.in_body,
             callee: head.callee,
-            key: self.intern_optional(head.key.as_deref()),
-            entered: self.intern_optional(head.entered.as_deref()),
-            fields: self.interner.intern(&fields),
+            key: CopyKey {
+                key: self.intern_optional(head.key.as_deref()),
+                entered: self.intern_optional(head.entered.as_deref()),
+            },
+        };
+        let event = IndexedEvent {
+            offset,
             text: self.interner.intern(&text),
+            word: self.interner.intern(&line_word),
+            reason: stored(facts.reason),
+            body: stored(head.body),
+            spent_by: stored(head.spent_by),
+            in_body: stored(head.in_body),
+            callee: stored(head.callee),
+            category,
         };
         if let Some(position) = TraceCategory::ALL
             .iter()
@@ -1297,29 +1529,29 @@ impl Contents {
         {
             self.category_counts[position] += 1;
         }
-        for named in [event.body, event.spent_by, event.in_body, event.callee]
+        for named in [head.body, head.spent_by, head.in_body, head.callee]
             .into_iter()
             .flatten()
         {
             self.tally(named);
         }
-        self.tally_event(head, &event, index);
-        self.follow_sends(head, &event, index);
+        self.tally_event(head, &facts, index);
+        self.follow_sends(head, &facts, index);
+        if let Some(reasons) = facts.reasons {
+            self.reasons.insert(index, reasons.into_boxed_slice());
+        }
         self.events.push(event);
         Ok(())
     }
 
     /// Counts `event`, the `index`th, into its bodies' tallies.
-    fn tally_event(&mut self, head: &RecordHead<'_>, event: &IndexedEvent, index: u32) {
-        let word = self.interner.texts[event.event as usize].clone();
-        let copy_key = CopyKey {
-            key: event.key,
-            entered: event.entered,
-        };
+    fn tally_event(&mut self, head: &RecordHead<'_>, event: &EventFacts<'_>, index: u32) {
+        let word = event.word;
+        let copy_key = event.key;
         if let Some(body) = event.body {
             let tally = self.tally(body);
             tally.events.push(index);
-            match &*word {
+            match word {
                 "compiled" => tally.announced.baseline += 1,
                 "compiled-twin" => tally.announced.twin += 1,
                 "optimized" => {
@@ -1361,7 +1593,7 @@ impl Contents {
                 _ => {}
             }
         }
-        match &*word {
+        match word {
             "declined" => {
                 if let Some(callee) = event.callee {
                     let tally = self.tally(callee);
@@ -1375,7 +1607,11 @@ impl Contents {
             }
             "inlined" => {
                 if let (Some(callee), Some(body)) = (event.callee, event.body) {
-                    count(&mut self.tally(callee).inlined_into, (body, event.key), 1);
+                    count(
+                        &mut self.tally(callee).inlined_into,
+                        (body, event.key.key),
+                        1,
+                    );
                 }
             }
             "declined-no-body" => {
@@ -1389,19 +1625,16 @@ impl Contents {
 
     /// Follows what `event`, the `index`th, says of the sends, as the
     /// plugin's `TraceRun` does.
-    fn follow_sends(&mut self, head: &RecordHead<'_>, event: &IndexedEvent, index: u32) {
-        let word = self.interner.texts[event.event as usize].clone();
-        let key = CopyKey {
-            key: event.key,
-            entered: event.entered,
-        };
+    fn follow_sends(&mut self, head: &RecordHead<'_>, event: &EventFacts<'_>, index: u32) {
+        let word = event.word;
+        let key = event.key;
         if event.category == TraceCategory::Inlining {
             // A compile's inlining events, whatever their kind, belong to
             // its stretch.
             if let Some(body) = event.body {
                 self.sends.continue_compile(CompileKey { body, key });
             }
-            if matches!(&*word, "inlined" | "declined")
+            if matches!(word, "inlined" | "declined")
                 && event.body.is_some()
                 && self.sends.outcome_can_arrive
                 && let (Some(in_body), Some(program_counter)) =
@@ -1415,11 +1648,11 @@ impl Contents {
         }
         let concluded = event.body.is_some()
             && event.category == TraceCategory::Optimize
-            && matches!(&*word, "optimized" | "refused" | "deferred");
+            && matches!(word, "optimized" | "refused" | "deferred");
         if !concluded {
             self.sends.leave_open_compile();
         }
-        match &*word {
+        match word {
             "transition" => {
                 if let (Some(body), Some(site), Some(after)) = (event.body, head.site, &head.after)
                 {
@@ -1457,11 +1690,11 @@ impl Contents {
                 if let Some(body) = event.body {
                     let compile = CompileKey { body, key };
                     if concluded {
-                        self.sends.conclude(compile, &*word == "optimized");
+                        self.sends.conclude(compile, word == "optimized");
                     }
                     let optimized_freed =
-                        &*word == "freed" && head.tier.as_deref() == Some("optimized");
-                    if matches!(&*word, "retired" | "invalidated") || optimized_freed {
+                        word == "freed" && head.tier.as_deref() == Some("optimized");
+                    if matches!(word, "retired" | "invalidated") || optimized_freed {
                         self.sends.copy_gone(compile);
                     }
                 }
@@ -1585,8 +1818,8 @@ mod tests {
         assert_eq!(index.event_count(), events.len());
         for ((event, line), indexed) in events.iter().zip(index.events()) {
             let record = event_record(event);
-            assert_eq!(indexed.category, event.category, "{line}");
-            assert_eq!(index.text(indexed.event), record["event"], "{line}");
+            assert_eq!(indexed.category(), event.category, "{line}");
+            assert_eq!(index.event_word(indexed), record["event"], "{line}");
             // The text line with every body named by its number: each body
             // of `every_event` is numbered 1.
             let parts = split_outside_braces(line);
@@ -1603,14 +1836,43 @@ mod tests {
                     expected.push_str(&format!(" {name}={value}"));
                 }
             }
-            assert_eq!(index.text(indexed.text), expected, "{line}");
-            assert_eq!(index.text(indexed.word), parts[2], "{line}");
+            assert_eq!(index.text(indexed.text()), expected, "{line}");
+            assert_eq!(index.text(indexed.word()), parts[2], "{line}");
+            let fields: String = parts[3..]
+                .iter()
+                .map(|field| {
+                    let (name, value) = field.split_once('=').expect("a field is name=value");
+                    if BODY_FIELDS.contains(&name) {
+                        format!(" {name}={{#1}}")
+                    } else {
+                        format!(" {name}={value}")
+                    }
+                })
+                .collect();
+            assert_eq!(index.fields(indexed), fields, "{line}");
+            // The record is read again whole from its offset.
+            assert_eq!(index.read_event(indexed), Ok(record), "{line}");
         }
-        // Each event's record is read again whole from its offset.
-        let last = index.events().last().expect("an event");
-        let length = u32::try_from(index.bytes() - 1 - last.offset).unwrap();
-        let record = index.read_record(last.offset, length).expect("the record");
-        assert_eq!(record, event_record(&events.last().expect("an event").0));
+        let no_body = index
+            .events()
+            .iter()
+            .position(|indexed| index.event_word(indexed) == "declined-no-body")
+            .expect("a declined-no-body event");
+        let reasons: Vec<(&str, u32)> = index
+            .reasons(u32::try_from(no_body).unwrap())
+            .iter()
+            .map(|(reason, count)| (index.text(*reason), *count))
+            .collect();
+        assert!(!reasons.is_empty());
+        assert!(index.reasons(0).is_empty());
+    }
+
+    /// An event is kept in 40 bytes, a long run's millions of them beside
+    /// the file: its texts interned, its numbers without an `Option`'s
+    /// word each.
+    #[test]
+    fn an_event_is_kept_in_forty_bytes() {
+        assert_eq!(std::mem::size_of::<IndexedEvent>(), 40);
     }
 
     #[test]
@@ -1639,32 +1901,79 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(scratch.index.bytes(), size);
+        // A record after the multi-byte line stands where its bytes do,
+        // and is read again from there.
+        let compiled = event_record(&about(
+            1,
+            TraceEventKind::Compiled {
+                trigger: CompileTrigger::Call,
+                bytes: 96,
+            },
+        ));
+        scratch.record(&compiled);
+        scratch.index.catch_up();
+        let event = &scratch.index.events()[0];
+        assert_eq!(event.offset(), size);
+        assert_eq!(scratch.index.read_event(event), Ok(compiled.clone()));
+        // And so does one read in the same read as a multi-byte line.
+        let before = std::fs::metadata(scratch.index.path().unwrap())
+            .unwrap()
+            .len();
+        let second = body_record(2, "Demo>>rün", None).to_string();
+        scratch.write(&format!(
+            "{second}
+{compiled}
+"
+        ));
+        scratch.index.catch_up();
+        let event = &scratch.index.events()[1];
+        assert_eq!(event.offset(), before + second.len() as u64 + 1);
+        assert_eq!(scratch.index.read_event(event), Ok(compiled));
+    }
+
+    /// A hundred instructions in the architecture this binary decodes,
+    /// the last a return, and a data word: the architecture, the bytes and
+    /// where the code ends.
+    #[cfg(target_arch = "x86_64")]
+    fn hundred_native_instructions() -> (ns_runtime::trace_events::Architecture, Vec<u8>, u32) {
+        let mut bytes = vec![0x90; 99]; // nop
+        bytes.push(0xC3); // ret
+        bytes.extend([0; 8]);
+        (ns_runtime::trace_events::Architecture::X64, bytes, 100)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn hundred_native_instructions() -> (ns_runtime::trace_events::Architecture, Vec<u8>, u32) {
+        let nop = 0xD503_201F_u32;
+        let ret = 0xD65F_03C0_u32;
+        let mut bytes: Vec<u8> = std::iter::repeat_n(nop, 99)
+            .chain([ret])
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        bytes.extend([0; 8]);
+        (ns_runtime::trace_events::Architecture::Aarch64, bytes, 400)
     }
 
     /// A code listing of a hundred instructions, as the writer writes it.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     fn hundred_instructions() -> ns_runtime::trace_events::Listing {
         use ns_runtime::trace_events::{
-            Annotation, Architecture, CodeListing, CodeTier, DataWord, ListedScope, Listing,
-            Position,
+            Annotation, CodeListing, CodeTier, DataWord, ListedScope, Listing, Position,
         };
         let body = BodyName {
             number: 2,
             name: "Demo>>answer".to_string(),
         };
-        // A hundred one-byte instructions and a data word.
-        let mut bytes = vec![0x90; 99];
-        bytes.push(0xC3);
-        bytes.extend([0; 8]);
+        let (architecture, bytes, code_end) = hundred_native_instructions();
         Listing::Code(CodeListing {
             body: body.clone(),
             tier: CodeTier::Baseline,
             key: None,
-            architecture: Architecture::X64,
+            architecture,
             base_address: 0x4000,
             bytes,
-            code_end: 100,
-            words: vec![(100, DataWord::Budget)],
+            code_end,
+            words: vec![(code_end, DataWord::Budget)],
             positions: vec![(
                 0,
                 Position::Instruction {
@@ -1683,7 +1992,7 @@ mod tests {
         })
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     #[test]
     fn a_listing_is_kept_as_its_place() {
         let mut scratch = Scratch::new("listing-place");
@@ -1700,7 +2009,8 @@ mod tests {
         let entry = &index.listings()[0];
         assert_eq!(entry.kind, ListingKind::Code);
         assert_eq!(entry.body, 2);
-        assert_eq!(entry.bytes, Some(108));
+        let (_, bytes, _) = hundred_native_instructions();
+        assert_eq!(entry.bytes, Some(bytes.len() as u64));
         assert_eq!(entry.tier.map(|tier| index.text(tier)), Some("baseline"));
         let header_length = index.bytes() - line.len() as u64 - 1;
         assert_eq!(entry.offset, header_length);
@@ -1959,5 +2269,228 @@ mod tests {
             Err("the trace file is closed".to_string())
         );
         assert!(index.header().is_some());
+    }
+
+    /// An event record of `category` about `body`, or about none, with
+    /// `fields`.
+    fn event_of(category: &str, body: Option<u32>, fields: &Value) -> Value {
+        let mut record = json!({ "kind": "event", "category": category, "body": body });
+        for (name, value) in fields.as_object().expect("fields") {
+            record[name] = value.clone();
+        }
+        record
+    }
+
+    /// Every end of a copy takes its decisions, each other live copy's
+    /// standing; and a site's receivers count from its last vacancy until
+    /// every site is vacated.
+    #[test]
+    fn the_sends_follow_every_end_of_a_copy() {
+        let mut scratch = Scratch::new("copy-ends");
+        scratch.header(
+            &["optimize", "inlining", "deoptimize", "code-zone", "caches"],
+            &[],
+        );
+        scratch.body(1, "Demo>>run", None);
+        let planned = |event: &str, key: &str, callee: u32| {
+            event_of(
+                "inlining",
+                Some(1),
+                &json!({ "event": event, "key": key, "entered": null, "in-body": 1,
+                         "callee": callee, "reason": "over-weight", "at": 0 }),
+            )
+        };
+        let optimized = |key: &str| {
+            event_of(
+                "optimize",
+                Some(1),
+                &json!({ "event": "optimized", "key": key, "entered": null, "bytes": 100,
+                         "inlined-scopes": 0, "inlined-sites": 0, "type-case-arms": 0,
+                         "eliminated-blocks": 0 }),
+            )
+        };
+        let freed = |key: &str, tier: &str| {
+            event_of(
+                "code-zone",
+                Some(1),
+                &json!({ "event": "freed", "key": key, "entered": null, "tier": tier,
+                         "cause": "edit" }),
+            )
+        };
+        // Two live copies, each planning the send: the one installed last
+        // decides it.
+        scratch.record(&planned("declined", "Demo", 3));
+        scratch.record(&optimized("Demo"));
+        scratch.record(&planned("inlined", "Other", 3));
+        scratch.record(&optimized("Other"));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(2));
+        // The later copy freed, the earlier one's decision stands again.
+        scratch.record(&freed("Other", "optimized"));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(0));
+        // Baseline code freed takes no copy's decision.
+        scratch.record(&freed("Demo", "baseline"));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.send_outcome(1, 0).inlining, Some(0));
+        // The zone replaced takes every copy's.
+        scratch.record(&event_of(
+            "code-zone",
+            None,
+            &json!({ "event": "replaced", "bodies-freed": 1 }),
+        ));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.send_outcome(1, 0).inlining, None);
+        let transition = |before: &str, after: &str, receiver: &str| {
+            event_of(
+                "caches",
+                Some(1),
+                &json!({ "event": "transition", "before": before, "after": after,
+                         "selector": "value", "site": 0, "receiver": receiver }),
+            )
+        };
+        scratch.record(&transition("vacant", "monomorphic", "Demo"));
+        scratch.record(&transition("monomorphic", "polymorphic", "Other"));
+        scratch.index.catch_up();
+        let receivers =
+            |index: &TraceIndex| index.send_outcome(1, 0).cache.map(|cache| cache.receivers);
+        assert_eq!(receivers(&scratch.index), Some(2));
+        // A site vacant again counts its receivers afresh.
+        scratch.record(&transition("vacant", "monomorphic", "Third"));
+        scratch.index.catch_up();
+        assert_eq!(receivers(&scratch.index), Some(1));
+        scratch.record(&event_of(
+            "caches",
+            None,
+            &json!({ "event": "vacated", "cause": "edit" }),
+        ));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.send_outcome(1, 0).cache, None);
+    }
+
+    /// What a later binary adds within the version -- a category the
+    /// header or an event names -- is passed over, as the plugin's reader
+    /// passes it, and a header that does not say what it traces is taken
+    /// to trace everything.
+    #[test]
+    fn what_the_reader_does_not_know_is_passed_over() {
+        let mut scratch = Scratch::new("unknown");
+        scratch.header(&["compile", "future"], &["code", "future"]);
+        scratch.record(&event_of(
+            "future",
+            Some(1),
+            &json!({ "event": "foreseen" }),
+        ));
+        scratch.record(&event_record(&about(
+            1,
+            TraceEventKind::Compiled {
+                trigger: CompileTrigger::Call,
+                bytes: 96,
+            },
+        )));
+        scratch.index.catch_up();
+        let index = &scratch.index;
+        assert_eq!(index.failure(), None);
+        assert_eq!(index.event_count(), 1);
+        assert_eq!(index.body(1).map(|tally| tally.events.len()), Some(1));
+        assert!(index.traces(TraceCategory::Compile));
+        assert!(!index.traces(TraceCategory::Optimize));
+        assert!(index.lists(ListingKind::Code));
+        assert!(!index.lists(ListingKind::Inlining));
+        let mut silent = Scratch::new("silent-header");
+        silent.write(&format!(
+            "{}\n",
+            json!({ "kind": "header", "format": FORMAT, "version": VERSION })
+        ));
+        silent.index.catch_up();
+        assert_eq!(silent.index.failure(), None);
+        assert!(silent.index.traces(TraceCategory::Deoptimize));
+        assert!(silent.index.lists(ListingKind::Inlining));
+        assert!(silent.index.contents.sends.outcome_can_arrive);
+    }
+
+    /// A reading ends at the length the file had when it began, however
+    /// fast the child goes on writing: each read appends another record
+    /// here, which an unbounded reading would chase for ever.
+    #[test]
+    fn a_reading_ends_while_the_file_grows() {
+        let mut scratch = Scratch::new("growing");
+        scratch.header(&["compile"], &[]);
+        for number in 1..=3 {
+            scratch.body(number, "Demo>>run", None);
+        }
+        let at_entry = std::fs::metadata(scratch.index.path().unwrap())
+            .unwrap()
+            .len();
+        let mut appender = scratch.writer.try_clone().expect("a second writer");
+        let mut appended = 0;
+        scratch.index.after_read = Some(Box::new(move || {
+            appended += 1;
+            assert!(appended < 1000, "the reading never ended");
+            let line = format!("{}\n", body_record(100 + appended, "Demo>>more", None));
+            appender.write_all(line.as_bytes()).expect("appended");
+        }));
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.failure(), None);
+        assert_eq!(scratch.index.bytes(), at_entry);
+        assert_eq!(scratch.index.body_count(), 3);
+        // What was written meanwhile is the next reading's.
+        scratch.index.after_read = None;
+        scratch.index.catch_up();
+        assert_eq!(scratch.index.body_count(), 4);
+    }
+
+    /// The follower reads a slice at a time and lets the lock go between
+    /// slices, so that a tool waits for one slice at most: here a tool
+    /// takes the lock at each pause and finds the file read in part.
+    #[test]
+    fn the_follower_lets_the_lock_go_between_slices() {
+        let mut scratch = Scratch::new("slices");
+        scratch.header(&["compile"], &[]);
+        for number in 1..=40 {
+            scratch.body(number, "Demo>>run", None);
+        }
+        let size = std::fs::metadata(scratch.index.path().unwrap())
+            .unwrap()
+            .len();
+        let Scratch {
+            index,
+            writer,
+            _directory,
+        } = scratch;
+        drop(writer);
+        let index = Arc::new(Mutex::new(index));
+        let (paused, pauses) = std::sync::mpsc::channel::<()>();
+        let (resume, resumed) = std::sync::mpsc::channel::<()>();
+        let resumed = Mutex::new(resumed);
+        let follower = spawn_following(&index, 2048, move |_| {
+            // Once the test has stopped listening the follower goes on.
+            if paused.send(()).is_ok() {
+                let _ = resumed.lock().expect("the resumption").recv();
+            }
+        })
+        .expect("a follower");
+        let mut seen = Vec::new();
+        loop {
+            pauses
+                .recv_timeout(Duration::from_secs(30))
+                .expect("a pause between slices");
+            // The follower is paused between slices: the lock is free.
+            let bytes = index
+                .try_lock()
+                .expect("the lock is free between slices")
+                .bytes();
+            seen.push(bytes);
+            if bytes == size {
+                break;
+            }
+            resume.send(()).expect("the follower waits");
+        }
+        assert!(seen.len() > 2, "{seen:?}");
+        assert!(seen[0] > 0 && seen[0] < size, "{seen:?}");
+        drop(pauses);
+        drop(resume);
+        drop(index);
+        follower.join().expect("the follower ended");
     }
 }
