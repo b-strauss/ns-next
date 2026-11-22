@@ -13,6 +13,7 @@ import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.execution.ui.RunContentManager
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.util.Disposer
@@ -30,6 +31,7 @@ import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.StateGutterRenderer
 import io.github.bstrauss.newspeak.devtool.model.MethodState
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
+import io.github.bstrauss.newspeak.devtool.ui.CodeTab
 import io.github.bstrauss.newspeak.devtool.ui.InliningTab
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
@@ -179,6 +181,55 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
         assertEquals("a row for each plan", plans, runInEdtAndGet { tab.tree.rowCount })
     }
 
+    /**
+     * A slot's initializer links its source and its code in the Code tab
+     * both ways, from the records the runtime wrote: the caret on the slot's
+     * expression selects its statement and colours its listing's lines, and
+     * the viewer's caret on such a line selects the statement again.
+     */
+    fun testASlotInitializerLinksItsSourceAndItsCode() {
+        val program = program("Balls", BALLS)
+        val configuration = NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
+        configuration.name = "Balls"
+        configuration.program = program.path
+        configuration.options.traceCategories = mutableListOf("compile")
+        configuration.options.printBytecode = true
+        configuration.options.printCode = true
+        val output = StringBuffer()
+        val started = recordNextProcess { event, _ -> output.append(event.text) }
+        runInEdtAndWait { DecorationsService.getInstance(project) }
+        runInEdtAndWait {
+            val runManager = RunManager.getInstance(project)
+            val settings = runManager.createConfiguration(configuration, NewspeakConfigurationType.getInstance().factory)
+            ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
+        }
+        val handler = started.get(WAIT_SECONDS, TimeUnit.SECONDS)
+        assertTrue(output.toString(), handler.waitFor(WAIT_MILLISECONDS))
+        assertEquals(output.toString(), 0, handler.exitCode)
+        val run = waitFor("the initializer's code") {
+            runInEdtAndGet {
+                TracedRuns.getInstance(project).selected?.takeIf { run ->
+                    run.bodies.values.any { body -> body.name == "Balls/Ball initializer" && run.code.containsKey(body.number) }
+                }
+            }
+        }
+        val compiled = runInEdtAndGet { run.bodies.values.single { body -> body.name == "Balls/Ball initializer" && run.code.containsKey(body.number) } }
+        assertTrue("the initializer that runs is described with its statements", compiled.statements.isNotEmpty())
+        val editor = runInEdtAndGet { checkNotNull(FileEditorManager.getInstance(project).openTextEditor(OpenFileDescriptor(project, program), true)) }
+        val tab = runInEdtAndGet { CodeTab(project, run, testRootDisposable) }
+        runInEdtAndWait { editor.caretModel.moveToOffset(BALLS.indexOf("seed + 500") + 1) }
+        val selected = runInEdtAndGet { tab.highlighting.selected }
+        assertNotNull("the slot's statement is selected", selected?.second)
+        val linked = runInEdtAndGet { tab.highlighting.linkedLines(tab.viewer.document) }
+        assertTrue("the listing's lines of the statement", linked.isNotEmpty())
+        runInEdtAndWait {
+            // Nothing selected, as before any caret named a statement.
+            tab.highlighting.deselect()
+            tab.viewer.caretModel.moveToLogicalPosition(LogicalPosition(linked.first(), 0))
+        }
+        assertEquals("the listing's line selects the slot's statement", selected, runInEdtAndGet { tab.highlighting.selected })
+    }
+
     /** A traced Debug is told to the runs as Debug's, so that it replaces no traced Run's tab. */
     fun testATracedDebugRunsUnderItsExecutor() {
         val program = program("Demo", DEMO)
@@ -270,6 +321,29 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
         const val WAIT_SECONDS = 30L
         const val WAIT_MILLISECONDS = 30_000L
         const val POLL_MILLISECONDS = 20L
+
+        /** A class whose slots run sends as they are initialized, instantiated often enough that its initializer is compiled. */
+        val BALLS = """
+            class Balls = Object new () (
+              class Ball new: seed = (
+                |
+                  horizontal ::= seed + 500.
+                  vertical ::= seed max: 300.
+                |
+              ) (
+                public sum = (
+                  ^horizontal + vertical
+                )
+              )
+
+              public main: platform args: arguments = (
+                | total ::= 0. |
+                1 to: 1000 do: [:index | total:: total + (Ball new: index) sum].
+                platform transcript show: total printString; newLine.
+              )
+            )
+
+        """.trimIndent()
 
         /** `run` is sent three hundred times, each sending `square:` a thousand times, so that the optimizing JIT compiles it. */
         val HOT = """

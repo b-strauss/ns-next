@@ -16,7 +16,7 @@ use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
 use crate::interpreter::Mutator;
-use crate::mixin::Mixin;
+use crate::mixin::{DeclarationText, Mixin};
 
 /// Each body's metadata, `None` for a body that pairs with none, keyed by
 /// the body's address, and the text of each program module a level was
@@ -266,7 +266,8 @@ impl Cache {
             cache.placements_prune_at = 2 * cache.placements.len();
         }
         let root = member_code(&origin.mixin, &origin.member)?;
-        let own_root = origin.mixin.text.as_ref()?.slice(root.source)?.to_string();
+        let version = Rc::clone(origin.mixin.text.as_ref()?);
+        let own_root = version.slice(root.source)?.to_string();
         let own_length = u32::try_from(own_root.len()).ok()?;
         let family = family_of(&root);
         let mut found: HashMap<usize, Rc<BodyMetadata>> = HashMap::new();
@@ -292,8 +293,8 @@ impl Cache {
                 text.get(standing.start as usize..standing.end as usize) == Some(own_root.as_str());
             current = holds.then(|| (Rc::clone(&text), standing));
             let patched_level;
-            let pairs = if holds {
-                &level.pairs
+            let (pairs, compiled) = if holds {
+                (&level.pairs, &level.text)
             } else {
                 let patched = format!(
                     "{}{own_root}{}",
@@ -303,7 +304,7 @@ impl Cache {
                 match compile_level_in(mutator, &origin.mixin, lowering, Some(patched)) {
                     Some((patched, _)) => {
                         patched_level = patched;
-                        &patched_level.pairs
+                        (&patched_level.pairs, &patched_level.text)
                     }
                     None => continue,
                 }
@@ -316,7 +317,7 @@ impl Cache {
                 }
                 let moved = metadata
                     .as_ref()
-                    .and_then(|metadata| moved_into(metadata, region, root.source));
+                    .map(|metadata| moved_into(metadata, region, root.source, compiled, &version));
                 complete &= moved.is_some();
                 if let Some(moved) = moved {
                     found.entry(address(body)).or_insert_with(|| Rc::new(moved));
@@ -423,47 +424,71 @@ pub(crate) fn moved_span(span: Span, from: Span, start: u32) -> Option<Span> {
     ))
 }
 
-/// `metadata`, compiled where `region` holds the family root's own source,
-/// with its statements' and sends' spans moved to `own`, the root's own
-/// span; `None` where one of them lies outside `region`.
-fn moved_into(metadata: &BodyMetadata, region: Span, own: Span) -> Option<BodyMetadata> {
-    let moved = |span: Span| moved_span(span, region, own.start);
-    let statements = metadata
+/// `metadata`, compiled from `compiled` where `region` holds the family
+/// root's own source, with its statements' and sends' spans moved to
+/// `own`, the root's own span in `version`, its version's text.
+///
+/// A span outside `region` is one of the declaration's own, outside the
+/// body's source: a full initializer's statements of the superclass and
+/// of each `<:` clause stand at the clauses, or at the declaration's name
+/// where it writes none (`lower_instance_initialization_prologue`). It
+/// moves by the region's own distance where the version's text holds the
+/// same bytes there, and stands empty at the body's start where it does
+/// not -- an edit between the clause and the body moved them apart --, so
+/// that the body is described with every statement and send it has
+/// wherever it runs: a body left without them links nothing at all.
+fn moved_into(
+    metadata: &BodyMetadata,
+    region: Span,
+    own: Span,
+    compiled: &str,
+    version: &DeclarationText,
+) -> BodyMetadata {
+    let outside = |span: Span| -> Span {
+        let shift = |offset: u32| {
+            (i64::from(offset) - i64::from(region.start) + i64::from(own.start))
+                .try_into()
+                .ok()
+        };
+        let same = shift(span.start)
+            .zip(shift(span.end))
+            .map(|(start, end)| Span::new(start, end))
+            .filter(|shifted| {
+                let held = version.slice(*shifted);
+                held.is_some() && held == compiled.get(span.start as usize..span.end as usize)
+            });
+        same.unwrap_or(Span::new(own.start, own.start))
+    };
+    let moved = |span: Span| moved_span(span, region, own.start).unwrap_or_else(|| outside(span));
+    let statements: Vec<_> = metadata
         .statements
         .iter()
-        .map(|statement| {
-            Some(super::StatementEntry {
-                span: moved(statement.span)?,
-                ..statement.clone()
-            })
+        .map(|statement| super::StatementEntry {
+            span: moved(statement.span),
+            ..statement.clone()
         })
-        .collect::<Option<Vec<_>>>()?;
-    let sends = metadata
+        .collect();
+    let sends: Vec<_> = metadata
         .sends
         .iter()
-        .map(|send| {
-            Some(super::SendEntry {
-                call: moved(send.call)?,
-                selector: send
-                    .selector
-                    .iter()
-                    .map(|token| moved(*token))
-                    .collect::<Option<Vec<_>>>()?
-                    .into(),
-                receiver: match send.receiver {
-                    Some(receiver) => Some(moved(receiver)?),
-                    None => None,
-                },
-                ..send.clone()
-            })
+        .map(|send| super::SendEntry {
+            call: moved(send.call),
+            selector: send
+                .selector
+                .iter()
+                .map(|token| moved(*token))
+                .collect::<Vec<_>>()
+                .into(),
+            receiver: send.receiver.map(moved),
+            ..send.clone()
         })
-        .collect::<Option<Vec<_>>>()?;
-    Some(BodyMetadata {
-        source: moved(metadata.source).unwrap_or(own),
+        .collect();
+    BodyMetadata {
+        source: moved_span(metadata.source, region, own.start).unwrap_or(own),
         statements: statements.into(),
         sends: sends.into(),
         ..metadata.clone()
-    })
+    }
 }
 
 /// The lowerings a level is compiled again under, in order: the

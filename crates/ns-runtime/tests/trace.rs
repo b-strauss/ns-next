@@ -2817,3 +2817,148 @@ fn nothing_is_described_unless_asked() {
             .all(|body| body.number >= 1)
     );
 }
+
+/// A class whose slots run sends as they are initialized, instantiated
+/// often enough that its initializer is compiled.
+const SLOT_INITIALIZERS: &str = indoc! {"
+    class Demo = Object new () (
+      class Ball new: seed = (
+        |
+          horizontal ::= seed + 500.
+          vertical ::= seed max: 300.
+        |
+      ) (
+        public sum = (
+          ^horizontal + vertical
+        )
+      )
+
+      public run = (
+        | total ::= 0. |
+        1 to: 1000 do: [:index | total:: total + (Ball new: index) sum].
+        ^total
+      )
+    )
+"};
+
+/// Every initializer body is described with its statements and sends,
+/// the full initializer that runs among them: the slots' clauses are its
+/// statements, which a reader links its code to, whatever statement the
+/// compiler adds before them.
+#[test]
+fn every_initializer_body_is_described_with_its_statements() {
+    let received = received(SLOT_INITIALIZERS, &[TraceCategory::Compile], true);
+    let initializers = descriptions_of(&received, "Demo/Ball initializer");
+    assert!(!initializers.is_empty(), "the initializer is described");
+    let text = SLOT_INITIALIZERS;
+    let slice = |span: ns_syntax::Span| &text[span.start as usize..span.end as usize];
+    for initializer in initializers {
+        let statements: Vec<&str> = initializer
+            .statements
+            .iter()
+            .map(|statement| slice(statement.span))
+            .collect();
+        assert!(
+            statements
+                .iter()
+                .any(|statement| statement.contains("seed + 500")),
+            "{statements:?}"
+        );
+        let selectors: Vec<&str> = initializer
+            .sends
+            .iter()
+            .flat_map(|send| send.selector.iter().map(|span| slice(*span)))
+            .collect();
+        assert!(
+            selectors.contains(&"+") && selectors.contains(&"max:"),
+            "{selectors:?}"
+        );
+    }
+}
+
+/// A class a superclass clause with an argument and a `<:` clause make,
+/// instantiated often enough that its initializer bodies are compiled,
+/// and the mixin it applies instantiated as a class of its own too.
+const APPLIED_INITIALIZERS: &str = indoc! {"
+    class Demo = Object new () (
+      class Base new: seed = (
+        |
+          base ::= seed + 1.
+        |
+      ) ()
+
+      class Mixed new: seed = (
+        |
+          mixed ::= seed max: 3.
+        |
+      ) ()
+
+      class Applied new: seed = Base new: seed + 2 <: Mixed new: seed + 4 (
+        |
+          applied ::= seed min: 9.
+        |
+      ) (
+        public sum = (
+          ^base + mixed + applied
+        )
+      )
+
+      public run = (
+        | total ::= 0. |
+        1 to: 1000 do: [:index |
+          total:: total + (Applied new: index) sum.
+          Mixed new: index].
+        ^total
+      )
+    )
+"};
+
+/// Every initializer body of a class made by its superclass and `<:`
+/// clauses -- the full initializer, the own part and the standalone body
+/// of an applied level, and the superclass clause -- is described with its
+/// statements and sends, each slot's clause among them.
+#[test]
+fn every_initializer_body_of_an_applied_class_is_described() {
+    let received = received(APPLIED_INITIALIZERS, &[TraceCategory::Compile], true);
+    let text = APPLIED_INITIALIZERS;
+    let slice = |span: ns_syntax::Span| &text[span.start as usize..span.end as usize];
+    let bodies: Vec<&BodyDescription> = received
+        .iter()
+        .filter_map(|item| match item {
+            Received::Body(description)
+                if description.body.name.ends_with("initializer")
+                    || description.body.name.contains("clause") =>
+            {
+                Some(description)
+            }
+            _ => None,
+        })
+        .collect();
+    let names: Vec<&str> = bodies.iter().map(|body| body.body.name.as_str()).collect();
+    assert!(
+        names.iter().any(|name| name.starts_with("Demo/Applied")),
+        "{names:?}"
+    );
+    for body in bodies {
+        let source = slice(body.source);
+        assert!(
+            !body.statements.is_empty() && !body.sends.is_empty(),
+            "{} at {source:?} is described with nothing",
+            body.body.name
+        );
+        for slot in ["seed + 1", "seed max: 3", "seed min: 9"] {
+            if source.contains(slot) {
+                let statements: Vec<&str> = body
+                    .statements
+                    .iter()
+                    .map(|statement| slice(statement.span))
+                    .collect();
+                assert!(
+                    statements.iter().any(|statement| statement.contains(slot)),
+                    "{}: {statements:?}",
+                    body.body.name
+                );
+            }
+        }
+    }
+}

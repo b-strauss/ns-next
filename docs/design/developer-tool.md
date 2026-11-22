@@ -1130,7 +1130,15 @@ every span moved from where the root's source stands in that text to
 the root's own span, the same bytes, so that a body whose counterpart
 differs only in its layout -- a comment edited inside it -- keeps its
 statements and sends, and none is ever moved across text laid out
-otherwise: a body with a span outside its root's source has none. The
+otherwise. A span outside the root's source is the declaration's own --
+a full initializer's statements of the superclass and of each `<:`
+clause stand at the clauses, or at the declaration's name where it
+writes none --: it moves by the same distance where the body's version
+text holds the same bytes there, and stands empty at the body's start
+where it does not, so that every initializer body -- the full one, the
+own part, the standalone body, the superclass clause -- is described
+with all its statements and sends wherever it runs, its slots'
+statements linked as any. The
 current text is handed where its declaration of the member holds the
 root's own source, with where the body stands in it: at its own span,
 or where an edit above the member moved it. Each family's placement is
@@ -1664,8 +1672,10 @@ tests pin the numbers -- unique, and never a dead body's for the body
 that took its address, a block's family named after its root's code is
 gone -- and the descriptions, an edited module's bodies each in its own
 text, a body whose counterpart differs only in a comment with its
-statements and sends, and a body a later edit moved where it stands
-now;
+statements and sends, a body a later edit moved where it stands
+now, and every initializer body -- of a plain class and of one a
+superclass and a `<:` clause make -- with its slots' statements and
+sends;
 `crates/ns-runtime/tests/printing.rs` the structured bytecode listing
 beside its text, each body's line among them. `trace_file.rs`'s unit
 tests hold every event of `trace.rs`'s `every_event` to a record with
@@ -1778,7 +1788,9 @@ runtime wrote at the place the reader counted, under the Run executor,
 and the program's editor shows the method's icon; and a traced Debug of
 it is told to the runs as Debug's; and a run with `compile`, `optimize`,
 `deoptimize`, `code-zone`, machine code and plans, as a user starts one,
-shows a row in the Inlining tab for each plan the runtime wrote.
+shows a row in the Inlining tab for each plan the runtime wrote; and a
+slot's initializer of a class instantiated often links its source and
+its code in the Code tab both ways.
 
 ## Planned: the stages
 
