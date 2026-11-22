@@ -34,7 +34,7 @@ fun groupingChooser(changed: () -> Unit): ComboBox<Grouping> =
  */
 fun nameFilterField(placeholder: String, changed: () -> Unit): SearchTextField =
     SearchTextField(false).apply {
-        textEditor.columns = 20
+        textEditor.columns = 30
         textEditor.emptyText.text = placeholder
         addDocumentListener(
             object : DocumentListener {
