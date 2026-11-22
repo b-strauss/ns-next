@@ -13,7 +13,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
@@ -101,17 +100,15 @@ pub(crate) struct DescribedSend {
 }
 
 /// A `body` record but its statements.
-#[expect(dead_code, reason = "the events query reads it")]
 pub(crate) struct BodyRecord {
     pub(crate) name: String,
     /// A block's family root.
     pub(crate) family: Option<u32>,
     pub(crate) module: ModuleName,
     pub(crate) source: BodySource,
-    /// Lines and UTF-16 columns from 0, in the text `placed` names.
+    /// Lines and UTF-16 columns from 0, in the text the record's
+    /// `placed` names.
     pub(crate) range: Option<[u32; 4]>,
-    pub(crate) placed: Option<String>,
-    pub(crate) checksum: String,
     pub(crate) sends: Vec<DescribedSend>,
 }
 
@@ -129,15 +126,12 @@ fn optional(value: u32) -> Option<u32> {
 }
 
 /// One event of the file, compact -- a long run writes millions -- and
-/// so 40 bytes: what the overview, the journal's fold and the events
+/// so 32 bytes: what the overview, the journal's fold and the events
 /// filter decide by, its numbers stored without an `Option`'s word each,
-/// and its text interned. Its fields are its text's after the word; its
-/// record, should an answer need more, is read again from `offset`
-/// (`TraceIndex::read_event`), as a listing is.
-#[expect(dead_code, reason = "the events query reads it")]
+/// and its text interned. Its fields are its text's after the word: every
+/// answer writes an event from its text, so that its record is never read
+/// again, and the event keeps no place in the file.
 pub(crate) struct IndexedEvent {
-    /// Where its record begins in the file.
-    offset: u64,
     /// The whole entry, `#<n> [<category>] <word><fields>` -- the body's
     /// number left out for an event about none, every body field
     /// `{#<n>}` -- as its text line writes it: two events with one text
@@ -155,12 +149,7 @@ pub(crate) struct IndexedEvent {
     category: TraceCategory,
 }
 
-#[expect(dead_code, reason = "the events query reads it")]
 impl IndexedEvent {
-    pub(crate) fn offset(&self) -> u64 {
-        self.offset
-    }
-
     pub(crate) fn category(&self) -> TraceCategory {
         self.category
     }
@@ -181,14 +170,6 @@ impl IndexedEvent {
 
     pub(crate) fn body(&self) -> Option<u32> {
         optional(self.body)
-    }
-
-    pub(crate) fn spent_by(&self) -> Option<u32> {
-        optional(self.spent_by)
-    }
-
-    pub(crate) fn in_body(&self) -> Option<u32> {
-        optional(self.in_body)
     }
 
     pub(crate) fn callee(&self) -> Option<u32> {
@@ -887,8 +868,8 @@ impl TraceIndex {
     }
 
     /// The file's path, while it is open.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
-    pub(crate) fn path(&self) -> Option<&Path> {
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> Option<&std::path::Path> {
         self.file.as_deref().map(TraceFile::path)
     }
 
@@ -949,7 +930,6 @@ impl TraceIndex {
     }
 
     /// The number `text` is interned as, if any event or listing gave it.
-    #[expect(dead_code, reason = "the events query reads it")]
     pub(crate) fn interned(&self, text: &str) -> Option<u32> {
         self.contents.interner.numbers.get(text).copied()
     }
@@ -983,44 +963,11 @@ impl TraceIndex {
 
     /// `declined-no-body`'s reasons of the event `index`, with their
     /// counts; empty for any other event.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
     pub(crate) fn reasons(&self, index: u32) -> &[(u32, u32)] {
         self.contents
             .reasons
             .get(&index)
             .map_or(&[], |reasons| &reasons[..])
-    }
-
-    /// The record of `event`, read again from the file to its newline.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
-    pub(crate) fn read_event(&self, event: &IndexedEvent) -> Result<Value, String> {
-        let Some(trace_file) = &self.file else {
-            return Err("the trace file is closed".to_string());
-        };
-        let unreadable = |error: &dyn std::fmt::Display| {
-            format!(
-                "the trace file no longer gives the record at byte {}: {error}",
-                event.offset
-            )
-        };
-        let mut line = Vec::new();
-        let mut buffer = vec![0; READ_BYTES];
-        loop {
-            let offset = event.offset + line.len() as u64;
-            let read = read_at(trace_file.file(), &mut buffer, offset)
-                .map_err(|error| unreadable(&error))?;
-            if read == 0 {
-                return Err(unreadable(&"the record has no end"));
-            }
-            match buffer[..read].iter().position(|byte| *byte == b'\n') {
-                Some(end) => {
-                    line.extend_from_slice(&buffer[..end]);
-                    break;
-                }
-                None => line.extend_from_slice(&buffer[..read]),
-            }
-        }
-        serde_json::from_slice(&line).map_err(|error| unreadable(&error))
     }
 
     /// How many events of `category` were read.
@@ -1261,8 +1208,6 @@ struct RecordHead<'line> {
     module: Option<ModuleHead>,
     source: Option<SourceHead>,
     range: Option<[u32; 4]>,
-    placed: Option<String>,
-    checksum: Option<String>,
     sends: Option<Vec<SendHead>>,
     // A bytecode listing's.
     bodies: Option<Vec<ListedBodyHead>>,
@@ -1460,7 +1405,7 @@ impl Contents {
             head.map_err(|error| format!("line {number} of the trace file is no record: {error}"))?;
         let taken = match head.kind.as_ref() {
             "body" => self.take_body(head),
-            "event" => self.take_event(&head, offset),
+            "event" => self.take_event(&head),
             "bytecode" | "code" | "inlining" => self.take_listing(&head, offset, length),
             // A kind this reader does not know -- the header again among
             // them -- is skipped, as the plugin's reader skips it.
@@ -1546,8 +1491,6 @@ impl Contents {
             },
             source,
             range: head.range,
-            placed: head.placed,
-            checksum: head.checksum.unwrap_or_default(),
             sends,
         };
         if let Some(family) = description.family {
@@ -1630,7 +1573,7 @@ impl Contents {
         Ok(())
     }
 
-    fn take_event(&mut self, head: &RecordHead<'_>, offset: u64) -> Result<(), String> {
+    fn take_event(&mut self, head: &RecordHead<'_>) -> Result<(), String> {
         let category_name = required(head.category.as_deref(), "event", "category")?;
         let word = required(head.event.as_deref(), "event", "event")?;
         // A category this reader does not know -- a later binary's, which
@@ -1678,7 +1621,6 @@ impl Contents {
             },
         };
         let event = IndexedEvent {
-            offset,
             text: self.interner.intern(&text),
             word: self.interner.intern(&line_word),
             reason: stored(facts.reason),
@@ -2025,8 +1967,6 @@ pub(crate) mod tests {
                 })
                 .collect();
             assert_eq!(index.fields(indexed), fields, "{line}");
-            // The record is read again whole from its offset.
-            assert_eq!(index.read_event(indexed), Ok(record), "{line}");
         }
         let no_body = index
             .events()
@@ -2042,12 +1982,12 @@ pub(crate) mod tests {
         assert!(index.reasons(0).is_empty());
     }
 
-    /// An event is kept in 40 bytes, a long run's millions of them beside
+    /// An event is kept in 32 bytes, a long run's millions of them beside
     /// the file: its texts interned, its numbers without an `Option`'s
     /// word each.
     #[test]
-    fn an_event_is_kept_in_forty_bytes() {
-        assert_eq!(std::mem::size_of::<IndexedEvent>(), 40);
+    fn an_event_is_kept_in_thirty_two_bytes() {
+        assert_eq!(std::mem::size_of::<IndexedEvent>(), 32);
     }
 
     #[test]
@@ -2075,30 +2015,34 @@ pub(crate) mod tests {
         assert_eq!(scratch.caught_up().bytes(), size);
         // A record after the multi-byte line stands where its bytes do,
         // and is read again from there.
-        let compiled = event_record(&about(
-            1,
-            TraceEventKind::Compiled {
-                trigger: CompileTrigger::Call,
-                bytes: 96,
-            },
-        ));
-        scratch.record(&compiled);
+        let plan = json!({
+            "kind": "inlining", "body": 1, "key": "Demo", "entered": null,
+            "outcome": { "installed": 96 }, "scopes": [], "arms": [], "declined": [],
+        });
+        scratch.record(&plan);
         {
             let index = scratch.caught_up();
-            let event = &index.events()[0];
-            assert_eq!(event.offset(), size);
-            assert_eq!(index.read_event(event), Ok(compiled.clone()));
+            let entry = &index.listings()[0];
+            assert_eq!(entry.offset, size);
+            assert_eq!(
+                index.read_record(entry.offset, entry.length),
+                Ok(plan.clone())
+            );
         }
         // And so does one read in the same read as a multi-byte line.
         let before = std::fs::metadata(scratch.caught_up().path().unwrap())
             .unwrap()
             .len();
         let second = body_record(2, "Demo>>rün", None).to_string();
-        scratch.write(&format!("{second}\n{compiled}\n"));
+        scratch.write(&format!(
+            "{second}
+{plan}
+"
+        ));
         let index = scratch.caught_up();
-        let event = &index.events()[1];
-        assert_eq!(event.offset(), before + second.len() as u64 + 1);
-        assert_eq!(index.read_event(event), Ok(compiled));
+        let entry = &index.listings()[1];
+        assert_eq!(entry.offset, before + second.len() as u64 + 1);
+        assert_eq!(index.read_record(entry.offset, entry.length), Ok(plan));
     }
 
     /// A hundred instructions in the architecture this binary decodes,

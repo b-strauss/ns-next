@@ -697,6 +697,25 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
 /// it stands in, or that it stands out of line, and what a call or jump
 /// out of it reaches; and the address the code was installed at, as the
 /// text listing's `base=` writes it.
+/// The separator of an instruction's annotations in its record.
+const ANNOTATION_SEPARATOR: &str = "; ";
+
+/// Two annotations on one instruction, which the text listing writes one
+/// after the other, joined as it separates them. A reader -- the plugin
+/// -- splits the text at the separator to write each after its own
+/// `  ; `, so that no annotation's own text may hold it, or the reader
+/// would write one annotation as two.
+fn joined_annotations(texts: impl Iterator<Item = String>) -> String {
+    let texts: Vec<String> = texts.collect();
+    debug_assert!(
+        texts
+            .iter()
+            .all(|text| !text.contains(ANNOTATION_SEPARATOR)),
+        "an annotation holds the separator its record joins them with: {texts:?}"
+    );
+    texts.join(ANNOTATION_SEPARATOR)
+}
+
 fn code_record(code: &CodeListing) -> Value {
     let CodeListing {
         body,
@@ -734,15 +753,8 @@ fn code_record(code: &CodeListing) -> Value {
                 Some(Position::OutOfLine) => (None, None, true),
                 None => (None, None, false),
             };
-            // Two annotations on one instruction, which the text listing
-            // writes one after the other, are joined as it separates them.
-            let annotation = (!annotations.is_empty()).then(|| {
-                annotations
-                    .into_iter()
-                    .map(listing::annotation_text)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            });
+            let annotation = (!annotations.is_empty())
+                .then(|| joined_annotations(annotations.into_iter().map(listing::annotation_text)));
             let mut record = json!({
                 "offset": instruction.offset,
                 "text": instruction.text,
@@ -1852,5 +1864,27 @@ mod tests {
         assert!(instructions[1]["at"].is_null(), "{record}");
         assert_eq!(instructions[2]["out-of-line"], false, "{record}");
         assert_eq!(instructions[2]["at"], 1, "{record}");
+    }
+
+    /// An instruction's annotations are joined by the separator a reader
+    /// splits them at.
+    #[test]
+    fn annotations_are_joined_by_their_separator() {
+        let texts = [Annotation::Leaf("miss"), Annotation::Cell { site: 0 }]
+            .iter()
+            .map(listing::annotation_text);
+        assert_eq!(joined_annotations(texts), "leaf miss; cell site 0");
+    }
+
+    /// An annotation whose own text holds the separator would be read
+    /// back as two: a debug build refuses to write it.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an annotation holds the separator its record joins them with")]
+    fn an_annotation_holding_the_separator_is_refused() {
+        let texts = [Annotation::Leaf("miss"), Annotation::Target("one; two")]
+            .iter()
+            .map(listing::annotation_text);
+        joined_annotations(texts);
     }
 }

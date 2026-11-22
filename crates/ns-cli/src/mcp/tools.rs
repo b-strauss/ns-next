@@ -590,6 +590,19 @@ pub(crate) fn list() -> Value {
             }),
             &["method", "kind"],
         ),
+        tool(
+            "debug_trace_events",
+            "Answers a traced session's events, filtered, in file order and unfolded, each numbered by its place among all the run's events (@1,204) and written as ns-next run --trace writes its line, the body it is about and every body field named {<name> #<n>}, {} for an event about no body. Every filter given must hold. Readable while the program runs; paged by start and count.",
+            json!({
+                "category": { "type": "string", "description": "One category or several joined by commas, as debug_start's trace takes them: compile, osr, optimize, inlining, deoptimize, code-zone, caches, or all." },
+                "event": { "type": "string", "description": "An event's word: declined, retired, or a cache transition as its line writes it (monomorphic->polymorphic) or as transition." },
+                "reason": { "type": "string", "description": "An event's reason, cause, by or walk-end, or one of declined-no-body's reasons." },
+                "method": { "type": "string", "description": "The method, as the tools name one: the module's id, @ its version for one version only, then / and the path to a class inside the module, then >> and the selector (Demo/Account>>deposit:), a trailing ... making a prefix -- a method's name matching its blocks too; or #<n>, a body by the number the trace gives it. Selects the events about such a body or naming it in a field: spent-by, in-body or callee." },
+                "start": { "type": "integer", "minimum": 0, "description": "How many of the selected events to skip; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many events; 50 by default, 200 at most." }
+            }),
+            &[],
+        ),
     ];
     // Every tool but the one that opens a session names the session.
     for tool in tools.iter_mut().skip(1) {

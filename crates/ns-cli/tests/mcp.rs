@@ -41,7 +41,7 @@ const STRESS_MODES: [&str; 15] = [
 ];
 
 /// The tools and their parameters, the required ones first.
-const TOOLS: [(&str, &[&str], &[&str]); 20] = [
+const TOOLS: [(&str, &[&str], &[&str]); 21] = [
     (
         "debug_start",
         &["program"],
@@ -91,6 +91,13 @@ const TOOLS: [(&str, &[&str], &[&str]); 20] = [
         "debug_trace_listing",
         &["method", "kind"],
         &["index", "start", "count", "session"],
+    ),
+    (
+        "debug_trace_events",
+        &[],
+        &[
+            "category", "event", "reason", "method", "start", "count", "session",
+        ],
     ),
 ];
 
@@ -1575,6 +1582,167 @@ fn a_listing_window_is_bounded() {
             r##" — pass one: debug_trace_listing {{"session":1,"method":"#{run}","kind":"code"}}"##
         )),
         "{asked}"
+    );
+}
+
+/// The places, from 1, of the event records of `records` that `selects`
+/// takes, among all of them.
+fn event_places(records: &[Value], selects: impl Fn(&Value) -> bool) -> Vec<usize> {
+    records
+        .iter()
+        .filter(|record| record["kind"] == "event")
+        .enumerate()
+        .filter(|(_, record)| selects(record))
+        .map(|(place, _)| place + 1)
+        .collect()
+}
+
+/// `debug_trace_events` answers a traced session's events, filtered and
+/// paged with the exact call that goes on: a category's -- `compile`'s
+/// where the binary compiles, `caches`', which the interpreter traces
+/// too, where it does not --, a page of the most events within the
+/// answer budget, the events a journal's call names, and an unknown
+/// category refused, naming the categories.
+#[test]
+fn events_are_filtered_and_paged() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Demo", A_HOT_BLOCK);
+    let compiles = compiles_bodies(&path);
+    let stopped = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "all",
+            "breakpoints": [{ "location": location(&path, 15) }],
+        }),
+    );
+    assert!(
+        started(&stopped).1.starts_with("stopped: breakpoint"),
+        "{stopped}"
+    );
+    let records = trace_records(&trace_file_of(&traces, 1));
+    let category = if compiles { "compile" } else { "caches" };
+    let places = event_places(&records, |record| record["category"] == category);
+    assert!(places.len() > 2, "{} {category} events", places.len());
+    let page = server.succeed(
+        "debug_trace_events",
+        json!({ "session": 1, "category": category, "count": 2 }),
+    );
+    let lines: Vec<&str> = page.lines().collect();
+    assert_eq!(lines.len(), 4, "{page}");
+    assert_eq!(
+        lines[0],
+        format!(
+            "events of session 1, category={category} (2 of {})",
+            places.len()
+        ),
+        "{page}"
+    );
+    for (line, place) in lines[1..3].iter().zip(&places) {
+        assert!(
+            line.starts_with(&format!("  @{place} [{category}] {{")),
+            "{page}"
+        );
+    }
+    assert_eq!(
+        lines[3],
+        format!(
+            r#"Showing 1–2 of {} — next: debug_trace_events {{"session":1,"category":"{category}","start":2,"count":2}}"#,
+            places.len()
+        ),
+        "{page}"
+    );
+    // The next call answers the next two.
+    let next = server.succeed(
+        "debug_trace_events",
+        json!({ "session": 1, "category": category, "start": 2, "count": 2 }),
+    );
+    let lines: Vec<&str> = next.lines().collect();
+    assert!(
+        lines[1].starts_with(&format!("  @{} [{category}] {{", places[2])),
+        "{next}"
+    );
+    // A page of the most events stays within the budget.
+    let all = event_places(&records, |_| true);
+    let most = server.succeed("debug_trace_events", json!({ "session": 1, "count": 200 }));
+    assert!(
+        most.chars().count() <= 20_000,
+        "{} characters",
+        most.chars().count()
+    );
+    let shown = most.lines().count() - 2;
+    assert_eq!(shown, all.len().min(200), "{most}");
+    assert!(
+        most.lines()
+            .last()
+            .is_some_and(|line| line.starts_with(&format!("Showing 1–{shown} of "))),
+        "{most}"
+    );
+    // The journal's call: every event about the method or its blocks, or
+    // naming one of them in a field.
+    let journal = server.succeed(
+        "debug_trace_method",
+        json!({ "session": 1, "method": "Demo>>run" }),
+    );
+    let call = journal
+        .lines()
+        .find_map(|line| line.split_once("every event, caches included: "))
+        .and_then(|(_, call)| call.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("no call:\n{journal}"));
+    let arguments: Value = serde_json::from_str(
+        call.strip_prefix("debug_trace_events ")
+            .unwrap_or_else(|| panic!("{call}")),
+    )
+    .expect("the call's arguments");
+    assert_eq!(arguments, json!({ "session": 1, "method": "Demo>>run" }));
+    let run = body_number(&records, "Demo>>run", true);
+    let bodies: Vec<u64> = records
+        .iter()
+        .filter(|record| {
+            record["kind"] == "body" && (record["body"] == run || record["family"] == run)
+        })
+        .filter_map(|record| record["body"].as_u64())
+        .collect();
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    let named = event_places(&records, |record| {
+        ["body", "spent-by", "in-body", "callee"]
+            .iter()
+            .any(|field| {
+                record[*field]
+                    .as_u64()
+                    .is_some_and(|body| bodies.contains(&body))
+            })
+    });
+    let answer = server.succeed("debug_trace_events", arguments);
+    let lines: Vec<&str> = answer.lines().collect();
+    assert_eq!(
+        lines[0],
+        format!(
+            "events of session 1, method=Demo>>run ({} of {})",
+            named.len().min(50),
+            named.len()
+        ),
+        "{answer}"
+    );
+    let answered: Vec<usize> = lines[1..lines.len() - 1]
+        .iter()
+        .map(|line| {
+            line.strip_prefix("  @")
+                .and_then(|line| line.split_once(' '))
+                .and_then(|(place, _)| place.replace(',', "").parse().ok())
+                .unwrap_or_else(|| panic!("{line:?} has no place:\n{answer}"))
+        })
+        .collect();
+    assert_eq!(answered, named[..named.len().min(50)], "{answer}");
+    let refused = server.fail(
+        "debug_trace_events",
+        json!({ "session": 1, "category": "nothing" }),
+    );
+    assert_eq!(
+        refused,
+        "category: no category `nothing`; the categories are compile, osr, optimize, inlining, deoptimize, code-zone, caches, or all"
     );
 }
 

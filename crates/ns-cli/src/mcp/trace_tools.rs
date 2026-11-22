@@ -1,15 +1,16 @@
 //! The trace tools' answers (`docs/design/debugger.md`, "The MCP server",
 //! "The trace tools"), one function each, every one rendered as text from
 //! a session's `TraceIndex` and bounded by `pages.rs`: `overview`, the
-//! run-wide lists an agent starts from, and `journal`, one method's
-//! bodies, copies, events and sends. Each tool runs on a thread of its
+//! run-wide lists an agent starts from, `journal`, one method's bodies,
+//! copies, events and sends, `listing_window`, a window of one listing,
+//! and `events`, the run's events filtered. Each tool runs on a thread of its
 //! own and locks the index alone, never waiting on the session's worker,
 //! so that the trace of a program that runs, or of a wait in progress, can
 //! be asked.
 
 use std::collections::HashMap;
 
-use ns_runtime::TraceCategory;
+use ns_runtime::{TraceCategories, TraceCategory};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -38,7 +39,7 @@ const LISTS: [&str; 5] = [
 pub(crate) fn is_trace_tool(name: &str) -> bool {
     matches!(
         name,
-        "debug_trace" | "debug_trace_method" | "debug_trace_listing"
+        "debug_trace" | "debug_trace_method" | "debug_trace_listing" | "debug_trace_events"
     )
 }
 
@@ -102,8 +103,36 @@ pub(crate) fn call(handle: &SessionHandle, name: &str, arguments: Value) -> Answ
                 arguments.count,
             )
         }
+        "debug_trace_events" => {
+            let arguments: EventArguments = parse(arguments)?;
+            let index = trace.caught_up();
+            let query = EventQuery::new(
+                &index,
+                arguments.category.as_deref(),
+                arguments.event.as_deref(),
+                arguments.reason.as_deref(),
+                arguments.method.as_deref(),
+            )?;
+            events(&index, handle, &query, arguments.start, arguments.count)
+        }
         _ => Err(format!("no tool is named {name}")),
     }
+}
+
+#[derive(Deserialize)]
+struct EventArguments {
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    start: Option<usize>,
+    #[serde(default)]
+    count: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -2037,6 +2066,247 @@ fn listing_summary(index: &TraceIndex, entry: &ListingEntry, record: &Value) -> 
     }
 }
 
+/// What `debug_trace_events` selects by: every filter given must hold.
+pub(crate) struct EventQuery {
+    categories: Option<TraceCategories>,
+    /// A line's word or a record's event word: `monomorphic->polymorphic`
+    /// or `transition`.
+    event: Option<String>,
+    /// An event's `reason`, `cause`, `by` or `walk-end`, or one of
+    /// `declined-no-body`'s reasons.
+    reason: Option<String>,
+    /// The bodies `method` named, the lowest first.
+    bodies: Option<Vec<u32>>,
+    /// The filters as the call gave them, in the tool's order, which the
+    /// head and the next call repeat.
+    given: Vec<(&'static str, String)>,
+}
+
+impl EventQuery {
+    /// The query of the filters given: `category` one category or several
+    /// joined by commas, as `--trace` takes them, `method` a name in the
+    /// tools' grammar or `#<n>`, resolved as the journal resolves it
+    /// (`TraceIndex::bodies_named`), so that the call a journal names
+    /// answers the journal's bodies. An unknown category and a name the
+    /// filter's grammar or the index refuses are refused with its reason.
+    pub(crate) fn new(
+        index: &TraceIndex,
+        category: Option<&str>,
+        event: Option<&str>,
+        reason: Option<&str>,
+        method: Option<&str>,
+    ) -> Result<EventQuery, String> {
+        let categories = category
+            .map(|text| {
+                crate::trace::categories_named(text).map_err(|reason| format!("category: {reason}"))
+            })
+            .transpose()?;
+        let bodies = method.map(|name| index.bodies_named(name)).transpose()?;
+        let given = [
+            ("category", category),
+            ("event", event),
+            ("reason", reason),
+            ("method", method),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value.to_string())))
+        .collect();
+        Ok(EventQuery {
+            categories,
+            event: event.map(str::to_string),
+            reason: reason.map(str::to_string),
+            bodies,
+            given,
+        })
+    }
+
+    /// Whether the event `number` of `index` meets every filter; `reason`
+    /// is the query's reason as interned -- `Some(None)` where no text of
+    /// the file is it, so that no event meets it.
+    fn matches(&self, index: &TraceIndex, number: usize, reason: Option<Option<u32>>) -> bool {
+        let event = &index.events()[number];
+        if self
+            .categories
+            .is_some_and(|categories| !categories.contains(event.category()))
+        {
+            return false;
+        }
+        if let Some(word) = &self.event
+            && index.text(event.word()) != word
+            && index.event_word(event) != word
+        {
+            return false;
+        }
+        if let Some(reason) = reason {
+            let Some(reason) = reason else {
+                return false;
+            };
+            let declined = u32::try_from(number).map_or(&[][..], |number| index.reasons(number));
+            if event.reason() != Some(reason) && !declined.iter().any(|(known, _)| *known == reason)
+            {
+                return false;
+            }
+        }
+        if let Some(bodies) = &self.bodies
+            && !event
+                .bodies()
+                .any(|body| bodies.binary_search(&body).is_ok())
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// `debug_trace_events`: the events `query` selects, in file order and
+/// unfolded, from `start`, each numbered by its place among all the run's
+/// events and written as the text trace writes its line, every body named
+/// `{<name> #<n>}` (`event_line`). A first line names the session, the
+/// filters, the asked categories the run does not trace and the failure
+/// that ended the reading early; the answer ends in its `Showing` line,
+/// with the call that goes on, which repeats every argument given,
+/// `start` advanced.
+pub(crate) fn events(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    query: &EventQuery,
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Answer {
+    let shown = count_of(count, ENTRY_DEFAULT, ENTRY_MAXIMUM)?;
+    let reason = query.reason.as_deref().map(|reason| index.interned(reason));
+    let selected: Vec<usize> = (0..index.events().len())
+        .filter(|number| query.matches(index, *number, reason))
+        .collect();
+    let mut head = format!("events of session {}", session.number);
+    if !query.given.is_empty() {
+        let filters: Vec<String> = query
+            .given
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        head.push_str(", ");
+        head.push_str(&filters.join(" "));
+    }
+    // An asked category the run does not trace has no events for good,
+    // which an empty page would not tell from a quiet one.
+    let untraced: Vec<&str> = query.categories.map_or_else(Vec::new, |categories| {
+        TraceCategory::ALL
+            .into_iter()
+            .filter(|category| categories.contains(*category) && !index.traces(*category))
+            .map(TraceCategory::name)
+            .collect()
+    });
+    let mut tail = String::new();
+    if !untraced.is_empty() {
+        tail.push_str("; not traced: ");
+        tail.push_str(&untraced.join(", "));
+    }
+    if let Some(failure) = index.failure() {
+        tail.push_str("; ");
+        tail.push_str(failure);
+    }
+    let total = selected.len();
+    let start = start.unwrap_or(0);
+    if total == 0 && start == 0 {
+        return Ok(format!("{head}: none{tail}"));
+    }
+    if start >= total {
+        return Err(format!(
+            "start {start} is past the end: {} {}",
+            counted(total as u64, "event", "events"),
+            if total == 1 { "matches" } else { "match" }
+        ));
+    }
+    let next_from = |last: usize| {
+        let mut arguments = json!({ "session": session.number, "start": last });
+        for (name, value) in &query.given {
+            arguments[*name] = json!(value);
+        }
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        ("debug_trace_events", arguments)
+    };
+    let head_of = |taken: usize| {
+        format!(
+            "{head} ({} of {}){tail}",
+            thousands(taken as u64),
+            thousands(total as u64)
+        )
+    };
+    // The head and the `Showing` line as long as they can be.
+    let mut used = characters(&head_of(total))
+        + 1
+        + characters(&showing_line(total, total, total, Some(next_from(total))));
+    let mut lines = Vec::new();
+    for &number in selected.iter().skip(start).take(shown) {
+        let line = format!("  {}", event_line(index, number));
+        let length = characters(&line) + 1;
+        if used + length > ANSWER_BUDGET {
+            break;
+        }
+        used += length;
+        lines.push(line);
+    }
+    let last = start + lines.len();
+    let next = (last < total).then(|| next_from(last));
+    let mut answer = vec![head_of(lines.len())];
+    answer.extend(lines);
+    answer.push(showing_line(start + 1, last, total, next));
+    Ok(answer.join("\n"))
+}
+
+/// The event `number` of `index` as the text trace writes its line, its
+/// place among the run's events, from 1, before it:
+/// `@1,204 [deoptimize] {Bounce>>run #4} retired key={Bounce}
+/// reason=exits version=2`, `{}` for an event about no body, every body
+/// field `{<name> #<n>}`.
+fn event_line(index: &TraceIndex, number: usize) -> String {
+    let event = &index.events()[number];
+    let body = event
+        .body()
+        .map_or_else(String::new, |body| named(index, body));
+    format!(
+        "@{} [{}] {{{body}}} {}{}",
+        thousands(number as u64 + 1),
+        event.category().name(),
+        index.text(event.word()),
+        bodies_named_in(index, index.fields(event))
+    )
+}
+
+/// `fields` with every body field's `{#<n>}` written `{<name> #<n>}`.
+fn bodies_named_in(index: &TraceIndex, fields: &str) -> String {
+    let mut text = String::with_capacity(fields.len());
+    let mut rest = fields;
+    while let Some(found) = rest.find("{#") {
+        text.push_str(&rest[..found]);
+        let after = &rest[found + 2..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        let body = after[digits..]
+            .starts_with('}')
+            .then(|| after[..digits].parse::<u32>().ok())
+            .flatten();
+        match body {
+            Some(body) => {
+                text.push('{');
+                text.push_str(&named(index, body));
+                text.push('}');
+                rest = &after[digits + 1..];
+            }
+            // A class's name never begins with `#`: only a body field is
+            // written so, and anything else stays as it is.
+            None => {
+                text.push_str("{#");
+                rest = after;
+            }
+        }
+    }
+    text.push_str(rest);
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::{Registry, SessionState};
@@ -3327,6 +3597,532 @@ mod tests {
                 )
                 .as_str()
             )
+        );
+    }
+
+    /// A trace of every category but `osr` and `optimize`: `Demo>>run`
+    /// (#1) and its block (#2), `Demo>>square:` (#3), and an undescribed
+    /// callee (#20), nine events among them, one about no body.
+    fn events_trace() -> Scratch {
+        let mut scratch = Scratch::new("events");
+        scratch.header(
+            &["compile", "inlining", "deoptimize", "code-zone", "caches"],
+            &[],
+        );
+        scratch.body(1, "Demo>>run", None);
+        scratch.body(2, "[] in Demo>>run", Some(1));
+        scratch.body(3, "Demo>>square:", None);
+        let compile = |body: u32, trigger: &str, bytes: u64| {
+            event_of(
+                "compile",
+                Some(body),
+                &json!({ "event": "compiled", "trigger": trigger, "bytes": bytes }),
+            )
+        };
+        scratch.record(&compile(1, "call", 96));
+        scratch.record(&compile(3, "call", 64));
+        scratch.record(&event_of(
+            "inlining",
+            Some(1),
+            &json!({ "event": "declined", "key": "Demo", "entered": null, "in-body": 1,
+                     "callee": 20, "reason": "over-weight", "at": 4 }),
+        ));
+        scratch.record(&event_of(
+            "inlining",
+            Some(3),
+            &json!({ "event": "inlined", "key": "Demo", "entered": null, "in-body": 3,
+                     "callee": 2, "at": 0 }),
+        ));
+        scratch.record(&event_of(
+            "inlining",
+            Some(1),
+            &json!({ "event": "declined-no-body", "key": "Demo", "entered": null, "count": 2,
+                     "reasons": [{ "reason": "not-snapshotted", "count": 2 }] }),
+        ));
+        scratch.record(&event_of(
+            "deoptimize",
+            Some(1),
+            &json!({ "event": "invalidated", "key": "Demo", "entered": null, "cause": "edit" }),
+        ));
+        scratch.record(&event_of(
+            "code-zone",
+            None,
+            &json!({ "event": "compacted", "freeing": "no-room", "bodies-freed": 1 }),
+        ));
+        scratch.record(&event_of(
+            "caches",
+            Some(2),
+            &json!({ "event": "transition", "before": "monomorphic", "after": "polymorphic",
+                     "selector": "x", "site": 0, "receiver": "Demo" }),
+        ));
+        scratch.record(&compile(2, "entry", 32));
+        scratch
+    }
+
+    /// The lines of `events_trace`, by their place.
+    const EVENT_LINES: [&str; 9] = [
+        "  @1 [compile] {Demo>>run #1} compiled trigger=call bytes=96",
+        "  @2 [compile] {Demo>>square: #3} compiled trigger=call bytes=64",
+        "  @3 [inlining] {Demo>>run #1} declined key={Demo} in-body={Demo>>run #1} callee={#20 (not described)} reason=over-weight at=4",
+        "  @4 [inlining] {Demo>>square: #3} inlined key={Demo} in-body={Demo>>square: #3} callee={[] in Demo>>run #2} at=0",
+        "  @5 [inlining] {Demo>>run #1} declined-no-body key={Demo} count=2 reasons=not-snapshotted:2",
+        "  @6 [deoptimize] {Demo>>run #1} invalidated key={Demo} cause=edit",
+        "  @7 [code-zone] {} compacted freeing=no-room bodies-freed=1",
+        "  @8 [caches] {[] in Demo>>run #2} monomorphic->polymorphic selector=#x site=0 receiver={Demo}",
+        "  @9 [compile] {[] in Demo>>run #2} compiled trigger=entry bytes=32",
+    ];
+
+    /// The answer of `debug_trace_events` with the filters given, from
+    /// `start`, `count` at most.
+    fn queried(
+        index: &TraceIndex,
+        handle: &SessionHandle,
+        filters: [Option<&str>; 4],
+        start: Option<usize>,
+        count: Option<usize>,
+    ) -> Answer {
+        let [category, event, reason, method] = filters;
+        let query = EventQuery::new(index, category, event, reason, method)?;
+        events(index, handle, &query, start, count)
+    }
+
+    /// The whole answer of the filters given: its head, the places of its
+    /// lines, and its `Showing` line, each line checked against
+    /// `EVENT_LINES`.
+    fn selected_places(
+        index: &TraceIndex,
+        handle: &SessionHandle,
+        filters: [Option<&str>; 4],
+    ) -> (String, Vec<usize>, String) {
+        let answer = queried(index, handle, filters, None, None).expect("events");
+        let lines: Vec<&str> = answer.lines().collect();
+        let places = lines[1..lines.len() - 1]
+            .iter()
+            .map(|line| {
+                let place = EVENT_LINES
+                    .iter()
+                    .position(|known| known == line)
+                    .unwrap_or_else(|| panic!("{line:?} is no line of the trace:\n{answer}"));
+                place + 1
+            })
+            .collect();
+        (
+            lines[0].to_string(),
+            places,
+            lines[lines.len() - 1].to_string(),
+        )
+    }
+
+    /// A query's filters, the head its answer begins with, and the places
+    /// of the events it answers.
+    type Case<'case> = ([Option<&'case str>; 4], &'case str, &'case [usize]);
+
+    #[test]
+    fn the_events_are_selected_by_each_filter_alone_and_together() {
+        let scratch = events_trace();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        let every = queried(&index, &handle, [None; 4], None, None).expect("events");
+        let mut expected = vec!["events of session 1 (9 of 9)"];
+        expected.extend(EVENT_LINES);
+        expected.push("Showing 1–9 of 9");
+        assert_eq!(every.lines().collect::<Vec<_>>(), expected, "{every}");
+        let cases: [Case; 16] = [
+            (
+                [Some("compile"), None, None, None],
+                "events of session 1, category=compile (3 of 3)",
+                &[1, 2, 9],
+            ),
+            (
+                [Some("compile,caches"), None, None, None],
+                "events of session 1, category=compile,caches (4 of 4)",
+                &[1, 2, 8, 9],
+            ),
+            (
+                [Some("deoptimize"), None, None, None],
+                "events of session 1, category=deoptimize (1 of 1)",
+                &[6],
+            ),
+            (
+                [Some("all"), None, None, None],
+                "events of session 1, category=all (9 of 9); not traced: osr, optimize",
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+            ),
+            // The record's word and the line's.
+            (
+                [None, Some("declined"), None, None],
+                "events of session 1, event=declined (1 of 1)",
+                &[3],
+            ),
+            (
+                [None, Some("transition"), None, None],
+                "events of session 1, event=transition (1 of 1)",
+                &[8],
+            ),
+            (
+                [None, Some("monomorphic->polymorphic"), None, None],
+                "events of session 1, event=monomorphic->polymorphic (1 of 1)",
+                &[8],
+            ),
+            // A reason, a cause, and one of `declined-no-body`'s reasons.
+            (
+                [None, None, Some("over-weight"), None],
+                "events of session 1, reason=over-weight (1 of 1)",
+                &[3],
+            ),
+            (
+                [None, None, Some("edit"), None],
+                "events of session 1, reason=edit (1 of 1)",
+                &[6],
+            ),
+            (
+                [None, None, Some("not-snapshotted"), None],
+                "events of session 1, reason=not-snapshotted (1 of 1)",
+                &[5],
+            ),
+            // A body field names the body as its own body does.
+            (
+                [None, None, None, Some("#20")],
+                "events of session 1, method=#20 (1 of 1)",
+                &[3],
+            ),
+            (
+                [None, None, None, Some("#2")],
+                "events of session 1, method=#2 (3 of 3)",
+                &[4, 8, 9],
+            ),
+            // A method's name names its blocks, a prefix every match.
+            (
+                [None, None, None, Some("Demo>>run")],
+                "events of session 1, method=Demo>>run (7 of 7)",
+                &[1, 3, 4, 5, 6, 8, 9],
+            ),
+            (
+                [None, None, None, Some("Demo>>sq...")],
+                "events of session 1, method=Demo>>sq... (2 of 2)",
+                &[2, 4],
+            ),
+            (
+                [Some("inlining"), None, None, Some("Demo>>run")],
+                "events of session 1, category=inlining method=Demo>>run (3 of 3)",
+                &[3, 4, 5],
+            ),
+            (
+                [
+                    Some("inlining,deoptimize"),
+                    Some("declined"),
+                    Some("over-weight"),
+                    Some("#1"),
+                ],
+                "events of session 1, category=inlining,deoptimize event=declined reason=over-weight method=#1 (1 of 1)",
+                &[3],
+            ),
+        ];
+        for (filters, head, places) in cases {
+            let (answered_head, answered, showing) = selected_places(&index, &handle, filters);
+            assert_eq!(answered_head, head, "{filters:?}");
+            assert_eq!(answered, places, "{filters:?}");
+            assert_eq!(
+                showing,
+                format!("Showing 1–{0} of {0}", places.len()),
+                "{filters:?}"
+            );
+        }
+        // A filter no event meets, and a category the run does not trace.
+        assert_eq!(
+            queried(
+                &index,
+                &handle,
+                [None, None, Some("nothing"), None],
+                None,
+                None
+            ),
+            Ok("events of session 1, reason=nothing: none".to_string())
+        );
+        assert_eq!(
+            queried(
+                &index,
+                &handle,
+                [None, Some("compiled"), None, Some("#20")],
+                None,
+                None
+            ),
+            Ok("events of session 1, event=compiled method=#20: none".to_string())
+        );
+        assert_eq!(
+            queried(
+                &index,
+                &handle,
+                [Some("osr,compile"), None, None, Some("#3")],
+                None,
+                None
+            )
+            .expect("events")
+            .lines()
+            .next(),
+            Some("events of session 1, category=osr,compile method=#3 (1 of 1); not traced: osr")
+        );
+        assert_eq!(
+            queried(&index, &handle, [Some("osr"), None, None, None], None, None),
+            Ok("events of session 1, category=osr: none; not traced: osr".to_string())
+        );
+    }
+
+    #[test]
+    fn the_events_are_paged_with_their_exact_next() {
+        let scratch = events_trace();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let page = queried(&index, &handle, [None; 4], None, Some(2)).expect("events");
+        assert_eq!(
+            page.lines().collect::<Vec<_>>(),
+            [
+                "events of session 1 (2 of 9)",
+                EVENT_LINES[0],
+                EVENT_LINES[1],
+                r#"Showing 1–2 of 9 — next: debug_trace_events {"session":1,"start":2,"count":2}"#,
+            ],
+            "{page}"
+        );
+        // Every filter given is repeated, in the signature's order.
+        let page = queried(
+            &index,
+            &handle,
+            [Some("compile,caches"), None, None, Some("Demo>>run")],
+            Some(1),
+            Some(1),
+        )
+        .expect("events");
+        assert_eq!(
+            page.lines().collect::<Vec<_>>(),
+            [
+                "events of session 1, category=compile,caches method=Demo>>run (1 of 3)",
+                EVENT_LINES[7],
+                r#"Showing 2–2 of 3 — next: debug_trace_events {"session":1,"category":"compile,caches","method":"Demo>>run","start":2,"count":1}"#,
+            ],
+            "{page}"
+        );
+        // The last page names no next; a count past the maximum is capped.
+        let last = queried(&index, &handle, [None; 4], Some(8), Some(500)).expect("events");
+        assert_eq!(
+            last.lines().collect::<Vec<_>>(),
+            [
+                "events of session 1 (1 of 9)",
+                EVENT_LINES[8],
+                "Showing 9–9 of 9"
+            ],
+            "{last}"
+        );
+    }
+
+    #[test]
+    fn the_events_refuse_what_they_cannot_answer() {
+        let scratch = events_trace();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(
+            queried(&index, &handle, [Some("nothing"), None, None, None], None, None),
+            Err("category: no category `nothing`; the categories are compile, osr, optimize, inlining, deoptimize, code-zone, caches, or all".to_string())
+        );
+        assert_eq!(
+            queried(&index, &handle, [None, None, None, Some("#99")], None, None),
+            Err("no body of the trace is named #99".to_string())
+        );
+        // A name of no module is refused as every tool refuses it.
+        let refused = queried(
+            &index,
+            &handle,
+            [None, None, None, Some("Nope>>x")],
+            None,
+            None,
+        )
+        .expect_err("a refusal");
+        assert_eq!(Err(refused), index.bodies_named("Nope>>x").map(|_| ()));
+        assert_eq!(
+            queried(&index, &handle, [None; 4], None, Some(0)),
+            Err("a count of 0: give 1 or more".to_string())
+        );
+        assert_eq!(
+            queried(&index, &handle, [None; 4], Some(9), None),
+            Err("start 9 is past the end: 9 events match".to_string())
+        );
+        assert_eq!(
+            queried(
+                &index,
+                &handle,
+                [Some("deoptimize"), None, None, None],
+                Some(1),
+                None
+            ),
+            Err("start 1 is past the end: 1 event matches".to_string())
+        );
+    }
+
+    /// The overview's call for a declined callee answers its declines.
+    #[test]
+    fn the_overview_s_call_finds_a_callee_s_declines() {
+        let scratch = written();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer = queried(
+            &index,
+            &handle,
+            [None, Some("declined"), None, Some("#20")],
+            None,
+            None,
+        )
+        .expect("events");
+        assert_eq!(
+            answer.lines().collect::<Vec<_>>(),
+            [
+                "events of session 1, event=declined method=#20 (3 of 3)",
+                "  @85 [inlining] {Bounce>>m1 #1} declined key={Bounce} in-body={Bounce>>m1 #1} callee={#20 (not described)} reason=over-weight at=0",
+                "  @86 [inlining] {Bounce>>m2 #2} declined key={Bounce} in-body={Bounce>>m2 #2} callee={#20 (not described)} reason=over-weight at=0",
+                "  @87 [inlining] {Bounce>>m2 #2} declined key={Bounce} in-body={Bounce>>m2 #2} callee={#20 (not described)} reason=block-escapes at=0",
+                "Showing 1–3 of 3",
+            ],
+            "{answer}"
+        );
+    }
+
+    /// The call a journal's head names answers the journal's bodies'
+    /// events -- the method's root and its blocks, and every event naming
+    /// one in a field -- caches included, in the run-wide order.
+    #[test]
+    fn the_journal_s_call_answers_its_bodies_events() {
+        let scratch = bounce_journal();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let journal =
+            journal(&index, &handle, "Bounce/Ball>>bounce", None, None, None).expect("a journal");
+        let call = journal
+            .lines()
+            .find_map(|line| line.split_once("every event, caches included: "))
+            .and_then(|(_, call)| call.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("no call:\n{journal}"));
+        let arguments = call
+            .strip_prefix("debug_trace_events ")
+            .unwrap_or_else(|| panic!("{call} is no call of debug_trace_events"));
+        let arguments: EventArguments =
+            parse(serde_json::from_str(arguments).expect("JSON")).expect("the tool's arguments");
+        let query = EventQuery::new(
+            &index,
+            arguments.category.as_deref(),
+            arguments.event.as_deref(),
+            arguments.reason.as_deref(),
+            arguments.method.as_deref(),
+        )
+        .expect("a query");
+        let answer =
+            events(&index, &handle, &query, arguments.start, arguments.count).expect("events");
+        let lines: Vec<&str> = answer.lines().collect();
+        assert_eq!(
+            lines[0], "events of session 1, method=Bounce/Ball>>bounce (21 of 21)",
+            "{answer}"
+        );
+        let places: Vec<&str> = lines[1..lines.len() - 1]
+            .iter()
+            .map(|line| {
+                line.strip_prefix("  @")
+                    .and_then(|line| line.split_once(' '))
+                    .map_or("", |(place, _)| place)
+            })
+            .collect();
+        let expected: Vec<String> = (1..=20)
+            .chain([22])
+            .map(|place| place.to_string())
+            .collect();
+        assert_eq!(places, expected, "{answer}");
+        assert_eq!(
+            lines[1],
+            "  @1 [compile] {Bounce/Ball>>bounce #12} compiled trigger=call bytes=1216"
+        );
+        assert_eq!(
+            lines[12],
+            "  @12 [osr] {[] in Bounce/Ball>>bounce #13} osr-entered at=3"
+        );
+        assert_eq!(
+            lines[16],
+            "  @16 [inlining] {Bounce/Ball>>bounce #12} inlined key={Bounce/Ball} entered={Bounce/Ball} in-body={Bounce/Ball>>bounce #12} callee={Bounce/Ball>>x #30} at=0"
+        );
+        // Another method's compile, by its callee field.
+        assert_eq!(
+            lines[20],
+            "  @20 [inlining] {Bounce>>run #4} declined key={Bounce} in-body={Bounce>>run #4} callee={Bounce/Ball>>bounce #12} reason=over-weight at=5"
+        );
+        assert_eq!(
+            lines[21],
+            "  @22 [caches] {Bounce/Ball>>bounce #12} vacant->monomorphic selector=#x: site=0 receiver={Bounce/Ball}"
+        );
+        assert_eq!(lines[22], "Showing 1–21 of 21");
+    }
+
+    /// A page of the most events of long lines stays within the budget,
+    /// cut before its count, numbered past a thousand, and goes on where
+    /// it stopped.
+    #[test]
+    fn the_events_stay_under_their_budget() {
+        let mut scratch = Scratch::new("events-budget");
+        scratch.header(&["inlining"], &[]);
+        let name = format!("Demo/{}>>run", "Inner".repeat(16));
+        scratch.body(1, &name, None);
+        for _ in 0..1_500 {
+            scratch.record(&event_of(
+                "inlining",
+                Some(1),
+                &json!({ "event": "declined", "key": "Demo", "entered": null, "in-body": 1,
+                         "callee": 1, "reason": "over-weight", "at": 4 }),
+            ));
+        }
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer = queried(&index, &handle, [None; 4], Some(1_000), Some(200)).expect("events");
+        assert!(
+            characters(&answer) <= ANSWER_BUDGET,
+            "{}",
+            characters(&answer)
+        );
+        let lines: Vec<&str> = answer.lines().collect();
+        let shown = lines.len() - 2;
+        assert!(shown < 200, "{shown} events");
+        let named = format!("{{{name} #1}}");
+        assert_eq!(
+            lines[1],
+            format!(
+                "  @1,001 [inlining] {named} declined key={{Demo}} in-body={named} callee={named} reason=over-weight at=4"
+            )
+        );
+        assert_eq!(lines[0], format!("events of session 1 ({shown} of 1,500)"));
+        assert_eq!(
+            lines[lines.len() - 1],
+            format!(
+                "Showing 1,001–{} of 1,500 — next: debug_trace_events {{\"session\":1,\"start\":{},\"count\":200}}",
+                thousands((1_000 + shown) as u64),
+                1_000 + shown
+            )
+        );
+        // The page stopped at the line that would have passed the budget,
+        // the head and the `Showing` line counted as long as they can be.
+        let longest_head = "events of session 1 (1,500 of 1,500)";
+        let longest_showing = showing_line(
+            1_500,
+            1_500,
+            1_500,
+            Some((
+                "debug_trace_events",
+                json!({ "session": 1, "start": 1_500, "count": 200 }),
+            )),
+        );
+        let counted_as = characters(&answer) + characters(longest_head) - characters(lines[0])
+            + characters(&longest_showing)
+            - characters(lines[lines.len() - 1]);
+        let next_line =
+            lines[1].replace("@1,001", &format!("@{}", thousands((1_001 + shown) as u64)));
+        assert!(counted_as <= ANSWER_BUDGET, "{counted_as}");
+        assert!(
+            counted_as + characters(&next_line) + 1 > ANSWER_BUDGET,
+            "{counted_as}"
         );
     }
 }
