@@ -437,7 +437,11 @@ permanent icon: a method is watched through the editor's context menu,
 an intention (Alt+Enter) or the gutter's menu, and shows an eye; after a
 run its state icon takes the eye's place, a badge saying it is watched;
 the icon's menu unwatches, shows the code, shows the inlining and opens
-the tool window. With an empty list every traced method shows its state
+the tool window. Methods whose roots stand at one place -- a class's
+factory and the initializer bodies the compiler synthesizes for it,
+which stand at its header -- share one icon: its tooltip names each
+body with its state, and its menu holds a submenu of each body's
+actions. With an empty list every traced method shows its state
 icon. The shipped modules' sources, the library "Newspeak Core Library",
 are decorated as a program's are.
 

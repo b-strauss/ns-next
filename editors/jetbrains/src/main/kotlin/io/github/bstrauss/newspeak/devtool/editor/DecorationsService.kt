@@ -282,16 +282,21 @@ class DecorationsService internal constructor(
         val showHints = settings().showSendHints
         val iconOffsets = ArrayList<Int>()
         if (current != null) {
+            val placed = ArrayList<PlacedIcon>()
             for (method in methods) {
                 val root = method.root
                 // A method the run neither lists nor knows how it ran has no icon; the eye stands there if it is watched.
                 if (showIcons && root != null && root.marker.isValid) {
                     stateIcon(current, method, root.body)?.let { renderer ->
-                        decorations.highlighters += icon(editor, root.marker.startOffset, renderer)
-                        iconOffsets += root.marker.startOffset
+                        placed += PlacedIcon(root.marker.startOffset, root.body, renderer)
                     }
                 }
                 if (showHints && !method.stale) for (body in method.bodies) hints(editor, current, body, decorations)
+            }
+            for ((offset, shared) in placed.groupBy(PlacedIcon::offset)) {
+                val renderer = shared.singleOrNull()?.renderer ?: sharedIcon(shared.sortedBy { icon -> icon.root.number })
+                decorations.highlighters += icon(editor, offset, renderer)
+                iconOffsets += offset
             }
         }
         eyes(editor, file, iconOffsets, decorations)
@@ -403,6 +408,38 @@ class DecorationsService internal constructor(
         val unheard = traced.unheardCopies(root.number)
         if (unheard.isNotEmpty()) tooltip += NewspeakBundle.message("devtool.gutter.unheard", state.name.lowercase(), categoryList(unheard))
         return StateGutterRenderer(state, stale = false, watched = watched, tooltip, actions)
+    }
+
+    /** A method's icon at [offset], its root's [renderer], before the icons at one offset become one. */
+    private class PlacedIcon(val offset: Int, val root: Body, val renderer: StateGutterRenderer)
+
+    /**
+     * The one icon of the methods whose roots stand at one offset -- a
+     * class's factory and the initializer bodies the compiler synthesizes
+     * for it, which the runtime places at its header -- in their roots'
+     * order: the first one's state, badged where any is watched, its
+     * tooltip naming each root with its own tooltip, and its menu a
+     * submenu of each root's actions, so that each body is told apart and
+     * reached from the one icon.
+     */
+    private fun sharedIcon(icons: List<PlacedIcon>): StateGutterRenderer {
+        val first = icons.first().renderer
+        val tooltip = icons.joinToString("<br>", prefix = "<html>", postfix = "</html>") { icon ->
+            StringUtil.escapeXmlEntities("${icon.root.name}: ${icon.renderer.tooltipText}")
+        }
+        val actions = DefaultActionGroup()
+        for (icon in icons) {
+            val own = icon.renderer.popupMenuActions as? DefaultActionGroup ?: continue
+            actions.add(DefaultActionGroup(icon.root.name, true).apply { addAll(own.childActionsOrStubs.toList()) })
+        }
+        return StateGutterRenderer(
+            first.state,
+            stale = first.stale,
+            watched = icons.any { icon -> icon.renderer.watched },
+            tooltip,
+            actions,
+            listed = first.listed,
+        )
     }
 
     /** Whether [traced] lists code of one of [method]'s bodies: its bytecode, an install's machine code or an inlining plan. */
