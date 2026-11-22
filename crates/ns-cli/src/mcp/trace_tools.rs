@@ -1419,7 +1419,8 @@ fn fields_of(fields: &str) -> Vec<(&str, &str)> {
 /// What the events of one step say of each field whose value differs
 /// among them, beside its word: a number's range, `bytes 6,208–6,400`;
 /// otherwise each value and how often, the most first, `by=entries ×520,
-/// by=decay ×34`, at most `VARIANTS_SHOWN` of them, then `…`.
+/// by=decay ×34`, at most `VARIANTS_SHOWN` of them, then `…`, and how
+/// many events do not carry the field, `absent ×8`.
 fn varying_fields(index: &TraceIndex, word: &str, events: &[u32]) -> Vec<String> {
     let all = index.events();
     let mut names: Vec<&str> = Vec::new();
@@ -1466,6 +1467,12 @@ fn varying_fields(index: &TraceIndex, word: &str, events: &[u32]) -> Vec<String>
                     .collect();
                 if ranked.len() > VARIANTS_SHOWN {
                     shown.push("…".to_string());
+                }
+                // A field only some of the events carry counts its absence
+                // too, so that the counts add up to the step's events.
+                let absent = events.len() - values.len();
+                if absent > 0 {
+                    shown.push(format!("absent ×{}", thousands(absent as u64)));
                 }
                 summaries.push(format!("{word} {}", shown.join(", ")));
             }
@@ -2477,6 +2484,39 @@ mod tests {
             answer.lines().nth(3),
             Some(
                 "    [compile] compiled trigger=call bytes=96 ×5 — compiled trigger=call ×2, trigger=entry ×1, trigger=back-edge ×1, …; compiled bytes 96–128"
+            ),
+            "{answer}"
+        );
+    }
+
+    /// A field only some of a step's events carry counts its absence, so
+    /// that its counts add up to the step's events.
+    #[test]
+    fn a_field_some_events_lack_counts_its_absence() {
+        let mut scratch = Scratch::new("journal-absent");
+        scratch.header(&["compile"], &[]);
+        scratch.record(&bounce_body(1, "Bounce>>run", None, 0, json!([])));
+        for trigger in ["entry", "entry", "call", "entry"] {
+            scratch.record(&event_of(
+                "compile",
+                Some(1),
+                &json!({ "event": "held", "trigger": trigger, "reason": "zone-full" }),
+            ));
+        }
+        // A `held` whose record has no trigger.
+        scratch.record(&event_of(
+            "compile",
+            Some(1),
+            &json!({ "event": "held", "reason": "zone-full" }),
+        ));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer =
+            journal(&index, &handle, "#1", Some(Part::Events), None, None).expect("a journal");
+        assert_eq!(
+            answer.lines().nth(3),
+            Some(
+                "    [compile] held trigger=entry reason=zone-full ×5 — held trigger=entry ×3, trigger=call ×1, absent ×1"
             ),
             "{answer}"
         );
