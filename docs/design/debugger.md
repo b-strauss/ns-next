@@ -5629,7 +5629,11 @@ the way not taken: every question would run the program from its start.
   session's program with it. The thread that reads the input answers
   `initialize`, `ping`, `tools/list` and a refusal at once and hands a
   tool call to its session's worker (`worker.rs`), a thread of its own
-  that serves the session's calls in their order of arrival; one writer
+  that serves the session's calls in their order of arrival -- but for a
+  `debug_pause` or a `debug_stop` made while a call waits for the
+  program, which acts on that wait at once, and a call the client
+  cancelled (`notifications/cancelled`), which ends its wait and answers
+  nothing; one writer
   thread owns the standard output (`responses.rs`), and a batch is
   answered once each of its members is. So a wait in one session holds
   neither another session's calls nor a `ping`

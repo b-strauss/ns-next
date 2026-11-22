@@ -29,6 +29,9 @@ pub(crate) enum Input {
     /// A message off the DAP connection; `None` when it closed.
     Dap(Option<Value>),
     Call(Call),
+    /// The client cancelled its request of this JSON-RPC identifier, as
+    /// it sent it.
+    Cancelled(Value),
     /// The server ends.
     End,
 }
@@ -40,12 +43,20 @@ pub(crate) struct Call {
     pub(crate) reply: Reply,
 }
 
+/// The tools that act on a wait in progress rather than wait their turn:
+/// the two a debugger's user presses while the program runs.
+const INTERRUPTING: [&str; 2] = ["debug_pause", "debug_stop"];
+
 /// A session's inbox, as its worker reads it: the channel, the calls
-/// queued while another call waited, and whether the server's end came.
+/// queued while another call waited, whether the server's end came, and
+/// the call being served -- its identifier, and whether its client
+/// cancelled it.
 pub(crate) struct Inbox {
     receiver: Receiver<Input>,
     pending: VecDeque<Call>,
     ended: bool,
+    serving: Option<Value>,
+    cancelled: bool,
 }
 
 impl Inbox {
@@ -54,6 +65,8 @@ impl Inbox {
             receiver,
             pending: VecDeque::new(),
             ended: false,
+            serving: None,
+            cancelled: false,
         }
     }
 
@@ -89,6 +102,65 @@ impl Inbox {
     /// The call queued first.
     pub(crate) fn next_pending(&mut self) -> Option<Call> {
         self.pending.pop_front()
+    }
+
+    /// Takes the first queued call that acts on a wait in progress -- a
+    /// `debug_pause` or a `debug_stop` -- out of its turn.
+    pub(crate) fn take_interrupting(&mut self) -> Option<Call> {
+        let index = self
+            .pending
+            .iter()
+            .position(|call| INTERRUPTING.contains(&call.tool.as_str()))?;
+        self.pending.remove(index)
+    }
+
+    /// Moves the first queued `debug_stop` before every other queued
+    /// call; answers whether there is one.
+    pub(crate) fn stop_first(&mut self) -> bool {
+        let Some(index) = self
+            .pending
+            .iter()
+            .position(|call| call.tool == "debug_stop")
+        else {
+            return false;
+        };
+        if let Some(stop) = self.pending.remove(index) {
+            self.pending.push_front(stop);
+        }
+        true
+    }
+
+    /// Whether `call` acts on a wait in progress.
+    pub(crate) fn interrupts(call: &Call) -> bool {
+        INTERRUPTING.contains(&call.tool.as_str())
+    }
+
+    /// Keeps `call` to be served before every other queued call.
+    pub(crate) fn queue_first(&mut self, call: Call) {
+        self.pending.push_front(call);
+    }
+
+    /// Notes that `call` is served now; `None` between calls.
+    pub(crate) fn serve(&mut self, call: Option<&Call>) {
+        self.serving = call.map(|call| call.reply.request_identifier().clone());
+        self.cancelled = false;
+    }
+
+    /// The client cancelled its request `identifier`: the call served, if
+    /// it is that one, is to end its wait and answers nothing, and a
+    /// queued one of it is dropped -- its answer, which its reply's drop
+    /// writes, is one the cancelled set of `Responses` drops.
+    pub(crate) fn cancel(&mut self, identifier: &Value) {
+        if self.serving.as_ref() == Some(identifier) {
+            self.cancelled = true;
+        }
+        self.pending
+            .retain(|call| call.reply.request_identifier() != identifier);
+    }
+
+    /// Whether the client cancelled the call served.
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancelled
     }
 
     /// Refuses every call still queued or on its way: the session they
@@ -132,7 +204,7 @@ pub(crate) fn spawn(
 fn serve(
     registry: &Registry,
     handle: Arc<SessionHandle>,
-    inbox: Inbox,
+    mut inbox: Inbox,
     start: Call,
     default_runtime: &std::path::Path,
 ) {
@@ -144,8 +216,14 @@ fn serve(
         Err(refusal) => refusal,
         Ok(_) => format!("no session {number} is open"),
     };
+    inbox.serve(Some(&start));
     let mut session = match tools::start(start.arguments, default_runtime, handle, inbox) {
-        Ok((session, answer)) => {
+        Ok((mut session, answer)) => {
+            // A cancelled start keeps its session; only its answer, which
+            // the cancelled set drops, goes unseen, and its output with it.
+            if session.call_cancelled() {
+                session.show_again_from(0);
+            }
             start
                 .reply
                 .answer(Ok(format!("session: {number}\n{answer}")));
@@ -173,7 +251,13 @@ fn serve(
             inbox.refuse_remaining(refusal);
             return;
         }
+        let shown = session.shown_output();
         let answer = tools::call(&mut session, &call.tool, call.arguments);
+        // A cancelled call answers nothing -- the cancelled set drops what
+        // it answers -- so the output it took is shown by the next answer.
+        if session.call_cancelled() {
+            session.show_again_from(shown);
+        }
         call.reply.answer(answer);
     }
     // The server ends: the session's program with it, and what is still

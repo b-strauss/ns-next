@@ -185,6 +185,9 @@ impl Server {
         // A notification -- `notifications/initialized`,
         // `notifications/cancelled` -- has no id and asks for no answer.
         let Some(identifier) = message.get("id") else {
+            if method == "notifications/cancelled" {
+                self.cancel(&message["params"]["requestId"]);
+            }
             return;
         };
         let reply = Reply::new(identifier.clone(), destination);
@@ -254,6 +257,21 @@ impl Server {
                 ));
             }
         }
+    }
+
+    /// Honours the client's cancellation of its request `identifier`,
+    /// which MCP asks the receiver to stop and answer nothing: its
+    /// response is dropped from now on, and the session serving or
+    /// holding it lets it go. A request answered already, or never made,
+    /// is cancelled to no effect.
+    fn cancel(&self, identifier: &Value) {
+        if identifier.is_null() {
+            return;
+        }
+        // Recorded before any session hears of it, so that whatever answer
+        // the session still gives is dropped.
+        self.responses.cancel(identifier);
+        self.registry.cancel(identifier);
     }
 
     /// Hands `call` to the session it names, or refuses it.

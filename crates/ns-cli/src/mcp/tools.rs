@@ -18,7 +18,7 @@ use super::worker::Inbox;
 /// How long a tool that lets the program go on waits for its next stop
 /// when not told, and how long an evaluation may run before it is
 /// aborted.
-const DEFAULT_WAIT: Duration = Duration::from_secs(30);
+pub(crate) const DEFAULT_WAIT: Duration = Duration::from_secs(30);
 
 /// The longest wait a tool takes, whatever it is asked: a client that
 /// waits longer holds its session's calls for nothing.

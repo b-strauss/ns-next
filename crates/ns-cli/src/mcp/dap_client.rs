@@ -25,6 +25,8 @@ pub(crate) enum Next {
     TimedOut,
     /// A tool call of the session's, made while it waits.
     Call(Call),
+    /// The client cancelled its request of this identifier.
+    Cancelled(Value),
     /// The server ends.
     End,
 }
@@ -90,6 +92,7 @@ impl DapClient {
         match inbox.receive(Some(deadline)) {
             Ok(Input::Dap(message)) => self.received(message),
             Ok(Input::Call(call)) => Next::Call(call),
+            Ok(Input::Cancelled(identifier)) => Next::Cancelled(identifier),
             // Every sender gone: a live session holds one in its handle,
             // so only the detached inbox a dropped session leaves
             // (`Session::take_inbox`) answers this. It is the end too, and

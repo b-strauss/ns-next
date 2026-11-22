@@ -212,16 +212,49 @@ impl McpServer {
         stdin.flush().expect("flush the server's input");
     }
 
-    /// The process id of the program the last `debug_start` started, as
-    /// the server says it on its standard error.
-    fn program_process(&self) -> u32 {
-        let stderr = String::from_utf8_lossy(&self.stderr.lock().expect("stderr")).to_string();
-        let line = stderr
-            .lines()
-            .rev()
-            .find_map(|line| line.split(" runs as process ").nth(1))
-            .unwrap_or_else(|| panic!("no program's process on stderr: {stderr}"));
-        line.trim().parse().expect("a process id")
+    /// The process id of the program the `start`th `debug_start` started,
+    /// counting from 1, as the server says it on its standard error. The
+    /// server says it before the start answers, but the reader of the
+    /// standard error may take it in later than the reader of the output
+    /// takes the answer, so the line is waited for by its place, never
+    /// taken as the last one there.
+    fn program_process(&self, start: usize) -> u32 {
+        let started = Instant::now();
+        loop {
+            let stderr = String::from_utf8_lossy(&self.stderr.lock().expect("stderr")).to_string();
+            let process = stderr
+                .lines()
+                .filter_map(|line| line.split(" runs as process ").nth(1))
+                .nth(start - 1)
+                .map(|line| line.trim().parse().expect("a process id"));
+            if let Some(process) = process {
+                return process;
+            }
+            assert!(
+                started.elapsed() < TIMEOUT,
+                "no process of start {start} on stderr: {stderr}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Sends the notification that the client cancelled its request
+    /// `identifier`.
+    fn cancel(&mut self, identifier: i64) {
+        self.write(&json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": identifier, "reason": "the user interrupted it" },
+        }));
+    }
+
+    /// The response to `identifier`, which must come within `TIMEOUT`, as
+    /// its text and whether it is an error.
+    fn answered(&mut self, identifier: i64, what: &str) -> (String, bool) {
+        let response = self
+            .response(identifier, TIMEOUT)
+            .unwrap_or_else(|| panic!("{what} was not answered within {TIMEOUT:?}"));
+        text_of(&response)
     }
 
     /// Closes the server's input, as a client that ends does.
@@ -852,7 +885,7 @@ fn killing_the_server_ends_its_program() {
     let mut server = McpServer::start();
     let running = server.succeed("debug_start", json!({ "program": path, "wait": 0.5 }));
     assert!(started(&running).1.starts_with("running for "), "{running}");
-    let process = server.program_process();
+    let process = server.program_process(1);
     assert!(process_runs(process), "the program does not run");
     {
         let mut child = server.child.lock().expect("the child");
@@ -1106,7 +1139,7 @@ fn a_wait_holds_no_other_session() {
     let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
     assert!(started(&running).1.starts_with("running for "), "{running}");
     // Before the second start, whose process the server names last.
-    let spinning = server.program_process();
+    let spinning = server.program_process(1);
     let wait = server.send_call("debug_wait", json!({ "session": 1, "seconds": 600 }));
     let answered = |server: &mut McpServer, identifier: i64, what: &str| {
         let response = server
@@ -1151,7 +1184,7 @@ fn a_call_queued_at_the_server_s_end_is_refused() {
     let mut server = McpServer::start();
     let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
     assert!(started(&running).1.starts_with("running for "), "{running}");
-    let process = server.program_process();
+    let process = server.program_process(1);
     let wait = server.send_call("debug_wait", json!({ "seconds": 600 }));
     let queued = server.send_call("debug_wait", json!({ "seconds": 0 }));
     server.close_input();
@@ -1184,9 +1217,10 @@ fn closing_the_input_ends_every_session_s_program() {
     let (_counter_directory, counter) = program("Counter", COUNTER);
     let mut server = McpServer::start();
     server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
-    let spinning = server.program_process();
+    let spinning = server.program_process(1);
     server.succeed("debug_start", counter_start(&counter));
-    let stopped = server.program_process();
+    let stopped = server.program_process(2);
+    assert_ne!(spinning, stopped, "both starts named one process");
     server.send_call("debug_wait", json!({ "session": 1, "seconds": 600 }));
     server.close_input();
     assert!(server.exited_within(TIMEOUT), "the server did not end");
@@ -1197,6 +1231,173 @@ fn closing_the_input_ends_every_session_s_program() {
     assert!(
         ended_within(stopped, TIMEOUT),
         "the stopped session's program outlived its server"
+    );
+}
+
+/// Starts `SPIN` and answers its running start's text: the program
+/// spins forever, so that nothing but the test's own act ends a wait.
+fn spinning_start(server: &mut McpServer, spin: &Path) -> String {
+    let running = server.succeed("debug_start", json!({ "program": spin, "wait": 0.5 }));
+    assert!(started(&running).1.starts_with("running for "), "{running}");
+    running
+}
+
+/// A `debug_pause` made while a `debug_continue` waits pauses the program
+/// at once, and both answer the pause. Only the pause can end the wait,
+/// which asks for the longest a tool waits.
+#[test]
+fn a_pause_reaches_a_waiting_continue() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    let entry = server.succeed(
+        "debug_start",
+        json!({ "program": spin, "stop_on_entry": true }),
+    );
+    assert!(
+        started(&entry).1.starts_with("stopped: entry at "),
+        "{entry}"
+    );
+    let waiting = server.send_call("debug_continue", json!({ "wait": 600 }));
+    let pause = server.send_call("debug_pause", json!({}));
+    let (paused, is_error) = server.answered(pause, "the pause");
+    assert!(!is_error, "{paused}");
+    assert!(paused.starts_with("stopped: pause at "), "{paused}");
+    let (continued, is_error) = server.answered(waiting, "the continue");
+    assert!(!is_error, "{continued}");
+    assert!(continued.starts_with("stopped: pause at "), "{continued}");
+}
+
+/// A `debug_stop` made while a `debug_wait` waits ends the program at
+/// once and closes the session; the wait answers the end.
+#[test]
+fn a_stop_reaches_a_waiting_wait() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    spinning_start(&mut server, &spin);
+    let waiting = server.send_call("debug_wait", json!({ "seconds": 600 }));
+    let stop = server.send_call("debug_stop", json!({}));
+    let (stopped, is_error) = server.answered(stop, "the stop");
+    assert!(!is_error, "{stopped}");
+    assert!(stopped.starts_with("ended: "), "{stopped}");
+    assert!(stopped.ends_with("\nsession 1 is closed"), "{stopped}");
+    let (waited, is_error) = server.answered(waiting, "the wait");
+    assert!(!is_error, "{waited}");
+    assert!(waited.starts_with("ended: "), "{waited}");
+}
+
+/// A cancelled wait ends at once and answers nothing: the pause made
+/// after it finds no wait to act on and answers alone, and the wait's
+/// answer, which would come before the pause's, never comes.
+#[test]
+fn a_cancelled_wait_answers_nothing() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    spinning_start(&mut server, &spin);
+    let waiting = server.send_call("debug_wait", json!({ "seconds": 600 }));
+    server.cancel(waiting);
+    let pause = server.send_call("debug_pause", json!({}));
+    let (paused, is_error) = server.answered(pause, "the pause");
+    assert!(!is_error, "{paused}");
+    assert!(paused.starts_with("stopped: pause at "), "{paused}");
+    assert!(
+        server.response(waiting, Duration::from_secs(1)).is_none(),
+        "the cancelled wait was answered"
+    );
+}
+
+/// A cancelled call still queued behind a waiting one is dropped, never
+/// served: the call made after it answers, and the cancelled one, which
+/// would have answered before it, does not.
+#[test]
+fn a_cancelled_queued_call_is_dropped() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    spinning_start(&mut server, &spin);
+    let waiting = server.send_call("debug_wait", json!({ "seconds": 600 }));
+    let queued = server.send_call("debug_wait", json!({ "seconds": 0 }));
+    server.cancel(queued);
+    let after = server.send_call("debug_wait", json!({ "seconds": 0 }));
+    let pause = server.send_call("debug_pause", json!({}));
+    let (paused, is_error) = server.answered(pause, "the pause");
+    assert!(!is_error, "{paused}");
+    let (waited, is_error) = server.answered(waiting, "the wait");
+    assert!(
+        !is_error && waited.starts_with("stopped: pause at "),
+        "{waited}"
+    );
+    let (text, is_error) = server.answered(after, "the call after the cancelled one");
+    assert!(
+        !is_error && text.starts_with("stopped: pause at "),
+        "{text}"
+    );
+    assert!(
+        server.response(queued, Duration::ZERO).is_none(),
+        "the cancelled call was answered"
+    );
+}
+
+/// A cancelled evaluation is aborted as its timeout aborts it: the
+/// evaluation made after it answers, the program still stopped. Its own
+/// wait is far longer than the test's bound, so that only the abort lets
+/// the second evaluation run.
+#[cfg(debug_assertions)]
+#[test]
+fn a_cancelled_evaluation_is_aborted() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::launch(Path::new(binary()), &[(EVALUATION_WAIT, "600000")], true);
+    server.succeed("debug_start", counter_start(&path));
+    let endless = server.send_call(
+        "debug_evaluate",
+        json!({ "expression": "[true] whileTrue: []" }),
+    );
+    server.cancel(endless);
+    let count = server.send_call("debug_evaluate", json!({ "expression": "count" }));
+    assert_eq!(
+        server.answered(count, "the evaluation after the cancelled one"),
+        ("41".to_string(), false)
+    );
+    assert!(
+        server.response(endless, Duration::ZERO).is_none(),
+        "the cancelled evaluation was answered"
+    );
+}
+
+/// A `debug_stop` made while an evaluation runs aborts it and ends the
+/// program at once, without waiting out the evaluation's own wait.
+#[cfg(debug_assertions)]
+#[test]
+fn a_stop_aborts_a_running_evaluation() {
+    let (_directory, path) = program("Counter", COUNTER);
+    let mut server = McpServer::launch(Path::new(binary()), &[(EVALUATION_WAIT, "600000")], true);
+    server.succeed("debug_start", counter_start(&path));
+    let endless = server.send_call(
+        "debug_evaluate",
+        json!({ "expression": "[true] whileTrue: []" }),
+    );
+    let stop = server.send_call("debug_stop", json!({}));
+    let (aborted, is_error) = server.answered(endless, "the evaluation");
+    assert!(is_error, "{aborted}");
+    assert!(aborted.contains("aborted"), "{aborted}");
+    let (stopped, is_error) = server.answered(stop, "the stop");
+    assert!(!is_error, "{stopped}");
+    assert!(stopped.starts_with("ended: "), "{stopped}");
+    assert!(stopped.ends_with("\nsession 1 is closed"), "{stopped}");
+}
+
+/// Closing the input while a wait runs ends the wait, the server and the
+/// program's process.
+#[test]
+fn closing_the_input_ends_a_waiting_server() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    spinning_start(&mut server, &spin);
+    let process = server.program_process(1);
+    server.send_call("debug_wait", json!({ "seconds": 600 }));
+    server.close_input();
+    assert!(server.exited_within(TIMEOUT), "the server did not end");
+    assert!(
+        ended_within(process, TIMEOUT),
+        "the program outlived its server"
     );
 }
 
@@ -1265,5 +1466,28 @@ fn a_batch_is_answered_as_one_array_in_its_order() {
     assert!(
         text.starts_with("no session 7 is open: session 1 ("),
         "{text}"
+    );
+}
+
+/// A batch's cancelled member is left out of the batch's answer, which
+/// answers every other member.
+#[test]
+fn a_cancelled_member_of_a_batch_is_left_out() {
+    let (_directory, spin) = program("Spin", SPIN);
+    let mut server = McpServer::start_plain();
+    spinning_start(&mut server, &spin);
+    server.write(&json!([
+        {
+            "jsonrpc": "2.0", "id": 201, "method": "tools/call",
+            "params": { "name": "debug_wait", "arguments": { "seconds": 600 } }
+        },
+        { "jsonrpc": "2.0", "id": 202, "method": "ping" }
+    ]));
+    server.cancel(201);
+    let answer = server.next_message();
+    assert_eq!(
+        answer,
+        json!([{ "jsonrpc": "2.0", "id": 202, "result": {} }]),
+        "{answer}"
     );
 }

@@ -24,6 +24,7 @@ use super::dap_client::{DapClient, Next};
 use super::registry::{SessionHandle, SessionState};
 use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
+use super::tools;
 use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
@@ -56,6 +57,11 @@ pub(crate) const LISTING_LIMIT: usize = 100;
 
 /// The agent's message for an evaluation the abort ended.
 const ABORTED: &str = "evaluation aborted";
+
+/// What an evaluation answers that `debug_stop`, or its cancellation,
+/// aborted.
+const INTERRUPTED_EVALUATION: &str =
+    "the evaluation was aborted: debug_stop ends the program, or the call was cancelled";
 
 /// The longest text of an evaluation's value an answer shows.
 const EVALUATION_LIMIT: usize = 10_000;
@@ -167,6 +173,19 @@ enum Unanswered {
     Ended,
     /// The server ends.
     ServerEnding,
+    /// An evaluation's wait gave way: its call was cancelled, or a
+    /// `debug_stop` came.
+    Interrupted,
+}
+
+/// What a response is awaited for: a request that runs nothing of the
+/// program's, which is answered within its bound and waited for whatever
+/// comes meanwhile, or an evaluation, which runs the program's code and
+/// gives way to its cancellation and to a `debug_stop`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Awaited {
+    Request,
+    Evaluation,
 }
 
 /// What a call the server's end cut off is answered.
@@ -201,6 +220,9 @@ pub(crate) struct Session {
     exit_code: Option<i64>,
     /// The `terminated` event came, or the connection closed.
     ending: bool,
+    /// A `pause` was asked and no stop has come since, so that a second
+    /// pause asks nothing more of the program.
+    pause_requested: bool,
     lines: BTreeMap<String, Vec<Held>>,
     methods: Vec<Held>,
     references: HashMap<i64, Reference>,
@@ -255,6 +277,7 @@ impl Session {
             },
             exit_code: None,
             ending: false,
+            pause_requested: false,
             lines: BTreeMap::new(),
             methods: Vec::new(),
             references: HashMap::new(),
@@ -309,6 +332,7 @@ impl Session {
     /// the program's end finished at once, so that the state the session
     /// publishes is current. `None` once the server ends.
     pub(crate) fn next_call(&mut self) -> Option<Call> {
+        self.inbox.serve(None);
         loop {
             // The server's end comes first: a call queued behind it is
             // refused, never served -- a resumed program and a wait
@@ -317,10 +341,15 @@ impl Session {
                 return None;
             }
             if let Some(call) = self.inbox.next_pending() {
+                self.inbox.serve(Some(&call));
                 return Some(call);
             }
             match self.inbox.receive(None) {
-                Ok(Input::Call(call)) => return Some(call),
+                Ok(Input::Call(call)) => {
+                    self.inbox.serve(Some(&call));
+                    return Some(call);
+                }
+                Ok(Input::Cancelled(identifier)) => self.inbox.cancel(&identifier),
                 Ok(Input::Dap(message)) => {
                     match self.client.received(message) {
                         Next::Message(message) if message["type"] == "event" => {
@@ -336,6 +365,22 @@ impl Session {
                 Ok(Input::End) | Err(_) => self.inbox.end(),
             }
         }
+    }
+
+    /// Whether the client cancelled the call served.
+    pub(crate) fn call_cancelled(&self) -> bool {
+        self.inbox.cancelled()
+    }
+
+    /// How much of the program's output answers have shown.
+    pub(crate) fn shown_output(&self) -> usize {
+        self.shown
+    }
+
+    /// Shows the output from `shown` on again in the next answer: the
+    /// answer that took it was cancelled, and nobody saw it.
+    pub(crate) fn show_again_from(&mut self, shown: usize) {
+        self.shown = shown;
     }
 
     /// Publishes the program's state in the session's handle.
@@ -386,9 +431,9 @@ impl Session {
     /// Sends a request and answers its response's body, or its message.
     fn request(&mut self, command: &str, arguments: Value) -> Result<Value, String> {
         let seq = self.send(command, arguments)?;
-        match self.response(seq, Instant::now() + REQUEST_BOUND) {
+        match self.response(seq, Instant::now() + REQUEST_BOUND, Awaited::Request) {
             Ok(response) => body_of(&response),
-            Err(Unanswered::TimedOut) => Err(format!(
+            Err(Unanswered::TimedOut | Unanswered::Interrupted) => Err(format!(
                 "the debugger did not answer `{command}` within {} s",
                 REQUEST_BOUND.as_secs()
             )),
@@ -412,9 +457,19 @@ impl Session {
     }
 
     /// The response to `seq`, the events before it handled; waits until
-    /// `deadline` at the latest.
-    fn response(&mut self, seq: i64, deadline: Instant) -> Result<Value, Unanswered> {
+    /// `deadline` at the latest, and for an evaluation until its call is
+    /// cancelled or a `debug_stop` comes, which is then served first.
+    fn response(
+        &mut self,
+        seq: i64,
+        deadline: Instant,
+        awaited: Awaited,
+    ) -> Result<Value, Unanswered> {
         loop {
+            if awaited == Awaited::Evaluation && (self.inbox.cancelled() || self.inbox.stop_first())
+            {
+                return Err(Unanswered::Interrupted);
+            }
             match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "response" && message["request_seq"] == seq {
@@ -430,6 +485,7 @@ impl Session {
                 }
                 Next::TimedOut => return Err(Unanswered::TimedOut),
                 Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
                 Next::End => {
                     self.inbox.end();
                     return Err(Unanswered::ServerEnding);
@@ -459,6 +515,7 @@ impl Session {
                     return Err(format!("the debugger sent no `{name}` event"));
                 }
                 Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
                 Next::End => {
                     self.inbox.end();
                     return Err(SERVER_ENDING.to_string());
@@ -472,6 +529,7 @@ impl Session {
         match event["event"].as_str() {
             Some("stopped") => {
                 self.references.clear();
+                self.pause_requested = false;
                 self.state = State::Stopped(StopEvent {
                     reason: body["reason"].as_str().unwrap_or("pause").to_string(),
                     description: body["description"].as_str().map(str::to_string),
@@ -530,10 +588,22 @@ impl Session {
     // ---- Waiting ----
 
     /// Waits at most `wait` for the running program to stop or end; the
-    /// server's end ends the wait at once.
+    /// server's end and the cancellation of the call served end the wait
+    /// at once. A `debug_pause` or a `debug_stop` made meanwhile acts at
+    /// once -- pauses the program, or ends it -- and is served next, so
+    /// that it answers the stop or the end the wait answers.
     fn wait_for_stop(&mut self, wait: Duration) {
         let deadline = Instant::now() + wait;
-        while matches!(self.state, State::Running { .. }) && !self.ending && !self.inbox.ended() {
+        let mut interrupting = Vec::new();
+        while matches!(self.state, State::Running { .. })
+            && !self.ending
+            && !self.inbox.ended()
+            && !self.inbox.cancelled()
+        {
+            if let Some(call) = self.inbox.take_interrupting() {
+                self.interrupt(call, &mut interrupting);
+                continue;
+            }
             match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
@@ -542,15 +612,52 @@ impl Session {
                 }
                 Next::Closed => self.ending = true,
                 Next::TimedOut => break,
+                Next::Call(call) if Inbox::interrupts(&call) => {
+                    self.interrupt(call, &mut interrupting);
+                }
                 Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
                 Next::End => self.inbox.end(),
             }
+        }
+        // Before every call that waits its turn, in the order they came.
+        for call in interrupting.into_iter().rev() {
+            self.inbox.queue_first(call);
         }
         if self.ending {
             self.finish();
         } else if matches!(self.state, State::Stopped(_)) {
             self.settle_output();
         }
+    }
+
+    /// Acts on `call`, a `debug_pause` or a `debug_stop` made while the
+    /// program runs and a call waits for it: asks the pause, or ends the
+    /// program, and keeps the call in `interrupting`, to be served once
+    /// the wait answered.
+    fn interrupt(&mut self, call: Call, interrupting: &mut Vec<Call>) {
+        if call.tool == "debug_stop" {
+            self.end_program(tools::STOP_WAIT);
+        } else {
+            // A refusal leaves the pause to its own call, which asks again.
+            let _ = self.request_pause();
+        }
+        interrupting.push(call);
+    }
+
+    /// Asks the running program to pause, unless a pause was asked and no
+    /// stop came since.
+    fn request_pause(&mut self) -> Result<(), String> {
+        if self.pause_requested {
+            return Ok(());
+        }
+        // Noted before the request: the stop may come before its response.
+        self.pause_requested = true;
+        let asked = self.request("pause", json!({ "threadId": 1 }));
+        if asked.is_err() {
+            self.pause_requested = false;
+        }
+        asked.map(|_| ())
     }
 
     /// Waits until the program's output has been quiet for `OUTPUT_QUIET`,
@@ -603,7 +710,7 @@ impl Session {
     /// `debug_pause`: stops the running program where it is.
     pub(crate) fn pause(&mut self, wait: Duration) -> Result<String, String> {
         if matches!(self.state, State::Running { .. }) && !self.ending {
-            self.request("pause", json!({ "threadId": 1 }))?;
+            self.request_pause()?;
             self.wait_for_stop(wait);
         }
         Ok(self.summary(false))
@@ -619,6 +726,14 @@ impl Session {
     /// `ensure:` blocks run, and kills it when it does not end within
     /// `wait`.
     pub(crate) fn stop(&mut self, wait: Duration) -> String {
+        self.end_program(wait);
+        self.summary(false)
+    }
+
+    /// Ends the program as `debug_stop` does, and the session's view of it.
+    /// A cancellation of the call served lets the end go on: it is bounded
+    /// by `wait`, and a program half ended is no state to leave.
+    fn end_program(&mut self, wait: Duration) {
         if !self.ending && !matches!(self.state, State::Ended { .. }) {
             // A refusal leaves the end to the kill below.
             let _ = self.request("terminate", json!({}));
@@ -641,6 +756,7 @@ impl Session {
                     Next::Closed => self.ending = true,
                     Next::TimedOut => break,
                     Next::Call(call) => self.inbox.queue(call),
+                    Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
                     Next::End => self.inbox.end(),
                 }
             }
@@ -649,7 +765,6 @@ impl Session {
             }
         }
         self.finish();
-        self.summary(false)
     }
 
     fn require_stopped(&mut self) -> Result<(), String> {
@@ -892,18 +1007,22 @@ impl Session {
             arguments["frameId"] = json!(frame + 1);
         }
         let seq = self.send("evaluate", arguments)?;
-        let response = match self.response(seq, Instant::now() + wait) {
+        let awaited = self.response(seq, Instant::now() + wait, Awaited::Evaluation);
+        let response = match awaited {
             Ok(response) => response,
-            Err(Unanswered::TimedOut) => {
+            Err(cut @ (Unanswered::TimedOut | Unanswered::Interrupted)) => {
                 let _ = self.send("cancel", json!({ "requestId": seq }));
                 // The evaluation's answer, which the agent sends however it
                 // ended: aborted, or answered just before the abort.
-                match self.response(seq, Instant::now() + ABORT_BOUND) {
+                match self.response(seq, Instant::now() + ABORT_BOUND, Awaited::Request) {
                     // Answered, or ended otherwise than by the abort: its
                     // own word.
                     Ok(response) if response["message"] != ABORTED => response,
                     Err(Unanswered::Ended) => return Err(self.ended_refusal()),
                     Err(Unanswered::ServerEnding) => return Err(SERVER_ENDING.to_string()),
+                    _ if matches!(cut, Unanswered::Interrupted) => {
+                        return Err(INTERRUPTED_EVALUATION.to_string());
+                    }
                     _ => {
                         return Err(format!(
                             "the evaluation did not end within {:.1} s and was aborted; \

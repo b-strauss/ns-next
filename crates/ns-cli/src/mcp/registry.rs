@@ -136,6 +136,16 @@ impl Registry {
             .remove(&number);
     }
 
+    /// Tells every open session's worker that the client cancelled its
+    /// request `identifier`: whichever serves or holds it lets it go.
+    pub(crate) fn cancel(&self, identifier: &serde_json::Value) {
+        let sessions = self.sessions.lock().expect("the sessions");
+        for handle in sessions.open.values() {
+            // A worker that already ended holds no request.
+            let _ = handle.inbox.send(Input::Cancelled(identifier.clone()));
+        }
+    }
+
     /// Asks every open session's worker to end.
     pub(crate) fn end_all(&self) {
         let sessions = self.sessions.lock().expect("the sessions");

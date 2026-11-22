@@ -4,8 +4,10 @@
 //! answers never interleave on the stream the protocol owns and no
 //! answer waits for another session's.
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
@@ -21,6 +23,11 @@ const UNANSWERED: &str = "the session closed before it served the call";
 #[derive(Clone)]
 pub(crate) struct Responses {
     sender: Sender<Value>,
+    /// The requests the client cancelled, by their identifiers' JSON
+    /// text: MCP's cancellation asks for no response, so whatever answers
+    /// one later -- the session that served it, a reply dropped
+    /// unanswered -- writes nothing.
+    cancelled: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Responses {
@@ -47,11 +54,18 @@ impl Responses {
                         .is_err();
                 }
             })?;
-        Ok((Responses { sender }, writer))
+        let responses = Responses {
+            sender,
+            cancelled: Arc::new(Mutex::new(HashSet::new())),
+        };
+        Ok((responses, writer))
     }
 
-    /// Writes `message` as one line.
+    /// Writes `message` as one line, unless it answers a cancelled request.
     pub(crate) fn send(&self, message: Value) {
+        if self.answers_cancelled(&message) {
+            return;
+        }
         // The writer ends only once every sender is gone.
         let _ = self.sender.send(message);
     }
@@ -61,9 +75,34 @@ impl Responses {
     /// so that whatever decides whether a response is written decides it
     /// for a batch's member as for a single answer.
     pub(crate) fn send_batch(&self, members: Vec<Value>) {
+        let members: Vec<Value> = members
+            .into_iter()
+            .filter(|member| !self.answers_cancelled(member))
+            .collect();
         if !members.is_empty() {
-            self.send(Value::Array(members));
+            let _ = self.sender.send(Value::Array(members));
         }
+    }
+
+    /// Notes that the client cancelled its request `identifier`, whose
+    /// response is dropped from now on.
+    pub(crate) fn cancel(&self, identifier: &Value) {
+        self.cancelled
+            .lock()
+            .expect("the cancelled requests")
+            .insert(identifier.to_string());
+    }
+
+    /// Whether `message` is the response to a cancelled request. A request
+    /// is answered once, so its identifier is let go with that answer.
+    fn answers_cancelled(&self, message: &Value) -> bool {
+        let Some(identifier) = message.get("id") else {
+            return false;
+        };
+        self.cancelled
+            .lock()
+            .expect("the cancelled requests")
+            .remove(&identifier.to_string())
     }
 }
 
@@ -106,6 +145,11 @@ impl Reply {
         });
         let response = result_response(&self.request_identifier, result);
         self.respond(response);
+    }
+
+    /// The identifier of the request this reply answers.
+    pub(crate) fn request_identifier(&self) -> &Value {
+        &self.request_identifier
     }
 
     /// Answers with `result`.
