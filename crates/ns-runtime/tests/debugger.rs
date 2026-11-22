@@ -12880,13 +12880,15 @@ mod evaluation {
                 |remote| {
                     let before = variables(remote, Command::Variables { frame: 0 });
                     let items = value_of(&before, "items").id;
-                    // About 16 MiB, past eden twice, in few enough sends
-                    // that the collect stress mode's collections at
-                    // every safepoint end within the event timeout.
+                    // About 16 MiB, past eden twice, in arrays just below
+                    // the large-object size, so that each stays young and
+                    // the loop passes few safepoints: the stress modes
+                    // that move or collect at every safepoint end within
+                    // the event timeout under a gate's whole load.
                     let label = value_label(
                         remote,
                         0,
-                        "1 to: 2000 do: [:index | Array new: 1000]. items size",
+                        "1 to: 512 do: [:index | Array new: 3900]. items size",
                     );
                     let after = variables(remote, Command::Variables { frame: 0 });
                     let children = variables(
