@@ -2,13 +2,15 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
-import com.intellij.ui.components.JBTextField
 import com.intellij.ui.table.TableView
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.ColumnInfo
@@ -22,9 +24,12 @@ import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.FlowLayout
+import java.awt.GridLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import javax.swing.JButton
 import javax.swing.JPanel
+import javax.swing.SwingConstants
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 
@@ -100,16 +105,29 @@ data class EventRow(val order: Long, val event: Event, val body: String, val fie
  * many earlier ones were dropped.
  */
 class EventsTab(private val project: Project, private val run: TraceRun, parent: Disposable) : JPanel(BorderLayout()) {
-    /** One box per category, by its name, all selected: an event of a category unchecked is hidden. */
+    /**
+     * One box per category, by its name, all selected: an event of a
+     * category unchecked is hidden. The boxes are shown in the popup
+     * [categoriesButton] opens.
+     */
     val categoryBoxes: Map<String, JBCheckBox> = TRACE_CATEGORIES.associateWith { name ->
         JBCheckBox(NewspeakBundle.message("devtool.category.$name"), true).apply {
             toolTipText = NewspeakBundle.message("devtool.category.$name.tooltip")
-            addItemListener { refilter() }
+            addItemListener {
+                nameCategories()
+                refilter()
+            }
         }
     }
 
+    /** Opens the category boxes in a popup below it, which stays open while boxes are clicked; it says how many are shown. */
+    val categoriesButton = JButton(AllIcons.General.ArrowDown).apply {
+        horizontalTextPosition = SwingConstants.LEADING
+        addActionListener { showCategories() }
+    }
+
     /** The part a body's name must hold, in any case, for its events to show, in the table, the tree and the text alike. */
-    val bodyFilter: JBTextField = nameFilterField(NewspeakBundle.message("devtool.events.filter.body")) { refilter() }
+    val bodyFilter: SearchTextField = nameFilterField(NewspeakBundle.message("devtool.events.filter.body")) { refilter() }
 
     /** Whether the events show in a tree, under their methods, or under their classes and then their methods. */
     val grouping = groupingChooser { regroup() }
@@ -175,11 +193,12 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
 
     init {
         val filters = JPanel(FlowLayout(FlowLayout.LEFT))
-        for (box in categoryBoxes.values) filters.add(box)
         filters.add(bodyFilter)
         filters.add(JBLabel(NewspeakBundle.message("devtool.group")))
         filters.add(grouping)
         filters.add(textView)
+        filters.add(categoriesButton)
+        nameCategories()
         val head = JPanel(BorderLayout())
         head.add(filters, BorderLayout.NORTH)
         head.add(droppedLabel, BorderLayout.SOUTH)
@@ -203,6 +222,28 @@ class EventsTab(private val project: Project, private val run: TraceRun, parent:
         )
         takeNew()
         run.onChanged(parent) { takeNew() }
+    }
+
+    /** Names on [categoriesButton] how many categories are shown: all, or so many of all. */
+    private fun nameCategories() {
+        val shown = categoryBoxes.values.count { box -> box.isSelected }
+        categoriesButton.text = if (shown == categoryBoxes.size) {
+            NewspeakBundle.message("devtool.events.categories.all")
+        } else {
+            NewspeakBundle.message("devtool.events.categories.some", shown, categoryBoxes.size)
+        }
+    }
+
+    /** Shows the category boxes below [categoriesButton], in a popup that closes as the focus leaves it. */
+    private fun showCategories() {
+        val boxes = JPanel(GridLayout(0, 1)).apply { border = JBUI.Borders.empty(4, 8) }
+        // A box has one parent: each popup takes them from the last.
+        for (box in categoryBoxes.values) boxes.add(box)
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(boxes, categoryBoxes.values.first())
+            .setRequestFocus(true)
+            .createPopup()
+            .showUnderneathOf(categoriesButton)
     }
 
     /** The rows that pass the filters. */

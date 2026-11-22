@@ -2,7 +2,7 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.SimpleListCellRenderer
-import com.intellij.ui.components.JBTextField
+import com.intellij.ui.SearchTextField
 import io.github.bstrauss.newspeak.NewspeakBundle
 import java.awt.event.ItemEvent
 import javax.swing.event.DocumentEvent
@@ -27,11 +27,16 @@ fun groupingChooser(changed: () -> Unit): ComboBox<Grouping> =
         addItemListener { event -> if (event.stateChange == ItemEvent.SELECTED) changed() }
     }
 
-/** The field of a part of a name, its [placeholder] shown while it is empty, calling [changed] at every edit. */
-fun nameFilterField(placeholder: String, changed: () -> Unit): JBTextField =
-    JBTextField(20).apply {
-        emptyText.text = placeholder
-        document.addDocumentListener(
+/**
+ * The field of a part of a name, its [placeholder] shown while it is
+ * empty, with the search field's button that clears it, and no history,
+ * calling [changed] at every edit.
+ */
+fun nameFilterField(placeholder: String, changed: () -> Unit): SearchTextField =
+    SearchTextField(false).apply {
+        textEditor.columns = 20
+        textEditor.emptyText.text = placeholder
+        addDocumentListener(
             object : DocumentListener {
                 override fun insertUpdate(event: DocumentEvent) = changed()
 

@@ -188,7 +188,9 @@ class TabsTest : BasePlatformTestCase() {
         val tab = EventsTab(project, fixtureRun(), testRootDisposable)
         val all = tab.visibleRows.size
         assertTrue(tab.visibleRows.any { row -> row.event.category == "caches" })
+        assertEquals("Categories: all", tab.categoriesButton.text)
         checkNotNull(tab.categoryBoxes["caches"]).isSelected = false
+        assertEquals("the button says how many are shown", "Categories: 6 of 7", tab.categoriesButton.text)
         assertTrue(tab.visibleRows.none { row -> row.event.category == "caches" })
         assertTrue(tab.visibleRows.size < all)
         checkNotNull(tab.categoryBoxes["caches"]).isSelected = true

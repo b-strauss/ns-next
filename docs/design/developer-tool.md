@@ -1755,7 +1755,10 @@ sorted by the column whose header is clicked, a second click turning
 the order round. Events is the trace as a table, filtered by category and by a part
 of the method's name in any case, grouped on request by method or by
 class and then method, the same chooser and the same `classOf`, the
-filter applying to the tree as to the table, a double click
+filter applying to the tree as to the table, the categories chosen in a
+popup of boxes under a button that says how many are shown, after the
+name, the grouping and "Text" -- both tabs' name fields search fields
+a button clears --, a double click
 going to the event's place in the source, and with "Text" the same rows
 as the text trace's lines; it shows the events the run keeps, and says
 how many earlier ones were dropped. Code shows the bytecode and machine code of
