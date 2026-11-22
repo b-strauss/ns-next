@@ -44,7 +44,11 @@ pub(crate) fn execute(
             return ExitCode::FAILURE;
         }
         for module in &loaded.modules {
-            print!("{}", module.source.as_deref().unwrap_or_default());
+            if let Err(code) =
+                crate::entry::print_output(module.source.as_deref().unwrap_or_default())
+            {
+                return code;
+            }
         }
         return ExitCode::SUCCESS;
     }

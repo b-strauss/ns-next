@@ -422,7 +422,10 @@ pub(crate) fn execute(directory: &Path, whitelist: Option<&Path>) -> ExitCode {
             report_line!("FAIL {}: {error}", entry.file);
         }
     }
-    println!("ran {ran}, failed {failed}, skipped {skipped}");
+    let summary = format!("ran {ran}, failed {failed}, skipped {skipped}\n");
+    if let Err(code) = crate::entry::print_output(&summary) {
+        return code;
+    }
     if failed == 0 {
         ExitCode::SUCCESS
     } else {

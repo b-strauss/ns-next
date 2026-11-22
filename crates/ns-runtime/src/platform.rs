@@ -81,9 +81,7 @@ fn write_standard_output<'gc>(
     if STANDARD_OUTPUT_CLOSED.load(Ordering::Relaxed) {
         return Ok(receiver);
     }
-    let mut output = std::io::stdout().lock();
-    let written = output.write_all(bytes).and_then(|()| output.flush());
-    match written {
+    match write_and_flush(bytes) {
         Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
             STANDARD_OUTPUT_CLOSED.store(true, Ordering::Relaxed);
             Err(Signal::Terminate(Box::new(NewspeakError::error(
@@ -94,6 +92,17 @@ fn write_standard_output<'gc>(
         }
         _ => Ok(receiver),
     }
+}
+
+/// The one write of `bytes` and its flush on the locked standard output.
+fn write_and_flush(bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::STANDARD_OUTPUT_CLOSED_FOR_TESTING.get() {
+        return Err(std::io::ErrorKind::BrokenPipe.into());
+    }
+    let mut output = std::io::stdout().lock();
+    output.write_all(bytes)?;
+    output.flush()
 }
 
 /// The instant every monotonic reading is measured from, taken on the
@@ -141,5 +150,82 @@ fn stream<'gc>(
                 vec![low_digit(nanoseconds), high_digit(nanoseconds)],
             )))
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::heap::ValueKind;
+    use crate::{HostSignal, Interpreter, SourceOrigin};
+    use indoc::indoc;
+    use std::cell::Cell;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    thread_local! {
+        /// Makes every write of this thread's interpreter find the
+        /// standard output closed, which the test process's own stream
+        /// never is.
+        pub(crate) static STANDARD_OUTPUT_CLOSED_FOR_TESTING: Cell<bool> =
+            const { Cell::new(false) };
+    }
+
+    /// Writes for ever inside an `ensure:` whose block writes again and
+    /// records that it ran to its end.
+    const ENSURING_WRITER: &str = indoc! {"
+        class EnsuringWriter = Object new (
+          | ensureRan ::= false. |
+        ) (
+          public run: platform = (
+            [[true] whileTrue: [platform transcript show: 'line'; newLine]]
+              ensure: [
+                platform transcript show: 'ensured'; newLine.
+                ensureRan:: true].
+          )
+
+          public ensured = (
+            ^ensureRan
+          )
+        ) : ()
+    "};
+
+    /// The first write that finds the standard output closed terminates
+    /// the run, the pending `ensure:` block runs to its end, and its own
+    /// write is dropped rather than raising the termination again.
+    #[test]
+    fn a_closed_standard_output_terminates_the_run_after_its_ensure_blocks() {
+        let module = ns_syntax::parse(ENSURING_WRITER).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(ENSURING_WRITER),
+            SourceOrigin::File(PathBuf::from("EnsuringWriter.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        let instance = interpreter
+            .instantiate(&class, &[])
+            .ok()
+            .expect("an EnsuringWriter");
+        let platform = interpreter.platform();
+        STANDARD_OUTPUT_CLOSED_FOR_TESTING.set(true);
+        let result = interpreter.send(&instance, Symbol::intern("run:"), &[platform]);
+        STANDARD_OUTPUT_CLOSED_FOR_TESTING.set(false);
+        let closed = STANDARD_OUTPUT_CLOSED.swap(false, Ordering::Relaxed);
+        match result {
+            Err(HostSignal::Error(error)) => {
+                assert_eq!(&*error.message, STANDARD_OUTPUT_CLOSED_MESSAGE);
+            }
+            _ => panic!("the run was not terminated"),
+        }
+        assert!(closed, "the closed stream was recorded");
+        let ensured = match interpreter.send(&instance, Symbol::intern("ensured"), &[]) {
+            Ok(ensured) => ensured,
+            Err(_) => panic!("ensured failed"),
+        };
+        let ensured = interpreter
+            .enter(|mutator| matches!(mutator.fetch(&ensured).kind(), ValueKind::Boolean(true)));
+        assert!(ensured, "the ensure: block ran to its end");
     }
 }

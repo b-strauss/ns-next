@@ -158,11 +158,13 @@ pub(crate) fn execute(
         Ok(arguments) => arguments,
         Err(code) => return code,
     };
-    println!(
+    if let Err(code) = entry::print_output(&format!(
         "timing: `main:args:` only, after assembling the application -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
-         {iterations} timed run(s), after one discarded warm-up run."
-    );
+         {iterations} timed run(s), after one discarded warm-up run.\n"
+    )) {
+        return code;
+    }
     match benchmark_entry(
         &program,
         iterations,
@@ -172,10 +174,12 @@ pub(crate) fn execute(
         &arguments,
     ) {
         Ok(statistics) => {
-            println!(
-                "median {:?} (min {:?}, max {:?}, n={})",
+            if let Err(code) = entry::print_output(&format!(
+                "median {:?} (min {:?}, max {:?}, n={})\n",
                 statistics.median, statistics.min, statistics.max, statistics.iterations
-            );
+            )) {
+                return code;
+            }
             if let Some(cache_statistics) = &statistics.cache_statistics {
                 entry::print_cache_statistics(cache_statistics);
             }

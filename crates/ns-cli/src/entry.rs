@@ -3,6 +3,31 @@
 
 use std::process::ExitCode;
 
+/// Writes `text`, the command's own output, on standard output in one
+/// write. A closed standard output ends the command as it ends a program's
+/// run: one report line on standard error and status 1, so that
+/// `set -o pipefail` sees a cut-short producer and `println!` never panics.
+/// Any other write error ends it as well, because output that was not
+/// written is a failed command.
+pub(crate) fn print_output(text: &str) -> Result<(), ExitCode> {
+    use std::io::Write as _;
+    let mut output = std::io::stdout().lock();
+    match output
+        .write_all(text.as_bytes())
+        .and_then(|()| output.flush())
+    {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+            report_line!("error: the standard output is closed");
+            Err(ExitCode::FAILURE)
+        }
+        Err(error) => {
+            report_line!("error: writing the standard output: {error}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
 /// `--cache-statistics`'s one line, shared by `run` and `bench` -- always to
 /// stderr, so it never lands where a fixture or a golden reads stdout.
 pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {

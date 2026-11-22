@@ -1708,11 +1708,8 @@ pub const MIRROR: &[MirrorEntry] = &[
         "numArgs",
         Primitive::Block(BlockPrimitive::ArgumentCount),
     )),
-    // Exits, never leaves: a closed standard output terminates the run at
-    // the first write and drops every later one (`platform.rs`), so a send
-    // machine code handed back to be run again would be dropped and the run
-    // would never end. Pinned by
-    // `the_transcript_rows_leave_machine_code_through_an_exit`.
+    // Exits, never leaves: `platform.rs`'s `write_standard_output` says
+    // why; `the_transcript_rows_leave_machine_code_through_an_exit` pins it.
     mirror(
         "transcript:show:ifFail:",
         "show:",

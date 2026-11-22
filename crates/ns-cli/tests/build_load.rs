@@ -600,3 +600,36 @@ fn load_refuses_an_image_that_is_not_started() {
     assert_eq!(out, "", "nothing ran");
     assert!(error.contains("not a started image"), "{error}");
 }
+
+/// A host command whose own output finds the standard output closed --
+/// `ns-next load app.nsi --print-source | head -1` -- stops as a program's
+/// run does: one report line and status 1, never a panic.
+#[test]
+fn a_closed_standard_output_ends_print_source() {
+    let directory = ScratchDirectory::new("closed-print-source");
+    let image = directory.join("app.nsi");
+    let (ok, _, error) = ns_next(&[
+        "build".as_ref(),
+        golden("library/number/integer/arithmetic").as_os_str(),
+        image.as_os_str(),
+    ]);
+    assert!(ok, "{error}");
+    let mut child = common::target_command(env!("CARGO_BIN_EXE_ns-next"))
+        .arg("load")
+        .arg(&image)
+        .arg("--print-source")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run ns-next");
+    // Closed before the child, which first decodes the image, writes.
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("wait for ns-next");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("error: the standard output is closed"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
