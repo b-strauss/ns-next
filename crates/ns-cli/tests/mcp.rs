@@ -133,9 +133,15 @@ impl McpServer {
     }
 
     fn launch(executable: &Path, variables: &[(&str, &str)], plain: bool) -> McpServer {
+        // The test build's own cache, never the developer's, unless a test
+        // gives one of its own: a server killed leaves its files there for
+        // the next to remove.
+        let cache = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("mcp-cache");
         let mut command = common::target_command(executable);
         command
             .arg("mcp")
+            .env("LOCALAPPDATA", &cache)
+            .env("XDG_CACHE_HOME", &cache)
             .envs(variables.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

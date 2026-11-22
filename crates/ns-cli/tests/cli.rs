@@ -1143,6 +1143,32 @@ fn body_numbers(record: &serde_json::Value, numbers: &mut Vec<u64>) {
     }
 }
 
+/// With `--trace-file` the file replaces standard error for the trace and
+/// the listings, every category and every kind: the run writes nothing
+/// there, where the same run without the file lists its bytecode -- with
+/// a JIT or without one.
+#[test]
+fn a_trace_file_leaves_standard_error_empty() {
+    let directory = ScratchDirectory::new("trace-file-quiet");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let options = [
+        "--trace=all",
+        "--print-bytecode",
+        "--print-code",
+        "--print-inlining",
+    ];
+    let unfiled = traced_stderr(&program, &options);
+    assert!(unfiled.contains("--- bytecode"), "stderr: {unfiled}");
+    let file = directory.join("trace.jsonl");
+    let trace_file = format!("--trace-file={}", file.display());
+    let mut filed = options.to_vec();
+    filed.push(&trace_file);
+    assert_eq!(traced_stderr(&program, &filed), "");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#""kind":"bytecode""#), "{text}");
+}
+
 /// `--trace-file` writes the trace and the listings into the file, not on
 /// stderr: a header first, then every body described before any record
 /// names its number.

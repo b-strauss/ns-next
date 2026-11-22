@@ -5673,7 +5673,12 @@ the way not taken: every question would run the program from its start.
   them through `--trace-file` into a file of the server's,
   `traces/<server>/session-<n>.trace` in the user's own directory,
   deleted at `debug_stop`, so that nothing of them reaches the
-  program's output), `debug_breakpoints(set?, clear?)`,
+  program's output; a server knows another is gone by a lock that one
+  held, which needs a filesystem whose locks every client sees, so a home
+  on a network filesystem whose locks are local to each client --
+  Linux NFS mounted with `local_lock=flock`, some CIFS setups -- can let
+  a server on one machine remove a live one's files on another),
+  `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
   `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`

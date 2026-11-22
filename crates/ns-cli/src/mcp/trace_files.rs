@@ -12,6 +12,14 @@
 //! with no age guessing at whether a server that ran for days still runs.
 //! The lock is not on a trace file, since a Windows byte-range lock there
 //! would refuse the child's writes.
+//!
+//! The rule rests on every server that shares the directory seeing the
+//! others' locks. A home on a network filesystem whose locks are local to
+//! each client -- Linux NFS mounted with `local_lock=flock`, some CIFS
+//! setups -- breaks it: a server on one machine can take the lock of a
+//! live server on another and remove its files. Nothing in `std` tells
+//! such a mount apart, so the own directory is to lie on a filesystem
+//! whose locks every client sees.
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
@@ -26,6 +34,19 @@ const TRACES_DIRECTORY: &str = "traces";
 
 /// The extension of a server's lock file.
 const LOCK_EXTENSION: &str = "lock";
+
+/// How many names a claim tries. A name is given up only when another
+/// server's cleanup raced its claim, which resolves at once on a
+/// filesystem whose locks work; one where every attempt fails must not
+/// hold the server's start forever, and the server then runs without
+/// trace files.
+const CLAIM_ATTEMPTS: usize = 16;
+
+/// The mode `traces/` is created with on POSIX: the user's alone, so that
+/// no other user reads the traces below it -- bodies' names, bytecode,
+/// machine code -- in a cache directory others may read.
+#[cfg(unix)]
+const TRACES_MODE: u32 = 0o700;
 
 /// `CreateFileW`'s `dwShareMode` flag that lets other handles read the
 /// file: the child's, and a reader's.
@@ -59,11 +80,23 @@ impl TraceDirectory {
     /// users' containers sharing a home, or a process id reused never
     /// collide.
     pub(crate) fn claim() -> Result<TraceDirectory, String> {
-        let traces = own_directory()?.join(TRACES_DIRECTORY);
-        std::fs::create_dir_all(&traces)
+        let own = own_directory()?;
+        std::fs::create_dir_all(&own)
+            .map_err(|error| format!("creating {}: {error}", own.display()))?;
+        let traces = own.join(TRACES_DIRECTORY);
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(TRACES_MODE);
+        }
+        builder
+            .create(&traces)
             .map_err(|error| format!("creating {}: {error}", traces.display()))?;
         remove_dead(&traces);
-        loop {
+        let mut last_reason = String::new();
+        for _ in 0..CLAIM_ATTEMPTS {
             let token = Token::generate()
                 .map_err(|error| format!("naming the trace directory: {error}"))?;
             let name = format!("{}-{}", std::process::id(), token.hex());
@@ -75,14 +108,20 @@ impl TraceDirectory {
                 .open(&lock_path)
             {
                 Ok(lock) => lock,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_reason = format!("{} exists already", lock_path.display());
+                    continue;
+                }
                 Err(error) => return Err(format!("creating {}: {error}", lock_path.display())),
             };
             match lock.try_lock() {
                 Ok(()) => {}
                 // Another server's cleanup holds it, between this one's
                 // creation and its lock, and removes it.
-                Err(TryLockError::WouldBlock) => continue,
+                Err(TryLockError::WouldBlock) => {
+                    last_reason = format!("{} is locked by another", lock_path.display());
+                    continue;
+                }
                 Err(TryLockError::Error(error)) => {
                     drop(lock);
                     let _ = std::fs::remove_file(&lock_path);
@@ -92,6 +131,7 @@ impl TraceDirectory {
             // Another server's cleanup locked and removed it in between:
             // the lock this one holds guards no name.
             if !lock_path.is_file() {
+                last_reason = format!("{} was removed once locked", lock_path.display());
                 continue;
             }
             let claimed = TraceDirectory {
@@ -103,6 +143,9 @@ impl TraceDirectory {
                 .map_err(|error| format!("creating {}: {error}", claimed.directory.display()))?;
             return Ok(claimed);
         }
+        Err(format!(
+            "no name claimed in {CLAIM_ATTEMPTS} attempts: {last_reason}"
+        ))
     }
 
     /// Creates the trace file of the session `session_number`, which the
