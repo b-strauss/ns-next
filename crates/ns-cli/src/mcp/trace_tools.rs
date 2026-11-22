@@ -14,12 +14,15 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::pages::{
-    ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, OVERVIEW_DEFAULT, call_text, characters, count_of,
-    counted, showing_line, size, thousands,
+    ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, LINE_DEFAULT, LINE_MAXIMUM, OVERVIEW_DEFAULT,
+    call_text, characters, count_of, counted, showing_line, size, thousands,
 };
 use super::registry::SessionHandle;
 use super::tools::{Answer, parse};
-use super::trace_index::{BodySource, CopyKey, ListingKind, TraceIndex};
+use super::trace_index::{
+    BodyRecord, BodySource, CopyKey, ListingEntry, ListingKind, PlanOutcome, TraceIndex,
+};
+use super::trace_listings;
 
 /// The overview's lists, in the order it writes them.
 const LISTS: [&str; 5] = [
@@ -33,7 +36,10 @@ const LISTS: [&str; 5] = [
 /// Whether the tool `name` answers from a session's trace, on a thread of
 /// its own rather than the session's worker.
 pub(crate) fn is_trace_tool(name: &str) -> bool {
-    matches!(name, "debug_trace" | "debug_trace_method")
+    matches!(
+        name,
+        "debug_trace" | "debug_trace_method" | "debug_trace_listing"
+    )
 }
 
 /// Calls the trace tool `name` of the session `handle`, once the index
@@ -77,8 +83,39 @@ pub(crate) fn call(handle: &SessionHandle, name: &str, arguments: Value) -> Answ
                 arguments.count,
             )
         }
+        "debug_trace_listing" => {
+            let arguments: ListingArguments = parse(arguments)?;
+            let kind = ListingKind::from_name(&arguments.kind).ok_or_else(|| {
+                format!(
+                    "{:?} is no kind of listing: bytecode, code or inlining",
+                    arguments.kind
+                )
+            })?;
+            let index = trace.caught_up();
+            listing_window(
+                &index,
+                handle,
+                &arguments.method,
+                kind,
+                arguments.index,
+                arguments.start,
+                arguments.count,
+            )
+        }
         _ => Err(format!("no tool is named {name}")),
     }
+}
+
+#[derive(Deserialize)]
+struct ListingArguments {
+    method: String,
+    kind: String,
+    #[serde(default)]
+    index: Option<usize>,
+    #[serde(default)]
+    start: Option<usize>,
+    #[serde(default)]
+    count: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1470,7 +1507,9 @@ fn varying_fields(index: &TraceIndex, word: &str, events: &[u32]) -> Vec<String>
                 }
                 // A field only some of the events carry counts its absence
                 // too, so that the counts add up to the step's events.
-                let absent = events.len() - values.len();
+                // Saturating: an event that carries a field twice gives it
+                // two values, which must never make the count underflow.
+                let absent = events.len().saturating_sub(values.len());
                 if absent > 0 {
                     shown.push(format!("absent ×{}", thousands(absent as u64)));
                 }
@@ -1656,11 +1695,358 @@ fn journal_sends(index: &TraceIndex, bodies: &[u32]) -> Vec<String> {
     entries
 }
 
+/// `debug_trace_listing`: a window of one listing of the body `method`
+/// names -- its bytecode, one copy of its machine code or one inlining
+/// plan, `which` the 1-based index among the body's records of `kind` in
+/// file order, the last by default --, read back from the file and written
+/// as `--print-*` writes it (`trace_listings::rendered`). A first line says
+/// which listing it is; the window counts the listing's lines without its
+/// `---` head and `--- end`, and ends in its `Showing` line. A name of
+/// several bodies with such records is asked back, each with its number.
+pub(crate) fn listing_window(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    method: &str,
+    kind: ListingKind,
+    which: Option<usize>,
+    start: Option<usize>,
+    count: Option<usize>,
+) -> Answer {
+    let shown = count_of(count, LINE_DEFAULT, LINE_MAXIMUM)?;
+    let bodies = index.bodies_named(method)?;
+    let candidates = listing_candidates(index, &bodies, kind);
+    let (number, records) = match candidates.as_slice() {
+        [] => return Err(no_listing(index, method, kind)),
+        [only] => only.clone(),
+        several => {
+            return Err(ask_back(
+                index, session, method, kind, several, which, start, count,
+            ));
+        }
+    };
+    let total = records.len();
+    let listings_of = |total: usize| {
+        let singular = format!("{} listing", kind.name());
+        let plural = format!("{} listings", kind.name());
+        counted(total as u64, &singular, &plural)
+    };
+    let position = match which {
+        None => total,
+        Some(0) => return Err("index 0: a body's listings count from 1".to_string()),
+        Some(asked) if asked > total => {
+            return Err(format!(
+                "index {asked} is past the end: {} has {}",
+                named(index, number),
+                listings_of(total)
+            ));
+        }
+        Some(asked) => asked,
+    };
+    let entry = &index.listings()[records[position - 1]];
+    let record = index.read_record(entry.offset, entry.length)?;
+    let bytecode = scopes_bytecode(index, &record)?;
+    let names = |body: u32| {
+        index
+            .body_name(body)
+            .map_or_else(|| format!("#{body}"), ToString::to_string)
+    };
+    let rendered = trace_listings::rendered(&record, &bytecode, &names);
+    // The `---` head and `--- end` stand outside the window: the first
+    // line says what the head does.
+    let lines: &[String] = match rendered.as_slice() {
+        [_, inner @ .., _] => inner,
+        _ => &[],
+    };
+    let mut head = format!(
+        "{} {} of {} of {}: {}, {}",
+        kind.name(),
+        thousands(position as u64),
+        thousands(total as u64),
+        named(index, number),
+        listing_summary(index, entry, &record),
+        counted(lines.len() as u64, "line", "lines")
+    );
+    if let Some(failure) = index.failure() {
+        head.push_str("; ");
+        head.push_str(failure);
+    }
+    let start = start.unwrap_or(0);
+    if start > 0 && start >= lines.len() {
+        return Err(format!(
+            "start {start} is past the end: the listing has {}",
+            counted(lines.len() as u64, "line", "lines")
+        ));
+    }
+    // The next call names the listing by its index, given or not: a
+    // running program's next copy would otherwise be the last one.
+    let next_from = |last: usize| {
+        let mut arguments = json!({
+            "session": session.number,
+            "method": method,
+            "kind": kind.name(),
+            "index": position,
+            "start": last,
+        });
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        ("debug_trace_listing", arguments)
+    };
+    let total_lines = lines.len();
+    if total_lines == 0 {
+        return Ok(head);
+    }
+    let showing_at_most = characters(&showing_line(
+        total_lines,
+        total_lines,
+        total_lines,
+        Some(next_from(total_lines)),
+    )) + 1;
+    let mut used = characters(&head) + 1;
+    let mut answer = vec![head];
+    let mut last = start;
+    for line in lines.iter().skip(start).take(shown) {
+        let length = characters(line) + 1;
+        if used + length + showing_at_most > ANSWER_BUDGET {
+            break;
+        }
+        used += length;
+        answer.push(line.clone());
+        last += 1;
+    }
+    let next = (last < total_lines).then(|| next_from(last));
+    answer.push(showing_line(start + 1, last, total_lines, next));
+    Ok(answer.join("\n"))
+}
+
+/// The bodies of `bodies` with records of `kind`, the lowest number first,
+/// each with the indexes of its records among the file's listings, in
+/// file order: for bytecode, each family root's, whose record lists every
+/// block of it.
+fn listing_candidates(
+    index: &TraceIndex,
+    bodies: &[u32],
+    kind: ListingKind,
+) -> Vec<(u32, Vec<usize>)> {
+    let records_of = |number: u32| -> Vec<usize> {
+        match kind {
+            ListingKind::Code | ListingKind::Inlining => {
+                let Some(tally) = index.body(number) else {
+                    return Vec::new();
+                };
+                let records = if kind == ListingKind::Code {
+                    &tally.code
+                } else {
+                    &tally.inlining
+                };
+                records.iter().map(|record| *record as usize).collect()
+            }
+            ListingKind::Bytecode => index
+                .listings()
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.kind == ListingKind::Bytecode && entry.body == number)
+                .map(|(position, _)| position)
+                .collect(),
+        }
+    };
+    let mut numbers: Vec<u32> = match kind {
+        ListingKind::Bytecode => bodies
+            .iter()
+            .filter_map(|number| index.bytecode_of(*number).map(|entry| entry.body))
+            .collect(),
+        ListingKind::Code | ListingKind::Inlining => bodies.to_vec(),
+    };
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+        .into_iter()
+        .map(|number| (number, records_of(number)))
+        .filter(|(_, records)| !records.is_empty())
+        .collect()
+}
+
+/// Why `method` has no listing of `kind`: the run lists none, or the
+/// binary has no JIT to list machine code of.
+fn no_listing(index: &TraceIndex, method: &str, kind: ListingKind) -> String {
+    let mut refusal = format!("no {} listing of {method}", kind.name());
+    if !index.lists(kind) {
+        refusal.push_str(&format!(
+            " — the session lists no {0}: debug_start with listings [\"{0}\"] lists it",
+            kind.name()
+        ));
+    } else if kind != ListingKind::Bytecode
+        && index
+            .header()
+            .is_some_and(|header| header.architecture.is_none())
+    {
+        refusal.push_str(" — this ns-next has no JIT: every body runs interpreted");
+    }
+    refusal
+}
+
+/// The refusal of a name of several bodies with listings of `kind`: each
+/// with its number, what it is and its records' indexes, and the call
+/// that answers the first, every other argument given kept.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the call's own arguments, which the call it suggests repeats"
+)]
+fn ask_back(
+    index: &TraceIndex,
+    session: &SessionHandle,
+    method: &str,
+    kind: ListingKind,
+    candidates: &[(u32, Vec<usize>)],
+    which: Option<usize>,
+    start: Option<usize>,
+    count: Option<usize>,
+) -> String {
+    let description = |number: u32| index.body(number)?.description.as_ref();
+    let mut roots: Vec<&str> = candidates
+        .iter()
+        .filter_map(|(number, _)| description(*number))
+        .filter(|described| described.family.is_none())
+        .map(|described| described.name.as_str())
+        .collect();
+    roots.dedup();
+    let one_method = {
+        let mut names = roots.clone();
+        names.sort_unstable();
+        names.dedup();
+        names.len() == 1
+    };
+    let mut lead: Option<&BodyRecord> = None;
+    let items: Vec<String> = candidates
+        .iter()
+        .map(|(number, records)| {
+            let what = match description(*number) {
+                None => "(not described)".to_string(),
+                Some(described) if described.family.is_some() => described.name.clone(),
+                Some(described) => match lead {
+                    None => {
+                        lead = Some(described);
+                        if one_method && described.name.contains(">>") {
+                            "method".to_string()
+                        } else {
+                            described.name.clone()
+                        }
+                    }
+                    Some(first) if first.module != described.module => {
+                        format!("{} of {}", described.name, module_text(&described.module))
+                    }
+                    Some(first) if first.name == described.name => {
+                        format!("{}, an edited version", described.name)
+                    }
+                    Some(_) => described.name.clone(),
+                },
+            };
+            let positions: Vec<usize> = (1..=records.len()).collect();
+            format!("#{number} {what} ({} {})", kind.name(), ranges(&positions))
+        })
+        .collect();
+    let mut arguments = json!({
+        "session": session.number,
+        "method": format!("#{}", candidates[0].0),
+        "kind": kind.name(),
+    });
+    for (name, value) in [("index", which), ("start", start), ("count", count)] {
+        if let Some(value) = value {
+            arguments[name] = json!(value);
+        }
+    }
+    format!(
+        "{method} matches {} bodies: {} — pass one: {}",
+        thousands(candidates.len() as u64),
+        items.join(", "),
+        call_text("debug_trace_listing", &arguments)
+    )
+}
+
+/// The `bytecode` records of the families of `record`'s scopes, each read
+/// once, whose instructions its position lines name.
+fn scopes_bytecode(index: &TraceIndex, record: &Value) -> Result<Vec<Value>, String> {
+    let mut entries: Vec<&ListingEntry> = Vec::new();
+    for scope in record["scopes"].as_array().map_or(&[][..], Vec::as_slice) {
+        let Some(body) = scope["body"]
+            .as_u64()
+            .and_then(|body| u32::try_from(body).ok())
+        else {
+            continue;
+        };
+        if let Some(entry) = index.bytecode_of(body)
+            && !entries.iter().any(|known| known.offset == entry.offset)
+        {
+            entries.push(entry);
+        }
+    }
+    entries
+        .into_iter()
+        .map(|entry| index.read_record(entry.offset, entry.length))
+        .collect()
+}
+
+/// What the window's first line says of the listing `entry` indexes
+/// beside its place: a copy's tier, architecture, key and size; a plan's
+/// key and outcome; a bytecode listing's bodies, which its `record` holds.
+fn listing_summary(index: &TraceIndex, entry: &ListingEntry, record: &Value) -> String {
+    let key = key_text(
+        index,
+        CopyKey {
+            key: entry.key,
+            entered: entry.entered,
+        },
+    );
+    let keyed = entry.key.is_some() || entry.entered.is_some();
+    match entry.kind {
+        ListingKind::Code => {
+            let mut summary = format!(
+                "{} {}",
+                entry.tier.map_or("", |tier| index.text(tier)),
+                record["architecture"].as_str().unwrap_or_default()
+            );
+            if keyed {
+                summary.push(' ');
+                summary.push_str(&key);
+            }
+            summary.push_str(&format!(
+                ", {}",
+                counted(entry.bytes.unwrap_or(0), "byte", "bytes")
+            ));
+            summary
+        }
+        ListingKind::Inlining => {
+            let outcome = match entry.outcome {
+                Some(PlanOutcome::Installed(bytes)) => {
+                    format!("installed {}", counted(bytes, "byte", "bytes"))
+                }
+                Some(PlanOutcome::Refused(reason)) => format!("refused {}", index.text(reason)),
+                None => "no outcome".to_string(),
+            };
+            if keyed {
+                format!("{key}, {outcome}")
+            } else {
+                outcome
+            }
+        }
+        ListingKind::Bytecode => counted(
+            record["bodies"].as_array().map_or(0, Vec::len) as u64,
+            "body",
+            "bodies",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::{Registry, SessionState};
     use super::super::trace_index::tests::{Scratch, event_of};
+    use super::super::trace_listings::tests::{
+        NAMES, printed, run_bytecode, run_inlining, run_optimized, square_bytecode, square_code,
+    };
     use super::*;
+    use crate::trace_file::listing_record;
+    use ns_runtime::trace_events::{BodyName, InliningOutcome, Listing};
 
     /// A session `Bounce.ns`, stopped, and the registry that holds it.
     fn stopped_session() -> (Registry, std::sync::Arc<SessionHandle>) {
@@ -2614,5 +3000,333 @@ mod tests {
         .expect("a page");
         assert!(characters(&page) <= ANSWER_BUDGET, "{}", characters(&page));
         assert!(page.lines().last().unwrap().contains(" — next: "), "{page}");
+    }
+
+    /// A field an event's text carries twice -- a value holding ` name=` --
+    /// gives more values than there are events, and the summary counts
+    /// no absence rather than one below none.
+    #[test]
+    fn a_field_carried_twice_counts_no_absence() {
+        let mut scratch = Scratch::new("journal-twice");
+        scratch.header(&["compile"], &[]);
+        scratch.record(&bounce_body(1, "Bounce>>run", None, 0, json!([])));
+        for trigger in ["call trigger=entry", "entry"] {
+            scratch.record(&event_of(
+                "compile",
+                Some(1),
+                &json!({ "event": "held", "trigger": trigger, "reason": "zone-full" }),
+            ));
+        }
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer =
+            journal(&index, &handle, "#1", Some(Part::Events), None, None).expect("a journal");
+        let entry = answer.lines().nth(3).unwrap_or_default();
+        assert!(
+            entry.ends_with("— held trigger=entry ×2, trigger=call ×1"),
+            "{answer}"
+        );
+    }
+
+    /// A file of `trace_listings`' fixtures: `Demo>>run` #1 and its
+    /// blocks #2 and #3, `Demo>>square:` #4, their bytecode, two baseline
+    /// copies of `square:`, of 16 and 24 bytes of code, an optimized copy
+    /// of `run` and its plan; and the code of #44, which no `body` record
+    /// describes.
+    fn listed() -> Scratch {
+        let mut scratch = Scratch::new("listing-window");
+        scratch.header(&["compile"], &["bytecode", "code", "inlining"]);
+        for (number, name) in NAMES {
+            scratch.body(number, name, (number == 2 || number == 3).then_some(1));
+        }
+        for listing in [
+            Listing::Bytecode(run_bytecode()),
+            Listing::Bytecode(square_bytecode()),
+            Listing::Code(square_code(16)),
+            Listing::Code(square_code(24)),
+            Listing::Code(run_optimized()),
+            Listing::Inlining(run_inlining(InliningOutcome::Installed { bytes: 400 })),
+        ] {
+            scratch.record(&listing_record(&listing));
+        }
+        let mut undescribed = square_code(16);
+        undescribed.body = BodyName {
+            number: 44,
+            name: "Demo>>hidden".to_string(),
+        };
+        undescribed.scopes.clear();
+        scratch.record(&listing_record(&Listing::Code(undescribed)));
+        scratch
+    }
+
+    /// The lines `--print-*` writes for `listing` without its head and
+    /// end: the window's.
+    fn inner(listing: &Listing) -> Vec<String> {
+        let lines = printed(listing);
+        lines[1..lines.len() - 1].to_vec()
+    }
+
+    /// A window names its listing, holds the lines `--print-*` writes in
+    /// the order it writes them, and ends in where it stopped, the next
+    /// call naming the listing by its index; the last listing by default.
+    #[test]
+    fn a_listing_window_names_its_listing_and_pages_it() {
+        let scratch = listed();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let window = |method: &str, kind, which, start, count| {
+            listing_window(&index, &handle, method, kind, which, start, count)
+        };
+        let square = inner(&Listing::Code(square_code(24)));
+        let architecture = square_code(24).architecture.name();
+        assert_eq!(square.len(), 12);
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Code, None, None, Some(3)),
+            Ok([
+                format!(
+                    "code 2 of 2 of Demo>>square: #4: baseline {architecture}, 32 bytes, 12 lines"
+                ),
+                square[0].clone(),
+                square[1].clone(),
+                square[2].clone(),
+                "Showing 1–3 of 12 — next: debug_trace_listing {\"session\":1,\"method\":\"Demo>>square:\",\"kind\":\"code\",\"index\":2,\"start\":3,\"count\":3}".to_string(),
+            ]
+            .join("\n"))
+        );
+        // The last page, and a count above the maximum capped.
+        let last = window(
+            "Demo>>square:",
+            ListingKind::Code,
+            Some(2),
+            Some(9),
+            Some(600),
+        )
+        .expect("the last page");
+        assert_eq!(
+            last.lines().skip(1).collect::<Vec<_>>(),
+            [
+                square[9].as_str(),
+                square[10].as_str(),
+                square[11].as_str(),
+                "Showing 10–12 of 12"
+            ]
+        );
+        let first = inner(&Listing::Code(square_code(16)));
+        let whole = window("#4", ListingKind::Code, Some(1), None, None).expect("the first copy");
+        assert_eq!(
+            whole.lines().collect::<Vec<_>>(),
+            [format!(
+                "code 1 of 2 of Demo>>square: #4: baseline {architecture}, 24 bytes, 10 lines"
+            )
+            .as_str()]
+            .into_iter()
+            .chain(first.iter().map(String::as_str))
+            .chain(["Showing 1–10 of 10"])
+            .collect::<Vec<_>>()
+        );
+        // An optimized copy's position lines take their instructions from
+        // the scopes' bytecode.
+        let optimized = window("Demo>>run", ListingKind::Code, None, None, None).expect("run");
+        assert!(
+            optimized.starts_with(&format!(
+                "code 1 of 1 of Demo>>run #1: optimized {architecture} key={{Demo}} entered={{Demo/Base}}, 32 bytes, "
+            )),
+            "{optimized}"
+        );
+        assert_eq!(
+            optimized.lines().skip(1).take(4).collect::<Vec<_>>(),
+            inner(&Listing::Code(run_optimized()))[..4]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            optimized
+                .lines()
+                .any(|line| line == "  s1 {Demo>>square:} @1  stmt 0  Multiply r1 <- r0, r0"),
+            "{optimized}"
+        );
+        // A method's bytecode is its root's record, its blocks within.
+        let bytecode = inner(&Listing::Bytecode(run_bytecode()));
+        assert_eq!(
+            window("Demo>>run", ListingKind::Bytecode, None, None, None),
+            Ok([format!(
+                "bytecode 1 of 1 of Demo>>run #1: 3 bodies, {} lines",
+                bytecode.len()
+            )]
+            .into_iter()
+            .chain(bytecode.iter().cloned())
+            .chain([format!("Showing 1–{0} of {0}", bytecode.len())])
+            .collect::<Vec<_>>()
+            .join("\n"))
+        );
+        let plan = inner(&Listing::Inlining(run_inlining(
+            InliningOutcome::Installed { bytes: 400 },
+        )));
+        let inlining = window("#1", ListingKind::Inlining, None, None, None).expect("a plan");
+        assert_eq!(
+            inlining.lines().next(),
+            Some(
+                format!(
+                    "inlining 1 of 1 of Demo>>run #1: key={{Demo}}, installed 400 bytes, {} lines",
+                    plan.len()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            inlining
+                .lines()
+                .skip(1)
+                .take(plan.len())
+                .collect::<Vec<_>>(),
+            plan.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        // A body no record describes is named by its number.
+        let hidden = window("#44", ListingKind::Code, None, None, Some(1)).expect("#44");
+        assert!(
+            hidden.starts_with(&format!(
+                "code 1 of 1 of #44 (not described): baseline {architecture}, 24 bytes, "
+            )),
+            "{hidden}"
+        );
+    }
+
+    /// What a window refuses: an index or a start past the end, a count
+    /// of 0, and a kind of listing the method has none of.
+    #[test]
+    fn a_listing_window_refuses_what_it_cannot_show() {
+        let scratch = listed();
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let window = |method: &str, kind, which, start, count| {
+            listing_window(&index, &handle, method, kind, which, start, count)
+        };
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Code, Some(3), None, None),
+            Err("index 3 is past the end: Demo>>square: #4 has 2 code listings".to_string())
+        );
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Code, Some(0), None, None),
+            Err("index 0: a body's listings count from 1".to_string())
+        );
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Code, None, Some(12), None),
+            Err("start 12 is past the end: the listing has 12 lines".to_string())
+        );
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Code, None, None, Some(0)),
+            Err("a count of 0: give 1 or more".to_string())
+        );
+        assert_eq!(
+            window("Demo>>square:", ListingKind::Inlining, None, None, None),
+            Err("no inlining listing of Demo>>square:".to_string())
+        );
+    }
+
+    /// A session that lists no machine code says so, and how to list it.
+    #[test]
+    fn a_session_without_code_listings_says_so() {
+        let mut scratch = Scratch::new("listing-unlisted");
+        scratch.header(&["compile"], &["bytecode"]);
+        scratch.body(4, "Demo>>square:", None);
+        scratch.record(&listing_record(&Listing::Bytecode(square_bytecode())));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(
+            listing_window(&index, &handle, "Demo>>square:", ListingKind::Code, None, None, None),
+            Err("no code listing of Demo>>square: — the session lists no code: debug_start with listings [\"code\"] lists it".to_string())
+        );
+    }
+
+    /// A name of several bodies with listings of the kind is asked back,
+    /// each body with its number, what it is and its listings' indexes,
+    /// with the call that answers the first; for bytecode, a root and its
+    /// blocks are one record.
+    #[test]
+    fn a_name_of_several_bodies_is_asked_back() {
+        let mut scratch = listed();
+        // `run`'s block #2 with code, and `run` edited, #5, with two copies.
+        let mut block = square_code(16);
+        block.body = BodyName {
+            number: 2,
+            name: "[] in Demo>>run".to_string(),
+        };
+        scratch.record(&listing_record(&Listing::Code(block)));
+        scratch.body(5, "Demo>>run", None);
+        let mut edited = run_bytecode();
+        edited.body.number = 5;
+        edited.bodies.truncate(1);
+        edited.bodies[0].body.number = 5;
+        scratch.record(&listing_record(&Listing::Bytecode(edited)));
+        for _ in 0..2 {
+            let mut copy = square_code(16);
+            copy.body = BodyName {
+                number: 5,
+                name: "Demo>>run".to_string(),
+            };
+            scratch.record(&listing_record(&Listing::Code(copy)));
+        }
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(
+            listing_window(&index, &handle, "Demo>>run", ListingKind::Code, None, None, Some(5)),
+            Err("Demo>>run matches 3 bodies: #1 method (code 1), #2 [] in Demo>>run (code 1), #5 Demo>>run, an edited version (code 1–2) — pass one: debug_trace_listing {\"session\":1,\"method\":\"#1\",\"kind\":\"code\",\"count\":5}".to_string())
+        );
+        assert_eq!(
+            listing_window(&index, &handle, "Demo>>run", ListingKind::Bytecode, None, None, None),
+            Err("Demo>>run matches 2 bodies: #1 method (bytecode 1), #5 Demo>>run, an edited version (bytecode 1) — pass one: debug_trace_listing {\"session\":1,\"method\":\"#1\",\"kind\":\"bytecode\"}".to_string())
+        );
+    }
+
+    /// A window of the most lines over long ones stays within the answer
+    /// budget, and says where it stopped with the call that goes on.
+    #[test]
+    fn a_listing_window_stays_under_its_budget() {
+        let mut scratch = Scratch::new("listing-budget");
+        scratch.header(&["compile"], &["code"]);
+        scratch.body(4, "Demo>>square:", None);
+        let instructions: Vec<Value> = (0..1_000)
+            .map(|offset| {
+                json!({ "offset": offset * 4, "text": format!("mov rax,{}", "x".repeat(100)),
+                        "scope": 0, "at": 0, "out-of-line": false,
+                        "annotation": "leaf miss" })
+            })
+            .collect();
+        scratch.record(&json!({
+            "kind": "code", "body": 4, "tier": "baseline", "key": null, "entered": null,
+            "architecture": "x64", "base": 4096, "bytes": 4000,
+            "instructions": instructions, "data": [], "scopes": [], "mark": null,
+        }));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer = listing_window(
+            &index,
+            &handle,
+            "Demo>>square:",
+            ListingKind::Code,
+            None,
+            None,
+            Some(500),
+        )
+        .expect("a window");
+        assert!(
+            characters(&answer) <= ANSWER_BUDGET,
+            "{}",
+            characters(&answer)
+        );
+        let lines: Vec<&str> = answer.lines().collect();
+        // The head, the position line and the instructions that fit.
+        let shown = lines.len() - 2;
+        assert!(shown < 500, "{shown} lines");
+        assert_eq!(
+            lines.last().copied(),
+            Some(
+                format!(
+                    "Showing 1–{shown} of 1,001 — next: debug_trace_listing {{\"session\":1,\"method\":\"Demo>>square:\",\"kind\":\"code\",\"index\":1,\"start\":{shown},\"count\":500}}"
+                )
+                .as_str()
+            )
+        );
     }
 }

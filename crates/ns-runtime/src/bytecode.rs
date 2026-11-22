@@ -1730,24 +1730,40 @@ pub fn disassemble_marked(code: &CompiledCode, name: &str, mark: Option<u32>) ->
     out
 }
 
+/// How many columns deeper than its maker's lines a block's lines stand
+/// in a listing, under the `MakeClosure` that makes it.
+pub const BLOCK_INDENT: usize = 8;
+
+/// The name a listing gives every block, on the line above its
+/// instructions.
+pub const BLOCK_NAME: &str = "block";
+
 fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize, mark: Option<u32>) {
     use std::fmt::Write;
     let pad = " ".repeat(indent);
-    let kind = code.kind.word();
-    writeln!(
-        out,
-        "{pad}{kind} {name} (args {}, registers {})",
-        code.argument_count, code.register_count
-    )
-    .expect("writing to a String cannot fail");
+    let head = body_line(
+        code.kind.word(),
+        name,
+        code.argument_count,
+        code.register_count,
+    );
+    writeln!(out, "{pad}{head}").expect("writing to a String cannot fail");
     let listed = listed_instructions(code);
     for (instruction, (index, statement, text)) in code.instructions().iter().zip(listed) {
         let line = listed_line(index, statement, &text, mark == Some(index));
         writeln!(out, "{pad}{line}").expect("writing to a String cannot fail");
         if let Instruction::MakeClosure { code: block, .. } = instruction {
-            write_code(out, block, "block", indent + 8, None);
+            write_code(out, block, BLOCK_NAME, indent + BLOCK_INDENT, None);
         }
     }
+}
+
+/// The line a listing writes above a body's instructions: its kind's
+/// word, its name and its counts of arguments and registers. A host that
+/// writes a listing from its parts writes it through this, so that one
+/// layout stands wherever a body's bytecode is read.
+pub fn body_line(kind: &str, name: &str, argument_count: u16, register_count: u16) -> String {
+    format!("{kind} {name} (args {argument_count}, registers {register_count})")
 }
 
 /// `code`'s instructions, one line per program counter, each as
@@ -1788,8 +1804,9 @@ fn statement_of(code: &CompiledCode, index: usize) -> Option<usize> {
 
 /// The line of the instruction at `index`, of `statement` and written
 /// `text`, as `listed_instructions` answers them, marked when `marked`:
-/// `->` in place of the two spaces after the index.
-fn listed_line(index: u32, statement: Option<u32>, text: &str, marked: bool) -> String {
+/// `->` in place of the two spaces after the index. A host that writes a
+/// listing from its parts writes each instruction through this.
+pub fn listed_line(index: u32, statement: Option<u32>, text: &str, marked: bool) -> String {
     let statement = statement
         .map(|statement_index| format!("stmt {statement_index}"))
         .unwrap_or_else(|| "-".to_string());

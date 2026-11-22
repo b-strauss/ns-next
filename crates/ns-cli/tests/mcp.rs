@@ -41,7 +41,7 @@ const STRESS_MODES: [&str; 15] = [
 ];
 
 /// The tools and their parameters, the required ones first.
-const TOOLS: [(&str, &[&str], &[&str]); 19] = [
+const TOOLS: [(&str, &[&str], &[&str]); 20] = [
     (
         "debug_start",
         &["program"],
@@ -86,6 +86,11 @@ const TOOLS: [(&str, &[&str], &[&str]); 19] = [
         "debug_trace_method",
         &["method"],
         &["part", "start", "count", "session"],
+    ),
+    (
+        "debug_trace_listing",
+        &["method", "kind"],
+        &["index", "start", "count", "session"],
     ),
 ];
 
@@ -1383,6 +1388,194 @@ fn a_method_s_journal_names_its_bodies() {
     } else {
         assert!(copies.is_empty(), "{square}");
     }
+}
+
+/// A method called again and again whose block is hot, so that both
+/// compile, and a hot method it sends.
+const A_HOT_BLOCK: &str = indoc! {"
+    class Demo = Object new () (
+      square: number = (
+        ^number * number.
+      )
+
+      run = (
+        | total ::= 0. squared = [:value | total:: total + (square: value)]. |
+        1 to: 100 do: squared.
+        ^total
+      )
+
+      public main: platform args: arguments = (
+        | result ::= 0. |
+        1 to: 50 do: [:index | result:: result + run].
+        platform transcript show: result printString; newLine.
+      )
+    )
+"};
+
+/// The number of the body the records describe as `name`, a root when
+/// `family` is null.
+fn body_number(records: &[Value], name: &str, root: bool) -> u64 {
+    records
+        .iter()
+        .find(|record| {
+            record["kind"] == "body" && record["name"] == name && record["family"].is_null() == root
+        })
+        .and_then(|record| record["body"].as_u64())
+        .unwrap_or_else(|| panic!("no body {name}"))
+}
+
+/// `debug_trace_listing` answers a window of a listing: a line saying
+/// which, the lines asked for and the exact call that goes on; a window
+/// of the most lines over the run's longest listing stays within the
+/// answer budget; a name of a method whose block has code too is asked
+/// back with both numbers; and a target without a JIT has no code
+/// listing.
+#[test]
+fn a_listing_window_is_bounded() {
+    let data = ScratchDirectory::new("local-data");
+    let traces = traces_in(data.path());
+    let mut server = McpServer::start_in(data.path(), true);
+    let (_directory, path) = program("Demo", A_HOT_BLOCK);
+    let compiles = compiles_bodies(&path);
+    let stopped = server.succeed(
+        "debug_start",
+        json!({
+            "program": path,
+            "trace": "all",
+            "listings": ["bytecode", "code", "inlining"],
+            "breakpoints": [{ "location": location(&path, 15) }],
+        }),
+    );
+    assert!(
+        started(&stopped).1.starts_with("stopped: breakpoint"),
+        "{stopped}"
+    );
+    let records = trace_records(&trace_file_of(&traces, 1));
+    let run = body_number(&records, "Demo>>run", true);
+    let block = body_number(&records, "[] in Demo>>run", false);
+    let square = body_number(&records, "Demo>>square:", true);
+    // Bytecode on every target: the method and its block, one record.
+    let bytecode = server.succeed(
+        "debug_trace_listing",
+        json!({ "session": 1, "method": "Demo>>run", "kind": "bytecode", "count": 3 }),
+    );
+    let lines: Vec<&str> = bytecode.lines().collect();
+    assert!(
+        lines[0].starts_with(&format!("bytecode 1 of 1 of Demo>>run #{run}: 2 bodies, ")),
+        "{bytecode}"
+    );
+    assert!(
+        lines[1].starts_with("method Demo>>run (args 0, registers "),
+        "{bytecode}"
+    );
+    let total = lines[0]
+        .rsplit(", ")
+        .next()
+        .and_then(|count| count.strip_suffix(" lines"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no line count:
+{bytecode}"
+            )
+        });
+    assert_eq!(
+        lines[4],
+        format!(
+            r#"Showing 1–3 of {total} — next: debug_trace_listing {{"session":1,"method":"Demo>>run","kind":"bytecode","index":1,"start":3,"count":3}}"#
+        ),
+        "{bytecode}"
+    );
+    if !compiles {
+        let refused = server.fail(
+            "debug_trace_listing",
+            json!({ "session": 1, "method": "Demo>>square:", "kind": "code" }),
+        );
+        assert!(
+            refused.starts_with("no code listing of Demo>>square:"),
+            "{refused}"
+        );
+        return;
+    }
+    let copies = records
+        .iter()
+        .filter(|record| record["kind"] == "code" && record["body"] == square)
+        .count();
+    let window = server.succeed(
+        "debug_trace_listing",
+        json!({ "session": 1, "method": "Demo>>square:", "kind": "code", "count": 5 }),
+    );
+    let lines: Vec<&str> = window.lines().collect();
+    assert_eq!(lines.len(), 7, "{window}");
+    assert!(
+        lines[0].starts_with(&format!(
+            "code {copies} of {copies} of Demo>>square: #{square}: "
+        )),
+        "{window}"
+    );
+    let total = lines[0]
+        .rsplit(", ")
+        .next()
+        .and_then(|count| count.strip_suffix(" lines"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no line count:
+{window}"
+            )
+        });
+    assert_eq!(
+        lines[6],
+        format!(
+            r#"Showing 1–5 of {total} — next: debug_trace_listing {{"session":1,"method":"Demo>>square:","kind":"code","index":{copies},"start":5,"count":5}}"#
+        ),
+        "{window}"
+    );
+    // The run's longest code listing, by its body and its index there.
+    let mut longest: Option<(usize, u64, usize)> = None;
+    let mut indexes: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for record in records.iter().filter(|record| record["kind"] == "code") {
+        let body = record["body"].as_u64().expect("a body");
+        let position = indexes.entry(body).or_insert(0);
+        *position += 1;
+        let length = record["instructions"].as_array().map_or(0, Vec::len);
+        if longest.is_none_or(|(known, _, _)| length > known) {
+            longest = Some((length, body, *position));
+        }
+    }
+    let (_, body, position) = longest.expect("a code listing");
+    let longest = server.succeed(
+        "debug_trace_listing",
+        json!({ "session": 1, "method": format!("#{body}"), "kind": "code", "index": position, "count": 500 }),
+    );
+    assert!(
+        longest.chars().count() <= 20_000,
+        "{} characters",
+        longest.chars().count()
+    );
+    assert!(
+        longest
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("Showing 1–")),
+        "{longest}"
+    );
+    let asked = server.fail(
+        "debug_trace_listing",
+        json!({ "session": 1, "method": "Demo>>run", "kind": "code" }),
+    );
+    assert!(
+        asked.starts_with(&format!("Demo>>run matches 2 bodies: #{run} method (code ")),
+        "{asked}"
+    );
+    assert!(
+        asked.contains(&format!(", #{block} [] in Demo>>run (code ")),
+        "{asked}"
+    );
+    assert!(
+        asked.ends_with(&format!(
+            r##" — pass one: debug_trace_listing {{"session":1,"method":"#{run}","kind":"code"}}"##
+        )),
+        "{asked}"
+    );
 }
 
 /// `listing_filter` selects among the listings, and is refused without

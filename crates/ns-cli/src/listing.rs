@@ -4,11 +4,13 @@
 //! between a head line `--- <kind> {<body>} …` and an end line `--- end`,
 //! so that a script cuts it out of standard error.
 
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 
+use ns_runtime::bytecode;
 use ns_runtime::trace_events::{
-    Annotation, Architecture, ArmKind, CodeListing, CodeTier, DataWord, InliningListing,
-    InliningOutcome, ListedScope, Listing, Position,
+    Annotation, Architecture, ArmKind, CodeListing, CodeTier, DataWord, InliningOutcome,
+    ListedScope, Listing, Position,
 };
 
 #[cfg(target_arch = "aarch64")]
@@ -26,20 +28,332 @@ const HEX_LINE_BYTES: usize = 4;
 /// The whole text of `listing`, its head and end lines included, each
 /// line ended by a newline.
 pub(crate) fn text(listing: &Listing) -> String {
-    let mut text = String::new();
-    match listing {
-        Listing::Bytecode(bytecode) => {
-            let _ = writeln!(text, "--- bytecode {{{}}}", bytecode.body.name);
-            text.push_str(&bytecode.text);
-            if !text.ends_with('\n') {
-                text.push('\n');
-            }
-        }
-        Listing::Code(code) => write_code(&mut text, code),
-        Listing::Inlining(inlining) => write_inlining(&mut text, inlining),
+    let view = View::of_listing(listing);
+    let text = view.text();
+    // A bytecode listing is written from its bodies, as a trace file's
+    // record is read back; the runtime's disassembly beside them is the
+    // oracle the two layouts are held to.
+    #[cfg(debug_assertions)]
+    if let Listing::Bytecode(bytecode) = listing
+        && !bytecode.bodies.is_empty()
+    {
+        let disassembled = View::BytecodeText {
+            name: bytecode.body.name.clone(),
+            text: bytecode.text.clone(),
+        };
+        debug_assert_eq!(
+            text,
+            disassembled.text(),
+            "a bytecode listing's bodies write its disassembly"
+        );
     }
-    text.push_str(END);
     text
+}
+
+/// A listing as its text is written from it: what the runtime hands the
+/// sink and what a trace file's record holds are both read into it, so
+/// that `--print-*` and the MCP server's window over a record write one
+/// layout through one function (`View::text`), every body named as the
+/// trace names it.
+pub(crate) enum View {
+    /// Bytecode given as its disassembly alone, as a stopped frame's is.
+    BytecodeText {
+        name: String,
+        text: String,
+    },
+    /// Bytecode by its bodies, the root first, then the blocks in the
+    /// order the disassembly nests them.
+    Bytecode {
+        name: String,
+        bodies: Vec<ViewBody>,
+    },
+    Code(CodeView),
+    Inlining(InliningView),
+}
+
+/// One body of a bytecode listing.
+pub(crate) struct ViewBody {
+    pub(crate) number: u32,
+    /// Its kind's word, `method` or `block`.
+    pub(crate) kind: String,
+    /// A block's maker, by number, and the index of the `MakeClosure`
+    /// there it is nested under; `None` for the root.
+    pub(crate) made_at: Option<(u32, u32)>,
+    /// Its counts of arguments and registers; `None` where they are not
+    /// known, whose line has none.
+    pub(crate) counts: Option<(u16, u16)>,
+    /// Each instruction's index, statement and text.
+    pub(crate) instructions: Vec<(u32, Option<u32>, String)>,
+}
+
+/// A scope of a code or inlining listing.
+pub(crate) struct ViewScope {
+    pub(crate) number: u32,
+    pub(crate) body: String,
+    /// The scope and program counter it is inlined at.
+    pub(crate) parent: Option<(u32, u32)>,
+    /// Its body's instructions as the bytecode listing writes them, by
+    /// program counter; empty where they are not known.
+    pub(crate) instructions: Vec<String>,
+}
+
+/// A body's machine code.
+pub(crate) struct CodeView {
+    pub(crate) name: String,
+    pub(crate) tier: String,
+    pub(crate) architecture: String,
+    pub(crate) key: Option<(String, Option<String>)>,
+    pub(crate) base: u64,
+    pub(crate) bytes: u64,
+    pub(crate) scopes: Vec<ViewScope>,
+    pub(crate) instructions: Vec<ViewInstruction>,
+    /// Each data word's offset from the first and what it holds.
+    pub(crate) data: Vec<(u64, String)>,
+    pub(crate) mark: Option<u32>,
+}
+
+/// An instruction of a code listing.
+pub(crate) struct ViewInstruction {
+    pub(crate) offset: u32,
+    pub(crate) text: String,
+    /// The positions reached at it, in order (`AnnotatedInstruction`).
+    pub(crate) reached: Vec<Position>,
+    /// What each call or jump out of it reaches, as `annotation_text`
+    /// writes it.
+    pub(crate) annotations: Vec<String>,
+}
+
+/// An optimizing compile's inlining plan.
+pub(crate) struct InliningView {
+    pub(crate) name: String,
+    pub(crate) key: Option<(String, Option<String>)>,
+    pub(crate) scopes: Vec<ViewScope>,
+    pub(crate) arms: Vec<ViewArm>,
+    pub(crate) declined: Vec<ViewDecline>,
+    pub(crate) outcome: ViewOutcome,
+}
+
+/// An arm of a type-case.
+pub(crate) struct ViewArm {
+    pub(crate) scope: u32,
+    pub(crate) program_counter: u32,
+    pub(crate) receiver: String,
+    pub(crate) inlined: ViewArmKind,
+}
+
+/// What an arm inlines: a scope, or always the same kind of code.
+pub(crate) enum ViewArmKind {
+    Scope(u32),
+    Always(String),
+}
+
+/// A send the plan declined to inline.
+pub(crate) struct ViewDecline {
+    pub(crate) scope: u32,
+    pub(crate) program_counter: u32,
+    pub(crate) callee: Option<String>,
+    pub(crate) reason: String,
+}
+
+/// What a plan's compile came to.
+pub(crate) enum ViewOutcome {
+    Installed(usize),
+    Refused(String),
+}
+
+impl View {
+    /// `listing` as a view, its instructions decoded.
+    pub(crate) fn of_listing(listing: &Listing) -> View {
+        match listing {
+            Listing::Bytecode(bytecode) if bytecode.bodies.is_empty() => View::BytecodeText {
+                name: bytecode.body.name.clone(),
+                text: bytecode.text.clone(),
+            },
+            Listing::Bytecode(bytecode) => View::Bytecode {
+                name: bytecode.body.name.clone(),
+                bodies: bytecode
+                    .bodies
+                    .iter()
+                    .map(|listed| ViewBody {
+                        number: listed.body.number,
+                        kind: listed.kind.to_string(),
+                        made_at: listed.made_at.map(|made_at| (made_at.maker, made_at.index)),
+                        counts: Some((listed.argument_count, listed.register_count)),
+                        instructions: listed
+                            .instructions
+                            .iter()
+                            .map(|instruction| {
+                                (
+                                    instruction.index,
+                                    instruction.statement,
+                                    instruction.text.clone(),
+                                )
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            Listing::Code(code) => View::Code(code_view(code)),
+            Listing::Inlining(inlining) => View::Inlining(InliningView {
+                name: inlining.body.name.clone(),
+                key: inlining.key.clone(),
+                scopes: view_scopes(&inlining.scopes),
+                arms: inlining
+                    .arms
+                    .iter()
+                    .map(|arm| ViewArm {
+                        scope: arm.scope,
+                        program_counter: arm.program_counter,
+                        receiver: arm.receiver.clone(),
+                        inlined: match arm.inlined {
+                            ArmKind::Scope(scope) => ViewArmKind::Scope(scope),
+                            ArmKind::Always(kind) => ViewArmKind::Always(kind.to_string()),
+                        },
+                    })
+                    .collect(),
+                declined: inlining
+                    .declined
+                    .iter()
+                    .map(|declined| ViewDecline {
+                        scope: declined.scope,
+                        program_counter: declined.program_counter,
+                        callee: declined.callee.as_ref().map(|callee| callee.name.clone()),
+                        reason: declined.reason.name().to_string(),
+                    })
+                    .collect(),
+                outcome: match inlining.outcome {
+                    InliningOutcome::Installed { bytes } => ViewOutcome::Installed(bytes),
+                    InliningOutcome::Refused(refusal) => {
+                        ViewOutcome::Refused(refusal.name().to_string())
+                    }
+                },
+            }),
+        }
+    }
+
+    /// The whole text of the listing, its head and end lines included,
+    /// each line ended by a newline.
+    pub(crate) fn text(&self) -> String {
+        let mut text = String::new();
+        match self {
+            View::BytecodeText { name, text: listed } => {
+                let _ = writeln!(text, "--- bytecode {{{name}}}");
+                text.push_str(listed);
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+            }
+            View::Bytecode { name, bodies } => {
+                let _ = writeln!(text, "--- bytecode {{{name}}}");
+                write_bodies(&mut text, name, bodies);
+            }
+            View::Code(code) => write_code(&mut text, code),
+            View::Inlining(inlining) => write_inlining(&mut text, inlining),
+        }
+        text.push_str(END);
+        text
+    }
+
+    /// The listing's lines, its head and end lines included, without
+    /// their newlines.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.text().lines().map(ToString::to_string).collect()
+    }
+}
+
+fn view_scopes(scopes: &[ListedScope]) -> Vec<ViewScope> {
+    scopes
+        .iter()
+        .map(|scope| ViewScope {
+            number: scope.number,
+            body: scope.body.name.clone(),
+            parent: scope.parent,
+            instructions: scope.instructions.clone(),
+        })
+        .collect()
+}
+
+fn code_view(code: &CodeListing) -> CodeView {
+    let data_start = code.words.first().map_or(0, |(offset, _)| *offset);
+    CodeView {
+        name: code.body.name.clone(),
+        tier: code.tier.name().to_string(),
+        architecture: code.architecture.name().to_string(),
+        key: code.key.clone(),
+        base: code.base_address,
+        bytes: u64::try_from(code.bytes.len()).unwrap_or(u64::MAX),
+        scopes: view_scopes(&code.scopes),
+        instructions: annotated(code)
+            .into_iter()
+            .map(|annotated| ViewInstruction {
+                offset: annotated.instruction.offset,
+                text: annotated.instruction.text,
+                reached: annotated.reached,
+                annotations: annotated
+                    .annotations
+                    .into_iter()
+                    .map(annotation_text)
+                    .collect(),
+            })
+            .collect(),
+        data: code
+            .words
+            .iter()
+            .map(|(offset, word)| (u64::from(offset - data_start), word_text(*word)))
+            .collect(),
+        mark: code.mark,
+    }
+}
+
+/// The bodies of a bytecode listing as the disassembly nests them: the
+/// root under `name`, each block eight columns deeper right below the
+/// `MakeClosure` that makes it. A worklist, not recursion: an image's body
+/// chooses how deep its blocks nest.
+fn write_bodies(text: &mut String, name: &str, bodies: &[ViewBody]) {
+    let Some(root) = bodies.first() else {
+        return;
+    };
+    // The blocks under each `MakeClosure`, in the order they are listed:
+    // one block made at two places is listed at each.
+    let mut blocks: HashMap<(u32, u32), VecDeque<usize>> = HashMap::new();
+    for (position, body) in bodies.iter().enumerate().skip(1) {
+        if let Some(made_at) = body.made_at {
+            blocks.entry(made_at).or_default().push_back(position);
+        }
+    }
+    write_body_line(text, root, name, 0);
+    let mut pending: Vec<(usize, usize, usize)> = vec![(0, 0, 0)];
+    while let Some((position, next, indent)) = pending.last_mut().map(|top| *top) {
+        let body = &bodies[position];
+        let Some((index, statement, instruction)) = body.instructions.get(next) else {
+            pending.pop();
+            continue;
+        };
+        if let Some(top) = pending.last_mut() {
+            top.1 += 1;
+        }
+        let pad = " ".repeat(indent);
+        let line = bytecode::listed_line(*index, *statement, instruction, false);
+        let _ = writeln!(text, "{pad}{line}");
+        if let Some(block) = blocks
+            .get_mut(&(body.number, *index))
+            .and_then(VecDeque::pop_front)
+        {
+            let deeper = indent + bytecode::BLOCK_INDENT;
+            write_body_line(text, &bodies[block], bytecode::BLOCK_NAME, deeper);
+            pending.push((block, 0, deeper));
+        }
+    }
+}
+
+/// The line above a body's instructions, `indent` columns in.
+fn write_body_line(text: &mut String, body: &ViewBody, name: &str, indent: usize) {
+    let pad = " ".repeat(indent);
+    let line = match body.counts {
+        Some((arguments, registers)) => bytecode::body_line(&body.kind, name, arguments, registers),
+        None => format!("{} {name}", body.kind),
+    };
+    let _ = writeln!(text, "{pad}{line}");
 }
 
 /// An instruction decoded: its offset in the body, its length in bytes
@@ -113,8 +427,8 @@ fn write_key(text: &mut String, key: Option<&(String, Option<String>)>) {
 /// The tree of `scopes`, each under the scope it is inlined into, two
 /// spaces deeper, with the send it is inlined at; the children of a scope
 /// in the order of their numbers.
-fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
-    let mut pending: Vec<(&ListedScope, usize)> = scopes
+fn write_scope_tree(text: &mut String, scopes: &[ViewScope]) {
+    let mut pending: Vec<(&ViewScope, usize)> = scopes
         .iter()
         .filter(|scope| scope.parent.is_none())
         .rev()
@@ -122,7 +436,7 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
         .collect();
     while let Some((scope, depth)) = pending.pop() {
         let indent = "  ".repeat(depth);
-        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body.name);
+        let _ = write!(text, "{indent}s{} {{{}}}", scope.number, scope.body);
         if let Some((parent, program_counter)) = scope.parent {
             let _ = write!(text, " at s{parent}@{program_counter}");
         }
@@ -141,8 +455,8 @@ fn write_scope_tree(text: &mut String, scopes: &[ListedScope]) {
     }
 }
 
-fn write_inlining(text: &mut String, inlining: &InliningListing) {
-    let _ = write!(text, "--- inlining {{{}}}", inlining.body.name);
+fn write_inlining(text: &mut String, inlining: &InliningView) {
+    let _ = write!(text, "--- inlining {{{}}}", inlining.name);
     write_key(text, inlining.key.as_ref());
     text.push('\n');
     write_scope_tree(text, &inlining.scopes);
@@ -152,9 +466,9 @@ fn write_inlining(text: &mut String, inlining: &InliningListing) {
             "  s{}@{} {{{}}} -> ",
             arm.scope, arm.program_counter, arm.receiver
         );
-        let _ = match arm.inlined {
-            ArmKind::Scope(scope) => writeln!(text, "s{scope}"),
-            ArmKind::Always(kind) => writeln!(text, "always {kind}"),
+        let _ = match &arm.inlined {
+            ViewArmKind::Scope(scope) => writeln!(text, "s{scope}"),
+            ViewArmKind::Always(kind) => writeln!(text, "always {kind}"),
         };
     }
     for declined in &inlining.declined {
@@ -163,58 +477,40 @@ fn write_inlining(text: &mut String, inlining: &InliningListing) {
             "  s{}@{} declined callee={{{}}} reason={}",
             declined.scope,
             declined.program_counter,
-            declined
-                .callee
-                .as_ref()
-                .map_or("", |callee| callee.name.as_str()),
-            declined.reason.name()
+            declined.callee.as_deref().unwrap_or(""),
+            declined.reason
         );
     }
-    let _ = match inlining.outcome {
-        InliningOutcome::Installed { bytes } => writeln!(text, "  installed bytes={bytes}"),
-        InliningOutcome::Refused(refusal) => {
-            writeln!(text, "  refused reason={}", refusal.name())
-        }
+    let _ = match &inlining.outcome {
+        ViewOutcome::Installed(bytes) => writeln!(text, "  installed bytes={bytes}"),
+        ViewOutcome::Refused(reason) => writeln!(text, "  refused reason={reason}"),
     };
 }
 
-fn write_code(text: &mut String, code: &CodeListing) {
+fn write_code(text: &mut String, code: &CodeView) {
     let _ = write!(
         text,
         "--- code {{{}}} {} {}",
-        code.body.name,
-        code.tier.name(),
-        code.architecture.name()
+        code.name, code.tier, code.architecture
     );
     write_key(text, code.key.as_ref());
-    let _ = writeln!(
-        text,
-        " base=0x{:x} bytes={}",
-        code.base_address,
-        code.bytes.len()
-    );
+    let _ = writeln!(text, " base=0x{:x} bytes={}", code.base, code.bytes);
     // Only an optimized copy lays out more than its body's own scope; a
     // baseline body's positions name its program counters alone.
-    let optimized = code.tier == CodeTier::Optimized;
+    let optimized = code.tier == CodeTier::Optimized.name();
     if optimized {
         text.push_str("scopes:\n");
         write_scope_tree(text, &code.scopes);
     }
     let mut last_position = None;
-    for AnnotatedInstruction {
-        instruction,
-        reached,
-        annotations,
-        ..
-    } in annotated(code)
-    {
-        for position in reached {
+    for instruction in &code.instructions {
+        for position in &instruction.reached {
             // A stretch is named where its scope or program counter
             // changes; an instruction that emits no code leaves its
             // position beside the next one's, both named.
-            if last_position != Some(position) {
-                write_position(text, code, position, optimized);
-                last_position = Some(position);
+            if last_position != Some(*position) {
+                write_position(text, code, *position, optimized);
+                last_position = Some(*position);
             }
         }
         // The instruction a stopped frame returns to takes `->` in its
@@ -230,20 +526,15 @@ fn write_code(text: &mut String, code: &CodeListing) {
             body_offset(instruction.offset),
             instruction.text
         );
-        for annotation in annotations {
-            let _ = write!(text, "  ; {}", annotation_text(annotation));
+        for annotation in &instruction.annotations {
+            let _ = write!(text, "  ; {annotation}");
         }
         text.push('\n');
     }
-    if let Some((data_start, _)) = code.words.first() {
+    if !code.data.is_empty() {
         text.push_str("data:\n");
-        for (offset, word) in &code.words {
-            let _ = writeln!(
-                text,
-                "    {}  {}",
-                data_offset(offset - data_start),
-                word_text(*word)
-            );
+        for (offset, word) in &code.data {
+            let _ = writeln!(text, "    {}  {word}", data_offset(*offset));
         }
     }
 }
@@ -308,7 +599,7 @@ pub(crate) fn annotated(code: &CodeListing) -> Vec<AnnotatedInstruction<'_>> {
 /// The line that names the stretch of code from `position` on: its scope
 /// and that scope's body for an optimized copy, its program counter, and
 /// the instruction there as the bytecode listing writes it.
-fn write_position(text: &mut String, code: &CodeListing, position: Position, optimized: bool) {
+fn write_position(text: &mut String, code: &CodeView, position: Position, optimized: bool) {
     let (scope, program_counter) = match position {
         Position::Instruction {
             scope,
@@ -322,7 +613,7 @@ fn write_position(text: &mut String, code: &CodeListing, position: Position, opt
     let listed = code.scopes.iter().find(|listed| listed.number == scope);
     text.push_str("  ");
     if optimized {
-        let body = listed.map_or("", |listed| listed.body.name.as_str());
+        let body = listed.map_or("", |listed| listed.body.as_str());
         let _ = write!(text, "s{scope} {{{body}}} ");
     }
     let _ = write!(text, "@{program_counter}");

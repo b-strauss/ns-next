@@ -578,6 +578,18 @@ pub(crate) fn list() -> Value {
             }),
             &["method"],
         ),
+        tool(
+            "debug_trace_listing",
+            "Answers a window of one listing from a traced session's trace file, its lines as ns-next run's --print-bytecode, --print-code and --print-inlining write them, after a line that says which listing it is: a body's bytecode, its blocks nested under the instruction that makes them; one copy of its machine code, the head's tier, architecture, key and size, an optimized copy's scope tree, a line naming each stretch's scope and program counter, with its bytecode instruction where the run listed bytecode, then each instruction by its offset with what its calls and jumps reach, and the data words; or one optimizing compile's inlining plan, its scopes, type-case arms, declines and outcome. A name matching several bodies with such listings is answered with each body's #number and listings, to pass one. Readable while the program runs; paged by start and count.",
+            json!({
+                "method": { "type": "string", "description": "The method, as the tools name one: the module's id, @ its version for one version only, then / and the path to a class inside the module, then >> and the selector (Demo/Account>>deposit:), a trailing ... making a prefix; or #<n>, a body by the number the trace gives it." },
+                "kind": { "type": "string", "enum": ["bytecode", "code", "inlining"], "description": "Which listing: the bytecode of the method and its blocks, a copy of its machine code, or an optimizing compile's inlining plan." },
+                "index": { "type": "integer", "minimum": 1, "description": "Which of the body's listings of that kind, from 1 in the order the run wrote them, as debug_trace_method's copies line numbers them; the last by default, the copy the program goes on in." },
+                "start": { "type": "integer", "minimum": 0, "description": "How many of the listing's lines to skip; 0 by default." },
+                "count": { "type": "integer", "minimum": 1, "description": "How many lines; 150 by default, 500 at most." }
+            }),
+            &["method", "kind"],
+        ),
     ];
     // Every tool but the one that opens a session names the session.
     for tool in tools.iter_mut().skip(1) {

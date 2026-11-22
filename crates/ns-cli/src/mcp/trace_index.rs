@@ -69,7 +69,6 @@ impl ListingKind {
 pub(crate) struct Header {
     /// The architecture its `code` records are instructions of; `None`
     /// for a binary without a JIT.
-    #[expect(dead_code, reason = "the listing window and the events query read it")]
     pub(crate) architecture: Option<String>,
     /// The categories traced; `None` for a header that does not say,
     /// which is taken to trace every one, as the plugin takes it.
@@ -102,7 +101,7 @@ pub(crate) struct DescribedSend {
 }
 
 /// A `body` record but its statements.
-#[expect(dead_code, reason = "the listing window and the events query read it")]
+#[expect(dead_code, reason = "the events query reads it")]
 pub(crate) struct BodyRecord {
     pub(crate) name: String,
     /// A block's family root.
@@ -135,7 +134,7 @@ fn optional(value: u32) -> Option<u32> {
 /// and its text interned. Its fields are its text's after the word; its
 /// record, should an answer need more, is read again from `offset`
 /// (`TraceIndex::read_event`), as a listing is.
-#[expect(dead_code, reason = "the listing window and the events query read it")]
+#[expect(dead_code, reason = "the events query reads it")]
 pub(crate) struct IndexedEvent {
     /// Where its record begins in the file.
     offset: u64,
@@ -156,7 +155,7 @@ pub(crate) struct IndexedEvent {
     category: TraceCategory,
 }
 
-#[expect(dead_code, reason = "the listing window and the events query read it")]
+#[expect(dead_code, reason = "the events query reads it")]
 impl IndexedEvent {
     pub(crate) fn offset(&self) -> u64 {
         self.offset
@@ -231,10 +230,6 @@ pub(crate) enum PlanOutcome {
 
 /// One listing record of the file: its place and the fields its answers
 /// choose by, never its content.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the listing window and the events query read it")
-)]
 pub(crate) struct ListingEntry {
     pub(crate) kind: ListingKind,
     pub(crate) body: u32,
@@ -546,10 +541,6 @@ fn read_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize
 }
 
 /// Fills `buffer` from `offset` of `file`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the listing window and the events query read it")
-)]
 fn read_exactly_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
     let mut filled = 0;
     while filled < buffer.len() {
@@ -896,10 +887,7 @@ impl TraceIndex {
     }
 
     /// The file's path, while it is open.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the listing window and the events query read it")
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
     pub(crate) fn path(&self) -> Option<&Path> {
         self.file.as_deref().map(TraceFile::path)
     }
@@ -961,7 +949,7 @@ impl TraceIndex {
     }
 
     /// The number `text` is interned as, if any event or listing gave it.
-    #[expect(dead_code, reason = "the listing window and the events query read it")]
+    #[expect(dead_code, reason = "the events query reads it")]
     pub(crate) fn interned(&self, text: &str) -> Option<u32> {
         self.contents.interner.numbers.get(text).copied()
     }
@@ -995,10 +983,7 @@ impl TraceIndex {
 
     /// `declined-no-body`'s reasons of the event `index`, with their
     /// counts; empty for any other event.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the listing window and the events query read it")
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
     pub(crate) fn reasons(&self, index: u32) -> &[(u32, u32)] {
         self.contents
             .reasons
@@ -1007,10 +992,7 @@ impl TraceIndex {
     }
 
     /// The record of `event`, read again from the file to its newline.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the listing window and the events query read it")
-    )]
+    #[cfg_attr(not(test), expect(dead_code, reason = "the events query reads it"))]
     pub(crate) fn read_event(&self, event: &IndexedEvent) -> Result<Value, String> {
         let Some(trace_file) = &self.file else {
             return Err("the trace file is closed".to_string());
@@ -1077,7 +1059,6 @@ impl TraceIndex {
 
     /// The `bytecode` record that lists the body `number`, or else its
     /// family root's, which lists every block of it.
-    #[expect(dead_code, reason = "the listing window and the events query read it")]
     pub(crate) fn bytecode_of(&self, number: u32) -> Option<&ListingEntry> {
         let tally = self.body(number)?;
         let index = tally.bytecode.or_else(|| {
@@ -1201,10 +1182,6 @@ impl TraceIndex {
     /// and bounded by its own length, the lock keeps the file from being
     /// closed under the read, and the follower, which reads without the
     /// lock, waits for it only to hand a slice over.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the listing window and the events query read it")
-    )]
     pub(crate) fn read_record(&self, offset: u64, length: u32) -> Result<Value, String> {
         let Some(trace_file) = &self.file else {
             return Err("the trace file is closed".to_string());

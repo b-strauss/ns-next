@@ -1341,10 +1341,13 @@ The records:
   stretch it stands in (`null` before the first position and out of
   line), whether that stretch is out of line, which tells the two apart
   -- so that a reader names a first stretch out of line as the text
-  listing does --, a reader taking a record without it as `false`, and
+  listing does --, a reader taking a record without it as `false`,
   what a call or jump out of it reaches as the text listing's
   annotation writes it (`leaf miss`, `cell site 3`; two on one
-  instruction joined by `; `); each data word `{"offset":o,"word":…}`,
+  instruction joined by `; `), and, only where instructions before it
+  emitted no code, `"passed":[{"scope":s,"at":pc}|{"out-of-line":true}]`,
+  the positions they left beside its own, in order, each of which the
+  text listing names on a line of its own; each data word `{"offset":o,"word":…}`,
   its offset from the first data word, as the instructions' texts name
   it (`data+0x0008`), and what it holds (`budget word`); each scope
   `{"scope":s,"body":N,"parent":[scope,at]|null}`.

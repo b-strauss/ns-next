@@ -38,7 +38,7 @@ pub(crate) const VERSION: u32 = 1;
 /// one this binary's JIT emits for, the targets `ns-runtime`'s `build.rs`
 /// sets `cfg(ns_jit)` for; `None` where it has no JIT and so writes no
 /// `code` record.
-fn architecture() -> Option<&'static str> {
+pub(crate) fn architecture() -> Option<&'static str> {
     if cfg!(target_arch = "x86_64") {
         Some("x64")
     } else if cfg!(all(
@@ -718,7 +718,7 @@ fn code_record(code: &CodeListing) -> Value {
         .map(|annotated| {
             let AnnotatedInstruction {
                 instruction,
-                reached: _,
+                reached,
                 position,
                 annotations,
             } = annotated;
@@ -743,14 +743,26 @@ fn code_record(code: &CodeListing) -> Value {
                     .collect::<Vec<_>>()
                     .join("; ")
             });
-            json!({
+            let mut record = json!({
                 "offset": instruction.offset,
                 "text": instruction.text,
                 "scope": scope,
                 "at": program_counter,
                 "out-of-line": out_of_line,
                 "annotation": annotation,
-            })
+            });
+            // The positions an instruction that emitted no code left
+            // beside this one's, which the text listing names each: only
+            // where there are some, since most instructions have none.
+            if let Some((_, passed)) = reached.split_last()
+                && !passed.is_empty()
+            {
+                record["passed"] = passed
+                    .iter()
+                    .map(|position| position_record(*position))
+                    .collect();
+            }
+            record
         })
         .collect();
     // Offsets from the first data word, as the instructions' texts name
@@ -777,6 +789,18 @@ fn code_record(code: &CodeListing) -> Value {
         "scopes": scopes_record(scopes),
         "mark": mark,
     })
+}
+
+/// A position a `code` record's `passed` names: `{"scope":s,"at":pc}`, or
+/// `{"out-of-line":true}`.
+fn position_record(position: Position) -> Value {
+    match position {
+        Position::Instruction {
+            scope,
+            program_counter,
+        } => json!({ "scope": scope, "at": program_counter }),
+        Position::OutOfLine => json!({ "out-of-line": true }),
+    }
 }
 
 fn inlining_record(inlining: &InliningListing) -> Value {

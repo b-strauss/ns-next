@@ -21,20 +21,12 @@ pub(crate) const ENTRY_DEFAULT: usize = 50;
 pub(crate) const OVERVIEW_DEFAULT: usize = 10;
 
 /// The lines of a listing's window by default.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the listing and code windows page by it")
-)]
 pub(crate) const LINE_DEFAULT: usize = 150;
 
 /// The most entries a page holds, whatever it is asked.
 pub(crate) const ENTRY_MAXIMUM: usize = 200;
 
 /// The most lines a window holds, whatever it is asked.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the listing and code windows page by it")
-)]
 pub(crate) const LINE_MAXIMUM: usize = 500;
 
 /// How many entries or lines a call asked for: `default` when it asked
