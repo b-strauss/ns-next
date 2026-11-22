@@ -3059,54 +3059,6 @@ const FACTORIES: &str = indoc! {"
     )
 "};
 
-/// A factory's body is compiled though no machine code sends it: the
-/// interpreter's push counts its entry, as a push at a method's start
-/// counts a method's. Under the cache stress mode, which vacates every
-/// cache at every safepoint, the run's sends of `Point x:` are the
-/// interpreter's, the block that sends them leaving its machine code at
-/// each of them.
-#[cfg(debug_assertions)]
-#[test]
-fn a_factory_the_interpreter_alone_sends_is_compiled() {
-    let received = Rc::new(RefCell::new(Vec::new()));
-    let sink = Box::new(Describing(Rc::clone(&received)));
-    run_source_made_by(
-        FACTORIES,
-        Factory::Plain,
-        |interpreter| {
-            interpreter.set_jit_stress(false);
-            interpreter.set_optimize_stress(false);
-            interpreter.set_optimization_budget(i64::MAX);
-            interpreter.set_stress_caches(true);
-            interpreter.set_trace(
-                tracing(
-                    TraceCategories::default().with(TraceCategory::Compile),
-                    TraceFilter::everything(),
-                ),
-                sink,
-            );
-        },
-        |_| false,
-    );
-    let received = received.take();
-    let compiled: Vec<&str> = events_of(&received)
-        .into_iter()
-        .filter(|event| matches!(event.kind, TraceEventKind::Compiled { .. }))
-        .filter_map(|event| event.body.as_ref())
-        .map(|body| body.name.as_str())
-        .collect();
-    for factory in [
-        "Demo/Point class>>x:",
-        "Demo class>>new",
-        "Demo/Empty class>>new",
-    ] {
-        assert!(
-            compiled.contains(&factory),
-            "{factory} is not compiled: {compiled:?}"
-        );
-    }
-}
-
 /// What `source`'s `run` delivers to a describing sink that also prints
 /// every body's bytecode, which names every body of each mixin made: the
 /// `compile` category's events and the bodies' descriptions.
@@ -3174,12 +3126,16 @@ fn every_factory_body_is_described() {
     // A factory body stands at its header's factory pattern, in the
     // module's text, with no statement and no send: the compiler
     // synthesizes it from the header's arity, and the source writes none.
+    // Each is named through its mixin's bytecode listing, which names it
+    // whether or not the run compiles it: a stress mode that keeps its
+    // senders interpreted leaves it uncompiled.
+    let listed = received_listing_bytecode(FACTORIES);
     for (name, pattern) in [
         ("Demo/Point class>>x:", "x: ax"),
         ("Demo/Applied class>>new:", "new: seed"),
         ("Demo class>>new", "Demo"),
     ] {
-        let description = description_of(&received, name);
+        let description = description_of(&listed, name);
         assert_eq!(slice(description.source), pattern, "{name}");
         let current = description.current.as_ref().expect("the module's text");
         assert_eq!(current.source, description.source, "{name}");
@@ -3187,7 +3143,6 @@ fn every_factory_body_is_described() {
     }
     // So does an initializer the compiler synthesizes, at its header, which
     // the bytecode listing of its mixin names.
-    let listed = received_listing_bytecode(FACTORIES);
     for name in ["Demo/Empty initializer", "Demo/Empty initializer, own part"] {
         let empty = description_of(&listed, name);
         assert_eq!(slice(empty.source), "Empty", "{name}");

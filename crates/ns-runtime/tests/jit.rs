@@ -3732,29 +3732,27 @@ ns_runtime::for_each_lowering! {
         assert_eq!(run_with(&mut interpreter, 10_000), 50_005_000);
         let done = since(interpreter.jit_statistics(), before);
         if lowering == Lowering::Optimized && !a_stress_mode_is_on() {
-            assert!(
-                done.compiled_bodies >= 3,
-                "`run:`, then `new`, `sumWith:count:` and `add:` by the miss"
-            );
+            assert!(done.compiled_bodies >= 2, "`sumWith:count:`, then `add:` by the miss");
             // `Adder`'s accessor answers the class in its stub; `new`, the
-            // factory the first run's interpreted push counted once, has
-            // its miss count the second entry and compile it, as
-            // `sumWith:count:`'s and `add:`'s misses compile theirs, so that
-            // `run:` never leaves.
+            // factory's first send from machine code, has the miss count its
+            // body's first entry and refuse the call, so that `run:` leaves
+            // there; `add:`'s miss compiles it.
             assert_eq!(
-                done.miss_leaf_calls, 3,
-                "the three sends that found no machine entry"
+                done.miss_leaf_calls, 2,
+                "the two sends that found no machine entry"
             );
             assert!(done.compiled_calls >= 9_000, "{}", done.compiled_calls);
-            assert_eq!(done.send_exits, 0, "`run:` makes every send itself");
+            assert_eq!(done.send_exits, 1, "`run:` leaves at the one send it does not make");
             assert_eq!(
-                done.machine_entries, 1,
-                "`run:`, compiled at the host's push, is entered there; every other body only \
-                 through compiled calls"
+                done.machine_entries, 2,
+                "`run:`, compiled at the host's push, is entered there, and `sumWith:count:`, \
+                 compiled at the interpreter's push after `run:` left, is entered there; `add:` \
+                 only through compiled calls"
             );
         }
-        // The factory's next send from machine code calls its machine code,
-        // so that nothing leaves machine code.
+        // The factory's second send from machine code: its miss counts the
+        // body's second entry, which no interpreter's push counted, and
+        // compiles it, so that nothing leaves machine code.
         let before = interpreter.jit_statistics();
         assert_eq!(run_with(&mut interpreter, 10), 55);
         let done = since(interpreter.jit_statistics(), before);

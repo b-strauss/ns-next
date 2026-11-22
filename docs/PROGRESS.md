@@ -8746,8 +8746,6 @@ where the analyzer changed).
   program's arguments, refusals naming the filters and the categories
   not traced, a traced start not yet open told apart, an existing
   `traces/` narrowed to `0700`.
-- `09f7ee01` -- a factory's interpreted push counts its entry, so that a
-  factory only interpreted code sends is compiled.
 - `7dafaa64` -- the follower's test waits for the file's deletion.
 - `05369649` -- a code record's scope carries the lines no bytecode
   record lists.
