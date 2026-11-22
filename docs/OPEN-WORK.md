@@ -64,7 +64,8 @@ it through `debug_trace`, `debug_trace_method`, `debug_trace_listing`
 and `debug_trace_events`, every answer bounded
 ([developer-tool.md](design/developer-tool.md), "Stage 1: tracing",
 "Stage 2: printing code", "Stage 3: the developer tool in the IDE",
-decisions 36 to 39; [modules.md](design/modules.md), decision 8). Its stage 4, the shell,
+decisions 36 to 39; [modules.md](design/modules.md), decision 8). Its
+stage 4, the shell,
 is next for it: it needs a plan of its own, which decides its open
 questions -- how an input is compiled, how a workspace variable becomes
 a slot, whether results are named, how an interrupt stops an input,
@@ -2450,7 +2451,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   is built: typed events with their reasons reported to a sink the host
   installs (`ns_runtime::trace_events`), written by `ns-next run
   --trace=<categories>`, narrowed by `--trace-filter`, passed on by
-  `debug_start` into a trace file of the MCP server's. Stage 2, printing code, is built: bytecode, baseline,
+  `debug_start` into a trace file of the MCP server's. Stage 2, printing
+  code, is built: bytecode, baseline,
   twin and optimized machine code at install and the inlining plan,
   written by `--print-bytecode`, `--print-code` and `--print-inlining`,
   machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, and

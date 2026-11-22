@@ -8736,7 +8736,7 @@ where the analyzer changed).
 - `3b2b32ee`, `4bd84b32` -- `debug_trace_events`, and a journal's place
   in an edited body's current text.
 - `9b329fe2` -- `debug_code`, `debug_stack` and `debug_variables` paged.
-- the last commit -- the documentation.
+- `925676cd`, `bbb133f2` -- the documentation, and CLAUDE.md.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
 stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the

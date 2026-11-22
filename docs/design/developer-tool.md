@@ -595,8 +595,10 @@ at a tool answer of 10,000 tokens and cuts one at 25,000 by default, and
 20,000 characters stay at the warning even at two characters a token,
 the density machine code's hex and registers might have, which nothing
 measured, so that the budget assumes the worst plausible one. A cut
-answer ends in `Showing <first>–<last> of <total> — next: <exact call>`,
-the tool's name and its arguments as one JSON object, `session` always
+answer ends in `Showing <first>–<last> of <total> — next: <exact call>`
+-- but each list the overview cuts, which says it in its head,
+`installs (10 of 64) — next: debug_trace
+{"session":1,"list":"installs","start":10}` --, the tool's name and its arguments as one JSON object, `session` always
 among them, then the tool's arguments in its signature's order, then
 `start` and `count`, as Chrome DevTools' pages end in their range and
 the next page's call; a page that is the whole needs no such line, and
@@ -1221,7 +1223,8 @@ error, and the whole listing of a body without a send on Windows x64
 `tests/debug_adapter.rs` `nsNext/frameCode`; `tests/mcp.rs`
 `debug_code` and `debug_trace_listing`; and `mcp/trace_listings.rs`'s
 unit tests every kind of record rendered as `--print-*` prints it, and
-every listing of a whole run so (`every_listing_of_a_run_is_rendered_as_it_is_printed`).
+every listing of a whole run so
+(`every_listing_of_a_run_is_rendered_as_it_is_printed`).
 A test of machine code asserts the lines that must occur,
 never a whole listing but that one, and the CLI's and the MCP server's
 tests strip every stress mode from the child; without a JIT the MCP
@@ -1840,7 +1843,8 @@ offset -- a class's factory and its synthesized initializers at its
 header -- one icon between them (decision 28; `sharedIcon`), drawn with
 the state of the body of the lowest number, badged if any is watched,
 its tooltip a line per body, `<name>: <that body's tooltip>`, and its
-menu a submenu of each body's actions -- and a hint after each send the run says something of
+menu a submenu of each body's actions -- and a hint after each send
+the run says something of
 (`SendInlayRenderer`), `inlined` or `declined: <reason>` and the cache's
 state, the events' fields on hover; each block at its own range. A
 watched method the run has no body of shows an eye. Both icons and
@@ -1965,7 +1969,8 @@ library file, and one icon for the bodies at one header, naming each
 with its state; `ListingsFixtureTest` the plugin's bytecode and code
 listings, a passed position and two annotations on one instruction
 among them, equal to the CLI's text for the same records, from the
-fixture `src/test/resources/devtool/listings.jsonl`; `CodeTabTest` the caret's body, the chooser, a listing
+fixture `src/test/resources/devtool/listings.jsonl`; `CodeTabTest` the
+caret's body, the chooser, a listing
 built once per choice and read on a pooled thread, the text before it
 kept, linking nothing and opening nothing, and the notice of a slow read, a batch that keeps the chosen install
 leaving the viewer alone, a read for a copy no longer chosen dropped, a

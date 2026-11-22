@@ -5781,7 +5781,8 @@ the way not taken: every question would run the program from its start.
   returns, or `the frame goes on in the interpreter`, through
   `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
   printing code"), 150 lines by default and 500 at most --
-  `debug_variables(frame? | reference?, start?, count?)`, `debug_evaluate(expression, frame?)`,
+  `debug_variables(frame? | reference?, start?, count?)`,
+  `debug_evaluate(expression, frame?)`,
   `debug_set_variable(name, value, frame?)`, `debug_frame(action:
   restart | return, frame, value?)`, `debug_memory(class? |
   referrers_of?)`, `debug_mark(reference?, label)` -- without a
@@ -5917,9 +5918,11 @@ the way not taken: every question would run the program from its start.
     line that would take its answer past `ANSWER_BUDGET`, 20,000
     characters. A page that is not the whole -- and every window of
     `debug_trace_listing`, which always says where it stands -- ends in
-    `Showing <first>–<last> of <total>` and, where more follow, `— next:`
-    the exact call, `session` first, then the tool's arguments in its
-    signature's order, then `start` and `count`, every argument given
+    `Showing <first>–<last> of <total>`, but each list the overview cuts,
+    which says it in its head instead, `installs (10 of 64) — next:
+    debug_trace {"session":1,"list":"installs","start":10}`; where more
+    follow, `— next:` the exact call, `session` first, then the tool's
+    arguments in its signature's order, then `start` and `count`, every argument given
     repeated with `start` advanced, `debug_trace_listing`'s `index`
     always among them, so that a new install between pages does not
     change the listing: `next: debug_trace_events
@@ -6017,7 +6020,8 @@ the way not taken: every question would run the program from its start.
   temporary directory, where another user could put a file of their own
   at the path first, which the server would show (decided on
   2026-11-17). A directory is written under a name of its process's and
-  its session's and renamed into place, so that no session reads a half written one. A
+  its session's and renamed into place, so that no session reads a half
+  written one. A
   server that starts removes a directory of shipped sources untouched
   for a day -- its `fingerprint` file's time, which a `debug_start` that
   reuses the directory touches, or the directory's own without one --
