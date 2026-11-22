@@ -332,6 +332,23 @@ class CodeTabTest : BasePlatformTestCase() {
         )
     }
 
+    /** A body the run listed no bytecode of -- a host's own factory -- is named by the lines its scope carries. */
+    fun testAScopeWithoutBytecodeIsNamedByItsOwnLines() {
+        val run = tracedRun()
+        run.add(
+            listOf(
+                """{"kind":"code","body":3,"tier":"twin","key":null,"entered":null,"architecture":"x64","base":4096,"bytes":4,"instructions":[""" +
+                    """{"offset":0,"text":"mov rax,7","scope":0,"at":1,"out-of-line":false,"annotation":null}],""" +
+                    """"data":[],"scopes":[{"scope":0,"body":3,"parent":null,""" +
+                    """"lines":["   0   stmt 0  AllocateInstance r13","   1   stmt 0  InitializeInstance r13"]}],"mark":null}""",
+            ).let(trace::records),
+        )
+        val tab = tab(run)
+        tab.show(3)
+        choose(tab, "twin")
+        assertTrue(tab.viewer.document.text, tab.viewer.document.text.contains("\n  @1  stmt 0  InitializeInstance r13\n"))
+    }
+
     fun testAStatementHighlightsItsBytecodeAndItsMachineCode() {
         val tab = tab(tracedRun())
         val editor = openSource()

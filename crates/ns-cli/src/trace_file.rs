@@ -6,7 +6,7 @@
 //! trace's names, every body is named by its number, and every position
 //! is a range of lines and UTF-16 columns of its module's text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -624,8 +624,13 @@ fn key_record(key: Option<&(String, Option<String>)>) -> (Value, Value) {
 }
 
 /// The scopes of a code or inlining listing, each with its body's number
-/// and the scope and program counter it is inlined at.
-fn scopes_record(scopes: &[ListedScope]) -> Vec<Value> {
+/// and the scope and program counter it is inlined at, and, for a body
+/// `listed` says no earlier record lists the bytecode of, its instruction
+/// lines: a body no mixin holds -- a factory a host's instantiation built
+/// for itself -- has no bytecode listing ever, and one the print filter
+/// or the printing left out none in this file, so that a reader writes
+/// its positions as the text listing does from the record alone.
+fn scopes_record(scopes: &[ListedScope], listed: &dyn Fn(u32) -> bool) -> Vec<Value> {
     scopes
         .iter()
         .map(|scope| {
@@ -633,23 +638,52 @@ fn scopes_record(scopes: &[ListedScope]) -> Vec<Value> {
                 number: scope_number,
                 body,
                 parent,
-                instructions: _,
+                instructions,
             } = scope;
-            json!({
+            let mut record = json!({
                 "scope": scope_number,
                 "body": number(body),
                 "parent": parent.map(|(parent, program_counter)| json!([parent, program_counter])),
-            })
+            });
+            if !listed(number(body)) {
+                record["lines"] = json!(instructions);
+            }
+            record
         })
         .collect()
 }
 
-/// The record of `listing`: a `bytecode`, `code` or `inlining` record.
+/// The record of `listing`: a `bytecode`, `code` or `inlining` record, as
+/// a file whose bytecode records list every body writes it.
+#[cfg(test)]
 pub(crate) fn listing_record(listing: &Listing) -> Value {
+    listing_record_given(listing, &|_| true)
+}
+
+/// The record of `listing`, `listed` saying whether an earlier record of
+/// the file lists a body's bytecode.
+fn listing_record_given(listing: &Listing, listed: &dyn Fn(u32) -> bool) -> Value {
     match listing {
         Listing::Bytecode(bytecode) => bytecode_record(bytecode),
-        Listing::Code(code) => code_record(code),
-        Listing::Inlining(inlining) => inlining_record(inlining),
+        Listing::Code(code) => code_record(code, listed),
+        Listing::Inlining(inlining) => inlining_record(inlining, listed),
+    }
+}
+
+/// The bodies whose bytecode a file's records have listed so far.
+#[derive(Default)]
+pub(crate) struct ListedBodies(HashSet<u32>);
+
+impl ListedBodies {
+    /// The record of `listing` as the file it follows writes it, its
+    /// bodies noted when it lists their bytecode.
+    pub(crate) fn record(&mut self, listing: &Listing) -> Value {
+        if let Listing::Bytecode(bytecode) = listing {
+            self.0
+                .extend(bytecode.bodies.iter().map(|listed| number(&listed.body)));
+        }
+        let listed = &self.0;
+        listing_record_given(listing, &|body| listed.contains(&body))
     }
 }
 
@@ -716,7 +750,7 @@ fn joined_annotations(texts: impl Iterator<Item = String>) -> String {
 /// it stands in, or that it stands out of line, and what a call or jump
 /// out of it reaches; and the address the code was installed at, as the
 /// text listing's `base=` writes it.
-fn code_record(code: &CodeListing) -> Value {
+fn code_record(code: &CodeListing, listed: &dyn Fn(u32) -> bool) -> Value {
     let CodeListing {
         body,
         tier,
@@ -798,7 +832,7 @@ fn code_record(code: &CodeListing) -> Value {
         "bytes": bytes.len(),
         "instructions": instructions,
         "data": data,
-        "scopes": scopes_record(scopes),
+        "scopes": scopes_record(scopes, listed),
         "mark": mark,
     })
 }
@@ -815,7 +849,7 @@ fn position_record(position: Position) -> Value {
     }
 }
 
-fn inlining_record(inlining: &InliningListing) -> Value {
+fn inlining_record(inlining: &InliningListing, listed: &dyn Fn(u32) -> bool) -> Value {
     let InliningListing {
         body,
         key,
@@ -860,7 +894,7 @@ fn inlining_record(inlining: &InliningListing) -> Value {
         "body": number(body),
         "key": key,
         "entered": entered,
-        "scopes": scopes_record(scopes),
+        "scopes": scopes_record(scopes, listed),
         "arms": arms,
         "declined": declined,
         "outcome": outcome,
@@ -906,6 +940,7 @@ fn header_record(categories: TraceCategories, printing: Printing) -> Value {
 pub(crate) struct TraceFileSink {
     file: BufWriter<File>,
     modules: ModuleSources,
+    listed: ListedBodies,
 }
 
 /// Creates the trace file at `path`, replacing one there, and writes its
@@ -924,6 +959,7 @@ pub(crate) fn create(
     let mut sink = TraceFileSink {
         file: BufWriter::new(file),
         modules,
+        listed: ListedBodies::default(),
     };
     sink.write(&header_record(categories, printing));
     // A reader that opens the file at once finds it a trace.
@@ -948,7 +984,8 @@ impl TraceSink for TraceFileSink {
     }
 
     fn listing(&mut self, listing: &Listing) {
-        self.write(&listing_record(listing));
+        let record = self.listed.record(listing);
+        self.write(&record);
     }
 
     fn body(&mut self, description: &BodyDescription) {

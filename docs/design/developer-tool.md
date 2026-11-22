@@ -1518,7 +1518,13 @@ The records:
   text listing names on a line of its own; each data word `{"offset":o,"word":…}`,
   its offset from the first data word, as the instructions' texts name
   it (`data+0x0008`), and what it holds (`budget word`); each scope
-  `{"scope":s,"body":N,"parent":[scope,at]|null}`.
+  `{"scope":s,"body":N,"parent":[scope,at]|null}`, and with
+  `"lines":[…]`, its body's instruction lines as the bytecode listing
+  writes them, where no earlier `bytecode` record of the file lists the
+  body -- one no mixin holds, a factory a host's instantiation built for
+  itself, has none ever, and one the print filter or the printing left
+  out none in this file --, so that a reader writes every position line
+  as the text listing does from the file alone (`ListedBodies`).
 - `{"kind":"inlining","body":N,"key":…|null,"entered":…|null,"scopes":[…],"arms":[…],"declined":[…],"outcome":…}`,
   an optimizing compile's plan: its scopes as a `code` record's; each
   arm `{"scope":s,"at":pc,"receiver":…,"inlined":{"scope":s}|{"always":"identity"}}`;

@@ -229,6 +229,7 @@ fun codeListing(names: ListingNames, code: Code): CodeListing {
         writeScopeTree(writer, names, code.scopes)
     }
     val scopeBodies = code.scopes.associate { scope -> scope.scope to scope.body }
+    val scopeLines = code.scopes.associate { scope -> scope.scope to scope.lines }
     var lastPosition: CodePosition? = null
     // An instruction without a scope of its own stands in the body's.
     fun linkedOf(position: CodePosition): ListingPosition? =
@@ -251,7 +252,7 @@ fun codeListing(names: ListingNames, code: Code): CodeListing {
                 val label = StringBuilder("  ")
                 if (optimized) label.append("s${position.scope ?: 0} {${names.name(stretch.body)}} ")
                 label.append("@$at")
-                bytecodeText(names, stretch)?.let { text -> label.append("  ").append(text) }
+                (scopeLine(scopeLines[position.scope ?: 0], at) ?: bytecodeText(names, stretch))?.let { text -> label.append("  ").append(text) }
                 writer.line(label.toString(), stretch)
             }
             lastPosition = position
@@ -290,6 +291,15 @@ private fun writeScopeTree(writer: ListingWriter, names: ListingNames, scopes: L
 private fun bytecodeText(names: ListingNames, position: ListingPosition): String? {
     val instruction = names.instruction(position) ?: return null
     return "${statementWord(instruction.statement)}  ${instruction.text}"
+}
+
+/**
+ * The instruction at [at] of a scope's own [lines], which the record carries where the run listed no bytecode of
+ * its body, without its index, as the CLI writes it; null where the scope carries none.
+ */
+private fun scopeLine(lines: List<String>?, at: Int): String? {
+    val line = lines?.getOrNull(at) ?: return null
+    return line.trimStart().substringAfter(' ', "").trimStart()
 }
 
 private fun bodyOffset(offset: Int): String = "+0x${hex(offset)}"

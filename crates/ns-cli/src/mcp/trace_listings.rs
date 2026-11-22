@@ -138,7 +138,9 @@ fn body_of(body: &Value) -> Option<ViewBody> {
 }
 
 /// The scopes of a `code` or `inlining` record, each with its body's
-/// instructions where one of `bytecode` lists the body.
+/// instructions: the scope's own `lines`, where the record carries them
+/// for a body no earlier record lists, or those of the one of `bytecode`
+/// that lists the body.
 fn scopes_of(record: &Value, bytecode: &[Value], names: &dyn Fn(u32) -> String) -> Vec<ViewScope> {
     array(&record["scopes"])
         .iter()
@@ -152,7 +154,10 @@ fn scopes_of(record: &Value, bytecode: &[Value], names: &dyn Fn(u32) -> String) 
                     .first()
                     .and_then(number)
                     .zip(parent.get(1).and_then(number)),
-                instructions: instructions_of(body, bytecode),
+                instructions: match scope["lines"].as_array() {
+                    Some(lines) => lines.iter().map(text).collect(),
+                    None => instructions_of(body, bytecode),
+                },
             }
         })
         .collect()
@@ -655,6 +660,29 @@ pub(crate) mod tests {
         assert_eq!(lines[5], "  ->+0x0004  04 05 06 07");
     }
 
+    /// A file whose records listed no bytecode of a scope's body -- one no
+    /// mixin holds, or one the print filter or the printing left out --
+    /// carries its lines in the scope, which the listing is written by as
+    /// `--print-code` writes it; once a record lists the body, the scope
+    /// carries none.
+    #[test]
+    fn a_scope_no_bytecode_record_lists_carries_its_lines() {
+        let code = Listing::Code(square_code(16));
+        let mut listed = crate::trace_file::ListedBodies::default();
+        let alone = listed.record(&code);
+        let Listing::Code(square) = &code else {
+            unreachable!("a code listing")
+        };
+        assert_eq!(
+            alone["scopes"][0]["lines"],
+            serde_json::json!(square.scopes[0].instructions)
+        );
+        assert_eq!(rendered(&alone, &[], &name_of), printed(&code));
+        listed.record(&Listing::Bytecode(square_bytecode()));
+        let after = listed.record(&code);
+        assert_eq!(after["scopes"][0].get("lines"), None, "{after}");
+    }
+
     /// A sink that keeps every listing it receives.
     struct Listings(Rc<RefCell<Vec<Listing>>>);
 
@@ -702,8 +730,10 @@ pub(crate) mod tests {
 
     /// Every listing of a real run -- the core library's and the
     /// program's bytecode, and on a target with a JIT every copy of
-    /// machine code and every inlining plan -- read back from its record
-    /// is written as `--print-*` writes it.
+    /// machine code and every inlining plan -- read back from its record,
+    /// as the trace file writes the run's records in order, is written as
+    /// `--print-*` writes it: a body no bytecode record lists, the
+    /// host's own factory among them, by the lines its scope carries.
     #[test]
     fn every_listing_of_a_run_is_rendered_as_it_is_printed() {
         let module = ns_syntax::parse(HOT).expect("parse");
@@ -711,6 +741,13 @@ pub(crate) mod tests {
             .expect("resolve");
         let mut interpreter = Interpreter::bootstrap();
         interpreter.set_jit_enabled(true);
+        // Off whatever the environment says: a body the breakpoint or step
+        // stress mode patched loses its machine code at every statement,
+        // and the run would list none to compare.
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_breakpoints(false);
+        #[cfg(debug_assertions)]
+        interpreter.set_stress_step(false);
         let listings = Rc::new(RefCell::new(Vec::new()));
         interpreter.set_trace(
             TraceSettings {
@@ -765,11 +802,12 @@ pub(crate) mod tests {
         }
         let names_of = |number: u32| names.get(&number).cloned().unwrap_or_default();
         let mut machine_code = 0;
+        let mut listed = crate::trace_file::ListedBodies::default();
         for listing in listings.iter() {
             if !matches!(listing, Listing::Bytecode(_)) {
                 machine_code += 1;
             }
-            let record = listing_record(listing);
+            let record = listed.record(listing);
             assert_eq!(
                 rendered(&record, &bytecode, &names_of),
                 printed(listing),

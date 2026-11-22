@@ -219,8 +219,12 @@ data class DataWord(val offset: Int, val word: String)
 /** Where a scope is inlined: the [scope] and bytecode index [at] of its send. */
 data class ScopeParent(val scope: Int, val at: Int)
 
-/** A scope of a copy or a plan: the [body] it runs, and where it is inlined, null for the root. */
-data class Scope(val scope: Int, val body: Int, val parent: ScopeParent?)
+/**
+ * A scope of a copy or a plan: the [body] it runs, and where it is inlined, null for the root; and [lines], its
+ * body's instruction lines as the bytecode listing writes them, which a record carries for a body no earlier
+ * bytecode record of the file lists -- empty for one that is listed.
+ */
+data class Scope @JvmOverloads constructor(val scope: Int, val body: Int, val parent: ScopeParent?, val lines: List<String> = emptyList())
 
 /**
  * An install's machine code: its [tier] (`baseline`, `twin` or
@@ -388,7 +392,8 @@ private const val FORMAT = "ns-next-trace"
 private fun scopes(record: JsonObject): List<Scope> = record.requiredArray("scopes").map { element ->
     val scope = element.asJsonObject
     val parent = scope.optional("parent")?.asJsonArray
-    Scope(scope.requiredInteger("scope"), scope.requiredInteger("body"), parent?.let { pair -> ScopeParent(pair[0].asInt, pair[1].asInt) })
+    val lines = scope.optional("lines")?.asJsonArray?.map { line -> line.asString } ?: emptyList()
+    Scope(scope.requiredInteger("scope"), scope.requiredInteger("body"), parent?.let { pair -> ScopeParent(pair[0].asInt, pair[1].asInt) }, lines)
 }
 
 private fun sourceRange(element: JsonElement?): SourceRange? {
