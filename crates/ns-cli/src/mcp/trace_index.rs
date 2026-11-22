@@ -558,6 +558,11 @@ fn read_exactly_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Resu
 /// it takes the index's lock to hand the slice's records over.
 const SLICE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// How many lines one slice parses at most: a parsed line is far larger
+/// than its text, so that a slice of short event lines is handed over
+/// before it holds more than a few MB.
+const SLICE_LINES: usize = 4096;
+
 /// A session's trace: its index, which the trace tools lock, and the
 /// follower, a thread that reads the file as it grows. The follower reads
 /// and parses without the index's lock and takes it only to hand over
@@ -711,7 +716,7 @@ fn follow(trace: &Weak<Trace>, slice: u64, before_slice: &dyn Fn(u64)) {
             before_slice(slices);
             slices += 1;
             let read = reader.read;
-            let made = reader.read_to(&file, end.min(read.saturating_add(slice)));
+            let made = reader.read_to(&file, end.min(read.saturating_add(slice)), SLICE_LINES);
             let Some(trace) = trace.upgrade() else {
                 return;
             };
@@ -743,13 +748,15 @@ impl LineReader {
     /// Reads the file from where the reading stands up to `end`, holding
     /// it only for the length of each read, and parses every line ended
     /// by its `\n`; a line not ended yet waits in the tail.
-    fn read_to(&mut self, file: &Weak<TraceFile>, end: u64) -> Slice {
+    /// At most `line_cap` lines are parsed: the reading stops after the
+    /// last of them, and the next begins where it stopped.
+    fn read_to(&mut self, file: &Weak<TraceFile>, end: u64, line_cap: usize) -> Slice {
         let mut slice = Slice {
             lines: Vec::new(),
             failure: None,
         };
         let mut buffer = vec![0; READ_BYTES];
-        while self.read < end {
+        while self.read < end && slice.lines.len() < line_cap {
             let wanted =
                 usize::try_from(end - self.read).map_or(READ_BYTES, |left| left.min(READ_BYTES));
             // Closed meanwhile: the reading ends with the file.
@@ -766,18 +773,20 @@ impl LineReader {
                 }
             };
             drop(trace_file);
-            self.take(&buffer[..read], &mut slice.lines);
+            self.take(&buffer[..read], &mut slice.lines, line_cap);
         }
         slice
     }
 
     /// Takes `bytes`, the next read from the file, line by line into
-    /// `lines`.
-    fn take(&mut self, bytes: &[u8], lines: &mut Vec<ParsedLine>) {
+    /// `lines` until they hold `line_cap`; the bytes after the last line
+    /// taken are left unread, for the next reading to read again.
+    fn take(&mut self, bytes: &[u8], lines: &mut Vec<ParsedLine>, line_cap: usize) {
         let first = self.read;
-        self.read += bytes.len() as u64;
         let mut start = 0;
-        while let Some(found) = bytes[start..].iter().position(|byte| *byte == b'\n') {
+        while lines.len() < line_cap
+            && let Some(found) = bytes[start..].iter().position(|byte| *byte == b'\n')
+        {
             let end = start + found;
             // Bytes, never characters: the offset is what a later read
             // seeks to.
@@ -808,7 +817,11 @@ impl LineReader {
             self.line_start = newline_at + 1;
             start = end + 1;
         }
-        self.tail.extend_from_slice(&bytes[start..]);
+        if lines.len() < line_cap {
+            self.tail.extend_from_slice(&bytes[start..]);
+            start = bytes.len();
+        }
+        self.read = first + start as u64;
     }
 }
 
@@ -2564,6 +2577,43 @@ mod tests {
         assert!(!unwritten_index.lists(ListingKind::Code));
     }
 
+    /// A slice parses no more lines than its cap, though one read holds
+    /// more, and the next slice goes on at the line after its last, each
+    /// line at its offset.
+    #[test]
+    fn a_slice_parses_at_most_its_lines() {
+        let mut scratch = Scratch::new("line-cap");
+        scratch.header(&["compile"], &[]);
+        for number in 1..=4 {
+            scratch.body(number, "Demo>>run", None);
+        }
+        let end = std::fs::metadata(scratch.trace.lock().path().unwrap())
+            .unwrap()
+            .len();
+        let file = Arc::downgrade(scratch.trace.lock().file.as_ref().expect("open"));
+        let mut reader = LineReader {
+            tail: Vec::new(),
+            read: 0,
+            line_start: 0,
+            lines: 0,
+        };
+        let first = reader.read_to(&file, end, 2);
+        assert_eq!(first.lines.len(), 2);
+        assert_eq!(reader.read, reader.line_start);
+        assert!(reader.tail.is_empty());
+        let second = reader.read_to(&file, end, 2);
+        assert_eq!(second.lines.len(), 2);
+        assert_eq!(second.lines[0].number, 3);
+        assert_eq!(
+            second.lines[0].offset,
+            first.lines[1].offset + u64::from(first.lines[1].length) + 1
+        );
+        let last = reader.read_to(&file, end, 2);
+        assert_eq!(last.lines.len(), 1);
+        assert_eq!(reader.read, end);
+        assert!(last.lines.iter().all(|line| line.head.is_ok()));
+    }
+
     /// A slice ends at the length it was given, whatever the file holds
     /// past it, so that a turn ends however fast the child writes: what
     /// is written meanwhile is the next turn's.
@@ -2585,11 +2635,11 @@ mod tests {
             line_start: 0,
             lines: 0,
         };
-        let slice = reader.read_to(&file, end);
+        let slice = reader.read_to(&file, end, SLICE_LINES);
         assert!(slice.failure.is_none());
         assert_eq!(slice.lines.len(), 4);
         assert_eq!(reader.read, end);
-        let rest = reader.read_to(&file, u64::MAX);
+        let rest = reader.read_to(&file, u64::MAX, SLICE_LINES);
         assert_eq!(rest.lines.len(), 1);
         assert_eq!(rest.lines[0].offset, end);
     }
@@ -2604,22 +2654,28 @@ mod tests {
         let mut writer = scratch.writer.try_clone().expect("a second writer");
         let writing = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let still_writing = Arc::clone(&writing);
+        // The bytes of the lines the child finished writing: always a line's
+        // end, where the file's size may stand inside a line being written.
+        let finished = Arc::new(std::sync::atomic::AtomicU64::new(
+            std::fs::metadata(&path).unwrap().len(),
+        ));
+        let finishing = Arc::clone(&finished);
         let child = std::thread::spawn(move || {
             let mut number = 0;
-            while still_writing.load(std::sync::atomic::Ordering::Relaxed) {
+            while still_writing.load(std::sync::atomic::Ordering::Acquire) {
                 number += 1;
-                // One line a write, as the child's flush of whole records.
                 let line = format!("{}\n", body_record(number, "Demo>>run", None));
                 writer.write_all(line.as_bytes()).expect("written");
+                finishing.fetch_add(line.len() as u64, std::sync::atomic::Ordering::Release);
             }
         });
         for _ in 0..3 {
-            let length = std::fs::metadata(&path).unwrap().len();
+            let written = finished.load(std::sync::atomic::Ordering::Acquire);
             let index = scratch.caught_up();
             assert_eq!(index.failure(), None);
-            assert!(index.bytes() >= length, "{} < {length}", index.bytes());
+            assert!(index.bytes() >= written, "{} < {written}", index.bytes());
         }
-        writing.store(false, std::sync::atomic::Ordering::Relaxed);
+        writing.store(false, std::sync::atomic::Ordering::Release);
         child.join().expect("the child's writes");
     }
 
