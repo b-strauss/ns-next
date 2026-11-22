@@ -24,7 +24,7 @@ pub(crate) mod exceptions;
 mod memory;
 pub(crate) mod metadata;
 mod remote;
-mod stack;
+pub(crate) mod stack;
 pub(crate) mod stepping;
 mod unwinding;
 mod values;

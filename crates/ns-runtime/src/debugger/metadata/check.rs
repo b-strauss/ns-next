@@ -15,7 +15,7 @@ use crate::compiler::Lowering;
 use crate::heap::MixinId;
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{LAZY_SHIPPED_MODULES, shipped_module_text};
-use crate::interpreter::instantiate::{InitializerBody, initializer_name};
+use crate::interpreter::instantiate::{InitializerBody, initializer_member};
 use crate::mixin::{MethodEntry, Mixin};
 use crate::{Interpreter, Symbol};
 
@@ -267,7 +267,7 @@ fn describe(level: &str, body: &Checked) -> String {
     };
     let member = match &body.member {
         Member::Method(selector) => format!(">>{selector}"),
-        Member::Initializer(kind) => initializer_name("", *kind),
+        Member::Initializer(kind) => format!(" {}", initializer_member(kind.named_as(&body.side))),
         Member::SuperclassClause => " superclass clause".to_string(),
         Member::Factory => " factory".to_string(),
     };

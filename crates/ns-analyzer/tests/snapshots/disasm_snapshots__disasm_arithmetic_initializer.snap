@@ -2,7 +2,7 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"library/number/integer/arithmetic\", &[\"--initializer\"])"
 ---
-initializer Arithmetic (args 0, registers 17)
+initializer Arithmetic initializer (args 0, registers 17)
    0   stmt 0  InitializeSuperclass r13 <- steps 1 #new ()
    1   stmt 1  LoadLiteral r13, 6
    2   stmt 1  LoadLiteral r14, 7
@@ -13,7 +13,7 @@ initializer Arithmetic (args 0, registers 17)
    7        -  LoadSelf r16
    8        -  ImplicitReturn r16
 
-initializer Arithmetic own part (args 0, registers 17)
+initializer Arithmetic initializer, own part (args 0, registers 17)
    0   stmt 0  LoadLiteral r13, 6
    1   stmt 0  LoadLiteral r14, 7
    2   stmt 0  IntegerBinary Multiply r15 <- r13, r14 else -> 4

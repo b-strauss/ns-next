@@ -101,6 +101,8 @@ fn inspect_names_every_body_in_the_code_table() {
     // class whose superclass clause is `Object new`.
     assert!(listing.contains("main:args:"), "{listing}");
     assert!(listing.contains("initializer"), "{listing}");
+    // Each initializer body is named as the trace and the debugger name it.
+    assert!(listing.contains("initializer, own part"), "{listing}");
     assert!(listing.contains("superclass clause"), "{listing}");
     // Every body must be accounted for -- an unnamed row would be exactly the
     // gap this closes.

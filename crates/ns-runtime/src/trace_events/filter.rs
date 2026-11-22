@@ -11,7 +11,7 @@
 //! version of its id, as a method breakpoint does (`ModuleName::covers`).
 
 use crate::debugger::{ClassName, ModuleName};
-use crate::interpreter::instantiate::{INITIALIZER_SUFFIX, OWN_PART_SUFFIX, STANDALONE_SUFFIX};
+use crate::interpreter::instantiate::{INITIALIZER_WORD, OWN_PART_SUFFIX, STANDALONE_SUFFIX};
 use crate::modules;
 use crate::tool_names::{self, ClassRefusal, KnownModule, MethodName};
 
@@ -342,7 +342,7 @@ fn initializer_owner(name: &str) -> Option<&str> {
         .strip_suffix(OWN_PART_SUFFIX)
         .or_else(|| name.strip_suffix(STANDALONE_SUFFIX))
         .unwrap_or(name);
-    name.strip_suffix(INITIALIZER_SUFFIX)
+    name.strip_suffix(INITIALIZER_WORD)?.strip_suffix(' ')
 }
 
 #[cfg(test)]

@@ -280,6 +280,54 @@ fn bare_artifact(edit: fn(ns_runtime::Mixin) -> ns_runtime::Mixin) -> Vec<u8> {
     })
 }
 
+/// `--initializer` heads each of a class's three initializer bodies by the
+/// name the trace and the debugger give it.
+#[test]
+fn disasm_names_the_three_initializer_bodies_as_the_trace_does() {
+    let directory = ScratchDirectory::new("disasm-initializer-names");
+    let path = directory.join("applying.ns");
+    std::fs::write(
+        &path,
+        indoc! {"
+            class Applying = Object new () (
+              class Extra = Object new () ()
+              public class Composite = Object new <: Extra new (
+                | public composite = 1. |
+              ) ()
+            )
+        "},
+    )
+    .expect("write temp source");
+    let out = common::target_command(env!("CARGO_BIN_EXE_ns-next-analyzer"))
+        .arg("disasm")
+        .arg(&path)
+        .arg("--initializer")
+        .arg("--class")
+        .arg("Applying.Composite")
+        .output()
+        .expect("run ns-next-analyzer disasm");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let heads: Vec<&str> = listing
+        .lines()
+        .filter(|line| line.starts_with("initializer "))
+        .map(|line| line.split(" (").next().unwrap_or(line))
+        .collect();
+    assert_eq!(
+        heads,
+        [
+            "initializer Composite initializer",
+            "initializer Composite initializer, own part",
+            "initializer Composite initializer, standalone",
+        ],
+        "{listing}"
+    );
+}
+
 /// An artifact whose root row names no own part of its initializer is legal
 /// when the class declares no slots and no `initExpr`s -- `verify_mixins`
 /// accepts it -- so `disasm --initializer` lists the bodies it does carry.
@@ -305,7 +353,10 @@ fn disasm_leaves_out_an_own_part_an_artifact_does_not_carry() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(listing.contains("initializer Bare ("), "{listing}");
+    assert!(
+        listing.contains("initializer Bare initializer ("),
+        "{listing}"
+    );
     assert!(!listing.contains("own part"), "{listing}");
     assert!(listing.contains("method Bare factory new"), "{listing}");
 }
