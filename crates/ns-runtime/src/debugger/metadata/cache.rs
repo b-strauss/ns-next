@@ -16,7 +16,7 @@ use crate::bytecode::CompiledCode;
 use crate::compiler::Lowering;
 use crate::heap::MixinId;
 use crate::interpreter::Mutator;
-use crate::mixin::Mixin;
+use crate::mixin::{DeclarationText, Mixin};
 
 /// Each body's metadata, `None` for a body that pairs with none, keyed by
 /// the body's address, and the text of each program module a level was
@@ -63,9 +63,34 @@ const FIRST_PRUNE: usize = 1024;
 pub(crate) struct OwnPlacement {
     /// `None` where the body compiled again from its own source pairs
     /// with none.
-    pub(crate) metadata: Option<Rc<BodyMetadata>>,
+    pub(crate) metadata: Option<Rc<PlacedMetadata>>,
     /// The module's current text and the body's source in it.
     pub(crate) current: Option<(Rc<str>, Span)>,
+}
+
+/// A body's statements and sends, each span in the text the body's
+/// version was read in, `None` for one that text has no place for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlacedMetadata {
+    pub(crate) statements: Vec<PlacedStatement>,
+    pub(crate) sends: Vec<PlacedSend>,
+}
+
+/// A statement's instructions and its source's place, if it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlacedStatement {
+    pub(crate) instructions: std::ops::Range<u32>,
+    pub(crate) span: Option<Span>,
+}
+
+/// A send's index, site, and the places of its call and its selector's
+/// tokens, each where it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlacedSend {
+    pub(crate) index: u32,
+    pub(crate) call_site: Option<crate::bytecode::CallSite>,
+    pub(crate) call: Option<Span>,
+    pub(crate) selector: Vec<Option<Span>>,
 }
 
 struct PlacementEntry {
@@ -243,8 +268,10 @@ impl Cache {
     /// level compiled again from that text, so that the metadata is
     /// collected from the body's own source, laid out as it was compiled,
     /// and moved from where it stands in that text to the root's own span.
-    /// A span outside the root's source would count in text laid out
-    /// otherwise, so a body with one has no metadata.
+    /// A span outside the root's source -- a full initializer's statements
+    /// of its superclass and `<:` clauses -- moves by the same distance
+    /// where the version's text holds the same bytes there, and has no
+    /// place where it does not (`moved_into`).
     pub(crate) fn own_placement(
         mutator: &mut Mutator<'_>,
         code: &Rc<CompiledCode>,
@@ -266,10 +293,11 @@ impl Cache {
             cache.placements_prune_at = 2 * cache.placements.len();
         }
         let root = member_code(&origin.mixin, &origin.member)?;
-        let own_root = origin.mixin.text.as_ref()?.slice(root.source)?.to_string();
+        let version = Rc::clone(origin.mixin.text.as_ref()?);
+        let own_root = version.slice(root.source)?.to_string();
         let own_length = u32::try_from(own_root.len()).ok()?;
         let family = family_of(&root);
-        let mut found: HashMap<usize, Rc<BodyMetadata>> = HashMap::new();
+        let mut found: HashMap<usize, Rc<PlacedMetadata>> = HashMap::new();
         let mut current = None;
         for lowering in lowerings(mutator.lowering) {
             let Some(shared) = Cache::current_level(mutator, &origin.mixin, lowering) else {
@@ -292,8 +320,8 @@ impl Cache {
                 text.get(standing.start as usize..standing.end as usize) == Some(own_root.as_str());
             current = holds.then(|| (Rc::clone(&text), standing));
             let patched_level;
-            let pairs = if holds {
-                &level.pairs
+            let (pairs, compiled) = if holds {
+                (&level.pairs, &level.text)
             } else {
                 let patched = format!(
                     "{}{own_root}{}",
@@ -303,7 +331,7 @@ impl Cache {
                 match compile_level_in(mutator, &origin.mixin, lowering, Some(patched)) {
                     Some((patched, _)) => {
                         patched_level = patched;
-                        &patched_level.pairs
+                        (&patched_level.pairs, &patched_level.text)
                     }
                     None => continue,
                 }
@@ -316,7 +344,7 @@ impl Cache {
                 }
                 let moved = metadata
                     .as_ref()
-                    .and_then(|metadata| moved_into(metadata, region, root.source));
+                    .map(|metadata| moved_into(metadata, region, root.source, compiled, &version));
                 complete &= moved.is_some();
                 if let Some(moved) = moved {
                     found.entry(address(body)).or_insert_with(|| Rc::new(moved));
@@ -423,47 +451,59 @@ pub(crate) fn moved_span(span: Span, from: Span, start: u32) -> Option<Span> {
     ))
 }
 
-/// `metadata`, compiled where `region` holds the family root's own source,
-/// with its statements' and sends' spans moved to `own`, the root's own
-/// span; `None` where one of them lies outside `region`.
-fn moved_into(metadata: &BodyMetadata, region: Span, own: Span) -> Option<BodyMetadata> {
-    let moved = |span: Span| moved_span(span, region, own.start);
-    let statements = metadata
-        .statements
-        .iter()
-        .map(|statement| {
-            Some(super::StatementEntry {
-                span: moved(statement.span)?,
-                ..statement.clone()
+/// `metadata`, compiled from `compiled` where `region` holds the family
+/// root's own source, with its statements' and sends' spans moved to
+/// `own`, the root's own span in `version`, its version's text.
+///
+/// A span outside `region` is one of the declaration's own, outside the
+/// body's source: a full initializer's statements of the superclass and
+/// of each `<:` clause stand at the clauses, or at the declaration's name
+/// where it writes none (`lower_instance_initialization_prologue`). It
+/// moves by the region's own distance where the version's text holds the
+/// same bytes there, its true place in that text, and has no place where
+/// it does not -- an edit between the clause and the body moved them
+/// apart, or the place lies outside the declaration's text or across a
+/// hole of it --, never a place made up, which a reader would decorate.
+/// Every statement and send is kept either way, so that the body is
+/// described with all of them wherever it runs.
+fn moved_into(
+    metadata: &BodyMetadata,
+    region: Span,
+    own: Span,
+    compiled: &str,
+    version: &DeclarationText,
+) -> PlacedMetadata {
+    let outside = |span: Span| -> Option<Span> {
+        let shift = |offset: u32| -> Option<u32> {
+            (i64::from(offset) - i64::from(region.start) + i64::from(own.start))
+                .try_into()
+                .ok()
+        };
+        let shifted = Span::new(shift(span.start)?, shift(span.end)?);
+        let held = version.slice(shifted)?;
+        (Some(held) == compiled.get(span.start as usize..span.end as usize)).then_some(shifted)
+    };
+    let moved = |span: Span| moved_span(span, region, own.start).or_else(|| outside(span));
+    PlacedMetadata {
+        statements: metadata
+            .statements
+            .iter()
+            .map(|statement| PlacedStatement {
+                instructions: statement.instructions.clone(),
+                span: moved(statement.span),
             })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let sends = metadata
-        .sends
-        .iter()
-        .map(|send| {
-            Some(super::SendEntry {
-                call: moved(send.call)?,
-                selector: send
-                    .selector
-                    .iter()
-                    .map(|token| moved(*token))
-                    .collect::<Option<Vec<_>>>()?
-                    .into(),
-                receiver: match send.receiver {
-                    Some(receiver) => Some(moved(receiver)?),
-                    None => None,
-                },
-                ..send.clone()
+            .collect(),
+        sends: metadata
+            .sends
+            .iter()
+            .map(|send| PlacedSend {
+                index: send.index,
+                call_site: send.call_site,
+                call: moved(send.call),
+                selector: send.selector.iter().map(|token| moved(*token)).collect(),
             })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(BodyMetadata {
-        source: moved(metadata.source).unwrap_or(own),
-        statements: statements.into(),
-        sends: sends.into(),
-        ..metadata.clone()
-    })
+            .collect(),
+    }
 }
 
 /// The lowerings a level is compiled again under, in order: the
@@ -480,6 +520,132 @@ fn lowerings(first: Lowering) -> [Lowering; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The text a level was compiled again from: a class's name outside
+    /// its initializer's own source, which `region()` covers.
+    const COMPILED: &str = "class Ball = ( | slot ::= 1 + 2. | )";
+
+    /// Where the initializer's own source stands in `COMPILED`.
+    fn region() -> Span {
+        span_of(COMPILED, "( | slot ::= 1 + 2. | )")
+    }
+
+    /// `part`'s span in `text`.
+    fn span_of(text: &str, part: &str) -> Span {
+        let start =
+            u32::try_from(text.find(part).expect("the part is in the text")).expect("a short text");
+        Span::new(
+            start,
+            start + u32::try_from(part.len()).expect("a short part"),
+        )
+    }
+
+    /// Metadata with one statement at the class's name, outside the
+    /// region, as a full initializer's superclass statement stands, one at
+    /// the slot inside it, and a send whose call lies inside and whose
+    /// receiver's selector token lies outside.
+    fn metadata() -> BodyMetadata {
+        BodyMetadata {
+            source: region(),
+            statements: vec![
+                super::super::StatementEntry {
+                    instructions: 0..1,
+                    span: span_of(COMPILED, "Ball"),
+                },
+                super::super::StatementEntry {
+                    instructions: 1..4,
+                    span: span_of(COMPILED, "slot ::= 1 + 2"),
+                },
+            ]
+            .into(),
+            sends: vec![super::super::SendEntry {
+                index: 2,
+                call_site: None,
+                receiver: None,
+                selector: vec![span_of(COMPILED, "+"), span_of(COMPILED, "Ball")].into(),
+                call: span_of(COMPILED, "1 + 2"),
+                parenthesize_receiver: false,
+                setter: false,
+            }]
+            .into(),
+            block_sends: Vec::new().into(),
+            variables: Vec::new().into(),
+            factory_pattern: None,
+            header_pattern: None,
+        }
+    }
+
+    /// The places `moved_into` gives the outside statement and the inside
+    /// one, the version's text `text`, its declaration `range` and its
+    /// `holes`, the initializer's own source standing at `own`.
+    fn places(
+        text: &str,
+        range: Span,
+        holes: &[Span],
+        own: Span,
+    ) -> (Option<Span>, Option<Span>, PlacedSend) {
+        let version = DeclarationText::cut(text, range, holes).expect("the declaration's text");
+        let placed = moved_into(&metadata(), region(), own, COMPILED, &version);
+        (
+            placed.statements[0].span,
+            placed.statements[1].span,
+            placed.sends[0].clone(),
+        )
+    }
+
+    /// A span inside the body's source moves with it; one outside moves by
+    /// the same distance where the version's text holds the same bytes
+    /// there, its true place; and one whose bytes differ there, whose place
+    /// lies outside the declaration's text, or across a hole in it, has no
+    /// place -- never a made-up one -- while every statement and send is
+    /// kept.
+    #[test]
+    fn a_span_outside_the_body_moves_only_onto_the_same_bytes() {
+        // An edit above the class moved the whole declaration by three bytes.
+        let moved = format!("// {COMPILED}");
+        let whole = Span::new(0, u32::try_from(moved.len()).expect("a short text"));
+        let own = Span::new(region().start + 3, region().end + 3);
+        let (outside, inside, send) = places(&moved, whole, &[], own);
+        assert_eq!(
+            outside.map(|span| &moved[span.start as usize..span.end as usize]),
+            Some("Ball")
+        );
+        assert_eq!(
+            inside.map(|span| &moved[span.start as usize..span.end as usize]),
+            Some("slot ::= 1 + 2")
+        );
+        assert_eq!(
+            send.call
+                .map(|span| &moved[span.start as usize..span.end as usize]),
+            Some("1 + 2")
+        );
+        assert_eq!(send.selector.len(), 2);
+        assert!(send.selector.iter().all(Option::is_some));
+
+        // The class renamed between its name and the body: the bytes differ.
+        let renamed = format!("// {}", COMPILED.replace("Ball", "Bowl"));
+        let (outside, inside, send) = places(&renamed, whole, &[], own);
+        assert_eq!(outside, None);
+        assert!(inside.is_some());
+        assert_eq!(send.selector[1], None);
+        assert!(send.selector[0].is_some() && send.call.is_some());
+
+        // The declaration's text begins after the name.
+        let (outside, inside, _) = places(&moved, Span::new(own.start, whole.end), &[], own);
+        assert_eq!(outside, None);
+        assert!(inside.is_some());
+
+        // A hole -- a nested declaration's text -- covers the name.
+        let name = span_of(&moved, "Ball");
+        let (outside, inside, _) = places(
+            &moved,
+            whole,
+            &[Span::new(name.start - 1, name.end + 1)],
+            own,
+        );
+        assert_eq!(outside, None);
+        assert!(inside.is_some());
+    }
 
     /// A span moves with the bytes it lies in to where a copy of them
     /// starts; a span outside them, whose text the copy does not repeat,

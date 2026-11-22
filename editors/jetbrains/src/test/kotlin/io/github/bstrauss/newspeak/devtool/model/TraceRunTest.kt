@@ -11,9 +11,12 @@ import org.junit.Test
 import java.time.Instant
 
 class TraceRunTest {
-    private fun run() = TraceRun("Demo", Instant.EPOCH)
+    private fun run() = trace.run()
 
-    private fun records(vararg lines: String): List<TraceRecord> = lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
+    /** The file the records are written to, as the reader hands a run its listings and plans: as entries naming their places. */
+    private val trace = IndexedTrace()
+
+    private fun records(vararg lines: String): List<TraceRecord> = trace.records(*lines)
 
     private fun event(body: Int, category: String, event: String, fields: String = ""): String =
         """{"kind":"event","category":"$category","body":$body,"event":"$event"$fields}"""

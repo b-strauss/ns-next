@@ -2,15 +2,19 @@ package io.github.bstrauss.newspeak.devtool.ui
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.treeStructure.Tree
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.model.Inlining
+import io.github.bstrauss.newspeak.devtool.model.PlanEntry
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JPanel
+import javax.swing.event.TreeExpansionEvent
+import javax.swing.event.TreeWillExpandListener
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreePath
@@ -26,8 +30,21 @@ class InliningNode(val label: String, val body: Int?, val at: Int?) {
  * outcome, its scopes nested under the scope whose send inlined them, and
  * under each scope its type-case arms and the callees declined at its
  * sends. A click opens the scope's body, at the send a leaf names.
+ *
+ * A plan's root is made from the entry the run keeps (decision 34); its
+ * scopes, arms and declines are read from the run's file ([reads]) when
+ * it is expanded, a node saying so once a read has taken long; a plan read is
+ * kept from then on, so that the tab holds only the plans the user has
+ * opened and a collapsed one opens again as it was, without a read,
+ * while one the file did not give says why and is read again at its next
+ * expansion.
  */
-class InliningTab(private val project: Project, private val run: TraceRun, parent: Disposable) : JPanel(BorderLayout()) {
+class InliningTab(
+    private val project: Project,
+    private val run: TraceRun,
+    parent: Disposable,
+    private val reads: RecordReads = RecordReads.pooled(),
+) : JPanel(BorderLayout()) {
     /** One root per plan, in the order the file recorded them. */
     val treeModel = DefaultTreeModel(DefaultMutableTreeNode())
 
@@ -36,8 +53,21 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
     /** How many of the run's plans the tree holds. */
     private var fed = 0
 
+    /** Set once the tab is disposed; read by a plan's read off the EDT too. */
+    @Volatile private var disposed = false
+
     init {
+        Disposer.register(parent) { disposed = true }
         add(JBScrollPane(tree), BorderLayout.CENTER)
+        tree.addTreeWillExpandListener(
+            object : TreeWillExpandListener {
+                override fun treeWillExpand(event: TreeExpansionEvent) {
+                    (event.path.lastPathComponent as? PlanRoot)?.let(::readPlan)
+                }
+
+                override fun treeWillCollapse(event: TreeExpansionEvent) = Unit
+            },
+        )
         tree.addMouseListener(
             object : MouseAdapter() {
                 override fun mouseClicked(event: MouseEvent) {
@@ -69,16 +99,59 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
     private fun refresh() {
         val root = treeModel.root as DefaultMutableTreeNode
         val plans = run.plans
-        for (index in fed until plans.size) treeModel.insertNodeInto(planNode(plans[index]), root, root.childCount)
+        for (index in fed until plans.size) treeModel.insertNodeInto(planRoot(plans[index]), root, root.childCount)
         fed = plans.size
+        showRootsChildren(tree, root)
     }
 
-    private fun planNode(plan: Inlining): DefaultMutableTreeNode {
+    private fun planRoot(plan: PlanEntry): PlanRoot {
         val outcome = when {
             plan.installed != null -> NewspeakBundle.message("devtool.inlining.installed", plan.installed.toString())
             else -> NewspeakBundle.message("devtool.inlining.refused", plan.refused ?: "")
         }
-        val root = DefaultMutableTreeNode(InliningNode("${bodyName(run, plan.body)} -- $outcome", plan.body, null))
+        return PlanRoot(plan, InliningNode("${bodyName(run, plan.body)} -- $outcome", plan.body, null)).also(::unread)
+    }
+
+    /**
+     * Leaves [root] with one child, which makes it expandable: blank, and
+     * saying that its plan is read once a read has taken long.
+     */
+    private fun unread(root: PlanRoot) {
+        root.removeAllChildren()
+        root.add(DefaultMutableTreeNode(InliningNode("", null, null)))
+        root.filled = false
+    }
+
+    /** A read of [root]'s plan takes long: its one child says so, in place of nothing or of the last read's failure. */
+    private fun sayReading(root: PlanRoot) {
+        if (root.filled || root.parent == null || root.childCount != 1) return
+        val child = root.firstChild as DefaultMutableTreeNode
+        child.userObject = InliningNode(NewspeakBundle.message("devtool.record.reading"), null, null)
+        treeModel.nodeChanged(child)
+    }
+
+    /** [root] is being expanded: its plan is read, unless it is already shown or being read. */
+    private fun readPlan(root: PlanRoot) {
+        if (root.filled || root.reading != null) return
+        val reading = Any()
+        root.reading = reading
+        reads.read({ !disposed && root.reading === reading }, { run.readPlan(root.entry) }, { sayReading(root) }) { outcome ->
+            root.reading = null
+            // A plan removed since, with its tree, has no node to fill.
+            if (root.parent == null) return@read
+            root.removeAllChildren()
+            outcome.fold(
+                { plan -> addPlan(root, plan) },
+                { error -> root.add(DefaultMutableTreeNode(InliningNode(error.message.orEmpty(), null, null))) },
+            )
+            // A plan the file did not give is read again at its next expansion: the file may be readable then.
+            root.filled = outcome.isSuccess
+            treeModel.nodeStructureChanged(root)
+        }
+    }
+
+    /** Adds [plan]'s scopes under [root], each under the one whose send inlined it, and each scope's arms and declines. */
+    private fun addPlan(root: DefaultMutableTreeNode, plan: Inlining) {
         val bodies = plan.scopes.associate { scope -> scope.scope to scope.body }
         val nodes = HashMap<Int, DefaultMutableTreeNode>()
         for (scope in plan.scopes) {
@@ -103,6 +176,16 @@ class InliningTab(private val project: Project, private val run: TraceRun, paren
             val callee = decline.callee?.let { body -> bodyName(run, body) } ?: NewspeakBundle.message("devtool.inlining.no.body")
             owner.add(DefaultMutableTreeNode(InliningNode("@${decline.at} declined $callee ${decline.reason}", bodies[decline.scope], decline.at)))
         }
-        return root
+    }
+
+    /**
+     * A plan's root: its [entry], and whether its plan's nodes stand under
+     * it ([filled]) or are being read -- [reading] the read's token, so
+     * that one read at a time is made.
+     */
+    private class PlanRoot(val entry: PlanEntry, node: InliningNode) : DefaultMutableTreeNode(node) {
+        var filled = false
+
+        @Volatile var reading: Any? = null
     }
 }

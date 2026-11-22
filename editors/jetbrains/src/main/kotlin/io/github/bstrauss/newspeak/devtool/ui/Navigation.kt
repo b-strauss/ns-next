@@ -12,6 +12,9 @@ import io.github.bstrauss.newspeak.devtool.model.SourceRange
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import java.nio.file.Path
+import javax.swing.JTree
+import javax.swing.tree.TreeNode
+import javax.swing.tree.TreePath
 
 /** The range [at] names in [body]: the call of the send at that bytecode index, else the body's own. */
 fun rangeOf(body: Body, at: Int?): SourceRange? = at?.let { index -> body.sends.firstOrNull { send -> send.at == index }?.call } ?: body.range
@@ -56,6 +59,17 @@ fun withSourceFile(project: Project, path: Path, then: (VirtualFile) -> Unit) {
         val found = fileSystem.refreshAndFindFileByNioFile(path) ?: return@executeOnPooledThread
         application.invokeLater({ then(found) }, project.disposed)
     }
+}
+
+/**
+ * Expands [tree]'s hidden [root] once it has children: a tree shows a
+ * hidden root's children only while the root is expanded, and one made
+ * with a root of no children -- a run's view made before its records
+ * arrive -- leaves it collapsed, showing nothing whatever is inserted.
+ */
+fun showRootsChildren(tree: JTree, root: TreeNode) {
+    val path = TreePath(root)
+    if (root.childCount > 0 && !tree.isExpanded(path)) tree.expandPath(path)
 }
 
 /**

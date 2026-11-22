@@ -343,11 +343,14 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
     // A span moves with the body's source to where the text holds it. Only
     // the body's source is known to stand there, by its checksum, so a span
     // outside it -- in either text -- stays unplaced rather than land on
-    // text that may differ.
-    let range = |span: Span| match &lines {
-        Some(Placing {
-            text, lines, start, ..
-        }) => {
+    // text that may differ; and a span the runtime has no place for has none.
+    let range = |span: Option<Span>| match (&lines, span) {
+        (
+            Some(Placing {
+                text, lines, start, ..
+            }),
+            Some(span),
+        ) => {
             if span.start < source.start || span.end > source.end {
                 return Value::Null;
             }
@@ -359,9 +362,9 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
             let end = lines.position(text, end);
             json!([begin.line, begin.column, end.line, end.column])
         }
-        None => Value::Null,
+        _ => Value::Null,
     };
-    let range_record = range(*source);
+    let range_record = range(Some(*source));
     let statements: Vec<Value> = statements
         .iter()
         .map(|statement| {
@@ -1180,13 +1183,13 @@ mod tests {
             checksum: 0x0123_4567_89ab_cdef,
             statements: vec![DescribedStatement {
                 instructions: 0..3,
-                span: send,
+                span: Some(send),
             }],
             sends: vec![DescribedSend {
                 index: 1,
                 site: Some(0),
-                call: send,
-                selector: vec![Span::new(start("size"), start("size") + 4)],
+                call: Some(send),
+                selector: vec![Some(Span::new(start("size"), start("size") + 4))],
             }],
         };
         let record = body_record(&description, &mut demo_sources());
@@ -1310,10 +1313,57 @@ mod tests {
             checksum: 1,
             statements: vec![DescribedStatement {
                 instructions: 0..1,
-                span: Span::new(start, start + 3),
+                span: Some(Span::new(start, start + 3)),
             }],
             sends: Vec::new(),
         }
+    }
+
+    /// A placed body with a statement and a send the runtime has no place
+    /// for -- a full initializer's statement of a clause its version's text
+    /// no longer holds -- writes `null` for those ranges and places the
+    /// body and its other statement: every statement is listed, so that the
+    /// instructions keep their statements' numbers, and nothing unplaced is
+    /// given a place.
+    #[test]
+    fn a_statement_without_a_place_writes_no_range() {
+        let read = "Demo = (\n  run = ( )\n)";
+        let mut sources = demo_sources();
+        let mut description = run_in(read, 1);
+        description.statements.insert(
+            0,
+            DescribedStatement {
+                instructions: 0..1,
+                span: None,
+            },
+        );
+        description.sends.push(DescribedSend {
+            index: 0,
+            site: None,
+            call: None,
+            selector: vec![None, description.statements[1].span],
+        });
+        // And one placed outside the body's source, at the class's name, as a
+        // class that writes no superclass clause places its superclass's.
+        description.statements.push(DescribedStatement {
+            instructions: 1..2,
+            span: Some(Span::new(0, 4)),
+        });
+        let record = body_record(&description, &mut sources);
+        assert_eq!(record["statements"][2]["range"], Value::Null, "{record}");
+        assert_eq!(record["range"], json!([1, 2, 1, 5]), "{record}");
+        assert_eq!(record["statements"][0]["range"], Value::Null, "{record}");
+        assert_eq!(
+            record["statements"][1]["range"],
+            json!([1, 2, 1, 5]),
+            "{record}"
+        );
+        assert_eq!(record["sends"][0]["call"], Value::Null, "{record}");
+        assert_eq!(
+            record["sends"][0]["selector"],
+            json!([null, [1, 2, 1, 5]]),
+            "{record}"
+        );
     }
 
     /// Where the file's text does not hold the body at its span -- a body
@@ -1352,7 +1402,7 @@ mod tests {
             current: current_at(edited, Span::new(standing, standing + 3)),
             statements: vec![DescribedStatement {
                 instructions: 0..1,
-                span: Span::new(41, 43),
+                span: Some(Span::new(41, 43)),
             }],
             ..run_in(edited, 1)
         };
@@ -1417,7 +1467,7 @@ mod tests {
         let outside = |description: BodyDescription| BodyDescription {
             statements: vec![DescribedStatement {
                 instructions: 0..1,
-                span: Span::new(0, 4),
+                span: Some(Span::new(0, 4)),
             }],
             ..description
         };

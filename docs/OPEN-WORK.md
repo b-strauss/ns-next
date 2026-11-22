@@ -2466,16 +2466,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   evaluated only at a stop. Its open questions are decided in its plan
   ([developer-tool.md](design/developer-tool.md), "The decisions",
   "Planned: the stages", "Open questions").
-  - **What the developer tool's stage 3 left** (2026-11-21, its
-    reviews), none of them a wrong decoration -- what the plugin cannot
-    know it leaves out, a body whose text does not fit is shown stale
-    and a body placed in a text no file holds is not decorated, never
-    decorated in the wrong place:
-    - *Everything of a run but its events is unbounded*: a `TraceRun`
-      keeps its last 200,000 events (`KEPT_EVENTS`), but every body's
-      description, every listing and every plan for the run's length,
-      and the tool window keeps every run until its tab closes
-      (`devtool/model/TraceRun.kt`, `devtool/TracedRuns.kt`).
 - **The MCP server and the trace file** (noted 2026-11-21, with the
   developer tool's stage 3's design; not designed yet): `debug_start`
   passes `--trace` and the lines arrive with the program's output, and

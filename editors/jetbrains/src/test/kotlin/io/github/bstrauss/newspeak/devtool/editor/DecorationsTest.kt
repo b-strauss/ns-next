@@ -15,6 +15,7 @@ import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
 import io.github.bstrauss.newspeak.devtool.model.MethodState
+import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -89,7 +90,10 @@ class DecorationsTest : BasePlatformTestCase() {
     private fun event(body: Int?, category: String, event: String, fields: String = ""): String =
         """{"kind":"event","category":"$category","body":${body ?: "null"},"event":"$event"$fields}"""
 
-    private fun records(lines: List<String>): List<TraceRecord> = lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
+    /** The file the records are written to, as the reader hands a run its listings and plans: as entries naming their places. */
+    private val trace = IndexedTrace()
+
+    private fun records(lines: List<String>): List<TraceRecord> = trace.records(lines)
 
     /** The run of [DEMO]: `square:` optimized, `main:args:` optimized with its two blocks' sends decided and a second copy retired, `smile` interpreted. */
     private fun demoRun(path: Path = directory.resolve("Demo.ns"), name: String = "Demo"): TraceRun {

@@ -9,6 +9,7 @@ import com.intellij.testFramework.LightVirtualFile
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.model.Bytecode
 import io.github.bstrauss.newspeak.devtool.model.BytecodeBody
+import io.github.bstrauss.newspeak.devtool.model.BytecodeInstruction
 import io.github.bstrauss.newspeak.devtool.model.Code
 import io.github.bstrauss.newspeak.devtool.model.Scope
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
@@ -114,6 +115,35 @@ private fun statementWord(statement: Int?): String = statement?.let { index -> "
 private fun bodyName(run: TraceRun, body: Int): String = run.bodies[body]?.name ?: "#$body"
 
 /**
+ * What a machine-code listing names from its [run], copied on the EDT so
+ * that [codeListing] builds the listing on any thread: each described
+ * body's name, and the bytecode listings the run holds, which are
+ * records written once per body and never changed. The run itself is
+ * only named, by the listing it links.
+ */
+class ListingNames(val run: TraceRun, private val names: Map<Int, String>, private val bytecode: List<Bytecode>) {
+    /** Each listed body's bytecode by its number, built on first use, on the thread that builds the listing. */
+    private val bytecodeBodies: Map<Int, BytecodeBody> by lazy {
+        val bodies = HashMap<Int, BytecodeBody>()
+        for (listing in bytecode) for (listed in listing.bodies) bodies.putIfAbsent(listed.body, listed)
+        bodies
+    }
+
+    /** [body]'s name, as the listing names it. */
+    fun name(body: Int): String = names[body] ?: "#$body"
+
+    /** The bytecode instruction at [position]; null where the run listed no bytecode of its body. */
+    fun instruction(position: ListingPosition): BytecodeInstruction? =
+        bytecodeBodies[position.body]?.instructions?.firstOrNull { instruction -> instruction.index == position.index }
+
+    companion object {
+        /** [run]'s names and bytecode as they stand. On the EDT, as every read of the run. */
+        fun of(run: TraceRun): ListingNames =
+            ListingNames(run, run.bodies.entries.associate { (number, body) -> number to body.name }, run.bytecode.values.toList())
+    }
+}
+
+/**
  * [bytecode]'s listing as the text listing writes it: the head `---
  * bytecode {<body>}`, the root's line -- its kind, its name, its counts of
  * arguments and registers -- and its instructions, each block it makes
@@ -181,9 +211,9 @@ private const val MAKE_CLOSURE = "MakeClosure "
  * named where its scope or index changes, the instructions at their
  * offsets with their annotations, the data words.
  */
-fun codeListing(run: TraceRun, code: Code): CodeListing {
+fun codeListing(names: ListingNames, code: Code): CodeListing {
     val writer = ListingWriter()
-    val name = bodyName(run, code.body)
+    val name = names.name(code.body)
     val head = StringBuilder("--- code {$name} ${code.tier} ${code.architecture}")
     code.key?.let { key ->
         head.append(" key={$key}")
@@ -195,7 +225,7 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
     val optimized = code.tier == OPTIMIZED
     if (optimized) {
         writer.line("scopes:")
-        writeScopeTree(writer, run, code.scopes)
+        writeScopeTree(writer, names, code.scopes)
     }
     val scopeBodies = code.scopes.associate { scope -> scope.scope to scope.body }
     var lastPosition: Triple<Int?, Int?, Boolean>? = null
@@ -212,9 +242,9 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
                 writer.line("  out of line")
             } else {
                 val label = StringBuilder("  ")
-                if (optimized) label.append("s${instruction.scope ?: 0} {${bodyName(run, checkNotNull(linked).body)}} ")
+                if (optimized) label.append("s${instruction.scope ?: 0} {${names.name(checkNotNull(linked).body)}} ")
                 label.append("@$at")
-                bytecodeText(run, checkNotNull(linked))?.let { text -> label.append("  ").append(text) }
+                bytecodeText(names, checkNotNull(linked))?.let { text -> label.append("  ").append(text) }
                 writer.line(label.toString(), linked)
             }
             lastPosition = position
@@ -232,15 +262,15 @@ fun codeListing(run: TraceRun, code: Code): CodeListing {
     val title = StringBuilder("$name ${code.tier}")
     code.key?.let { key -> title.append(" key=$key") }
     code.entered?.let { entered -> title.append(" entered=$entered") }
-    return writer.build(title.toString(), run)
+    return writer.build(title.toString(), names.run)
 }
 
 /** The scopes, each under the one it is inlined into, two spaces deeper, with the send it is inlined at. */
-private fun writeScopeTree(writer: ListingWriter, run: TraceRun, scopes: List<Scope>) {
+private fun writeScopeTree(writer: ListingWriter, names: ListingNames, scopes: List<Scope>) {
     val pending = ArrayDeque(scopes.filter { scope -> scope.parent == null }.map { scope -> scope to 1 })
     while (pending.isNotEmpty()) {
         val (scope, depth) = pending.removeFirst()
-        val line = StringBuilder("  ".repeat(depth)).append("s${scope.scope} {${bodyName(run, scope.body)}}")
+        val line = StringBuilder("  ".repeat(depth)).append("s${scope.scope} {${names.name(scope.body)}}")
         scope.parent?.let { parent -> line.append(" at s${parent.scope}@${parent.at}") }
         writer.line(line.toString())
         val children = scopes.filter { child -> child.parent?.scope == scope.scope }.map { child -> child to depth + 1 }
@@ -249,11 +279,8 @@ private fun writeScopeTree(writer: ListingWriter, run: TraceRun, scopes: List<Sc
 }
 
 /** The bytecode at [position] as a stretch's line names it, without its index: `stmt 0  Return r1`; null where the run listed no bytecode of the body. */
-private fun bytecodeText(run: TraceRun, position: ListingPosition): String? {
-    val instruction = run.bytecode.values.asSequence()
-        .flatMap { bytecode -> bytecode.bodies.asSequence() }
-        .firstOrNull { listed -> listed.body == position.body }
-        ?.instructions?.firstOrNull { instruction -> instruction.index == position.index } ?: return null
+private fun bytecodeText(names: ListingNames, position: ListingPosition): String? {
+    val instruction = names.instruction(position) ?: return null
     return "${statementWord(instruction.statement)}  ${instruction.text}"
 }
 

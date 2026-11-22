@@ -9,6 +9,7 @@ import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.model.Event
 import io.github.bstrauss.newspeak.devtool.model.KEPT_EVENTS
 import io.github.bstrauss.newspeak.devtool.model.MethodState
+import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -19,11 +20,14 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreePath
 
 class TabsTest : BasePlatformTestCase() {
-    private fun records(lines: List<String>): List<TraceRecord> = lines.map { line -> checkNotNull(TraceRecord.parse(line)) }
+    /** The file the records are written to, as the reader hands a run its listings and plans: as entries naming their places. */
+    private val trace = IndexedTrace()
+
+    private fun records(lines: List<String>): List<TraceRecord> = trace.records(lines)
 
     private fun fixtureRun(vararg extra: String): TraceRun {
         val lines = checkNotNull(javaClass.getResource("/devtool/trace.jsonl")).readText().lines().filter { line -> line.isNotEmpty() }
-        return TraceRun("Demo", Instant.EPOCH).also { run -> run.add(records(lines + extra)) }
+        return trace.run().also { run -> run.add(records(lines + extra)) }
     }
 
     fun testMethodsListsEachRootWithItsState() {
@@ -117,11 +121,27 @@ class TabsTest : BasePlatformTestCase() {
         )
     }
 
+    /** A run's views are made before its records arrive: the plans and the grouped events that arrive later are shown, a row each. */
+    fun testTheTreesShowWhatArrivesAfterThem() {
+        val run = trace.run()
+        val inlining = InliningTab(project, run, testRootDisposable, immediateReads())
+        val events = EventsTab(project, run, testRootDisposable)
+        events.groupByMethod.isSelected = true
+        val lines = checkNotNull(javaClass.getResource("/devtool/trace.jsonl")).readText().lines().filter { line -> line.isNotEmpty() }
+        run.add(records(lines))
+        assertTrue(run.plans.isNotEmpty())
+        assertEquals("a row for each plan", run.plans.size, inlining.tree.rowCount)
+        assertEquals("a row for each method", events.treeModel.getChildCount(events.treeModel.root), events.tree.rowCount)
+        assertTrue(events.tree.rowCount > 0)
+    }
+
     fun testInliningTreeNestsScopesUnderTheirParents() {
-        val tab = InliningTab(project, fixtureRun(), testRootDisposable)
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())
         val roots = (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
         val plan = roots.first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
         assertTrue(plan.toString(), "installed, 3601 bytes" in plan.toString())
+        // Read from the run's file as the plan is expanded.
+        tab.tree.expandPath(TreePath(plan.path))
         val scopes = plan.children().toList().map { node -> node as DefaultMutableTreeNode }
         // The root scope hangs from the plan; the scopes it inlined hang from it, and theirs from them.
         val rootScope = scopes.single { node -> (node.userObject as InliningNode).body == 5 }
@@ -132,6 +152,92 @@ class TabsTest : BasePlatformTestCase() {
         assertTrue(nested.toString(), "Demo/Square>>area" in nested && "Demo/Circle>>area" in nested)
         // The declines of the root scope are leaves.
         assertTrue(rootScope.children().toList().any { node -> node.toString().contains("declined") })
+    }
+
+    private fun mainPlan(tab: InliningTab): DefaultMutableTreeNode =
+        (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
+            .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
+
+    /**
+     * A plan's nodes are read from the file as it is first expanded, and
+     * kept across a collapse; whether the scopes inside stay open is the
+     * IDE's setting "collapse recursively", as in every tree.
+     */
+    fun testAPlanIsReadWhenExpandedAndKeptWhenCollapsed() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, counting)
+        val plan = mainPlan(tab)
+        val path = TreePath(plan.path)
+        assertEquals("nothing is said before a read has taken long", listOf(""), plan.children().toList().map { node -> node.toString() })
+        tab.tree.expandPath(path)
+        assertTrue(tab.tree.isExpanded(path))
+        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+        val scope = plan.firstChild
+        tab.tree.expandPath(TreePath((scope as DefaultMutableTreeNode).path))
+        tab.tree.collapsePath(path)
+        assertSame("the nodes are kept", scope, plan.firstChild)
+        tab.tree.expandPath(path)
+        assertSame(scope, plan.firstChild)
+        assertEquals("read once", 1, readCount)
+    }
+
+    /** On a pooled thread, the plan arrives after the expansion, which stays. */
+    fun testAPlanIsReadOffTheEventDispatchThread() {
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable)
+        val plan = mainPlan(tab)
+        val path = TreePath(plan.path)
+        tab.tree.expandPath(path)
+        PlatformTestUtil.waitWithEventsDispatching(
+            "the plan arrives",
+            { plan.childCount == 1 && plan.firstChild.toString() == "[] in Demo>>main:args:" },
+            WAIT_SECONDS,
+        )
+        assertTrue(tab.tree.isExpanded(path))
+    }
+
+    /** A plan whose read failed is read again at its next expansion; only a plan that was read keeps its nodes. */
+    fun testAPlanSaysItIsReadOnlyOnceTheReadTakesLong() {
+        val reads = ArrayList<Runnable>()
+        val notices = ArrayList<Runnable>()
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, RecordReads({ task -> reads += task }, { task, _, _ -> task.run() }, { task, _, _ -> notices += task }))
+        val plan = mainPlan(tab)
+        tab.tree.expandPath(TreePath(plan.path))
+        assertEquals(listOf(""), plan.children().toList().map { node -> node.toString() })
+        notices.single().run()
+        assertEquals(listOf(NewspeakBundle.message("devtool.record.reading")), plan.children().toList().map { node -> node.toString() })
+        reads.single().run()
+        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+    }
+
+    fun testAPlanWhoseReadFailedIsReadAgain() {
+        var readCount = 0
+        val counting = RecordReads({ task -> readCount++; task.run() }, { task, _, _ -> task.run() }, { _, _, _ -> })
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, counting)
+        val bytes = Files.readAllBytes(trace.file)
+        Files.delete(trace.file)
+        val plan = mainPlan(tab)
+        val path = TreePath(plan.path)
+        tab.tree.expandPath(path)
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), plan.firstChild.toString())
+        tab.tree.collapsePath(path)
+        Files.write(trace.file, bytes)
+        tab.tree.expandPath(path)
+        assertEquals(2, readCount)
+        assertEquals(listOf("[] in Demo>>main:args:"), plan.children().toList().map { node -> node.toString() })
+        tab.tree.collapsePath(path)
+        tab.tree.expandPath(path)
+        assertEquals("a plan read is kept", 2, readCount)
+    }
+
+    /** A plan whose file is gone says so in its place, and throws nothing. */
+    fun testAPlanWhoseFileIsGoneSaysSo() {
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())
+        Files.delete(trace.file)
+        val plan = mainPlan(tab)
+        tab.tree.expandPath(TreePath(plan.path))
+        val message = plan.children().toList().single().toString()
+        assertEquals(NewspeakBundle.message("devtool.record.unreadable", trace.file.toString(), NewspeakBundle.message("devtool.record.gone")), message)
     }
 
     fun testNavigationOpensALibraryFileUnderTheLibraryDirectory() {
@@ -248,10 +354,11 @@ class TabsTest : BasePlatformTestCase() {
 
     fun testABatchKeepsTheInliningTreesExpansionAndSelection() {
         val run = fixtureRun()
-        val tab = InliningTab(project, run, testRootDisposable)
+        val tab = InliningTab(project, run, testRootDisposable, immediateReads())
         val root = tab.treeModel.root as DefaultMutableTreeNode
         val plan = root.children().toList().map { node -> node as DefaultMutableTreeNode }
             .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
+        tab.tree.expandPath(TreePath(plan.path))
         val rootScope = plan.firstChild as DefaultMutableTreeNode
         val scopePath = TreePath(rootScope.path)
         tab.tree.expandPath(scopePath)
@@ -273,9 +380,10 @@ class TabsTest : BasePlatformTestCase() {
     }
 
     fun testAScopeOpensTheSendThatInlinedIt() {
-        val tab = InliningTab(project, fixtureRun(), testRootDisposable)
+        val tab = InliningTab(project, fixtureRun(), testRootDisposable, immediateReads())
         val plan = (tab.treeModel.root as DefaultMutableTreeNode).children().toList().map { node -> node as DefaultMutableTreeNode }
             .first { node -> node.toString().startsWith("[] in Demo>>main:args:") }
+        tab.tree.expandPath(TreePath(plan.path))
         val rootScope = plan.children().toList().map { node -> node as DefaultMutableTreeNode }.single()
         val square = rootScope.children().toList().map { node -> node as DefaultMutableTreeNode }.first { node -> node.toString() == "Demo>>square:" }
         val node = square.userObject as InliningNode
