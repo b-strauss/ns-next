@@ -27,11 +27,6 @@ const LISTS: [&str; 5] = [
     "declined",
 ];
 
-/// The characters kept back, while a list's entries are taken, for each
-/// list still to be written and for the closing `Showing` line: their
-/// heads, which never pass the budget.
-const HEAD_RESERVE: usize = 300;
-
 /// Whether the tool `name` answers from a session's trace, on a thread of
 /// its own rather than the session's worker.
 pub(crate) fn is_trace_tool(name: &str) -> bool {
@@ -196,14 +191,20 @@ fn every_list(
         lines.push(format!("events: {}", traced.join(" · ")));
     }
     let mut used: usize = lines.iter().map(|line| characters(line) + 1).sum();
+    // What each list writes besides its entries, at the most -- its head
+    // or the line standing for it, and its closing line -- is kept back
+    // while any earlier list's entries are taken, so that no line written
+    // later passes the budget.
+    let fixed: Vec<usize> = lists
+        .iter()
+        .map(|list| fixed_characters(list, session_number, count))
+        .collect();
     for (position, list) in lists.iter().enumerate() {
-        let later = lists.len() - position - 1;
+        let reserve: usize = fixed[position..].iter().sum();
         let Some(entries) = written_entries(list, &mut lines) else {
             used = lines.iter().map(|line| characters(line) + 1).sum();
             continue;
         };
-        let closing = list.closing.as_ref().map_or(0, |line| characters(line) + 1);
-        let reserve = HEAD_RESERVE * (later + 1) + closing;
         let mut taken = Vec::new();
         for entry in entries.iter().take(shown) {
             let length = characters(entry) + 1;
@@ -213,25 +214,7 @@ fn every_list(
             used += length;
             taken.push(entry.as_str());
         }
-        let total = entries.len();
-        let mut head = format!(
-            "{} ({} of {})",
-            list.name,
-            thousands(taken.len() as u64),
-            thousands(total as u64)
-        );
-        if taken.len() < total {
-            let mut arguments = json!({
-                "session": session_number,
-                "list": list.name,
-                "start": taken.len(),
-            });
-            if let Some(count) = count {
-                arguments["count"] = json!(count);
-            }
-            head.push_str(" — next: ");
-            head.push_str(&call_text("debug_trace", &arguments));
-        }
+        let head = list_head(list.name, taken.len(), entries.len(), session_number, count);
         used += characters(&head) + 1;
         lines.push(head);
         lines.extend(taken.iter().map(|entry| entry.to_string()));
@@ -241,6 +224,50 @@ fn every_list(
         }
     }
     lines.join("\n")
+}
+
+/// A list's head in the overview: `name (k of N)`, and where it is cut,
+/// ` — next: ` and the call that pages on from `taken`.
+fn list_head(
+    name: &str,
+    taken: usize,
+    total: usize,
+    session_number: u32,
+    count: Option<usize>,
+) -> String {
+    let mut head = format!(
+        "{name} ({} of {})",
+        thousands(taken as u64),
+        thousands(total as u64)
+    );
+    if taken < total {
+        let mut arguments = json!({
+            "session": session_number,
+            "list": name,
+            "start": taken,
+        });
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        head.push_str(" — next: ");
+        head.push_str(&call_text("debug_trace", &arguments));
+    }
+    head
+}
+
+/// The characters `list` writes in the overview besides its entries, at
+/// the most: the line that stands for it, or its head as long as a head
+/// of its count can be -- one with a `next:`, no number in it of more
+/// digits than its total --, and its closing line.
+fn fixed_characters(list: &List, session_number: u32, count: Option<usize>) -> usize {
+    let mut lines = Vec::new();
+    if written_entries(list, &mut lines).is_some() {
+        let total = list.entries.len();
+        let head = list_head(list.name, 0, total, session_number, count);
+        let longest = characters(&head) + 2 * total.to_string().len();
+        return longest + 1 + list.closing.as_ref().map_or(0, |line| characters(line) + 1);
+    }
+    lines.iter().map(|line| characters(line) + 1).sum()
 }
 
 /// Writes the line of `list` that stands for its entries when it has
@@ -282,12 +309,23 @@ fn one_list(
         ));
     }
     lines.push(list.name.to_string());
-    let closing = list.closing.as_ref().map_or(0, |line| characters(line) + 1);
+    let next_from = |last: usize| {
+        let mut arguments = json!({ "session": session_number, "list": list.name, "start": last });
+        if let Some(count) = count {
+            arguments["count"] = json!(count);
+        }
+        ("debug_trace", arguments)
+    };
+    // The closing line and the longest `Showing` line this page can end
+    // in are kept back while its entries are taken.
+    let reserve = list.closing.as_ref().map_or(0, |line| characters(line) + 1)
+        + characters(&showing_line(total, total, total, Some(next_from(total))))
+        + 1;
     let mut used: usize = lines.iter().map(|line| characters(line) + 1).sum();
     let mut taken = 0;
     for entry in entries.iter().skip(start).take(shown) {
         let length = characters(entry) + 1;
-        if used + length + closing + HEAD_RESERVE > ANSWER_BUDGET {
+        if used + length + reserve > ANSWER_BUDGET {
             break;
         }
         used += length;
@@ -296,13 +334,7 @@ fn one_list(
     }
     lines.extend(list.closing.clone());
     let last = start + taken;
-    let next = (last < total).then(|| {
-        let mut arguments = json!({ "session": session_number, "list": list.name, "start": last });
-        if let Some(count) = count {
-            arguments["count"] = json!(count);
-        }
-        ("debug_trace", arguments)
-    });
+    let next = (last < total).then(|| next_from(last));
     lines.push(showing_line(start + 1, last, total, next));
     Ok(lines.join("\n"))
 }
@@ -340,12 +372,14 @@ fn traced_line(index: &TraceIndex) -> String {
     )
 }
 
-/// The body `number` as an entry names it: its name and number, or its
-/// number alone where the file never described it.
+/// The body `number` as an entry names it: its name and number, or,
+/// where the file never described it, its number and that it is not
+/// described -- a body the trace numbers without a `body` record, which
+/// its number still addresses.
 fn named(index: &TraceIndex, number: u32) -> String {
     match index.body_name(number) {
         Some(name) => format!("{name} #{number}"),
-        None => format!("#{number}"),
+        None => format!("#{number} (not described)"),
     }
 }
 
@@ -735,7 +769,7 @@ mod tests {
         assert_eq!(lines[19], "declined (1 of 1)");
         assert_eq!(
             lines[20],
-            r##"  #20: 3 (over-weight 2, block-escapes 1) in Bounce>>m2 #2 (2), Bounce>>m1 #1 (1) → debug_trace_events {"session":1,"event":"declined","method":"#20"}"##
+            r##"  #20 (not described): 3 (over-weight 2, block-escapes 1) in Bounce>>m2 #2 (2), Bounce>>m1 #1 (1) → debug_trace_events {"session":1,"event":"declined","method":"#20"}"##
         );
         assert_eq!(
             lines[21],
@@ -865,6 +899,129 @@ mod tests {
         let showing = page.lines().last().unwrap();
         assert!(showing.starts_with("Showing 1–"), "{showing}");
         assert!(showing.contains(" — next: "), "{showing}");
+    }
+
+    /// Four lists full of long entries, and a callee that is no body
+    /// declined for many reasons: the lines written after the earlier
+    /// lists' entries -- the later heads, `declined: none` and the closing
+    /// line -- still fit the budget.
+    #[test]
+    fn every_list_full_stays_under_the_budget() {
+        let mut scratch = Scratch::new("every-list-budget");
+        scratch.header(
+            &[
+                "compile",
+                "osr",
+                "optimize",
+                "inlining",
+                "deoptimize",
+                "code-zone",
+                "caches",
+            ],
+            &[],
+        );
+        let long = "y".repeat(400);
+        for number in 1..=150 {
+            scratch.body(number, &format!("Bounce>>{long}{number}"), None);
+            scratch.record(&compiled(number));
+            scratch.record(&event_of(
+                "compile",
+                Some(number),
+                &json!({ "event": "abandoned", "exits": 64 }),
+            ));
+            scratch.record(&event_of(
+                "deoptimize",
+                Some(number),
+                &json!({ "event": "retired", "key": "Bounce", "entered": null,
+                         "reason": "exits", "version": 2 }),
+            ));
+            scratch.record(&event_of(
+                "optimize",
+                Some(number),
+                &json!({ "event": "optimized", "key": "Bounce", "entered": null, "bytes": 100,
+                         "inlined-scopes": 0, "inlined-sites": 0, "type-case-arms": 0,
+                         "eliminated-blocks": 0 }),
+            ));
+        }
+        let reasons: Vec<Value> = (0..12)
+            .map(|number| {
+                json!({
+                    "reason": format!("a-reason-of-a-length-no-decline-has-yet-{number}"),
+                    "count": 1_000 + number,
+                })
+            })
+            .collect();
+        scratch.record(&event_of(
+            "inlining",
+            Some(1),
+            &json!({ "event": "declined-no-body", "key": "Bounce", "entered": null,
+                     "count": 12, "reasons": reasons }),
+        ));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        let answer = overview(&index, &handle, None, None, Some(200)).expect("an overview");
+        assert!(
+            characters(&answer) <= ANSWER_BUDGET,
+            "{}",
+            characters(&answer)
+        );
+        for list in &LISTS[..4] {
+            assert!(
+                answer
+                    .lines()
+                    .any(|line| line.starts_with(&format!("{list} ("))
+                        && line.contains(" of 150) — next: ")),
+                "no cut head of {list}:\n{answer}"
+            );
+        }
+        let lines: Vec<&str> = answer.lines().collect();
+        assert_eq!(lines[lines.len() - 2], "declined: none", "{answer}");
+        assert!(
+            lines[lines.len() - 1].starts_with("  callees that are no body: 12,066 ("),
+            "{answer}"
+        );
+    }
+
+    /// A body the trace numbers without describing it is named by its
+    /// number, saying so, and addressed by it; an optimized body whose
+    /// plans were listed names its last plan's listing.
+    #[test]
+    fn an_undescribed_body_is_named_by_its_number() {
+        let mut scratch = Scratch::new("undescribed");
+        scratch.header(&["compile", "optimize"], &["inlining"]);
+        scratch.record(&compiled(44));
+        scratch.record(&event_of(
+            "optimize",
+            Some(44),
+            &json!({ "event": "optimized", "key": null, "entered": null, "bytes": 1_053,
+                     "inlined-scopes": 0, "inlined-sites": 0, "type-case-arms": 0,
+                     "eliminated-blocks": 0 }),
+        ));
+        scratch.record(&json!({
+            "kind": "inlining", "body": 44, "key": null, "entered": null,
+            "outcome": { "installed": 1_053 }, "scopes": [], "arms": [], "declined": [],
+        }));
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        assert_eq!(index.failure(), None);
+        let answer = overview(&index, &handle, None, None, None).expect("an overview");
+        assert!(
+            answer.contains(
+                r##"
+  #44 (not described): 2 (baseline 1, optimized 1) → debug_trace_method {"session":1,"method":"#44"}
+"##
+            ),
+            "{answer}"
+        );
+        assert!(
+            answer.contains(
+                r##"
+  #44 (not described): 1 copy (no key 1), last 1,053 bytes → debug_trace_listing {"session":1,"method":"#44","kind":"inlining"}"##
+            ),
+            "{answer}"
+        );
+        assert_eq!(index.bodies_named("#44"), Ok(vec![44]));
     }
 
     #[test]

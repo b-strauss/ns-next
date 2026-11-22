@@ -87,29 +87,55 @@ pub(crate) fn showing_line(
     line
 }
 
+/// What each tool an answer names a call of is asked about, in the order
+/// its signature gives its parameters: between `session`, which comes
+/// first, and `start` and `count`, which come last.
+const PARAMETER_ORDERS: [(&str, &[&str]); 5] = [
+    ("debug_code", &["frame"]),
+    ("debug_trace", &["list"]),
+    ("debug_trace_method", &["method", "part"]),
+    ("debug_trace_listing", &["method", "kind", "index"]),
+    (
+        "debug_trace_events",
+        &["category", "event", "reason", "method"],
+    ),
+];
+
+/// The parameters every call names first and last.
+const FIRST: &str = "session";
+const LAST: [&str; 2] = ["start", "count"];
+
 /// The call of `tool` with `arguments` as an answer names it: the tool's
-/// name and its arguments as one JSON object, `session` first, then the
-/// others by name, then `start` and `count`, so that every call an answer
-/// suggests reads alike whatever order it was given in.
+/// name and its arguments as one JSON object: `session` first, then what
+/// the call is about in the order of the tool's parameters
+/// (`PARAMETER_ORDERS`), an argument of no listed parameter after them by
+/// name, then `start` and `count`, so that every call an answer suggests
+/// reads as the tool's signature does, whatever order it was given in.
 pub(crate) fn call_text(tool: &str, arguments: &Value) -> String {
     let Some(object) = arguments.as_object() else {
         return format!("{tool} {arguments}");
     };
-    let last = ["start", "count"];
-    let mut names: Vec<&String> = object
+    let order: &[&str] = PARAMETER_ORDERS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map_or(&[], |(_, order)| order);
+    let mut unlisted: Vec<&String> = object
         .keys()
-        .filter(|name| *name != "session" && !last.contains(&name.as_str()))
+        .filter(|name| {
+            *name != FIRST && !order.contains(&name.as_str()) && !LAST.contains(&name.as_str())
+        })
         .collect();
-    names.sort();
+    unlisted.sort();
     let ordered = object
-        .get_key_value("session")
+        .get_key_value(FIRST)
         .into_iter()
+        .chain(order.iter().filter_map(|name| object.get_key_value(*name)))
         .chain(
-            names
+            unlisted
                 .into_iter()
                 .filter_map(|name| object.get_key_value(name)),
         )
-        .chain(last.iter().filter_map(|name| object.get_key_value(*name)));
+        .chain(LAST.iter().filter_map(|name| object.get_key_value(*name)));
     let members: Vec<String> = ordered
         .map(|(name, value)| format!("{}:{value}", Value::String(name.clone())))
         .collect();
@@ -225,6 +251,27 @@ mod tests {
                 &json!({ "count": 3, "frame": 0, "session": 1, "start": 3 })
             ),
             r##"debug_code {"session":1,"frame":0,"start":3,"count":3}"##
+        );
+        assert_eq!(
+            call_text(
+                "debug_trace_listing",
+                &json!({ "kind": "inlining", "method": "#4", "session": 1 })
+            ),
+            r##"debug_trace_listing {"session":1,"method":"#4","kind":"inlining"}"##
+        );
+        assert_eq!(
+            call_text(
+                "debug_trace_events",
+                &json!({ "method": "#20", "event": "declined", "session": 1 })
+            ),
+            r##"debug_trace_events {"session":1,"event":"declined","method":"#20"}"##
+        );
+        assert_eq!(
+            call_text(
+                "debug_trace_method",
+                &json!({ "start": 50, "part": "events", "session": 1, "method": "Demo>>run" })
+            ),
+            r##"debug_trace_method {"session":1,"method":"Demo>>run","part":"events","start":50}"##
         );
         assert_eq!(
             call_text(
