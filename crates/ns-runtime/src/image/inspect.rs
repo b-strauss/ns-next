@@ -21,6 +21,7 @@ use std::rc::Rc;
 use crate::ArbitraryInteger;
 use crate::image::shipped_names::{self, ShippedName};
 use crate::image::{decode, mixins, modules, opcodes, symbols, texts};
+use crate::interpreter::instantiate::{InitializerBody, initializer_member};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -129,13 +130,13 @@ fn attribute_code(decoded: &mixins::Decoded, codes: &[Rc<CompiledCode>]) -> Vec<
             claim(*id, &owner, &selector.to_string());
         }
         if let Some(id) = code.own_initializer {
-            claim(id, &owner, "initializer own part");
+            claim(id, &owner, &initializer_member(InitializerBody::OwnPart));
         }
         if let Some(id) = code.standalone_initializer {
-            claim(id, &owner, "standalone initializer");
+            claim(id, &owner, &initializer_member(InitializerBody::Standalone));
         }
         if let Some(id) = code.initializer {
-            claim(id, &owner, "initializer");
+            claim(id, &owner, &initializer_member(InitializerBody::Full));
         }
         if let Some(id) = code.superclass_clause {
             claim(id, &owner, "superclass clause");
@@ -183,10 +184,16 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
         let _ = writeln!(out, "      method    {selector} -> code {id}");
     }
     for (what, id) in [
-        ("initializer", code.initializer),
-        ("initializer own part", code.own_initializer),
-        ("standalone initializer", code.standalone_initializer),
-        ("superclass clause", code.superclass_clause),
+        (initializer_member(InitializerBody::Full), code.initializer),
+        (
+            initializer_member(InitializerBody::OwnPart),
+            code.own_initializer,
+        ),
+        (
+            initializer_member(InitializerBody::Standalone),
+            code.standalone_initializer,
+        ),
+        ("superclass clause".to_string(), code.superclass_clause),
     ] {
         if let Some(id) = id {
             let _ = writeln!(out, "      {what} -> code {id}");

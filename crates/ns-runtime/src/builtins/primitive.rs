@@ -1708,6 +1708,8 @@ pub const MIRROR: &[MirrorEntry] = &[
         "numArgs",
         Primitive::Block(BlockPrimitive::ArgumentCount),
     )),
+    // Exits, never leaves: `platform.rs`'s `write_standard_output` says
+    // why; `the_transcript_rows_leave_machine_code_through_an_exit` pins it.
     mirror(
         "transcript:show:ifFail:",
         "show:",
@@ -3392,5 +3394,22 @@ mod tests {
         let entry = mirror_entry(primitive);
         assert_eq!(entry.primitive, Primitive::Integer(IntegerPrimitive::Add));
         assert_eq!(entry.reported, "+");
+    }
+
+    /// A transcript write that finds the standard output closed answers a
+    /// termination once and drops every later write, so machine code must
+    /// hand the send to the interpreter through an exit: a leaf's
+    /// termination would make the interpreter run the send again, which
+    /// would be dropped, and the run would go on writing to nobody.
+    #[test]
+    fn the_transcript_rows_leave_machine_code_through_an_exit() {
+        for selector in ["transcript:show:ifFail:", "transcriptNewLine:ifFail:"] {
+            let primitive = mirror_primitive_named(selector).expect("row exists");
+            assert_eq!(
+                mirror_entry(primitive).machine_call,
+                MachineCall::Exit,
+                "{selector}"
+            );
+        }
     }
 }

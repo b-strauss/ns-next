@@ -1,11 +1,12 @@
 //! A trace event's bodies named as the debugger names a frame
 //! (`debugger/stack.rs`'s `frame_name`): the owner qualified from its
 //! module down (`qualified_name`, `docs/design/modules.md`, decision 8),
-//! then `>>` and the selector, ` initializer` or ` superclass clause`, a
-//! block `[] in ` and the name of the body it is created in -- and
-//! numbered, since a name does not identify a body: every block of a
-//! method is `[] in <method>`, and a class's initializer bodies share one
-//! name (`docs/design/developer-tool.md`, decision 18).
+//! then `>>` and the selector, ` initializer` (`, own part` or
+//! `, standalone` after it for the other two initializer bodies,
+//! `instantiate::initializer_name`) or ` superclass clause`, a block
+//! `[] in ` and the name of the body it is created in -- and numbered,
+//! since a name does not identify a body: every block of a method is
+//! `[] in <method>` (`docs/design/developer-tool.md`, decision 18).
 //!
 //! A pending event holds a body as its code alone, and code knows neither
 //! its mixin nor its member, so a body is found by an index over every
@@ -19,7 +20,7 @@ use super::BodyName;
 use crate::bytecode::CompiledCode;
 use crate::debugger::metadata::again::{BodyOrigin, Member};
 use crate::interpreter::Mutator;
-use crate::interpreter::instantiate::InitializerBody;
+use crate::interpreter::instantiate::{InitializerBody, initializer_name};
 use crate::mixin::{MethodEntry, Mixin};
 
 /// The name of a body no mixin of the heap holds.
@@ -354,10 +355,15 @@ impl BodyNames {
             InitializerBody::OwnPart,
             InitializerBody::Standalone,
         ] {
+            // A body serving as two kinds is named once, as the kind it
+            // is named as, which a frame running it reads too.
+            if kind.named_as(side) != kind {
+                continue;
+            }
             if let Some(code) = kind.code_of(side) {
                 roots.push((
                     code,
-                    format!("{owner} initializer"),
+                    initializer_name(&owner, kind),
                     Member::Initializer(kind),
                 ));
             }
@@ -473,6 +479,26 @@ mod tests {
           public main: platform args: arguments = (
             ^[ arguments ].
           )
+        )
+    "};
+
+    /// A module whose class `Account` applies a mixin by a `<:` clause and
+    /// has a body, so that its mixin carries all three initializer bodies.
+    const APPLYING: &str = indoc! {"
+        class Demo = Object new () (
+          class Extra = Object new (
+            |
+              public extra ::= 3.
+            |
+          ) ()
+
+          public class Account = Object new <: Extra new (
+            |
+              public balance ::= 0.
+            |
+          ) ()
+
+          public class Bare = Object new <: Extra new.
         )
     "};
 
@@ -674,6 +700,114 @@ mod tests {
                 .clone()
                 .expect("a superclass clause");
             assert_eq!(name_of(mutator, &clause), "Demo/Account superclass clause");
+        });
+        let (mut interpreter, class) = load(APPLYING, None, "Account");
+        interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let account = nested(mutator, &demo, "Account");
+            let body = |kind: InitializerBody| kind.code_of(&account).expect("each body");
+            let full = name_of(mutator, &body(InitializerBody::Full));
+            let own_part = name_of(mutator, &body(InitializerBody::OwnPart));
+            let standalone = name_of(mutator, &body(InitializerBody::Standalone));
+            assert_eq!(full, "Demo/Account initializer");
+            assert_eq!(own_part, "Demo/Account initializer, own part");
+            assert_eq!(standalone, "Demo/Account initializer, standalone");
+            assert_eq!(
+                initializer_name("Demo/Account", InitializerBody::OwnPart),
+                own_part
+            );
+            // A body-less declaration's class object is never reached
+            // outside it, so it carries no standalone body; its other two
+            // are named as their kinds.
+            let bare = nested(mutator, &demo, "Bare");
+            assert!(InitializerBody::Standalone.code_of(&bare).is_none());
+            let full = InitializerBody::Full.code_of(&bare).expect("a full body");
+            let own_part = InitializerBody::OwnPart
+                .code_of(&bare)
+                .expect("an own part");
+            assert!(!Rc::ptr_eq(&full, &own_part));
+            assert_eq!(name_of(mutator, &full), "Demo/Bare initializer");
+            assert_eq!(
+                name_of(mutator, &own_part),
+                "Demo/Bare initializer, own part"
+            );
+        });
+    }
+
+    /// The name the debugger gives a frame of `level` running `mixin`'s
+    /// initializer body of `kind`.
+    fn frame_name_of<'gc>(
+        mutator: &Mutator<'gc>,
+        level: crate::heap::ClassReference<'gc>,
+        mixin: &Rc<Mixin>,
+        kind: InitializerBody,
+    ) -> String {
+        let origin = BodyOrigin {
+            mixin: Rc::clone(mixin),
+            member: Member::Initializer(kind),
+        };
+        crate::debugger::stack::frame_name(
+            &mutator.heap,
+            crate::types::ActivationKind::Initializer(level, kind),
+            Some(&origin),
+            crate::debugger::metadata::again::qualified_name(mutator, mixin),
+            None,
+        )
+    }
+
+    /// A frame running an initializer body is named as the trace names
+    /// that body, for each of the three kinds, and for a body serving as
+    /// two kinds -- the own part of a mixin no declaration was read into,
+    /// a class side's, which is its full body itself -- the name of the
+    /// kind it is named as, whichever kind the frame runs it as.
+    #[test]
+    fn a_frame_and_its_traced_body_read_alike() {
+        let (mut interpreter, class) = load(APPLYING, None, "Account");
+        interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let account = nested(mutator, &demo, "Account");
+            let level = mutator.fetch(&class).as_object().expect("a class object");
+            let frame_named = |mixin: &Rc<Mixin>, kind| frame_name_of(mutator, level, mixin, kind);
+            for (kind, name) in [
+                (InitializerBody::Full, "Demo/Account initializer"),
+                (
+                    InitializerBody::OwnPart,
+                    "Demo/Account initializer, own part",
+                ),
+                (
+                    InitializerBody::Standalone,
+                    "Demo/Account initializer, standalone",
+                ),
+            ] {
+                let body = kind.code_of(&account).expect("each body");
+                assert_eq!(frame_named(&account, kind), name);
+                assert_eq!(name_of(mutator, &body), name);
+            }
+        });
+        // `DEMO`'s `Account` declares its class side, which carries the
+        // bodies a declared side compiles.
+        let (mut interpreter, class) = load(DEMO, None, "Account");
+        interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let account = nested(mutator, &demo, "Account");
+            let level = mutator.fetch(&class).as_object().expect("a class object");
+            let frame_named = |mixin: &Rc<Mixin>, kind| frame_name_of(mutator, level, mixin, kind);
+            let class_side = class_side(mutator, &account);
+            let full = InitializerBody::Full
+                .code_of(&class_side)
+                .expect("a class side's full body");
+            let own_part = InitializerBody::OwnPart
+                .code_of(&class_side)
+                .expect("a class side's own part");
+            assert!(Rc::ptr_eq(&full, &own_part), "one body serves as both");
+            assert_eq!(
+                InitializerBody::OwnPart.named_as(&class_side),
+                InitializerBody::Full
+            );
+            let name = name_of(mutator, &own_part);
+            assert_eq!(name, "Demo/Account class initializer");
+            assert_eq!(frame_named(&class_side, InitializerBody::OwnPart), name);
+            assert_eq!(frame_named(&class_side, InitializerBody::Full), name);
         });
     }
 

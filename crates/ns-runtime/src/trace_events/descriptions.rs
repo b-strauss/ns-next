@@ -26,7 +26,9 @@ use super::BodyName;
 use crate::bytecode::{CallSite, CompiledCode};
 use crate::debugger::ModuleName;
 use crate::debugger::metadata::Cache;
-use crate::debugger::metadata::again::{BodyOrigin, declaration_path};
+use crate::debugger::metadata::again::{BodyOrigin, Member, declaration_path};
+use crate::debugger::metadata::synthesized_standing;
+use crate::debugger::stepping::selector_label;
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{shipped_module_text, shipped_source_files};
 
@@ -102,6 +104,12 @@ pub struct DescribedSend {
     pub call: Option<Span>,
     /// The selector's tokens, each `None` where the text has no place for it.
     pub selector: Vec<Option<Span>>,
+    /// The selector as the compiled send names it -- a super send's
+    /// without `super`, a mirror send's mirror selector -- read from the
+    /// instruction, never the source, so that a body whose source no text
+    /// holds as it was compiled still names its sends; `None` for an
+    /// index whose instruction is no send.
+    pub name: Option<String>,
 }
 
 /// The FNV-1a 64 hash of `text` (offset basis `0xcbf29ce484222325`,
@@ -157,9 +165,11 @@ impl std::fmt::Debug for BodyDescription {
 /// where that holds the same source: at the body's own span, or where the
 /// current text's declaration of the same member holds the family root's
 /// own source, which an edit above it moved. A version without a text of
-/// its own -- a builtin's, an image's without source -- and a factory's
-/// body are described as the module's current text holds their span, as
-/// nothing else says where they stand.
+/// its own -- a builtin's, an image's without source -- is described as
+/// the module's current text holds its span, and a body the compiler
+/// synthesized -- a factory's, an initializer of a declaration that
+/// writes none -- where its metadata places it in that text
+/// (`describe_synthesized`), as nothing else says where they stand.
 pub(crate) fn describe(
     mutator: &mut Mutator<'_>,
     code: &Rc<CompiledCode>,
@@ -178,6 +188,10 @@ pub(crate) fn describe(
             .map(|file| file.path.to_string())
     });
     let shipped_path = shipped_path.flatten();
+    // A body the compiler synthesized has no source of its own to slice.
+    if matches!(origin.member, Member::Factory) || code.source.start == code.source.end {
+        return describe_synthesized(mutator, code, origin, body, family, module, shipped_path);
+    }
     let source = code.source;
     let placement = Cache::own_placement(mutator, code, origin);
     let mut current_text = || -> Option<Rc<str>> {
@@ -229,6 +243,7 @@ pub(crate) fn describe(
                         .map(|site| site.number),
                     call: send.call,
                     selector: send.selector.clone(),
+                    name: send_name(code, send.index),
                 })
                 .collect(),
         ),
@@ -245,6 +260,98 @@ pub(crate) fn describe(
         statements,
         sends,
     })
+}
+
+/// The description of the body `code`, which `origin` names, that the
+/// compiler synthesized rather than lowered from source: a factory's,
+/// made from its class header's arity, and an initializer body of a
+/// declaration that writes none -- no slot, no initializer, a class side
+/// the declaration leaves out. Its own span is empty and no text holds
+/// it, so it stands where its metadata says (`debugger.md`, decision 12):
+/// a factory at its header's factory pattern, or the class's name for a
+/// header that writes none, an initializer at its declaration's header,
+/// as its own version declared them (`Cache::synthesized_place`). Its
+/// source and checksum are its version's, in the text that version was
+/// read in, as every other body's are, and the module's current text is
+/// handed only where it holds the same text at that place, so that a
+/// body an edit renamed the header of is placed only in a text that
+/// still holds its own header. Its statements and sends are its
+/// metadata's -- a factory none, since the source writes none -- each
+/// where the version's text holds it. `None` for a body no metadata
+/// pairs with.
+fn describe_synthesized(
+    mutator: &mut Mutator<'_>,
+    code: &Rc<CompiledCode>,
+    origin: &BodyOrigin,
+    body: BodyName,
+    family: Option<BodyName>,
+    module: ModuleName,
+    shipped_path: Option<String>,
+) -> Option<BodyDescription> {
+    let place = Cache::synthesized_place(mutator, code, origin)?;
+    let standing = synthesized_standing(&place.metadata)?;
+    let compiled = Rc::clone(&place.compiled);
+    // A span of the compiled text where the version's own text holds the
+    // same bytes, in that text's offsets; the compiled text itself for a
+    // version without one.
+    let own_span = |span: Span| -> Option<Span> {
+        let (Some(shift), Some(version)) = (place.shift, origin.mixin.text.as_ref()) else {
+            return Some(span);
+        };
+        let start = u32::try_from(i64::from(span.start) + shift).ok()?;
+        let end = u32::try_from(i64::from(span.end) + shift).ok()?;
+        let moved = Span::new(start, end);
+        (version.slice(moved) == compiled.get(range_of(span))).then_some(moved)
+    };
+    let source = own_span(standing)?;
+    let own = compiled.get(range_of(standing))?;
+    let checksum = source_checksum(own.as_bytes());
+    let statements = place
+        .metadata
+        .statements
+        .iter()
+        .map(|statement| DescribedStatement {
+            instructions: statement.instructions.clone(),
+            span: own_span(statement.span),
+        })
+        .collect();
+    let sends = place
+        .metadata
+        .sends
+        .iter()
+        .map(|send| DescribedSend {
+            index: send.index,
+            site: send
+                .call_site
+                .filter(|site| *site != CallSite::UNCACHED)
+                .map(|site| site.number),
+            call: own_span(send.call),
+            selector: send.selector.iter().map(|token| own_span(*token)).collect(),
+            name: send_name(code, send.index),
+        })
+        .collect();
+    Some(BodyDescription {
+        body,
+        family,
+        module,
+        shipped_path,
+        current: place
+            .current
+            .map(|(text, source)| CurrentText { text, source }),
+        source,
+        checksum,
+        statements,
+        sends,
+    })
+}
+
+/// The selector the send at `index` of `code` names, as a step into's
+/// target names it; `None` past the body's end or for no send.
+fn send_name(code: &CompiledCode, index: u32) -> Option<String> {
+    let index = usize::try_from(index)
+        .ok()
+        .filter(|index| *index < code.instruction_count())?;
+    selector_label(&code.instruction(index))
 }
 
 /// `span` as a range of byte offsets.

@@ -94,7 +94,9 @@
 > marks the shipped frames for folding ("Launching, the start and the
 > end"); `ns-next mcp`, a Model Context Protocol server, lets an
 > agent such as Claude debug a program through its tools, each stop
-> answered as a summary in text ("The MCP server"); and the plugin
+> answered as a summary in text, several numbered sessions served at
+> once, and answers a traced session's trace file through four tools
+> of its own ("The MCP server"); and the plugin
 > evaluates in the Evaluate dialog, its watches and its hovers, sets
 > values, sends conditions and log expressions, smart-steps, resets
 > frames, forces returns, marks objects, shows the memory view and folds
@@ -103,10 +105,12 @@
 > stage 5 moved"). Everything else is planned: hot swap,
 > edit-and-continue and `ActivationMirror` (stage 6) ("Planned: the
 > order of building it"). The
-> design rests on seventeen decisions made with the user, nine on
-> 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 ("The
-> decisions"), on the mechanisms they imply, stage 4's questions among
-> them, decided on 2026-11-14 ("Planned: the mechanisms"), and leaves the
+> design rests on nineteen decisions, eighteen made with the user, nine
+> on 2026-11-10, stage 2's six and stage 3's two on 2026-11-12 and the
+> MCP server's sessions on 2026-11-22, and one, the claim of the MCP
+> server's files, in that batch's plan ("The decisions"), on the
+> mechanisms they imply, stage 4's questions among them, decided on
+> 2026-11-14 ("Planned: the mechanisms"), and leaves the
 > questions in "Open questions" to be decided. It builds on groundwork
 > that exists: reified activations and the activation stack, suspension
 > into frames, the statement→program-counter table, stable call-site
@@ -1078,7 +1082,10 @@ A `FrameDescription` (`stack::stack_trace`) gives, innermost first:
   `SuperclassClause`, `Factory` or `TopLevel`;
 - `name` -- what it runs as a reader names it, after the declaration its
   body belongs to: `Foo>>bar`, `Foo class>>bar`, `[] in Foo>>bar`,
-  `Foo initializer`, `Foo superclass clause`, `Foo class>>new:` for a
+  `Foo initializer`, `Foo initializer, own part` and `Foo initializer,
+  standalone` for the three initializer bodies, a body that is both the
+  full one and the own part named as the full one
+  (`InitializerBody::named_as`), `Foo superclass clause`, `Foo class>>new:` for a
   factory, `top level`, `Foo` the declaration written as every tool
   writes a class (`docs/design/modules.md`, decision 8): its module's
   id, `@` its version whenever it has one, and `/` before the path to a
@@ -2017,8 +2024,18 @@ not.
   breakpoint with its summary, a step and an evaluation, an endless loop
   paused, a shipped frame's file, a reference expanded and a mark, an
   endless evaluation aborted, a start without a runtime running the
-  server's own executable, stale shipped sources removed, and a killed
-  server ending its program; `xtask/src/mcp.rs`'s tests hold the copy
+  server's own executable, stale shipped sources removed, a killed
+  server ending its program, several sessions served at once
+  (`a_wait_holds_no_other_session`), a wait reached by a pause, a stop,
+  a cancellation and the server's end, a batch answered in its order,
+  the trace files written, claimed and cleaned
+  (`a_traced_session_writes_its_own_file`,
+  `a_starting_server_removes_the_traces_of_dead_servers`), and each
+  trace tool and `debug_code`'s window over a real traced run, an answer
+  at its maximum under the budget; the unit tests in `mcp/` hold the
+  index to the file's records, a partial last line and a growing file,
+  the fold, the pages and every answer's exact text over hand-written
+  files; `xtask/src/mcp.rs`'s tests hold the copy
   `cargo xtask mcp` puts, that a copy already there stays and the
   refusal without a build. The plugin's tests cover the stage's actions
   over a scripted agent and the real runtime ("The JetBrains plugin").
@@ -2318,13 +2335,15 @@ at each request.
 ## The decisions
 
 Decisions 1 to 9 were decided with the user on 2026-11-10, decisions 10
-to 15, stage 2's, on 2026-11-12, and decisions 16 and 17, stage 3's, on
-2026-11-12, one at a time, each after the
+to 15, stage 2's, on 2026-11-12, decisions 16 and 17, stage 3's, on
+2026-11-12, and decision 18, the MCP server's sessions, on 2026-11-22;
+decision 19 was decided in that batch's plan. Each was decided one at a
+time, after the
 specification, the prior art (`prior-art/jdk`, `v8`, `opensmalltalk-vm`,
 `primordialsoup`, `newspeak`, `somns`) and the repository's invariants.
 Each states the choice and the reasons the alternatives were rejected; the
 mechanisms each implies are in "Planned: the mechanisms". Decisions 2,
-3, 5, 7 to 17 are built; of decision 1 the debugging API and its first
+3, 5, 7 to 19 are built; of decision 1 the debugging API and its first
 client, the DAP agent ("The debugging API at the safepoint"), without
 `ActivationMirror`; of decision 4 the tables, the stops at statement
 starts and return points, smart step into's targets and the agent's
@@ -3363,6 +3382,79 @@ as its form is, at the next statement or at its join mid-statement
 `a_step_out_of_an_initializer_s_last_form_goes_on_in_the_next_run`,
 `a_step_out_of_a_block_a_slot_initializer_runs_stops_after_the_factory_s_send`,
 `a_step_out_of_a_fallback_send_s_block_leaves_the_form`).
+
+### 18. One server serves numbered sessions concurrently
+
+**Built** (`crates/ns-cli/src/mcp/`; "The MCP server"). Decided with the
+user on 2026-11-22. Each `debug_start` opens a session of its own and
+answers `session: <n>`, a number never given twice; every other tool
+takes `session`, which may be left out while exactly one session is
+open, and a call without it among several is refused, naming the open
+sessions with their program and state. A session, with its child and
+its trace file, lasts until `debug_stop` or the server's end, also after
+its program ended, so that its trace can still be asked; there is no
+limit on the sessions open nor on a trace's size, whose `trace:` line
+says it. The server serves the sessions concurrently: a call waiting up
+to 600 s in one session holds no other session's call, nor a `ping`.
+
+The subagents of one Claude Code session share one MCP server process,
+so a server that served one message at a time, or one session, would
+make every subagent wait on another's 600-second wait, or end its
+program at the next `debug_start`. No limits, as the debuggers an agent
+already uses have none: mcp-debugger's sessions, each a `sessionId`
+from its creation tool, one adapter each, closed on the program's end,
+an explicit close or the server's end; DAP's clients, VS Code's among
+them; and the trace tools -- JFR, V8's log, Perfetto by default -- which
+leave a recording's size to what it records. The handle is the one MCP's
+guidance on stateful tools describes: MCP has no session of its own, so
+a server that keeps state across calls answers a handle from the tool
+that makes it, takes it as an ordinary argument, states its retention in
+the creating tool's description and refuses a handle it does not know
+with an error that says so, so that the model recovers by making a new
+one (the specification's "Tools", "Stateful Tools"). `session` is
+optional while one is open, so that the one-session dialogue an agent
+mostly has stays as short as it was.
+
+Each session has a worker thread (`worker.rs`) that owns its `Session`
+and reads one inbox, into which its DAP reader, the calls routed to it,
+the cancellations and the server's end all arrive -- the shape of the
+DAP agent's own loop (`debug/`), one thread over one channel -- so that
+a session's DAP state is touched by one thread alone and needs no lock,
+and the calls of a session are served in their order of arrival. A
+`Mutex<Session>` shared by threads per call is the way not taken: a
+waiting call would hold the lock for its whole wait. A `debug_pause`, a
+`debug_stop`, a cancellation and the server's end reach a wait in
+progress and act at once, since each is what a user sends to a wait
+that goes on too long: a pause that waited for the wait to end would
+never be served, and a cancelled call's wait would hold its session for
+up to ten minutes after the client stopped listening. The trace tools
+never reach the worker: they lock the session's trace index alone, so
+that an agent asks the trace of a program that runs or of a wait in
+progress.
+
+### 19. A server's files are claimed by a held lock
+
+**Built** (`crates/ns-cli/src/mcp/trace_files.rs`; "The MCP server",
+"The trace file"). Decided in this batch's plan
+(`docs/superpowers/plans/2026-11-22-0310-mcp-trace.md`), where the user
+left how a starting server knows a file's server is gone to it. A server
+claims `traces/<server>/` by an exclusive lock it holds for its whole
+life on a file beside it, `traces/<server>.lock` (`File::try_lock`,
+`LockFileEx` on Windows, `flock` on POSIX); a server that starts removes
+the directory of every lock it can take, and every directory without a
+lock. The operating system lets an exclusive lock go when its process
+ends, however it ends -- killed outright included --, so that a lock it
+can take is proof the server is gone, with no guess from a file's age
+at whether a server that ran for days still runs, nor from a process id
+the system may have given another process since. The lock is not on a
+trace file, since a byte-range lock there on Windows would refuse the
+child's writes. Beside it, the server keeps each trace file open from
+its creation, on Windows without sharing its deletion, so that a
+cleanup, another server's or a user's, cannot delete a live session's
+file there, and on POSIX reads on through its handle whatever happens
+to the name. The rule needs locks every client of the filesystem sees,
+which a network filesystem whose locks are local to each client breaks
+("The MCP server", "The trace file").
 
 ## Planned: the mechanisms
 
@@ -5625,10 +5717,24 @@ the way not taken: every question would run the program from its start.
   reaches `ns-next`. Nothing but protocol messages goes to the standard
   output; the server's own words go to the standard error -- the
   process each program runs as, and every request the agent refused.
-  The server ends when the client closes its standard input, and its
-  program with it. It serves one message at a time: a tool call holds
-  the loop for as long as it waits, so a `ping` sent meanwhile is
-  answered after it.
+  The server ends when the client closes its standard input, and every
+  session's program with it. The thread that reads the input answers
+  `initialize`, `ping`, `tools/list` and a refusal at once and hands a
+  tool call to its session's worker (`worker.rs`), a thread of its own
+  that serves the session's calls in their order of arrival -- but for a
+  `debug_pause` or a `debug_stop` made while a call waits for the
+  program, which acts on that wait at once, and a call the client
+  cancelled (`notifications/cancelled`), which ends its wait and answers
+  nothing, the output it would have shown going to the next answer;
+  a trace tool's call is answered on a thread of its own from the
+  session's trace index, never waiting on the worker, so that a
+  program's trace can be asked while a wait runs. One writer
+  thread owns the standard output (`responses.rs`), which drops the
+  answer of every request the client cancelled, and a batch is
+  answered as one array, in its members' order, once each of them is.
+  So a wait in one session holds
+  neither another session's calls nor a `ping`
+  (`a_wait_holds_no_other_session`; decision 18).
 - **The program runs in a child** (`session.rs`, `dap_client.rs`). Each
   `debug_start` starts `ns-next run --debug-connect` against a socket the
   server listens on, as the plugin does, hands the child a one-time secret
@@ -5638,33 +5744,56 @@ the way not taken: every question would run the program from its start.
   (`wire.rs`), with the requests the plugin uses, and asks it to stop at
   uncaught exceptions and at `halt`. The program writes to its own
   standard streams, which the server reads; a crash ends the child, never
-  the server; and the child is killed when its session ends -- at the next
-  `debug_start`, at `debug_stop` past its wait, and when the server ends.
+  the server; and the child is killed when its session ends -- at
+  `debug_stop` past its wait, and when the server ends.
   A server killed outright drops the child's connection, and the child's
   agent, whose launcher is gone, ends the program as a `terminate` does
   ("Launching, the start and the end";
   `killing_the_server_ends_its_program`). Running the program inside the
   server would put the program's output on the stream the protocol owns
   and take the server down with a crash.
-- **The tools** (`tools.rs`). One session at a time; a new `debug_start`
-  ends the last. `debug_start(program, breakpoints?, stop_on_entry?,
-  arguments?, runtime?, trace?, trace_filter?, wait?)` (`trace` is `ns-next
-  run --trace`'s value, `trace_filter` an array of patterns, each passed as
-  one `--trace-filter=<pattern>`, a prefix ending in `...`; both go before
-  the program, and the trace lines arrive on standard error, with the
-  program's output in every answer), `debug_breakpoints(set?, clear?)`,
+- **The tools** (`tools.rs`). Each `debug_start` opens a session of its
+  own, numbered from 1, a number never given twice, and answers
+  `session: <n>` on its first line; every other tool takes `session`,
+  which may be left out while one session is open, and is refused naming
+  the open sessions, each with its program, the arguments it runs with,
+  cut at 40 characters, and its state, when it names none open or is left
+  out among several (`registry.rs`), as `2 sessions are open: session 1
+  (newspeak Bounce, stopped), session 3 (newspeak CD, running) — pass
+  session`, so that two sessions of one project are told apart. A session lasts
+  until `debug_stop` closes it or the server ends, after its program
+  ended too, with no limit on how many are open (decision 18). There are
+  21 tools. `debug_start(program, breakpoints?, stop_on_entry?,
+  arguments?, runtime?, trace?, trace_filter?, listings?, listing_filter?,
+  wait?)` (`trace` is `ns-next run --trace`'s value, `trace_filter` an
+  array of patterns, each passed as one `--trace-filter=<pattern>`, a
+  prefix ending in `...`; `listings` any of `bytecode`, `code` and
+  `inlining`, each passed as `--print-<kind>`, and `listing_filter` one
+  `--print-filter=<pattern>` each, refused without `listings`; all go
+  before the program, and with `trace` or `listings` the child writes
+  them through `--trace-file` into the session's trace file (below), so
+  that nothing of them reaches the program's output),
+  `debug_breakpoints(set?, clear?)`,
   `debug_continue(wait?)`, `debug_step(kind: over | into | out, target?,
   wait?)`, `debug_step_targets`, `debug_run_to(location, wait?)`,
-  `debug_pause`, `debug_wait(seconds)`, `debug_stack`, `debug_code(frame?)`
-  -- the frame's bytecode and the machine code it goes on in, marked
-  where its call returns, or `the frame goes on in the interpreter`,
-  through `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
-  printing code") -- `debug_variables(frame? | reference?, start?,
-  count?)`, `debug_evaluate(expression, frame?)`,
+  `debug_pause`, `debug_wait(seconds)`, `debug_stack(start?, count?)`,
+  `debug_code(frame?, start?, count?)` -- a window of the frame's
+  bytecode and the machine code it goes on in, marked where its call
+  returns, or `the frame goes on in the interpreter`, through
+  `nsNext/frameCode` ([developer-tool.md](developer-tool.md), "Stage 2:
+  printing code"), 150 lines by default and 500 at most --
+  `debug_variables(frame? | reference?, start?, count?)`,
+  `debug_evaluate(expression, frame?)`,
   `debug_set_variable(name, value, frame?)`, `debug_frame(action:
   restart | return, frame, value?)`, `debug_memory(class? |
   referrers_of?)`, `debug_mark(reference?, label)` -- without a
-  reference it takes the label off -- and `debug_stop`. A breakpoint is
+  reference it takes the label off --, `debug_stop`, and the four trace
+  tools (`trace_tools.rs`; below), each with `session?` like every tool
+  but `debug_start`: `debug_trace(list?, start?, count?)`,
+  `debug_trace_method(method, part?, start?, count?)`,
+  `debug_trace_listing(method, kind, index?, start?, count?)` and
+  `debug_trace_events(category?, event?, reason?, method?, start?,
+  count?)`. A breakpoint is
   a location, `<absolute path>:<line>`, or a method,
   `<id>[@<version>][/<Class>(.<Class>)*]>>selector` (` class>>selector`
   for the class side) as a function breakpoint names it, each with an
@@ -5687,19 +5816,191 @@ the way not taken: every question would run the program from its start.
   the rest; `stack:` at most 8 frames on one line, each with its file's
   name and line, then how to see the rest; `output:` the program's
   standard output and error since the last answer, quoted as a JSON
-  string, its last 2,000 characters and how many came before; and on
+  string, its last 2,000 characters and how many came before; for a
+  traced session `trace:`, how much its trace file holds, read up to the
+  answer -- `trace: 412 MB, 16,636 events, 78 bodies, 4,692 listings —
+  debug_trace {"session":1} for an overview`, a failed reading of the
+  file named after it, and in `debug_stop`'s answer, which closes the
+  session, `— deleted with the session` in place of the call --; and on
   `debug_start`'s answer `runtime:` the binary and the fingerprint of its
   shipped sources. A value with children carries a reference (`[ref
   4]`), the agent's value reference for it, which `debug_variables`
   expands, `debug_mark` marks and `debug_memory` asks the referrers of,
   valid until the program goes on. `debug_stack` and `debug_variables`
   answer one entry a line in the same forms, every location an absolute
-  path, at most 100 unless asked for a page; an evaluation and a set
+  path, a page of 50 frames or 100 variables by default and 200 at most;
+  a page or window that is not the whole, `debug_code`'s too, ends in
+  `Showing <first>–<last> of <total>` and, where more follow, `— next:`
+  the exact call that answers them, every argument given repeated with
+  `start` advanced, and a page stops at the entry that would take it past
+  20,000 characters, but for its first, which it takes cut to the room
+  left, ending in `… (<n> characters left out)`, so that a line longer
+  than an answer -- a long literal's -- never stalls a page. A stop's
+  summary is held to the same budget: each source line it shows is cut
+  at 200 characters, `… (<n> characters left out; the file holds the
+  line whole)`, an exception's text and a condition's error at 2,000,
+  and a summary still past the budget has its longest lines cut; an
+  evaluation and a set
   variable answer the value and the output since the last answer. Text,
   not JSON: it is what an agent reads, in fewer tokens, and as precise.
   The output a program wrote before it stopped is still on its way
   through the pipe as the stop arrives, so the summary takes the output
   once it has been quiet for 20 ms, waiting at most 200 ms.
+- **The trace tools** (`trace_tools.rs`, `trace_index.rs`,
+  `trace_listings.rs`, `pages.rs`) answer a traced session's trace file,
+  while its program runs, at a stop, during a wait and after the program
+  ended, as the tool window's four tabs show the plugin's
+  ([developer-tool.md](developer-tool.md), decisions 36 to 39); a
+  session that traces nothing is refused, `session 1 traces nothing:
+  debug_start with trace or listings writes a trace`, and a traced one
+  whose start has not yet opened its file is told so, `session 1 is
+  starting: its trace file is not open yet; call again in a moment`.
+  - `debug_trace` is the overview: the session and its counts, what the
+    file's header says was traced and listed, the events per traced
+    category, then five lists of 10 entries each, ranked by their first
+    number, ties by body number -- `installs`, a body's installs by tier;
+    `abandoned`, its abandonments with their exits and its revivals by
+    cause; `deoptimized`, its retirements and invalidations by reason;
+    `optimized`, its copies by key and the last one's bytes; `declined`,
+    the callees the inlining plans declined, by reason and by the
+    compiles that declined them, closed by the declines of callees that
+    are no body --, each entry the body's name and number and the call
+    that goes on from it (`→ debug_trace_method {"session":1,"method":"#12"}`),
+    a list of a category not traced saying `not traced (deoptimize)` and
+    a body the file never described written `#44 (not described)`;
+    `list` pages one list alone.
+  - `debug_trace_method` is a method's journal: its place, its bodies
+    with their numbers, each body's copies -- baseline, twin, optimized
+    per key -- with the indexes of their listings, where it was inlined
+    and declined; then its `events`, each body's lifecycle -- `compile`,
+    `osr`, `optimize`, `deoptimize`, `code-zone` -- folded apart, in the
+    file's order; then its `sends`, each with its line and column, its
+    selector as the trace file names it, the inlining decision of the
+    copy installed last and its cache's state; `part` pages one alone. A
+    body's events are folded in two passes: a run of one shape -- its
+    category and event word -- becomes one step, `×k`, and the shortest
+    cycle of up to eight steps that repeats at least twice in a row one
+    entry, `[compile] (compiled … → abandoned exits=64 → [code-zone] freed
+    tier=baseline cause=abandoned ×2 → revived by=entries) ×278`, written
+    with its first round's fields and followed by the fields that vary
+    among its rounds -- `revived by=entries ×229, by=decay ×49`, a number
+    as its range, `bytes 6,208–6,400`, an event without the field as
+    `absent ×n` --, so that a body that churns is one line. The cache
+    transitions are the sends' to say, and the events part's head names
+    the `debug_trace_events` call that gives every event of the method in
+    the run's own order. A body an edit compiled is placed in its
+    module's current text and says so, `(edited, line 14 of its current
+    text)`. A sends part of a trace that does not trace `inlining` or
+    `caches`, whose outcomes it would show, says so in its head,
+    `sends (3 entries; not traced: caches)`.
+  - `debug_trace_listing` is a window of one listing, as `--print-*`
+    writes it (one `listing::View` writes both, `trace_listings.rs`
+    reading a record into it): `kind` `bytecode`, a method's and its
+    blocks', `code`, a copy's machine code, or `inlining`, an optimizing
+    compile's plan, `index` the copy or plan from 1 in the order the run
+    wrote them, as the journal's copies line numbers them, the last by
+    default. Its first line names the listing (`code 2 of 2 of
+    Demo>>square: #4: baseline x64, 32 bytes, 12 lines`) in place of the
+    head line, whose base address differs in every run; a name of several
+    bodies with such a listing is asked back, naming each with its
+    number and its listings and the call that picks one; a session that
+    lists no code says how to list it, one whose `listing_filter` is
+    set that it lists only the bodies the filter matches, and a binary
+    without a JIT that every body runs interpreted. A session that lists
+    `bytecode` too names every position of its machine code with its
+    instruction, as `--print-code` does; one that lists `code` alone
+    names each by its program counter, `@4`, its trace file holding no
+    bytecode.
+  - `debug_trace_events` lists the events, in the run's order, that
+    every filter given selects: `category`, one or several or `all` as
+    `trace` takes them; `event`, the line's word or the record's, so that
+    `transition` and `monomorphic->polymorphic` both select a cache's;
+    `reason`, a `reason`, `cause`, `by` or `walk-end`, or one of
+    `declined-no-body`'s; `method`, the events about such a body or
+    naming it as `spent-by`, `in-body` or `callee`. Each line is the
+    event's place among all the run's events and its line with every body
+    named and numbered, `@1,204 [deoptimize] {Bounce>>run #4} retired
+    key={Bounce} reason=exits version=2`.
+  - A `method` is a name in the tools' grammar, a trailing `...` a
+    prefix and a method's name covering its blocks, or `#<n>`, a body by
+    the number the file gives it, described or not; a name is read by
+    the trace filter's own `TraceFilter::parse` and `check`, so that a
+    name of no module is refused in the words `--trace-filter` refuses it
+    in, and one that matches nothing answers `no body of the trace is
+    named <method>`, followed, in a session whose start set
+    `trace_filter` -- or, for a listing, `listing_filter` --, by `— the
+    session's trace_filter ["Demo>>run"] may have left it out`.
+  - The bounds are fixed (decision 38 there): the overview's lists 10
+    entries, a journal's part and the events 50, a listing window 150
+    lines, and on request at most 200 entries or 500 lines; `count: 0`,
+    a `start` past the end and `start` without `list` or `part` are
+    refused, a larger `count` capped. Every page stops at the entry or
+    line that would take its answer past `ANSWER_BUDGET`, 20,000
+    characters, a page's first taken cut instead, as above. A page that
+    is not the whole -- and every window of
+    `debug_trace_listing`, which always says where it stands -- ends in
+    `Showing <first>–<last> of <total>`, but each list the overview cuts,
+    which says it in its head instead, `installs (10 of 64) — next:
+    debug_trace {"session":1,"list":"installs","start":10}`; where more
+    follow, `— next:` the exact call, `session` first, then the tool's
+    arguments in its signature's order, then `start` and `count`, every
+    argument given repeated with `start` advanced, `debug_trace_listing`'s `index`
+    always among them, so that a new install between pages does not
+    change the listing: `next: debug_trace_events
+    {"session":1,"category":"deoptimize","start":50}`.
+  - The index (`trace_index.rs`) follows the file as it grows: a
+    follower thread reads it from the end of what it read through the
+    server's own handle, by positional reads, in slices of at most 4 MiB
+    and 4,096 lines, parses each slice without the index's lock and takes
+    the lock only to hand it over, so that a tool never waits behind a
+    read; a tool asks for a turn that began after its call
+    (`Trace::caught_up`), so that its answer holds everything the child
+    wrote up to it, and a last line without its newline waits for it.
+    It keeps no listing (developer-tool.md's decision 34, for the
+    server): of a listing its kind, body, tier, key, entered
+    application, bytes or outcome and the offset and length of its line,
+    which a window reads again; of an event its category, its body and
+    the bodies its fields name, its reason, its line's word and its
+    entry text, interned -- 32 bytes an event --; of a body its
+    description without its statements and checksum, `placed` among
+    it, and its
+    tallies, which the overview and the journal count from; and the
+    caches' and the inlining decisions' latest state per send, by the
+    plugin's rule ("Stage 3", "The plugin's half" there). A first line
+    that is no header of `ns-next-trace` version 1, or a later line that
+    is no record, ends the reading, what was read before kept and the
+    failure named in every head.
+- **The trace file** (`trace_files.rs`). A traced session's file is
+  `ns-next/traces/<server>/session-<n>.trace` in the user's own
+  directory, the shipped sources' (below), never the shared temporary
+  directory, where another user could put a file at the path first,
+  which the server would read; `traces/` is the user's alone on POSIX
+  (mode `0700`, set on a `traces/` that exists with a wider mode too). `<server>` is the server's process id and 32 hex digits
+  of the operating system's random source, so that servers of several
+  clients never meet. A server claims its directory by an exclusive lock
+  it holds for its whole life on `traces/<server>.lock`, which the
+  operating system lets go when the process ends, however it ends
+  (decision 19); a claim that fails 16 times leaves the server without
+  trace files, each traced `debug_start` refused with `the server keeps
+  no trace files: <reason>`. The server creates each file, after every
+  argument of the start is checked and before the child starts, and
+  keeps it open for the session's life -- on Windows sharing reading and
+  writing but not deletion, so that no other server's cleanup deletes
+  it -- and its index reads through that handle; the child's
+  `--trace-file` truncates and writes it. `debug_stop` deletes the file
+  once the child is gone, before it answers, and the server's end its
+  directory and lock file; a worker that has not ended by then keeps
+  the directory, which the next server removes. A server that starts
+  removes the directory of every lock it can take, then the lock file,
+  and every directory without a lock beside it. The rule needs a
+  filesystem whose locks every client sees: a home on a network
+  filesystem whose locks are local to each client -- Linux NFS mounted
+  with `local_lock=flock`, some CIFS setups -- lets a server on one
+  machine remove a live one's files on another. The tests' servers keep
+  their files apart from the developer's: `McpServer::launch` sets
+  `LOCALAPPDATA` and `XDG_CACHE_HOME` to `mcp-cache` under
+  `CARGO_TARGET_TMPDIR` (`a_starting_server_removes_the_traces_of_dead_servers`,
+  `a_live_server_s_trace_resists_deletion`).
 - **Every location is an absolute path** with its line and column, in
   answers and in arguments alike, so that the agent opens it as it is
   and two modules of one name never meet; a relative path is refused.
@@ -5721,7 +6022,18 @@ the way not taken: every question would run the program from its start.
   stopped; an evaluation that ended otherwise meanwhile is answered in
   its own words. `debug_stop` ends the program as its own `terminate…` would,
   its `ensure:` blocks run, and kills it when it has not ended within
-  5 s.
+  5 s. A `debug_pause` or `debug_stop` of a session whose call waits for
+  the program acts at once: the waiting call answers the stop or the end
+  it brought, with the output, and the pause or stop then answers the
+  same without it; a pause asked while one is on its way asks the
+  program nothing more, and a `debug_stop` during an evaluation aborts
+  the evaluation as its bound does and ends the program after it
+  (`a_pause_reaches_a_waiting_continue`, `a_stop_reaches_a_waiting_wait`,
+  `a_stop_aborts_a_running_evaluation`). A cancelled wait or evaluation
+  ends -- an evaluation aborted -- and its session serves its next call;
+  a cancelled start keeps its session. The server's end ends every wait,
+  refuses every queued call with `the server is ending`, and kills every
+  session's program.
 - **The shipped sources** (`shipped_sources.rs`) of the binary a session
   runs lie in the user's own directory -- on Windows the local
   application data directory (`%LOCALAPPDATA%`), elsewhere the cache
@@ -5729,7 +6041,8 @@ the way not taken: every question would run the program from its start.
   temporary directory, where another user could put a file of their own
   at the path first, which the server would show (decided on
   2026-11-17). A directory is written under a name of its process's and
-  renamed into place, so that no session reads a half written one. A
+  its session's and renamed into place, so that no session reads a half
+  written one. A
   server that starts removes a directory of shipped sources untouched
   for a day -- its `fingerprint` file's time, which a `debug_start` that
   reuses the directory touches, or the directory's own without one --

@@ -188,11 +188,20 @@ data class BytecodeBody(
 data class Bytecode(val body: Int, val bodies: List<BytecodeBody>) : TraceRecord
 
 /**
+ * A position in machine code: the [scope] and bytecode index [at] of a
+ * stretch, both null before the first position and out of line, and
+ * whether it is [outOfLine], which tells those two apart.
+ */
+data class CodePosition(val scope: Int?, val at: Int?, val outOfLine: Boolean)
+
+/**
  * An instruction of machine code: its [offset] in the body, its text, the
  * [scope] and bytecode index [at] of the stretch it stands in, both null
  * before the first position and out of line, whether it stands [outOfLine],
- * which tells those two apart -- false where a record does not say -- and
- * what a call or jump out of it reaches.
+ * which tells those two apart -- false where a record does not say --,
+ * what a call or jump out of it reaches, and the positions [passed] at it:
+ * those instructions before it that emitted no code left beside its own,
+ * in order, empty where a record does not give them.
  */
 data class CodeInstruction(
     val offset: Int,
@@ -201,6 +210,7 @@ data class CodeInstruction(
     val at: Int?,
     val annotation: String?,
     val outOfLine: Boolean = false,
+    val passed: List<CodePosition> = emptyList(),
 )
 
 /** A data word of machine code: its [offset] from the first data word and what it holds. */
@@ -209,8 +219,12 @@ data class DataWord(val offset: Int, val word: String)
 /** Where a scope is inlined: the [scope] and bytecode index [at] of its send. */
 data class ScopeParent(val scope: Int, val at: Int)
 
-/** A scope of a copy or a plan: the [body] it runs, and where it is inlined, null for the root. */
-data class Scope(val scope: Int, val body: Int, val parent: ScopeParent?)
+/**
+ * A scope of a copy or a plan: the [body] it runs, and where it is inlined, null for the root; and [lines], its
+ * body's instruction lines as the bytecode listing writes them, which a record carries for a body no earlier
+ * bytecode record of the file lists -- empty for one that is listed.
+ */
+data class Scope @JvmOverloads constructor(val scope: Int, val body: Int, val parent: ScopeParent?, val lines: List<String> = emptyList())
 
 /**
  * An install's machine code: its [tier] (`baseline`, `twin` or
@@ -332,6 +346,14 @@ private fun parseObject(record: JsonObject): TraceRecord? = when (record.require
                 at = instruction.optionalInteger("at"),
                 annotation = instruction.optionalText("annotation"),
                 outOfLine = instruction.optional("out-of-line")?.asBoolean ?: false,
+                passed = instruction.optional("passed")?.asJsonArray?.map { element ->
+                    val position = element.asJsonObject
+                    CodePosition(
+                        position.optionalInteger("scope"),
+                        position.optionalInteger("at"),
+                        position.optional("out-of-line")?.asBoolean ?: false,
+                    )
+                } ?: emptyList(),
             )
         },
         data = record.requiredArray("data").map { element ->
@@ -370,7 +392,8 @@ private const val FORMAT = "ns-next-trace"
 private fun scopes(record: JsonObject): List<Scope> = record.requiredArray("scopes").map { element ->
     val scope = element.asJsonObject
     val parent = scope.optional("parent")?.asJsonArray
-    Scope(scope.requiredInteger("scope"), scope.requiredInteger("body"), parent?.let { pair -> ScopeParent(pair[0].asInt, pair[1].asInt) })
+    val lines = scope.optional("lines")?.asJsonArray?.map { line -> line.asString } ?: emptyList()
+    Scope(scope.requiredInteger("scope"), scope.requiredInteger("body"), parent?.let { pair -> ScopeParent(pair[0].asInt, pair[1].asInt) }, lines)
 }
 
 private fun sourceRange(element: JsonElement?): SourceRange? {

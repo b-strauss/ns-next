@@ -22,7 +22,9 @@ import javax.swing.SwingConstants
  * run lists the code of but says no state of, the neutral icon, [listed]
  * and [state] null; or, for a watched method the run has no body of, an
  * eye, [state] null. A click opens [actions], which the gutter's context
- * menu shows too.
+ * menu shows too. Methods whose roots stand at one offset share one icon,
+ * whose tooltip names each and whose [actions] hold a submenu of each
+ * (`DecorationsService.sharedIcon`).
  */
 class StateGutterRenderer(
     val state: MethodState?,

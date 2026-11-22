@@ -19,6 +19,12 @@ const ALL: &str = "all";
 /// name, or `all`. A name no category has is refused, naming it, so that
 /// a misspelt category is never a trace that stays silent.
 pub(crate) fn categories(text: &str) -> Result<TraceCategories, String> {
+    categories_named(text).map_err(|reason| format!("--trace: {reason}"))
+}
+
+/// `categories`, its refusal naming no option: the MCP server's
+/// `debug_trace_events` takes the categories as `--trace` does.
+pub(crate) fn categories_named(text: &str) -> Result<TraceCategories, String> {
     let mut categories = TraceCategories::default();
     for name in text.split(',').map(str::trim) {
         if name == ALL {
@@ -33,7 +39,7 @@ pub(crate) fn categories(text: &str) -> Result<TraceCategories, String> {
                 .map(TraceCategory::name)
                 .collect();
             return Err(format!(
-                "--trace: no category `{name}`; the categories are {}, or {ALL}",
+                "no category `{name}`; the categories are {}, or {ALL}",
                 known.join(", ")
             ));
         };

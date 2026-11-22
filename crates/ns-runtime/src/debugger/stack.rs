@@ -21,6 +21,7 @@ use super::values::StopValues;
 use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
 use crate::interpreter::Mutator;
+use crate::interpreter::instantiate::{InitializerBody, initializer_name};
 use crate::mixin::{MethodEntry, Mixin};
 use crate::types::ActivationKind;
 use crate::{Root, Value};
@@ -674,14 +675,18 @@ fn family_holds(root: &Rc<CompiledCode>, code: &Rc<CompiledCode>) -> bool {
 }
 
 /// What a frame runs, as a reader names it: `Foo>>bar`, `Foo class>>bar`,
-/// `[] in Foo>>bar`, `Foo initializer`, `Foo superclass clause`,
+/// `[] in Foo>>bar`, `Foo initializer` -- `Foo initializer, own part`
+/// and `Foo initializer, standalone` for the other two initializer bodies
+/// (`instantiate::initializer_name`), a body serving as two kinds named
+/// as the trace names it (`InitializerBody::named_as`) --,
+/// `Foo superclass clause`,
 /// `Foo class>>new:` for a factory and `top level`, `Foo` its
 /// declaration's `qualified` name -- its module's id and version, and
 /// `/` before a class inside the module, `com.acme.util.Util@1.0.0/Inner`
 /// -- so that each frame names one module (`docs/design/modules.md`,
 /// decision 8). Named after its current class where it has no origin, or
 /// its origin's mixin where no heap registered it, which name no module.
-fn frame_name<'gc>(
+pub(crate) fn frame_name<'gc>(
     heap: &Heap<'gc>,
     kind: ActivationKind<'gc>,
     origin: Option<&BodyOrigin>,
@@ -693,15 +698,19 @@ fn frame_name<'gc>(
         (None, Some(origin)) => origin.mixin.reflected_name(),
         (None, None) => class.map_or_else(String::new, |class| heap.class_display_name(class)),
     };
+    let named_as =
+        |body: InitializerBody| origin.map_or(body, |origin| body.named_as(&origin.mixin));
     match kind {
         ActivationKind::Method(selector) => format!("{owner}>>{selector}"),
         ActivationKind::Closure(_) => match origin.map(|origin| &origin.member) {
             Some(Member::Method(selector)) => format!("[] in {owner}>>{selector}"),
-            Some(Member::Initializer(_)) => format!("[] in {owner} initializer"),
+            Some(Member::Initializer(body)) => {
+                format!("[] in {}", initializer_name(&owner, named_as(*body)))
+            }
             Some(Member::SuperclassClause) => format!("[] in {owner} superclass clause"),
             Some(Member::Factory) | None => format!("[] in {owner}"),
         },
-        ActivationKind::Initializer(..) => format!("{owner} initializer"),
+        ActivationKind::Initializer(_, body) => initializer_name(&owner, named_as(body)),
         ActivationKind::SuperclassClause(_) => format!("{owner} superclass clause"),
         ActivationKind::Factory(_) => {
             let selector = crate::mixin::factory_entry_selector(

@@ -4,22 +4,35 @@
 //! waiting for the next stop (`docs/design/debugger.md`, "The MCP
 //! server"). The program runs in the child, so that its output never
 //! reaches the stream the protocol owns and a crash ends the child, never
-//! the server. The child is killed when the session is dropped: at a
-//! `debug_start` that replaces it and when the server ends.
+//! the server. The child is killed when the session is dropped: at
+//! `debug_stop` and when the server ends. The session belongs to its
+//! worker (`worker.rs`), and reads its program's messages from the
+//! worker's inbox, where the calls made of it while it waits are queued.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
 use super::dap_client::{DapClient, Next};
+use super::pages::{
+    self, ANSWER_BUDGET, ENTRY_DEFAULT, ENTRY_MAXIMUM, LINE_DEFAULT, LINE_MAXIMUM, characters,
+    count_of, counted,
+};
+use super::registry::{SessionHandle, SessionState};
 use super::shipped_sources;
 use super::summary::{self, Frame, Shown, Situation, Stop};
+use super::tools;
+use super::trace_files::TraceFile;
+use super::trace_index::Trace;
+use super::trace_tools;
+use super::worker::{Call, Inbox, Input};
 use crate::debug::{SECRET_VARIABLE, Token};
 use crate::target_runner;
 
@@ -33,7 +46,7 @@ const CONNECT_BOUND: Duration = Duration::from_secs(30);
 
 /// The longest an ended program's process takes to exit, and its streams
 /// to close, before it is killed.
-const END_BOUND: Duration = Duration::from_secs(10);
+pub(crate) const END_BOUND: Duration = Duration::from_secs(10);
 
 /// The longest an aborted evaluation takes to answer.
 const ABORT_BOUND: Duration = Duration::from_secs(10);
@@ -45,12 +58,17 @@ const ABORT_BOUND: Duration = Duration::from_secs(10);
 const OUTPUT_QUIET: Duration = Duration::from_millis(20);
 const OUTPUT_SETTLE: Duration = Duration::from_millis(200);
 
-/// The most lines `debug_stack`, `debug_variables` and `debug_memory`
-/// answer unless asked for a page.
+/// The lines `debug_variables` answers unless asked for another count,
+/// and the most `debug_memory` answers.
 pub(crate) const LISTING_LIMIT: usize = 100;
 
 /// The agent's message for an evaluation the abort ended.
 const ABORTED: &str = "evaluation aborted";
+
+/// What an evaluation answers that `debug_stop`, or its cancellation,
+/// aborted.
+const INTERRUPTED_EVALUATION: &str =
+    "the evaluation was aborted: debug_stop ends the program, or the call was cancelled";
 
 /// The longest text of an evaluation's value an answer shows.
 const EVALUATION_LIMIT: usize = 10_000;
@@ -148,19 +166,39 @@ struct StopEvent {
 }
 
 /// A value a stop's answers handed out by its reference: the DAP
-/// `variablesReference` that lists its children, 0 for none, and its
-/// `nsNext/valueReference`, by which it is marked and its referrers asked.
+/// `variablesReference` that lists its children, 0 for none, its
+/// `nsNext/valueReference`, by which it is marked and its referrers asked,
+/// and, for a value whose children are its elements, how many it has.
 #[derive(Clone, Copy)]
 struct Reference {
     variables: i64,
     value: Option<i64>,
+    elements: Option<usize>,
 }
 
 /// Why a request got no response.
 enum Unanswered {
     TimedOut,
     Ended,
+    /// The server ends.
+    ServerEnding,
+    /// An evaluation's wait gave way: its call was cancelled, or a
+    /// `debug_stop` came.
+    Interrupted,
 }
+
+/// What a response is awaited for: a request that runs nothing of the
+/// program's, which is answered within its bound and waited for whatever
+/// comes meanwhile, or an evaluation, which runs the program's code and
+/// gives way to its cancellation and to a `debug_stop`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Awaited {
+    Request,
+    Evaluation,
+}
+
+/// What a call the server's end cut off is answered.
+pub(crate) const SERVER_ENDING: &str = "the server is ending";
 
 /// What `debug_start` asks for.
 pub(crate) struct StartOptions {
@@ -172,6 +210,13 @@ pub(crate) struct StartOptions {
     pub(crate) trace: Option<String>,
     /// One `--trace-filter` pattern each.
     pub(crate) trace_filter: Vec<String>,
+    /// The listings, each `--print-<kind>`.
+    pub(crate) listings: Vec<String>,
+    /// One `--print-filter` pattern each.
+    pub(crate) listing_filter: Vec<String>,
+    /// The file the child writes the trace and the listings into, its
+    /// `--trace-file`, when it traces or lists.
+    pub(crate) trace_file: Option<TraceFile>,
     pub(crate) breakpoints: Vec<Breakpoint>,
     pub(crate) wait: Duration,
 }
@@ -191,11 +236,32 @@ pub(crate) struct Session {
     exit_code: Option<i64>,
     /// The `terminated` event came, or the connection closed.
     ending: bool,
+    /// A `pause` was asked and no stop has come since, so that a second
+    /// pause asks nothing more of the program.
+    pause_requested: bool,
     lines: BTreeMap<String, Vec<Held>>,
     methods: Vec<Held>,
     references: HashMap<i64, Reference>,
     /// The `runtime:` line of `debug_start`'s answer.
     runtime: String,
+    /// The worker's inbox, which the connection's messages arrive in.
+    inbox: Inbox,
+    /// Where the session publishes its state.
+    handle: Arc<SessionHandle>,
+    /// The index of the file the child writes its trace into, which the
+    /// session's handle shares with the trace tools; the file is closed
+    /// and deleted with the session once the child is gone.
+    trace: Option<Arc<Trace>>,
+}
+
+/// What a start made before the session is: the child, connected.
+struct Launched {
+    child: Child,
+    client: DapClient,
+    output: Written,
+    secret: String,
+    core_library: PathBuf,
+    fingerprint: String,
 }
 
 impl Drop for Session {
@@ -203,113 +269,174 @@ impl Drop for Session {
         self.client.close();
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Closed here rather than when the last holder of the index lets
+        // it go -- a trace tool's thread may still hold it -- so that the
+        // file is gone when `debug_stop` answers.
+        close_trace(self.trace.as_ref());
     }
 }
 
+/// Closes the trace file of `trace`, which deletes it.
+fn close_trace(trace: Option<&Arc<Trace>>) {
+    if let Some(trace) = trace {
+        trace.close();
+    }
+}
+
+/// The index of `file`, published in `handle` and followed from now on,
+/// so that the trace tools read the trace of a start still waiting.
+fn index_trace(file: TraceFile, handle: &SessionHandle) -> Arc<Trace> {
+    let trace = Trace::over(file);
+    // Set by this start alone: a session starts once.
+    let _ = handle.trace.set(Arc::clone(&trace));
+    trace
+}
+
 impl Session {
-    /// Starts `options.program` under the debugger and waits for its first
-    /// stop at most `options.wait`; answers the session and the start's
-    /// answer, or why it could not start.
-    pub(crate) fn start(options: StartOptions) -> Result<(Session, String), String> {
-        let (core_library, fingerprint) = shipped_sources::core_library(&options.runtime)?;
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
-        let address = listener
-            .local_addr()
-            .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
-        let secret = Token::generate()
-            .map_err(|error| format!("making the session's secret: {error}"))?
-            .hex();
-        let mut command = target_runner::target_command(&options.runtime);
-        command.arg("run").arg(format!("--debug-connect={address}"));
-        // Before the program, as `run` reads its options there; the lines
-        // arrive on the child's standard error with its other output.
-        if let Some(trace) = &options.trace {
-            command.arg(format!("--trace={trace}"));
-        }
-        for pattern in &options.trace_filter {
-            command.arg(format!("--trace-filter={pattern}"));
-        }
-        command.arg(&options.program);
-        if !options.arguments.is_empty() {
-            command.arg("--").args(&options.arguments);
-        }
-        command
-            .env(SECRET_VARIABLE, &secret)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
-        // Said for whoever watches the server: a test, or a person
-        // looking for the program's process.
-        eprintln!(
-            "ns-next mcp: {} runs as process {}",
-            options.program.display(),
-            child.id()
-        );
-        let output: Written = Arc::new(Mutex::new(Vec::new()));
-        if let Some(stdout) = child.stdout.take() {
-            collect(stdout, Arc::clone(&output));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            collect(stderr, Arc::clone(&output));
-        }
-        let stream = match accept(&listener, &mut child) {
-            Ok(stream) => stream,
+    /// Starts `options.program` under the debugger as the session
+    /// `handle`, its connection's messages arriving in `inbox`, and waits
+    /// for its first stop at most `options.wait`; answers the session and
+    /// the start's answer, or why it could not start and the inbox, with
+    /// the calls queued meanwhile.
+    pub(crate) fn start(
+        mut options: StartOptions,
+        handle: Arc<SessionHandle>,
+        inbox: Inbox,
+    ) -> Result<(Session, String), (String, Inbox)> {
+        let trace_path = options
+            .trace_file
+            .as_ref()
+            .map(|file| file.path().to_path_buf());
+        let trace = options
+            .trace_file
+            .take()
+            .map(|file| index_trace(file, &handle));
+        let launched = match launch(&options, trace_path.as_deref(), &handle) {
+            Ok(launched) => launched,
             Err(reason) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                wait_for_readers(&output);
-                let written =
-                    String::from_utf8_lossy(&output.lock().expect("the output")).to_string();
-                return Err(summary::output_line(&written)
-                    .map_or(reason.clone(), |line| format!("{reason}\n{line}")));
-            }
-        };
-        let client = match DapClient::over(stream) {
-            Ok(client) => client,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("the connection: {error}"));
+                close_trace(trace.as_ref());
+                return Err((reason, inbox));
             }
         };
         let mut session = Session {
-            child,
-            client,
-            output,
+            child: launched.child,
+            client: launched.client,
+            output: launched.output,
             shown: 0,
             state: State::Running {
                 since: Instant::now(),
             },
             exit_code: None,
             ending: false,
+            pause_requested: false,
             lines: BTreeMap::new(),
             methods: Vec::new(),
             references: HashMap::new(),
-            runtime: format!("{} {fingerprint}", options.runtime.display()),
+            runtime: format!("{} {}", options.runtime.display(), launched.fingerprint),
+            inbox,
+            handle,
+            trace,
         };
-        session.attach(&secret, &core_library, options.stop_on_entry)?;
+        match session.configure(&options, &launched.secret, &launched.core_library) {
+            Ok(answer) => Ok((session, answer)),
+            Err(reason) => Err((reason, session.take_inbox())),
+        }
+    }
+
+    /// Attaches to the started child, sets the breakpoints and lets the
+    /// program run; answers the start's answer.
+    fn configure(
+        &mut self,
+        options: &StartOptions,
+        secret: &str,
+        core_library: &Path,
+    ) -> Result<String, String> {
+        self.attach(secret, core_library, options.stop_on_entry)?;
         let breakpoints = (!options.breakpoints.is_empty())
-            .then(|| session.change_breakpoints(&options.breakpoints, &[]).0);
-        session.request(
+            .then(|| self.change_breakpoints(&options.breakpoints, &[]).0);
+        self.request(
             "setExceptionBreakpoints",
             json!({ "filters": ["uncaught", "halt"] }),
         )?;
         // The program runs from the configuration's end: a stop it makes
         // at once may come before the response, and is kept.
-        session.state = State::Running {
+        self.state = State::Running {
             since: Instant::now(),
         };
-        session.request("configurationDone", json!({}))?;
-        session.wait_for_stop(options.wait);
-        let mut answer = session.summary(true);
+        self.request("configurationDone", json!({}))?;
+        self.wait_for_stop(options.wait);
+        self.publish();
+        let mut answer = self.summary(true);
         if let Some(breakpoints) = breakpoints {
             answer.push_str(&format!("\nbreakpoints:\n{breakpoints}"));
         }
-        Ok((session, answer))
+        Ok(answer)
+    }
+
+    /// The worker's inbox, taken out of a session about to be dropped.
+    pub(crate) fn take_inbox(&mut self) -> Inbox {
+        let (_, detached) = mpsc::channel();
+        std::mem::replace(&mut self.inbox, Inbox::new(detached))
+    }
+
+    /// The next call to serve: the one queued first, or the next to
+    /// arrive. What the connection says meanwhile is taken as it comes,
+    /// the program's end finished at once, so that the state the session
+    /// publishes is current. `None` once the server ends.
+    pub(crate) fn next_call(&mut self) -> Option<Call> {
+        self.inbox.serve(None);
+        loop {
+            // The server's end comes first: a call queued behind it is
+            // refused, never served -- a resumed program and a wait
+            // nobody reads.
+            if self.inbox.ended() {
+                return None;
+            }
+            if let Some(call) = self.inbox.next_pending() {
+                self.inbox.serve(Some(&call));
+                return Some(call);
+            }
+            match self.inbox.receive(None) {
+                Ok(Input::Call(call)) => {
+                    self.inbox.serve(Some(&call));
+                    return Some(call);
+                }
+                Ok(Input::Cancelled(identifier)) => self.inbox.cancel(&identifier),
+                Ok(Input::Dap(message)) => {
+                    match self.client.received(message) {
+                        Next::Message(message) if message["type"] == "event" => {
+                            self.handle_event(&message);
+                        }
+                        Next::Closed => self.ending = true,
+                        _ => {}
+                    }
+                    if self.ending {
+                        self.finish();
+                    }
+                }
+                Ok(Input::End) | Err(_) => self.inbox.end(),
+            }
+        }
+    }
+
+    /// How much of the program's output answers have shown.
+    pub(crate) fn shown_output(&self) -> usize {
+        self.shown
+    }
+
+    /// Shows the output from `shown` on again in the next answer: the
+    /// answer that took it was cancelled, and nobody saw it.
+    pub(crate) fn show_again_from(&mut self, shown: usize) {
+        self.shown = shown;
+    }
+
+    /// Publishes the program's state in the session's handle.
+    fn publish(&self) {
+        self.handle.publish(match self.state {
+            State::Running { .. } => SessionState::Running,
+            State::Stopped(_) => SessionState::Stopped,
+            State::Ended { .. } => SessionState::Ended,
+        });
     }
 
     /// `initialize` and `attach`, then the `process` event, which must name
@@ -351,17 +478,23 @@ impl Session {
     /// Sends a request and answers its response's body, or its message.
     fn request(&mut self, command: &str, arguments: Value) -> Result<Value, String> {
         let seq = self.send(command, arguments)?;
-        match self.response(seq, Instant::now() + REQUEST_BOUND) {
+        match self.response(seq, Instant::now() + REQUEST_BOUND, Awaited::Request) {
             Ok(response) => body_of(&response),
-            Err(Unanswered::TimedOut) => Err(format!(
+            Err(Unanswered::TimedOut | Unanswered::Interrupted) => Err(format!(
                 "the debugger did not answer `{command}` within {} s",
                 REQUEST_BOUND.as_secs()
             )),
             Err(Unanswered::Ended) => Err(self.ended_refusal()),
+            Err(Unanswered::ServerEnding) => Err(SERVER_ENDING.to_string()),
         }
     }
 
     fn send(&mut self, command: &str, arguments: Value) -> Result<i64, String> {
+        // After the server's end the inbox is read no more, so a request
+        // would wait out its whole bound.
+        if self.inbox.ended() {
+            return Err(SERVER_ENDING.to_string());
+        }
         if self.ending || matches!(self.state, State::Ended { .. }) {
             return Err(self.ended_refusal());
         }
@@ -371,10 +504,20 @@ impl Session {
     }
 
     /// The response to `seq`, the events before it handled; waits until
-    /// `deadline` at the latest.
-    fn response(&mut self, seq: i64, deadline: Instant) -> Result<Value, Unanswered> {
+    /// `deadline` at the latest, and for an evaluation until its call is
+    /// cancelled or a `debug_stop` comes, which is then served first.
+    fn response(
+        &mut self,
+        seq: i64,
+        deadline: Instant,
+        awaited: Awaited,
+    ) -> Result<Value, Unanswered> {
         loop {
-            match self.client.next(deadline) {
+            if awaited == Awaited::Evaluation && (self.inbox.cancelled() || self.inbox.stop_first())
+            {
+                return Err(Unanswered::Interrupted);
+            }
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "response" && message["request_seq"] == seq {
                         return Ok(message);
@@ -388,6 +531,12 @@ impl Session {
                     return Err(Unanswered::Ended);
                 }
                 Next::TimedOut => return Err(Unanswered::TimedOut),
+                Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
+                Next::End => {
+                    self.inbox.end();
+                    return Err(Unanswered::ServerEnding);
+                }
             }
         }
     }
@@ -396,7 +545,7 @@ impl Session {
     fn event(&mut self, name: &str) -> Result<Value, String> {
         let deadline = Instant::now() + REQUEST_BOUND;
         loop {
-            match self.client.next(deadline) {
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
                         if message["event"] == name {
@@ -412,6 +561,12 @@ impl Session {
                 Next::TimedOut => {
                     return Err(format!("the debugger sent no `{name}` event"));
                 }
+                Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
+                Next::End => {
+                    self.inbox.end();
+                    return Err(SERVER_ENDING.to_string());
+                }
             }
         }
     }
@@ -421,11 +576,13 @@ impl Session {
         match event["event"].as_str() {
             Some("stopped") => {
                 self.references.clear();
+                self.pause_requested = false;
                 self.state = State::Stopped(StopEvent {
                     reason: body["reason"].as_str().unwrap_or("pause").to_string(),
                     description: body["description"].as_str().map(str::to_string),
                     text: body["text"].as_str().map(str::to_string),
                 });
+                self.publish();
             }
             Some("output") => {
                 if let Some(text) = body["output"].as_str() {
@@ -468,6 +625,7 @@ impl Session {
         self.state = State::Ended {
             status: self.exit_code.or(status.map(i64::from)),
         };
+        self.publish();
     }
 
     fn ended_refusal(&self) -> String {
@@ -476,11 +634,24 @@ impl Session {
 
     // ---- Waiting ----
 
-    /// Waits at most `wait` for the running program to stop or end.
+    /// Waits at most `wait` for the running program to stop or end; the
+    /// server's end and the cancellation of the call served end the wait
+    /// at once. A `debug_pause` or a `debug_stop` made meanwhile acts at
+    /// once -- pauses the program, or ends it -- and is served next, so
+    /// that it answers the stop or the end the wait answers.
     fn wait_for_stop(&mut self, wait: Duration) {
         let deadline = Instant::now() + wait;
-        while matches!(self.state, State::Running { .. }) && !self.ending {
-            match self.client.next(deadline) {
+        let mut interrupting = Vec::new();
+        while matches!(self.state, State::Running { .. })
+            && !self.ending
+            && !self.inbox.ended()
+            && !self.inbox.cancelled()
+        {
+            if let Some(call) = self.inbox.take_interrupting() {
+                self.interrupt(call, &mut interrupting);
+                continue;
+            }
+            match self.client.next(deadline, &self.inbox) {
                 Next::Message(message) => {
                     if message["type"] == "event" {
                         self.handle_event(&message);
@@ -488,13 +659,52 @@ impl Session {
                 }
                 Next::Closed => self.ending = true,
                 Next::TimedOut => break,
+                Next::Call(call) if Inbox::interrupts(&call) => {
+                    self.interrupt(call, &mut interrupting);
+                }
+                Next::Call(call) => self.inbox.queue(call),
+                Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
+                Next::End => self.inbox.end(),
             }
+        }
+        // Before every call that waits its turn, in the order they came.
+        for call in interrupting.into_iter().rev() {
+            self.inbox.queue_first(call);
         }
         if self.ending {
             self.finish();
         } else if matches!(self.state, State::Stopped(_)) {
             self.settle_output();
         }
+    }
+
+    /// Acts on `call`, a `debug_pause` or a `debug_stop` made while the
+    /// program runs and a call waits for it: asks the pause, or ends the
+    /// program, and keeps the call in `interrupting`, to be served once
+    /// the wait answered.
+    fn interrupt(&mut self, call: Call, interrupting: &mut Vec<Call>) {
+        if call.tool == "debug_stop" {
+            self.end_program(tools::STOP_WAIT);
+        } else {
+            // A refusal leaves the pause to its own call, which asks again.
+            let _ = self.request_pause();
+        }
+        interrupting.push(call);
+    }
+
+    /// Asks the running program to pause, unless a pause was asked and no
+    /// stop came since.
+    fn request_pause(&mut self) -> Result<(), String> {
+        if self.pause_requested {
+            return Ok(());
+        }
+        // Noted before the request: the stop may come before its response.
+        self.pause_requested = true;
+        let asked = self.request("pause", json!({ "threadId": 1 }));
+        if asked.is_err() {
+            self.pause_requested = false;
+        }
+        asked.map(|_| ())
     }
 
     /// Waits until the program's output has been quiet for `OUTPUT_QUIET`,
@@ -531,10 +741,12 @@ impl Session {
                 since: Instant::now(),
             },
         );
+        self.publish();
         if let Err(reason) = self.request(command, arguments) {
             // Refused, the program is still at its stop.
             if matches!(self.state, State::Running { .. }) && !self.ending {
                 self.state = stopped;
+                self.publish();
             }
             return Err(reason);
         }
@@ -545,7 +757,7 @@ impl Session {
     /// `debug_pause`: stops the running program where it is.
     pub(crate) fn pause(&mut self, wait: Duration) -> Result<String, String> {
         if matches!(self.state, State::Running { .. }) && !self.ending {
-            self.request("pause", json!({ "threadId": 1 }))?;
+            self.request_pause()?;
             self.wait_for_stop(wait);
         }
         Ok(self.summary(false))
@@ -561,6 +773,14 @@ impl Session {
     /// `ensure:` blocks run, and kills it when it does not end within
     /// `wait`.
     pub(crate) fn stop(&mut self, wait: Duration) -> String {
+        self.end_program(wait);
+        self.summary_closing(false, true)
+    }
+
+    /// Ends the program as `debug_stop` does, and the session's view of it.
+    /// A cancellation of the call served lets the end go on: it is bounded
+    /// by `wait`, and a program half ended is no state to leave.
+    fn end_program(&mut self, wait: Duration) {
         if !self.ending && !matches!(self.state, State::Ended { .. }) {
             // A refusal leaves the end to the kill below.
             let _ = self.request("terminate", json!({}));
@@ -568,10 +788,13 @@ impl Session {
                 self.state = State::Running {
                     since: Instant::now(),
                 };
+                self.publish();
             }
             let deadline = Instant::now() + wait;
-            while !self.ending && Instant::now() < deadline {
-                match self.client.next(deadline) {
+            // The server's end kills at once: the server waits for no
+            // program's `ensure:` blocks.
+            while !self.ending && !self.inbox.ended() && Instant::now() < deadline {
+                match self.client.next(deadline, &self.inbox) {
                     Next::Message(message) => {
                         if message["type"] == "event" {
                             self.handle_event(&message);
@@ -579,6 +802,9 @@ impl Session {
                     }
                     Next::Closed => self.ending = true,
                     Next::TimedOut => break,
+                    Next::Call(call) => self.inbox.queue(call),
+                    Next::Cancelled(identifier) => self.inbox.cancel(&identifier),
+                    Next::End => self.inbox.end(),
                 }
             }
             if !self.ending {
@@ -586,7 +812,6 @@ impl Session {
             }
         }
         self.finish();
-        self.summary(false)
     }
 
     fn require_stopped(&mut self) -> Result<(), String> {
@@ -607,6 +832,12 @@ impl Session {
     /// The answer that says where the program is, with its output since
     /// the last answer; with `runtime`, the binary and its fingerprint.
     pub(crate) fn summary(&mut self, runtime: bool) -> String {
+        self.summary_closing(runtime, false)
+    }
+
+    /// The summary, `closing` for `debug_stop`'s, the session's last,
+    /// whose `trace:` line names no call of the session.
+    fn summary_closing(&mut self, runtime: bool, closing: bool) -> String {
         let situation = match &self.state {
             State::Running { since } => Situation::Running {
                 seconds: since.elapsed().as_secs_f64(),
@@ -615,8 +846,14 @@ impl Session {
             State::Stopped(_) => Situation::Stopped(Box::new(self.stop_view())),
         };
         let output = self.new_output();
+        // Read to the length the file had now, which holds everything the
+        // stop or the end flushed.
+        let trace = self
+            .trace
+            .as_ref()
+            .map(|trace| trace_tools::trace_line(&trace.caught_up(), self.handle.number, closing));
         let runtime = runtime.then(|| self.runtime.clone());
-        summary::summary(&situation, &output, runtime.as_deref())
+        summary::summary(&situation, &output, trace.as_deref(), runtime.as_deref())
     }
 
     /// The output since the last answer that showed output.
@@ -655,7 +892,7 @@ impl Session {
             stack: Vec::new(),
             total_frames: 0,
         };
-        let Ok((frames, total)) = self.frames(summary::STACK_LIMIT) else {
+        let Ok((frames, total)) = self.frames(0, summary::STACK_LIMIT) else {
             return stop;
         };
         stop.total_frames = total;
@@ -674,11 +911,11 @@ impl Session {
         stop
     }
 
-    /// The first `levels` frames of the stop, and how many there are.
-    fn frames(&mut self, levels: usize) -> Result<(Vec<Value>, usize), String> {
+    /// `levels` frames of the stop from `start`, and how many there are.
+    fn frames(&mut self, start: usize, levels: usize) -> Result<(Vec<Value>, usize), String> {
         let body = self.request(
             "stackTrace",
-            json!({ "threadId": 1, "startFrame": 0, "levels": levels }),
+            json!({ "threadId": 1, "startFrame": start, "levels": levels }),
         )?;
         let frames = body["stackFrames"].as_array().cloned().unwrap_or_default();
         let total = body["totalFrames"]
@@ -733,7 +970,14 @@ impl Session {
     fn remember(&mut self, shown: &Value) -> Option<i64> {
         let variables = shown["variablesReference"].as_i64().unwrap_or(0);
         let value = shown["nsNext/valueReference"].as_i64();
-        let reference = Reference { variables, value };
+        let elements = shown["indexedVariables"]
+            .as_u64()
+            .and_then(|elements| usize::try_from(elements).ok());
+        let reference = Reference {
+            variables,
+            value,
+            elements,
+        };
         // The agent numbers both from one count, so neither names
         // another value's.
         let number = value.or((variables != 0).then_some(variables))?;
@@ -752,35 +996,54 @@ impl Session {
 
     // ---- The tools at a stop ----
 
-    /// `debug_stack`: every frame, one a line, at most `LISTING_LIMIT`.
-    pub(crate) fn stack(&mut self) -> Result<String, String> {
+    /// `debug_stack`: the frames from `start`, one a line, `count` of them
+    /// or `ENTRY_DEFAULT`, and where that is not every frame, the
+    /// `Showing` line; `given` is the call's arguments, which its next
+    /// call repeats.
+    pub(crate) fn stack(
+        &mut self,
+        start: Option<usize>,
+        count: Option<usize>,
+        given: &Value,
+    ) -> Result<String, String> {
         self.require_stopped()?;
-        let (frames, total) = self.frames(LISTING_LIMIT)?;
-        let mut lines: Vec<String> = frames
-            .iter()
-            .enumerate()
-            .map(|(index, frame)| summary::frame_text(index, &frame_of(frame)))
-            .collect();
-        if total > frames.len() {
-            lines.push(format!("… {} more frames", total - frames.len()));
+        let shown = count_of(count, ENTRY_DEFAULT, ENTRY_MAXIMUM)?;
+        let start = start.unwrap_or(0);
+        let (frames, total) = self.frames(start, shown)?;
+        if start > 0 && start >= total {
+            return Err(format!(
+                "start {start} is past the end: the stack has {}",
+                counted(total as u64, "frame", "frames")
+            ));
         }
-        Ok(lines.join("\n"))
+        let entries: Vec<String> = frames
+            .iter()
+            .take(shown)
+            .enumerate()
+            .map(|(offset, frame)| summary::frame_text(start + offset, &frame_of(frame)))
+            .collect();
+        let next_from = self.next_from("debug_stack", given);
+        Ok(pages::page(&entries, start, total, ANSWER_BUDGET, next_from).join("\n"))
     }
 
     /// `debug_variables`: the variables of a frame, or a value's children,
-    /// one a line, from `start`, `count` of them or `LISTING_LIMIT`.
+    /// one a line, from `start`, `count` of them or `LISTING_LIMIT`, and
+    /// where that is not every one, the `Showing` line; `given` is the
+    /// call's arguments, which its next call repeats.
     pub(crate) fn variables(
         &mut self,
         frame: Option<usize>,
         reference: Option<i64>,
-        start: usize,
+        start: Option<usize>,
         count: Option<usize>,
+        given: &Value,
     ) -> Result<String, String> {
         self.require_stopped()?;
-        let shown = count.unwrap_or(LISTING_LIMIT);
-        // One more than shown, to tell whether there are more.
-        let asked = Some(shown.saturating_add(1));
-        let (variables, more_hint) = match (frame, reference) {
+        let shown = count_of(count, LISTING_LIMIT, ENTRY_MAXIMUM)?;
+        let start = start.unwrap_or(0);
+        // The page shown, the total it is a page of, what has them and
+        // what they are called.
+        let (page, total, owner, noun) = match (frame, reference) {
             (Some(_), Some(_)) => {
                 return Err("debug_variables takes a frame or a reference, not both".to_string());
             }
@@ -789,30 +1052,66 @@ impl Session {
                 if target.variables == 0 {
                     return Err(format!("the value [ref {number}] has no children"));
                 }
-                let variables = self.variables_of(target.variables, start, asked)?;
-                (variables, format!("reference {number}"))
+                let owner = format!("[ref {number}]");
+                match target.elements {
+                    // A value that says how many elements it has is asked
+                    // for its page alone: it may have millions.
+                    Some(total) => {
+                        let asked = shown.min(total.saturating_sub(start));
+                        let page = if asked == 0 {
+                            Vec::new()
+                        } else {
+                            self.variables_of(target.variables, start, Some(asked))?
+                        };
+                        (page, total, owner, ("element", "elements"))
+                    }
+                    // Its slots, as many as its class declares, are asked
+                    // whole, so that their total is known.
+                    None => {
+                        let every = self.variables_of(target.variables, 0, None)?;
+                        let total = every.len();
+                        let page = every.into_iter().skip(start).take(shown).collect();
+                        (page, total, owner, ("child", "children"))
+                    }
+                }
             }
             (frame, None) => {
                 let frame = frame.unwrap_or(0);
-                let variables = self.frame_variables(frame, start, asked)?;
-                (variables, format!("frame {frame}"))
+                let every = self.frame_variables(frame, 0, None)?;
+                let total = every.len();
+                let page = every.into_iter().skip(start).take(shown).collect();
+                (
+                    page,
+                    total,
+                    format!("frame {frame}"),
+                    ("variable", "variables"),
+                )
             }
         };
-        let mut lines: Vec<String> = variables
-            .iter()
-            .take(shown)
-            .map(summary::variable_text)
-            .collect();
-        if lines.is_empty() {
-            lines.push("no variables".to_string());
+        if total == 0 && start == 0 {
+            return Ok("no variables".to_string());
         }
-        if variables.len() > shown {
-            lines.push(format!(
-                "… more: debug_variables {more_hint} start {}",
-                start + shown
+        if start >= total {
+            return Err(format!(
+                "start {start} is past the end: {owner} has {}",
+                counted(total as u64, noun.0, noun.1)
             ));
         }
-        Ok(lines.join("\n"))
+        let entries: Vec<String> = page.iter().map(summary::variable_text).collect();
+        let next_from = self.next_from("debug_variables", given);
+        Ok(pages::page(&entries, start, total, ANSWER_BUDGET, next_from).join("\n"))
+    }
+
+    /// The call of `tool` that answers its page from a start on: the call
+    /// `given` made, its session named and its start advanced.
+    fn next_from(
+        &self,
+        tool: &'static str,
+        given: &Value,
+    ) -> impl Fn(usize) -> (&'static str, Value) + use<> {
+        let session = self.handle.number;
+        let given = given.clone();
+        move |start| (tool, pages::next_arguments(&given, session, start))
     }
 
     /// `debug_evaluate`: the expression in frame `frame`, the top one
@@ -829,17 +1128,22 @@ impl Session {
             arguments["frameId"] = json!(frame + 1);
         }
         let seq = self.send("evaluate", arguments)?;
-        let response = match self.response(seq, Instant::now() + wait) {
+        let awaited = self.response(seq, Instant::now() + wait, Awaited::Evaluation);
+        let response = match awaited {
             Ok(response) => response,
-            Err(Unanswered::TimedOut) => {
+            Err(cut @ (Unanswered::TimedOut | Unanswered::Interrupted)) => {
                 let _ = self.send("cancel", json!({ "requestId": seq }));
                 // The evaluation's answer, which the agent sends however it
                 // ended: aborted, or answered just before the abort.
-                match self.response(seq, Instant::now() + ABORT_BOUND) {
+                match self.response(seq, Instant::now() + ABORT_BOUND, Awaited::Request) {
                     // Answered, or ended otherwise than by the abort: its
                     // own word.
                     Ok(response) if response["message"] != ABORTED => response,
                     Err(Unanswered::Ended) => return Err(self.ended_refusal()),
+                    Err(Unanswered::ServerEnding) => return Err(SERVER_ENDING.to_string()),
+                    _ if matches!(cut, Unanswered::Interrupted) => {
+                        return Err(INTERRUPTED_EVALUATION.to_string());
+                    }
                     _ => {
                         return Err(format!(
                             "the evaluation did not end within {:.1} s and was aborted; \
@@ -850,6 +1154,7 @@ impl Session {
                 }
             }
             Err(Unanswered::Ended) => return Err(self.ended_refusal()),
+            Err(Unanswered::ServerEnding) => return Err(SERVER_ENDING.to_string()),
         };
         let body = body_of(&response)?;
         let mut text = summary::cut(
@@ -918,21 +1223,46 @@ impl Session {
             .join("\n"))
     }
 
-    /// `debug_code`: the bytecode of frame `frame`, then the machine code
-    /// it goes on in, or the line saying it goes on interpreted.
-    pub(crate) fn code(&mut self, frame: usize) -> Result<String, String> {
+    /// `debug_code`: a window of the code of frame `frame` -- its
+    /// bytecode, then the machine code it goes on in, or the line saying
+    /// it goes on interpreted --, the lines from `start`, `count` of them
+    /// or `LINE_DEFAULT`, and where that is not every line, the `Showing`
+    /// line; `given` is the call's arguments, which its next call repeats.
+    pub(crate) fn code(
+        &mut self,
+        frame: usize,
+        start: Option<usize>,
+        count: Option<usize>,
+        given: &Value,
+    ) -> Result<String, String> {
         self.require_stopped()?;
+        let shown = count_of(count, LINE_DEFAULT, LINE_MAXIMUM)?;
         let body = self.request(
             "nsNext/frameCode",
             json!({ "frameId": frame.saturating_add(1) }),
         )?;
-        let bytecode = body["bytecode"].as_str().unwrap_or_default();
-        let text = match body["machineCode"].as_str() {
-            // Every listing ends its lines; the answer ends with its last.
-            Some(machine_code) => format!("{bytecode}{}", machine_code.trim_end_matches('\n')),
-            None => format!("{bytecode}the frame goes on in the interpreter"),
-        };
-        Ok(self.with_output(text))
+        let lines = code_lines(frame, &body)?;
+        let start = start.unwrap_or(0);
+        if start > 0 && start >= lines.len() {
+            return Err(format!(
+                "start {start} is past the end: the frame's code has {}",
+                counted(lines.len() as u64, "line", "lines")
+            ));
+        }
+        // The output since the last answer follows the window, which
+        // keeps back its room.
+        let output = self.output_line();
+        let budget = ANSWER_BUDGET - output.as_ref().map_or(0, |line| characters(line) + 1);
+        let next_from = self.next_from("debug_code", given);
+        let mut answer = pages::page(
+            lines.iter().skip(start).take(shown),
+            start,
+            lines.len(),
+            budget,
+            next_from,
+        );
+        answer.extend(output);
+        Ok(answer.join("\n"))
     }
 
     /// `debug_frame`: restarts frame `frame` or makes it return `value`,
@@ -1055,11 +1385,16 @@ impl Session {
 
     /// `text`, and the output since the last answer on a line after it.
     fn with_output(&mut self, text: String) -> String {
-        let output = self.new_output();
-        match summary::output_line(&output) {
+        match self.output_line() {
             Some(line) => format!("{text}\n{line}"),
             None => text,
         }
+    }
+
+    /// The line of the output since the last answer; none for no output.
+    fn output_line(&mut self) -> Option<String> {
+        let output = self.new_output();
+        summary::output_line(&output)
     }
 
     // ---- Breakpoints ----
@@ -1277,11 +1612,11 @@ fn body_of(response: &Value) -> Result<Value, String> {
             .as_str()
             .unwrap_or("the debugger refused it")
             .to_string();
-        eprintln!(
+        super::say(&format!(
             "ns-next mcp: the agent refused `{}` (request {}): {message}",
             response["command"].as_str().unwrap_or_default(),
             response["request_seq"]
-        );
+        ));
         Err(message)
     }
 }
@@ -1301,6 +1636,101 @@ fn frame_of(frame: &Value) -> Frame {
         column: number("column"),
         shipped: frame["nsNext/shipped"] == true,
     }
+}
+
+/// Starts the child `options` asks for, its trace written into
+/// `trace_path`, and waits for its agent to
+/// connect; answers it connected, its messages arriving in the inbox of
+/// `handle`, or why it did not start.
+fn launch(
+    options: &StartOptions,
+    trace_path: Option<&Path>,
+    handle: &SessionHandle,
+) -> Result<Launched, String> {
+    let (core_library, fingerprint) =
+        shipped_sources::core_library(&options.runtime, handle.number)?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("listening on 127.0.0.1: {error}"))?;
+    let secret = Token::generate()
+        .map_err(|error| format!("making the session's secret: {error}"))?
+        .hex();
+    let mut command = target_runner::target_command(&options.runtime);
+    command.arg("run").arg(format!("--debug-connect={address}"));
+    // Before the program, as `run` reads its options there. The trace
+    // and the listings go into the server's file, which replaces the
+    // child's standard error for them, so that the output stays the
+    // program's.
+    if let Some(trace) = &options.trace {
+        command.arg(format!("--trace={trace}"));
+    }
+    for pattern in &options.trace_filter {
+        command.arg(format!("--trace-filter={pattern}"));
+    }
+    for kind in &options.listings {
+        command.arg(format!("--print-{kind}"));
+    }
+    for pattern in &options.listing_filter {
+        command.arg(format!("--print-filter={pattern}"));
+    }
+    if let Some(trace_path) = trace_path {
+        command.arg(format!("--trace-file={}", trace_path.display()));
+    }
+    command.arg(&options.program);
+    if !options.arguments.is_empty() {
+        command.arg("--").args(&options.arguments);
+    }
+    command
+        .env(SECRET_VARIABLE, &secret)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("starting {}: {error}", options.runtime.display()))?;
+    // Said for whoever watches the server: a test, or a person looking
+    // for the program's process.
+    super::say(&format!(
+        "ns-next mcp: {} runs as process {}",
+        options.program.display(),
+        child.id()
+    ));
+    let output: Written = Arc::new(Mutex::new(Vec::new()));
+    if let Some(stdout) = child.stdout.take() {
+        collect(stdout, Arc::clone(&output));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        collect(stderr, Arc::clone(&output));
+    }
+    let stream = match accept(&listener, &mut child) {
+        Ok(stream) => stream,
+        Err(reason) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            wait_for_readers(&output);
+            let written = String::from_utf8_lossy(&output.lock().expect("the output")).to_string();
+            return Err(summary::output_line(&written)
+                .map_or(reason.clone(), |line| format!("{reason}\n{line}")));
+        }
+    };
+    let client = match DapClient::over(stream, handle.inbox.clone()) {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("the connection: {error}"));
+        }
+    };
+    Ok(Launched {
+        child,
+        client,
+        output,
+        secret,
+        core_library,
+        fingerprint,
+    })
 }
 
 /// Waits for the child's agent to connect to `listener`, at most
@@ -1339,6 +1769,22 @@ fn accept(listener: &TcpListener, child: &mut Child) -> Result<std::net::TcpStre
     }
 }
 
+/// The lines of `debug_code`'s listing of frame `frame` in the agent's
+/// `nsNext/frameCode` response `body`: the bytecode's, then the machine
+/// code's or the line saying the frame goes on in the interpreter.
+fn code_lines(frame: usize, body: &Value) -> Result<Vec<String>, String> {
+    // Every frame runs a body, so a response without its bytecode is the
+    // agent's fault, never an empty listing.
+    let bytecode = body["bytecode"]
+        .as_str()
+        .ok_or_else(|| format!("the debugger answered no bytecode for frame {frame}"))?;
+    let text = match body["machineCode"].as_str() {
+        Some(machine_code) => format!("{bytecode}{machine_code}"),
+        None => format!("{bytecode}the frame goes on in the interpreter"),
+    };
+    Ok(text.lines().map(ToString::to_string).collect())
+}
+
 /// Reads `stream` into `written` on a thread of its own until it ends.
 fn collect(mut stream: impl Read + Send + 'static, written: Written) {
     let _ = std::thread::Builder::new()
@@ -1363,5 +1809,49 @@ fn wait_for_readers(output: &Written) {
     let started = Instant::now();
     while Arc::strong_count(output) > 1 && started.elapsed() < END_BOUND {
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_s_code_is_its_bytecode_then_its_machine_code() {
+        let bytecode = "--- bytecode {Demo>>run}\n   0-> stmt 0  LoadSelf r1\n--- end\n";
+        assert_eq!(
+            code_lines(0, &json!({ "bytecode": bytecode })),
+            Ok(vec![
+                "--- bytecode {Demo>>run}".to_string(),
+                "   0-> stmt 0  LoadSelf r1".to_string(),
+                "--- end".to_string(),
+                "the frame goes on in the interpreter".to_string(),
+            ])
+        );
+        let machine_code = "--- code {Demo>>run} baseline\n  ->+0x0000  ret\n--- end\n";
+        assert_eq!(
+            code_lines(
+                1,
+                &json!({ "bytecode": bytecode, "machineCode": machine_code })
+            )
+            .map(|lines| lines[3..].to_vec()),
+            Ok(vec![
+                "--- code {Demo>>run} baseline".to_string(),
+                "  ->+0x0000  ret".to_string(),
+                "--- end".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_response_without_bytecode_is_refused() {
+        assert_eq!(
+            code_lines(2, &json!({ "body": "Demo>>run" })),
+            Err("the debugger answered no bytecode for frame 2".to_string())
+        );
+        assert_eq!(
+            code_lines(0, &json!({ "bytecode": null, "machineCode": "--- end\n" })),
+            Err("the debugger answered no bytecode for frame 0".to_string())
+        );
     }
 }

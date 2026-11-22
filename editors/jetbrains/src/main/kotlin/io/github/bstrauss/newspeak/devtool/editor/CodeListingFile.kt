@@ -11,6 +11,7 @@ import io.github.bstrauss.newspeak.devtool.model.Bytecode
 import io.github.bstrauss.newspeak.devtool.model.BytecodeBody
 import io.github.bstrauss.newspeak.devtool.model.BytecodeInstruction
 import io.github.bstrauss.newspeak.devtool.model.Code
+import io.github.bstrauss.newspeak.devtool.model.CodePosition
 import io.github.bstrauss.newspeak.devtool.model.Scope
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.util.Collections
@@ -228,30 +229,38 @@ fun codeListing(names: ListingNames, code: Code): CodeListing {
         writeScopeTree(writer, names, code.scopes)
     }
     val scopeBodies = code.scopes.associate { scope -> scope.scope to scope.body }
-    var lastPosition: Triple<Int?, Int?, Boolean>? = null
+    val scopeLines = code.scopes.associate { scope -> scope.scope to scope.lines }
+    var lastPosition: CodePosition? = null
+    // An instruction without a scope of its own stands in the body's.
+    fun linkedOf(position: CodePosition): ListingPosition? =
+        position.at?.let { index -> ListingPosition(position.scope?.let { scope -> scopeBodies[scope] } ?: code.body, index) }
     for (instruction in code.instructions) {
-        val position = Triple(instruction.scope, instruction.at, instruction.outOfLine)
-        val at = instruction.at
-        // An instruction without a scope of its own stands in the body's.
-        val linked = at?.let { index -> ListingPosition(instruction.scope?.let { scope -> scopeBodies[scope] } ?: code.body, index) }
-        // The code before the first position is named by no line; a record without `out-of-line` writes an
-        // out-of-line stretch as it writes that code, so there a stretch without a position is named out of
-        // line only after a position.
-        if (position != lastPosition && (lastPosition != null || at != null || instruction.outOfLine)) {
+        val own = CodePosition(instruction.scope, instruction.at, instruction.outOfLine)
+        val linked = linkedOf(own)
+        // The positions instructions that emitted no code left beside this one's are each named on a line of
+        // their own, linked to their instruction, as the text listing names them.
+        for (position in instruction.passed + own) {
+            // The code before the first position is named by no line; a record without `out-of-line` writes an
+            // out-of-line stretch as it writes that code, so there a stretch without a position is named out of
+            // line only after a position.
+            if (position == lastPosition || (lastPosition == null && position.at == null && !position.outOfLine)) continue
+            val at = position.at
             if (at == null) {
                 writer.line("  out of line")
             } else {
+                val stretch = checkNotNull(linkedOf(position))
                 val label = StringBuilder("  ")
-                if (optimized) label.append("s${instruction.scope ?: 0} {${names.name(checkNotNull(linked).body)}} ")
+                if (optimized) label.append("s${position.scope ?: 0} {${names.name(stretch.body)}} ")
                 label.append("@$at")
-                bytecodeText(names, checkNotNull(linked))?.let { text -> label.append("  ").append(text) }
-                writer.line(label.toString(), linked)
+                (scopeLine(scopeLines[position.scope ?: 0], at) ?: bytecodeText(names, stretch))?.let { text -> label.append("  ").append(text) }
+                writer.line(label.toString(), stretch)
             }
             lastPosition = position
         }
         val indent = if (code.mark == instruction.offset) "  ->" else "    "
         val line = StringBuilder("$indent${bodyOffset(instruction.offset)}  ${instruction.text}")
-        instruction.annotation?.let { annotation -> line.append("  ; ").append(annotation) }
+        // The record joins two annotations with `; `, which the text listing writes each after `  ; `.
+        instruction.annotation?.split("; ")?.forEach { annotation -> line.append("  ; ").append(annotation) }
         writer.line(line.toString(), linked)
     }
     if (code.data.isNotEmpty()) {
@@ -282,6 +291,15 @@ private fun writeScopeTree(writer: ListingWriter, names: ListingNames, scopes: L
 private fun bytecodeText(names: ListingNames, position: ListingPosition): String? {
     val instruction = names.instruction(position) ?: return null
     return "${statementWord(instruction.statement)}  ${instruction.text}"
+}
+
+/**
+ * The instruction at [at] of a scope's own [lines], which the record carries where the run listed no bytecode of
+ * its body, without its index, as the CLI writes it; null where the scope carries none.
+ */
+private fun scopeLine(lines: List<String>?, at: Int): String? {
+    val line = lines?.getOrNull(at) ?: return null
+    return line.trimStart().substringAfter(' ', "").trimStart()
 }
 
 private fun bodyOffset(offset: Int): String = "+0x${hex(offset)}"

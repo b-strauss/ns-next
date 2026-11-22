@@ -1143,6 +1143,117 @@ fn body_numbers(record: &serde_json::Value, numbers: &mut Vec<u64>) {
     }
 }
 
+/// The bodies a trace may number without describing: the VM mirror's
+/// class's factory, which no declaration writes, so that no text holds
+/// its source.
+const UNDESCRIBABLE: [&str; 1] = ["VmMirror class>>new"];
+
+/// A whole run of the benchmark project -- every module and the core
+/// library loaded, every category traced and every listing printed, so
+/// that each loaded body's bytecode names it -- describes every body the
+/// file numbers before any record names it: factories and the
+/// initializer bodies the compiler synthesizes for a declaration that
+/// writes none among them. The one exception is a body no text holds,
+/// which the same run's text listing names.
+#[test]
+fn a_whole_run_describes_every_body_it_numbers() {
+    let directory = ScratchDirectory::new("trace-file-whole-run");
+    let project = repository_root().join("benchmarks/are-we-fast-yet/newspeak");
+    let options = [
+        "--trace=all",
+        "--print-bytecode",
+        "--print-code",
+        "--print-inlining",
+    ];
+    let file = directory.join("trace.jsonl");
+    let filed = plain_run(&project)
+        .args(options)
+        .arg(format!("--trace-file={}", file.display()))
+        .args(["--", "Bounce"])
+        .output()
+        .unwrap();
+    assert!(filed.status.success(), "{filed:?}");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let mut described = std::collections::BTreeSet::new();
+    let mut undescribed = Vec::new();
+    let mut listings = Vec::new();
+    for line in text.lines().skip(1) {
+        let record: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|error| panic!("{error}: {line}"));
+        if record["kind"] == "body" {
+            described.insert(record["body"].as_u64().unwrap());
+            continue;
+        }
+        if record["kind"] == "bytecode" {
+            listings.push(record["body"].as_u64().unwrap());
+        }
+        let mut numbers = Vec::new();
+        body_numbers(&record, &mut numbers);
+        undescribed.extend(
+            numbers
+                .into_iter()
+                .filter(|number| !described.contains(number)),
+        );
+    }
+    assert!(
+        described.len() > 1_000,
+        "{} bodies described",
+        described.len()
+    );
+    if undescribed.is_empty() {
+        return;
+    }
+    // The same run's text listings name each listed root, in the same
+    // order as the file lists them.
+    let listed = plain_run(&project)
+        .args(options)
+        .args(["--", "Bounce"])
+        .output()
+        .unwrap();
+    let names: Vec<String> = String::from_utf8_lossy(&listed.stderr)
+        .lines()
+        .filter_map(|line| line.strip_prefix("--- bytecode {"))
+        .filter_map(|rest| rest.split_once('}').map(|(name, _)| name.to_string()))
+        .collect();
+    assert_eq!(names.len(), listings.len());
+    for number in undescribed {
+        let name = listings
+            .iter()
+            .position(|listed| *listed == number)
+            .map(|position| names[position].as_str());
+        assert!(
+            name.is_some_and(|name| UNDESCRIBABLE.contains(&name)),
+            "body {number} ({name:?}) is named and never described"
+        );
+    }
+}
+
+/// With `--trace-file` the file replaces standard error for the trace and
+/// the listings, every category and every kind: the run writes nothing
+/// there, where the same run without the file lists its bytecode -- with
+/// a JIT or without one.
+#[test]
+fn a_trace_file_leaves_standard_error_empty() {
+    let directory = ScratchDirectory::new("trace-file-quiet");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let options = [
+        "--trace=all",
+        "--print-bytecode",
+        "--print-code",
+        "--print-inlining",
+    ];
+    let unfiled = traced_stderr(&program, &options);
+    assert!(unfiled.contains("--- bytecode"), "stderr: {unfiled}");
+    let file = directory.join("trace.jsonl");
+    let trace_file = format!("--trace-file={}", file.display());
+    let mut filed = options.to_vec();
+    filed.push(&trace_file);
+    assert_eq!(traced_stderr(&program, &filed), "");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#""kind":"bytecode""#), "{text}");
+}
+
 /// `--trace-file` writes the trace and the listings into the file, not on
 /// stderr: a header first, then every body described before any record
 /// names its number.
@@ -1910,4 +2021,85 @@ fn a_leafless_body_pins_its_listing() {
 ",
         expected
     );
+}
+
+/// Writes `line` for as long as anyone reads it, and once more as its
+/// `ensure:` block runs.
+const AN_ENDLESS_WRITER: &str = indoc! {"
+    class Demo = Object new () (
+      public main: platform args: arguments = (
+        [[true] whileTrue: [platform transcript show: 'line'; newLine]]
+          ensure: [platform transcript show: 'ensured'; newLine].
+      )
+    )
+"};
+
+/// A run whose standard output is closed under it -- `ns-next run Spin.ns
+/// | head -1` -- ends as a terminated run does, with status 1 and the
+/// report line, its `ensure:` block run without raising it again, rather
+/// than panicking or writing to nobody for ever.
+#[test]
+fn a_closed_standard_output_ends_the_run() {
+    use std::io::BufRead;
+    let directory = ScratchDirectory::new("closed-standard-output");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, AN_ENDLESS_WRITER).unwrap();
+    let mut child = ns_next()
+        .arg("run")
+        .arg(&program)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut first = String::new();
+    stdout.read_line(&mut first).unwrap();
+    assert_eq!(first, "line\n");
+    drop(stdout);
+    // Standard error is read on a thread of its own, so that a full pipe
+    // never holds the child up.
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut stderr, &mut text).unwrap();
+        text
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("the run went on after its standard output closed");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stderr = reader.join().unwrap();
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Uncaught Newspeak error: the standard output is closed"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("panicked"), "stderr: {stderr}");
+}
+
+/// A run whose standard error is closed under it loses the trace, the
+/// listings and the statistics line, never the run: the program's output
+/// is whole and the status its own.
+#[test]
+fn a_closed_standard_error_loses_the_trace() {
+    let directory = ScratchDirectory::new("closed-standard-error");
+    let program = directory.join("Demo.ns");
+    std::fs::write(&program, A_HOT_METHOD).unwrap();
+    let mut child = plain_run(&program)
+        .args(["--trace=all", "--print-bytecode", "--jit-statistics"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), A_HOT_METHOD_STDOUT);
 }

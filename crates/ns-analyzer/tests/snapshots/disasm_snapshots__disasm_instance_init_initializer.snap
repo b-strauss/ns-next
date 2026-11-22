@@ -2,7 +2,7 @@
 source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/class/instantiation/instance_init\", &[\"--initializer\"])"
 ---
-initializer InstanceInit (args 0, registers 16)
+initializer InstanceInit initializer (args 0, registers 16)
    0   stmt 0  InitializeSuperclass r13 <- steps 1 #new ()
    1   stmt 1  LoadLiteral r13, 'hi'
    2   stmt 1  InitSlot own 0 <- r13
@@ -18,7 +18,7 @@ initializer InstanceInit (args 0, registers 16)
   12        -  LoadSelf r15
   13        -  ImplicitReturn r15
 
-initializer InstanceInit own part (args 0, registers 16)
+initializer InstanceInit initializer, own part (args 0, registers 16)
    0   stmt 0  LoadLiteral r13, 'hi'
    1   stmt 0  InitSlot own 0 <- r13
    2   stmt 1  LoadLiteral r13, 0

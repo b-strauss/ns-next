@@ -187,7 +187,10 @@ Rust 1.100.0, edition 2024, seven crates:
   each site cold and testing its category's bit first, a release build
   tracing too; a site records the event pending, its bodies as
   `Rc<CompiledCode>` and never a handle, and a flush names them as the
-  debugger names a frame (`trace_events/names.rs`), applies the filter
+  debugger names a frame (`trace_events/names.rs`) -- a class's three
+  initializer bodies `X initializer`, `X initializer, own part` and
+  `X initializer, standalone`, spelled once by `interpreter/instantiate.rs`'s
+  `initializer_name` --, applies the filter
   (`trace_events/filter.rs`) and delivers them at the end of the
   interpreter's compile trigger, at the safepoint, when a host's run
   returns and before a host method that records outside a run returns,
@@ -319,10 +322,12 @@ Rust 1.100.0, edition 2024, seven crates:
   print option, writes the events and the listings into the file
   instead of standard error, as one JSON object a line -- a header, each
   body described once by number with its source range, the text that
-  range counts in (`placed`), checksum, statements and sends
+  range counts in (`placed`), checksum, statements and sends, each send
+  with the selector its instruction names (`name`)
   (`TraceSettings::describe_bodies`,
   `trace_events/descriptions.rs`), then the events and the listings
-  naming bodies by number -- flushed at every flush's end, and refuses a
+  naming bodies by number -- flushed at every flush's end, read by the
+  plugin and the MCP server, and refuses a
   path no file can be created at with exit status 2 before the program
   runs (`trace_file.rs`; `developer-tool.md`, "Stage 3: the developer
   tool in the IDE", "The trace file"). The agent answers its own request `nsNext/frameCode`,
@@ -330,14 +335,33 @@ Rust 1.100.0, edition 2024, seven crates:
   Context Protocol server on standard input and output (`mcp/`),
   registered by `.mcp.json` from the copy `cargo xtask mcp` puts in
   `target/mcp/`, through whose tools an agent debugs a program: each
-  `debug_start` runs it in a child `ns-next run --debug-connect` the
-  server is a DAP client of, and each stop is answered as a summary in
-  text, `debug_start`'s `trace` and `trace_filter` passed on as `--trace`
-  and one `--trace-filter` per pattern, the lines arriving with the
-  program's output, and `debug_code` answering a frame's code through
-  `nsNext/frameCode`; a child runs the server's own executable unless
-  `runtime` names another, and the server knows nothing of the build
-  (`debugger.md`, "The MCP server"; tests `tests/mcp.rs`).
+  `debug_start` opens a numbered session, which every other tool names
+  by `session` -- left out while one is open -- and which lasts until
+  `debug_stop` or the server's end, the sessions served concurrently,
+  each by a worker thread of its own that a `debug_pause`, a
+  `debug_stop`, a cancellation and the server's end reach during a wait,
+  one writer thread owning standard output; a session runs its program
+  in a child `ns-next run --debug-connect` the server is a DAP client
+  of, and each stop is answered as a summary in text; `debug_start`'s
+  `trace`, `trace_filter`, `listings` and `listing_filter`, passed on as
+  `--trace`, `--trace-filter`, `--print-<kind>` and `--print-filter`,
+  have the child write `--trace-file` into a file of the server's in the
+  user's own directory, never its output (`traces/<server>/session-<n>.trace`,
+  claimed by a lock the server holds and deleted at `debug_stop`;
+  `trace_files.rs`), every summary of a traced session carrying one
+  `trace:` line of its size and counts, and four tools answer it from an
+  index that follows the file and keeps no listing (`trace_index.rs`):
+  `debug_trace`, the overview, `debug_trace_method`, a method's journal,
+  `debug_trace_listing`, a window of one listing, and
+  `debug_trace_events`, the events filtered, a method named in the tools'
+  grammar or by its body number `#<n>`; every answer is bounded by its
+  page and by 20,000 characters, a cut one ending in `Showing … — next:`
+  and the exact call (`pages.rs`), and `debug_code` answers a window of a
+  frame's code through `nsNext/frameCode`; a child runs the server's own
+  executable unless `runtime` names another, and the server knows
+  nothing of the build (`debugger.md`, "The MCP server", decisions 18
+  and 19; `developer-tool.md`, decisions 36 to 39; tests
+  `tests/mcp.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols, formatting,

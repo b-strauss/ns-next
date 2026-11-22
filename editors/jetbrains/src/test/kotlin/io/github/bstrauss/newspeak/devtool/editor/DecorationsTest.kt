@@ -567,6 +567,51 @@ class DecorationsTest : BasePlatformTestCase() {
         )
     }
 
+    /**
+     * Bodies the runtime places at one class header -- a class's factory and
+     * the initializer bodies the compiler synthesizes for it stand at its
+     * name or its factory pattern -- share one icon, whose tooltip names
+     * each body with its state and whose menu reaches each body's actions.
+     */
+    fun testBodiesAtOneOffsetShareOneIconNamingEach() {
+        val editor = openDemo()
+        decorations()
+        val source = fileSource(directory.resolve("Demo.ns"))
+        val header = "Demo"
+        val run = TraceRun("Demo", Instant.EPOCH).also { traced ->
+            traced.add(
+                records(
+                    listOf(
+                        HEADER.replace(""""listings":[]""", """"listings":["bytecode"]"""),
+                        bodyJson(6, "Demo initializer", source, DEMO, header),
+                        bodyJson(7, "Demo initializer, own part", source, DEMO, header),
+                        bodyJson(1, "Demo>>square:", source, DEMO, SQUARE),
+                        """{"kind":"bytecode","body":6,"bodies":[{"body":6,"instructions":[]},{"body":7,"instructions":[]}]}""",
+                        event(6, "compile", "compiled"),
+                        event(1, "compile", "compiled"),
+                    ),
+                ),
+            )
+        }
+        tracedRuns.selected = run
+        val icons = icons(editor)
+        assertEquals(listOf(lineOf(header), lineOf(SQUARE)), icons.map { (line, _) -> line })
+        val shared = icons.first().second
+        assertEquals(
+            "<html>Demo initializer: baseline · 0 copies · 0 deoptimizations<br>" +
+                "Demo initializer, own part: interpreted · 0 copies · 0 deoptimizations</html>",
+            shared.tooltipText,
+        )
+        assertEquals(MethodState.BASELINE, shared.state)
+        assertEquals(listOf("Demo initializer", "Demo initializer, own part"), menu(shared))
+        for (submenu in (shared.popupMenuActions as DefaultActionGroup).childActionsOrStubs) {
+            val actions = (submenu as DefaultActionGroup).childActionsOrStubs.map { action -> action.templateText }
+            assertEquals(listOf("Watch Method", "Show Code", "Show Inlining", "Open in Tool Window"), actions)
+        }
+        // A method alone at its offset keeps its own icon, unnamed.
+        assertEquals("baseline · 0 copies · 0 deoptimizations", icons[1].second.tooltipText)
+    }
+
     private companion object {
         val DEMO = """
             |class Demo usingPlatform: platform = (

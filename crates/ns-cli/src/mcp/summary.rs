@@ -22,6 +22,21 @@ pub(crate) const OUTPUT_LIMIT: usize = 2_000;
 /// The source lines a stop shows before and after its own.
 const SOURCE_CONTEXT: u32 = 2;
 
+/// The most characters of a source line a stop shows: a line of a long
+/// literal is cut, and the file the stop names holds it whole.
+pub(crate) const SOURCE_LINE_LIMIT: usize = 200;
+
+/// What a cut source line says of the rest.
+const SOURCE_LINE_HINT: &str = "the file holds the line whole";
+
+/// The most characters of an exception's text or a condition's error a
+/// stop shows.
+const MESSAGE_LIMIT: usize = 2_000;
+
+/// The most characters a summary holds: the answer's budget, less what
+/// `debug_start`'s and `debug_stop`'s answers write around it.
+const SUMMARY_BUDGET: usize = super::pages::ANSWER_BUDGET - 100;
+
 /// A frame as the summary and `debug_stack` show it.
 pub(crate) struct Frame {
     pub(crate) name: String,
@@ -74,9 +89,15 @@ pub(crate) struct Stop {
 }
 
 /// The answer of a tool that let the program go on, or that asked where
-/// it is: the situation, the output since the last answer, and on
-/// `debug_start`'s answer the binary and its fingerprint.
-pub(crate) fn summary(situation: &Situation, output: &str, runtime: Option<&str>) -> String {
+/// it is: the situation, the output since the last answer, a traced
+/// session's `trace:` line, and on `debug_start`'s answer the binary and
+/// its fingerprint.
+pub(crate) fn summary(
+    situation: &Situation,
+    output: &str,
+    trace: Option<&str>,
+    runtime: Option<&str>,
+) -> String {
     let mut lines = Vec::new();
     match situation {
         Situation::Stopped(stop) => stopped_lines(stop, &mut lines),
@@ -87,9 +108,13 @@ pub(crate) fn summary(situation: &Situation, output: &str, runtime: Option<&str>
         }),
     }
     lines.extend(output_line(output));
+    lines.extend(trace.map(str::to_string));
     if let Some(runtime) = runtime {
         lines.push(format!("runtime: {runtime}"));
     }
+    // Each part is bounded, but a stop deep in long names, values and
+    // escaped output could still pass the budget together.
+    super::pages::fit_lines(&mut lines, SUMMARY_BUDGET, None);
     lines.join("\n")
 }
 
@@ -106,10 +131,10 @@ fn stopped_lines(stop: &Stop, lines: &mut Vec<String>) {
         lines.extend(source_excerpt(text, top.line));
     }
     if let Some(exception) = &stop.exception {
-        lines.push(format!("exception: {exception}"));
+        lines.push(format!("exception: {}", cut(exception, MESSAGE_LIMIT)));
     }
     if let Some(error) = &stop.condition_error {
-        lines.push(format!("condition failed: {error}"));
+        lines.push(format!("condition failed: {}", cut(error, MESSAGE_LIMIT)));
     }
     if !stop.locals.is_empty() {
         let mut shown: Vec<String> = stop.locals.iter().map(variable_text).collect();
@@ -143,8 +168,9 @@ fn stopped_lines(stop: &Stop, lines: &mut Vec<String>) {
     }
 }
 
-/// The lines around the 1-based `line` of `text`, numbered, `>` at `line`;
-/// none when `line` is not in the text.
+/// The lines around the 1-based `line` of `text`, numbered, `>` at `line`,
+/// each cut at `SOURCE_LINE_LIMIT` characters, saying how many it left
+/// out; none when `line` is not in the text.
 pub(crate) fn source_excerpt(text: &str, line: u32) -> Vec<String> {
     let all: Vec<&str> = text.lines().collect();
     let Ok(index) = usize::try_from(line) else {
@@ -162,6 +188,7 @@ pub(crate) fn source_excerpt(text: &str, line: u32) -> Vec<String> {
         .map(|number| {
             let marker = if number == line { '>' } else { ' ' };
             let text = all[usize::try_from(number - 1).unwrap_or_default()].trim_end();
+            let text = super::pages::cut_line(text, SOURCE_LINE_LIMIT, Some(SOURCE_LINE_HINT));
             format!("{marker} {number:>width$} | {text}")
         })
         .collect()
@@ -268,6 +295,7 @@ mod tests {
         let summary = summary(
             &Situation::Stopped(Box::new(stop)),
             "start\n",
+            Some("trace: 1 KB, 2 events, 1 body, 0 listings"),
             Some("/bin/ns-next 0123"),
         );
         assert_eq!(
@@ -281,6 +309,7 @@ mod tests {
              locals: count = 41, elements = an Array [ref 7]\n\
              stack: #0 Counter>>main:args: Counter.ns:4 · #1 newspeak.core.Kernel>>run Kernel.ns:120\n\
              output: \"start\\n\"\n\
+             trace: 1 KB, 2 events, 1 body, 0 listings\n\
              runtime: /bin/ns-next 0123"
         );
     }
@@ -308,7 +337,7 @@ mod tests {
                 .collect(),
             total_frames: STACK_LIMIT + 5,
         };
-        let summary = summary(&Situation::Stopped(Box::new(stop)), "", None);
+        let summary = summary(&Situation::Stopped(Box::new(stop)), "", None, None);
         let lines: Vec<&str> = summary.lines().collect();
         assert_eq!(lines[1], "exception: Error: boom");
         assert_eq!(
@@ -348,11 +377,11 @@ mod tests {
     #[test]
     fn running_and_ended_say_so() {
         assert_eq!(
-            summary(&Situation::Running { seconds: 1.04 }, "x", None),
+            summary(&Situation::Running { seconds: 1.04 }, "x", None, None),
             "running for 1.0 s\noutput: \"x\""
         );
         assert_eq!(
-            summary(&Situation::Ended { status: Some(0) }, "", None),
+            summary(&Situation::Ended { status: Some(0) }, "", None, None),
             "ended: exit status 0"
         );
     }

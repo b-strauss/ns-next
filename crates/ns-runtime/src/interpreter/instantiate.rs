@@ -1477,6 +1477,20 @@ pub enum InitializerBody {
 }
 
 impl InitializerBody {
+    /// The kind a body of this kind of `mixin` is named as. A body is
+    /// named by what it is, so the own part of a mixin no declaration was
+    /// read into, which is its full body itself -- one body serving as
+    /// both -- is named as the full body, by a frame running it as an
+    /// applied level and by the trace alike.
+    pub fn named_as(self, mixin: &crate::mixin::Mixin) -> InitializerBody {
+        match (self, &mixin.initializer_code, &mixin.own_initializer_code) {
+            (InitializerBody::OwnPart, Some(full), Some(own)) if Rc::ptr_eq(full, own) => {
+                InitializerBody::Full
+            }
+            _ => self,
+        }
+    }
+
     /// The body of this kind `mixin` carries, if any.
     pub(crate) fn code_of(
         self,
@@ -1512,6 +1526,41 @@ impl InitializerBody {
         .into_iter()
         .find(|body| body.frame_tag() == tag)
     }
+}
+
+/// The word every initializer body's member is named by, after its class
+/// and a space (`initializer_name`).
+pub const INITIALIZER_WORD: &str = "initializer";
+
+/// What follows `INITIALIZER_WORD` in the name of an own part
+/// (`InitializerBody::OwnPart`).
+pub const OWN_PART_SUFFIX: &str = ", own part";
+
+/// What follows `INITIALIZER_WORD` in the name of a standalone body
+/// (`InitializerBody::Standalone`).
+pub const STANDALONE_SUFFIX: &str = ", standalone";
+
+/// The member an initializer body of `kind` is named by after its class:
+/// `initializer` for the full body, the name of the body a program's
+/// instantiation runs, and for the other two their kind after a comma,
+/// which occurs in no class name and no id, so that the three bodies of a
+/// declaration with `<:` clauses are told apart -- in a frame, a traced
+/// body, the metadata check's failures, `disasm` and `inspect` alike.
+pub fn initializer_member(kind: InitializerBody) -> String {
+    let part = match kind {
+        InitializerBody::Full => "",
+        InitializerBody::OwnPart => OWN_PART_SUFFIX,
+        InitializerBody::Standalone => STANDALONE_SUFFIX,
+    };
+    format!("{INITIALIZER_WORD}{part}")
+}
+
+/// The name of `owner`'s initializer body of `kind`, as a frame and a
+/// traced body read it: `Demo/Account initializer`,
+/// `Demo/Account initializer, own part`,
+/// `Demo/Account initializer, standalone` (`initializer_member`).
+pub fn initializer_name(owner: &str, kind: InitializerBody) -> String {
+    format!("{owner} {}", initializer_member(kind))
 }
 
 /// The body of the one factory entry the metaclass of `class` holds, for

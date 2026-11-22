@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
+use ns_runtime::interpreter::instantiate::{InitializerBody, initializer_name};
 use ns_tooling::source;
 
 /// Resolves a dot-separated mixin path like `Outer.Inner` or `Outer.class`
@@ -194,17 +195,26 @@ fn initializer_listing(
     full: &ns_runtime::bytecode::CompiledCode,
 ) -> String {
     let name = mixin.name.to_string();
-    let mut listings = vec![ns_runtime::bytecode::disassemble(full, &name)];
-    if let Some(own) = &mixin.own_initializer_code {
+    // Each body headed by the name the trace and the debugger give it.
+    let named = |kind| initializer_name(&name, kind);
+    let mut listings = vec![ns_runtime::bytecode::disassemble(
+        full,
+        &named(InitializerBody::Full),
+    )];
+    // An own part that is the full body itself is one body, listed once
+    // (`InitializerBody::named_as`).
+    if let Some(own) = &mixin.own_initializer_code
+        && InitializerBody::OwnPart.named_as(mixin) == InitializerBody::OwnPart
+    {
         listings.push(ns_runtime::bytecode::disassemble(
             own,
-            &format!("{name} own part"),
+            &named(InitializerBody::OwnPart),
         ));
     }
     if let Some(standalone) = &mixin.standalone_initializer_code {
         listings.push(ns_runtime::bytecode::disassemble(
             standalone,
-            &format!("{name} standalone"),
+            &named(InitializerBody::Standalone),
         ));
     }
     if let Some(factory) = mixin.factory {

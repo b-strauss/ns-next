@@ -668,7 +668,7 @@ fn forms_own_sends(code: &CompiledCode, metadata: &BodyMetadata) -> Vec<u32> {
 /// A target's label for the send `instruction`: its selector as the
 /// source writes it -- a super send's without `super` -- or a mirror
 /// send's mirror selector; `None` for an instruction that is no send.
-fn selector_label(instruction: &Instruction) -> Option<String> {
+pub(crate) fn selector_label(instruction: &Instruction) -> Option<String> {
     let (_, call) = call_of(instruction)?;
     Some(match call {
         Call::Send(selector) | Call::Super(selector) => selector.to_string(),

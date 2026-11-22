@@ -4379,15 +4379,102 @@ ns_runtime::for_each_lowering! {
                 ("Initializing/Base initializer", "a ::= 1."),
                 ("Initializing/Base initializer", "a:: a + 1"),
                 ("Initializing/Mixed initializer", "Extra new"),
-                ("Initializing/Extra initializer", "Extra"),
-                ("Initializing/Extra initializer", "public c ::= 3."),
-                ("Initializing/Extra initializer", "c:: c + 1"),
+                ("Initializing/Extra initializer, own part", "Extra"),
+                ("Initializing/Extra initializer, own part", "public c ::= 3."),
+                ("Initializing/Extra initializer, own part", "c:: c + 1"),
                 ("Initializing/Mixed initializer", "public d ::= 4."),
                 ("Initializing>>mixed", "made:: Mixed new"),
                 ("Initializing>>mixed", "^made c + made d"),
             ]
         );
         assert_eq!(answer, 8);
+    }
+}
+
+/// A class that writes a `<:` clause and has a body, `Composite`, whose
+/// level `UsesComposite`'s clause adds is reached from outside through a
+/// mirror and instantiated, so that it runs `Composite`'s standalone
+/// body, and a block that body creates runs too.
+const STANDALONE: &str = indoc! {"
+    class Standalone usingPlatform: platform = Object new (
+      | mirrors = platform mirrors. |
+    ) (
+      class Extra = Object new () ()
+      class Composite = Object new <: Extra new (
+        |
+          public composite = self twice: [
+            2].
+        |
+      ) (
+        public twice: block = (
+          ^block value + block value
+        )
+      )
+      class UsesComposite = Object new <: Composite () ()
+      public run = (
+        ^(mirrors ClassMirror reflecting: UsesComposite) superclass reflectee new composite
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// A frame running a standalone body is named as one, as the trace
+    /// names the body, and so is a frame of a block it creates; the level
+    /// is a class of `Composite`'s mixin, so its factory is `Composite`'s.
+    fn a_frame_of_a_standalone_body_is_named_as_one(lowering) {
+        let slot = line_start(STANDALONE, "public composite");
+        let block = line_start(STANDALONE, "2].");
+        let (mut interpreter, class) = interpreted(STANDALONE, lowering);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        let (stacks, result) = debugged_in(
+            &mut interpreter,
+            &instance,
+            |remote| set_breakpoints(remote, "Standalone", vec![slot, block]),
+            |remote| {
+                let breakpoints = expect_breakpoints(remote, "Standalone");
+                assert_eq!(breakpoints.len(), 2, "{breakpoints:?}");
+                let mut stacks = Vec::new();
+                for _ in 0..3 {
+                    expect_breakpoint_stop(remote);
+                    let frames = stack_trace(remote);
+                    stacks.push(
+                        frame_names(&frames)
+                            .into_iter()
+                            .take(3)
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>(),
+                    );
+                    continue_stopped(remote);
+                }
+                stacks
+            },
+        );
+        assert_eq!(
+            stacks,
+            [
+                vec![
+                    "Standalone/Composite initializer, standalone",
+                    "Standalone/Composite class>>new",
+                    "Standalone>>run",
+                ],
+                vec![
+                    "[] in Standalone/Composite initializer, standalone",
+                    "Standalone/Composite>>twice:",
+                    "Standalone/Composite initializer, standalone",
+                ],
+                vec![
+                    "[] in Standalone/Composite initializer, standalone",
+                    "Standalone/Composite>>twice:",
+                    "Standalone/Composite initializer, standalone",
+                ],
+            ]
+        );
+        let answer = expect_ok(result, "run");
+        assert_eq!(small_integer(&mut interpreter, &answer), 4);
     }
 }
 

@@ -68,7 +68,7 @@ pub(crate) fn start(
     let (mode, connected) = match options {
         DebugOptions::Connect(address) => {
             let stream = TcpStream::connect(address.as_str()).map_err(|error| {
-                eprintln!("error: connecting the debugger to {address}: {error}");
+                report_line!("error: connecting the debugger to {address}: {error}");
                 ExitCode::FAILURE
             })?;
             let secret = std::env::var(agent::SECRET_VARIABLE).ok();
@@ -76,17 +76,17 @@ pub(crate) fn start(
         }
         DebugOptions::Listen => {
             let token = connection::Token::generate().map_err(|error| {
-                eprintln!("error: making the debugger's token: {error}");
+                report_line!("error: making the debugger's token: {error}");
                 ExitCode::FAILURE
             })?;
             let listener = connection::listen()
                 .and_then(|listener| Ok((listener.local_addr()?.port(), listener)))
                 .map_err(|error| {
-                    eprintln!("error: listening for a debugger on 127.0.0.1: {error}");
+                    report_line!("error: listening for a debugger on 127.0.0.1: {error}");
                     ExitCode::FAILURE
                 });
             let (port, listener) = listener?;
-            eprintln!(
+            report_line!(
                 "ns-next: debugger listening on 127.0.0.1:{port}, token {}",
                 token.hex()
             );

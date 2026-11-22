@@ -57,7 +57,7 @@ const MANIFEST_FILE: &str = "Manifest.ns";
 
 pub(crate) fn read_program(path: &Path) -> Result<Program, ExitCode> {
     let report = |message: String| {
-        eprintln!("error: {message}");
+        report_line!("error: {message}");
         ExitCode::FAILURE
     };
     let located = project::locate_program(path).map_err(report)?;
@@ -124,7 +124,7 @@ pub(crate) fn entry_arguments(
         return Ok(arguments.to_vec());
     };
     let Some((project_file, scripts)) = &program.scripts else {
-        eprintln!(
+        report_line!(
             "error: --script names a script of a project's newspeak.json, and the program \
              given is a source file"
         );
@@ -143,7 +143,7 @@ pub(crate) fn entry_arguments(
                     .join(", ")
             )
         };
-        eprintln!(
+        report_line!(
             "error: {} has no script `{name}`; {known}",
             project_file.display()
         );
@@ -406,7 +406,7 @@ pub(crate) fn warn_of_ambiguities(loaded: &mut Loaded) {
         .enter(|mutator| manifest_ambiguities(mutator, manifest));
     if loaded.warns {
         for text in texts.iter().skip(loaded.ambiguities_warned) {
-            eprintln!("warning: {text}");
+            report_line!("warning: {text}");
         }
     }
     loaded.ambiguities_warned = loaded.ambiguities_warned.max(texts.len());
@@ -464,7 +464,7 @@ pub(crate) fn warn_of_kept_ambiguities(
     for (manifest, warned) in &mut kept.0 {
         let texts = interpreter.enter(|mutator| manifest_ambiguities(mutator, manifest));
         for text in texts.iter().skip(*warned) {
-            eprintln!("warning: {text}");
+            report_line!("warning: {text}");
         }
         *warned = (*warned).max(texts.len());
     }
@@ -519,7 +519,7 @@ pub(crate) fn instantiate_application(
     let arguments = match (&program.assembly, factory.as_deref()) {
         (Assembly::New, None | Some("new")) => Vec::new(),
         (Assembly::New, Some(other)) => {
-            eprintln!(
+            report_line!(
                 "error: cannot start `{name}`: its primary factory is `{other}`, and a program \
                  started from a source file is instantiated with `new` -- the platform arrives \
                  as `main:args:`'s first argument"
@@ -528,7 +528,7 @@ pub(crate) fn instantiate_application(
         }
         (Assembly::Package, Some("packageUsing:")) => vec![build_manifest(program, loaded, link)?],
         (Assembly::Package, other) => {
-            eprintln!(
+            report_line!(
                 "error: cannot start `{name}`: its primary factory is `{}`, and a project's root \
                  is instantiated with `packageUsing:` its manifest",
                 other.unwrap_or("new")

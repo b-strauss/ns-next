@@ -6,7 +6,7 @@
 //! trace's names, every body is named by its number, and every position
 //! is a range of lines and UTF-16 columns of its module's text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -28,17 +28,17 @@ use crate::listing::{self, AnnotatedInstruction};
 
 /// The format's name, which the header gives so that a reader refuses a
 /// file that is no trace.
-const FORMAT: &str = "ns-next-trace";
+pub(crate) const FORMAT: &str = "ns-next-trace";
 
 /// The format's version, raised with every change a reader of the old
 /// one would misread.
-const VERSION: u32 = 1;
+pub(crate) const VERSION: u32 = 1;
 
 /// The architecture the file's `code` records are instructions of: the
 /// one this binary's JIT emits for, the targets `ns-runtime`'s `build.rs`
 /// sets `cfg(ns_jit)` for; `None` where it has no JIT and so writes no
 /// `code` record.
-fn architecture() -> Option<&'static str> {
+pub(crate) fn architecture() -> Option<&'static str> {
     if cfg!(target_arch = "x86_64") {
         Some("x64")
     } else if cfg!(all(
@@ -383,6 +383,7 @@ pub(crate) fn body_record(description: &BodyDescription, sources: &mut ModuleSou
                 "site": send.site,
                 "call": range(send.call),
                 "selector": selector,
+                "name": send.name,
             })
         })
         .collect();
@@ -623,8 +624,10 @@ fn key_record(key: Option<&(String, Option<String>)>) -> (Value, Value) {
 }
 
 /// The scopes of a code or inlining listing, each with its body's number
-/// and the scope and program counter it is inlined at.
-fn scopes_record(scopes: &[ListedScope]) -> Vec<Value> {
+/// and the scope and program counter it is inlined at, and, for a body
+/// `listed` says no earlier record lists the bytecode of, its instruction
+/// lines (`ListedBodies`).
+fn scopes_record(scopes: &[ListedScope], listed: &dyn Fn(u32) -> bool) -> Vec<Value> {
     scopes
         .iter()
         .map(|scope| {
@@ -632,23 +635,76 @@ fn scopes_record(scopes: &[ListedScope]) -> Vec<Value> {
                 number: scope_number,
                 body,
                 parent,
-                instructions: _,
+                instructions,
             } = scope;
-            json!({
+            let mut record = json!({
                 "scope": scope_number,
                 "body": number(body),
                 "parent": parent.map(|(parent, program_counter)| json!([parent, program_counter])),
-            })
+            });
+            if !listed(number(body)) {
+                record["lines"] = json!(instructions);
+            }
+            record
         })
         .collect()
 }
 
-/// The record of `listing`: a `bytecode`, `code` or `inlining` record.
+/// The record of `listing`: a `bytecode`, `code` or `inlining` record, as
+/// a file whose bytecode records list every body writes it.
+#[cfg(test)]
 pub(crate) fn listing_record(listing: &Listing) -> Value {
+    listing_record_given(listing, &|_| true)
+}
+
+/// The record of `listing`, `listed` saying whether an earlier record of
+/// the file lists a body's bytecode.
+fn listing_record_given(listing: &Listing, listed: &dyn Fn(u32) -> bool) -> Value {
     match listing {
         Listing::Bytecode(bytecode) => bytecode_record(bytecode),
-        Listing::Code(code) => code_record(code),
-        Listing::Inlining(inlining) => inlining_record(inlining),
+        Listing::Code(code) => code_record(code, listed),
+        Listing::Inlining(inlining) => inlining_record(inlining, listed),
+    }
+}
+
+/// Which bodies' instruction lines a file's code and inlining records
+/// carry in their scopes. A file that lists bytecode names its positions
+/// as the text listing does, with each instruction, from the bytecode
+/// records it holds; where none lists a scope's body -- one no mixin
+/// holds, a factory a host's instantiation built for itself, which has no
+/// bytecode listing ever, or one the print filter leaves out -- the scope
+/// carries its body's lines, so that the file writes every position as
+/// the text listing does. A file that lists no bytecode carries none: its
+/// positions name their program counters alone, and its code records
+/// stay free of every scope's bytecode.
+pub(crate) struct ListedBodies {
+    /// Whether the file lists bytecode at all.
+    bytecode: bool,
+    /// The bodies its bytecode records listed so far.
+    bodies: HashSet<u32>,
+}
+
+impl ListedBodies {
+    /// The bodies of a file that lists bytecode where `bytecode` says so.
+    pub(crate) fn new(bytecode: bool) -> ListedBodies {
+        ListedBodies {
+            bytecode,
+            bodies: HashSet::new(),
+        }
+    }
+
+    /// The record of `listing` as the file it follows writes it, its
+    /// bodies noted when it lists their bytecode.
+    pub(crate) fn record(&mut self, listing: &Listing) -> Value {
+        if let Listing::Bytecode(bytecode) = listing {
+            self.bodies
+                .extend(bytecode.bodies.iter().map(|listed| number(&listed.body)));
+        }
+        if !self.bytecode {
+            return listing_record_given(listing, &|_| true);
+        }
+        let listed = &self.bodies;
+        listing_record_given(listing, &|body| listed.contains(&body))
     }
 }
 
@@ -691,12 +747,31 @@ fn bytecode_record(bytecode: &BytecodeListing) -> Value {
     json!({ "kind": "bytecode", "body": number(body), "bodies": bodies })
 }
 
+/// The separator of an instruction's annotations in its record.
+const ANNOTATION_SEPARATOR: &str = "; ";
+
+/// Two annotations on one instruction, which the text listing writes one
+/// after the other, joined as it separates them. A reader -- the plugin
+/// -- splits the text at the separator to write each after its own
+/// `  ; `, so that no annotation's own text may hold it, or the reader
+/// would write one annotation as two.
+fn joined_annotations(texts: impl Iterator<Item = String>) -> String {
+    let texts: Vec<String> = texts.collect();
+    debug_assert!(
+        texts
+            .iter()
+            .all(|text| !text.contains(ANNOTATION_SEPARATOR)),
+        "an annotation holds the separator its record joins them with: {texts:?}"
+    );
+    texts.join(ANNOTATION_SEPARATOR)
+}
+
 /// A `code` record: `code`'s instructions decoded as its text listing
 /// decodes them, each with the scope and program counter of the stretch
 /// it stands in, or that it stands out of line, and what a call or jump
 /// out of it reaches; and the address the code was installed at, as the
 /// text listing's `base=` writes it.
-fn code_record(code: &CodeListing) -> Value {
+fn code_record(code: &CodeListing, listed: &dyn Fn(u32) -> bool) -> Value {
     let CodeListing {
         body,
         tier,
@@ -717,7 +792,7 @@ fn code_record(code: &CodeListing) -> Value {
         .map(|annotated| {
             let AnnotatedInstruction {
                 instruction,
-                reached: _,
+                reached,
                 position,
                 annotations,
             } = annotated;
@@ -733,23 +808,28 @@ fn code_record(code: &CodeListing) -> Value {
                 Some(Position::OutOfLine) => (None, None, true),
                 None => (None, None, false),
             };
-            // Two annotations on one instruction, which the text listing
-            // writes one after the other, are joined as it separates them.
-            let annotation = (!annotations.is_empty()).then(|| {
-                annotations
-                    .into_iter()
-                    .map(listing::annotation_text)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            });
-            json!({
+            let annotation = (!annotations.is_empty())
+                .then(|| joined_annotations(annotations.into_iter().map(listing::annotation_text)));
+            let mut record = json!({
                 "offset": instruction.offset,
                 "text": instruction.text,
                 "scope": scope,
                 "at": program_counter,
                 "out-of-line": out_of_line,
                 "annotation": annotation,
-            })
+            });
+            // The positions an instruction that emitted no code left
+            // beside this one's, which the text listing names each: only
+            // where there are some, since most instructions have none.
+            if let Some((_, passed)) = reached.split_last()
+                && !passed.is_empty()
+            {
+                record["passed"] = passed
+                    .iter()
+                    .map(|position| position_record(*position))
+                    .collect();
+            }
+            record
         })
         .collect();
     // Offsets from the first data word, as the instructions' texts name
@@ -773,12 +853,24 @@ fn code_record(code: &CodeListing) -> Value {
         "bytes": bytes.len(),
         "instructions": instructions,
         "data": data,
-        "scopes": scopes_record(scopes),
+        "scopes": scopes_record(scopes, listed),
         "mark": mark,
     })
 }
 
-fn inlining_record(inlining: &InliningListing) -> Value {
+/// A position a `code` record's `passed` names: `{"scope":s,"at":pc}`, or
+/// `{"out-of-line":true}`.
+fn position_record(position: Position) -> Value {
+    match position {
+        Position::Instruction {
+            scope,
+            program_counter,
+        } => json!({ "scope": scope, "at": program_counter }),
+        Position::OutOfLine => json!({ "out-of-line": true }),
+    }
+}
+
+fn inlining_record(inlining: &InliningListing, listed: &dyn Fn(u32) -> bool) -> Value {
     let InliningListing {
         body,
         key,
@@ -823,7 +915,7 @@ fn inlining_record(inlining: &InliningListing) -> Value {
         "body": number(body),
         "key": key,
         "entered": entered,
-        "scopes": scopes_record(scopes),
+        "scopes": scopes_record(scopes, listed),
         "arms": arms,
         "declined": declined,
         "outcome": outcome,
@@ -869,6 +961,7 @@ fn header_record(categories: TraceCategories, printing: Printing) -> Value {
 pub(crate) struct TraceFileSink {
     file: BufWriter<File>,
     modules: ModuleSources,
+    listed: ListedBodies,
 }
 
 /// Creates the trace file at `path`, replacing one there, and writes its
@@ -887,6 +980,7 @@ pub(crate) fn create(
     let mut sink = TraceFileSink {
         file: BufWriter::new(file),
         modules,
+        listed: ListedBodies::new(printing.bytecode),
     };
     sink.write(&header_record(categories, printing));
     // A reader that opens the file at once finds it a trace.
@@ -911,7 +1005,8 @@ impl TraceSink for TraceFileSink {
     }
 
     fn listing(&mut self, listing: &Listing) {
-        self.write(&listing_record(listing));
+        let record = self.listed.record(listing);
+        self.write(&record);
     }
 
     fn body(&mut self, description: &BodyDescription) {
@@ -1190,6 +1285,7 @@ mod tests {
                 site: Some(0),
                 call: Some(send),
                 selector: vec![Some(Span::new(start("size"), start("size") + 4))],
+                name: Some("size".to_string()),
             }],
         };
         let record = body_record(&description, &mut demo_sources());
@@ -1198,6 +1294,8 @@ mod tests {
         assert_eq!(record["sends"][0]["call"], json!([1, 10, 1, 20]));
         assert_eq!(record["sends"][0]["at"], 1);
         assert_eq!(record["sends"][0]["site"], 0);
+        // The selector's text, as the compiled send names it.
+        assert_eq!(record["sends"][0]["name"], "size");
         assert_eq!(record["range"], json!([1, 2, 1, 22]));
         assert_eq!(record["statements"][0]["instructions"], json!([0, 3]));
         assert_eq!(record["statements"][0]["range"], json!([1, 10, 1, 20]));
@@ -1342,6 +1440,7 @@ mod tests {
             site: None,
             call: None,
             selector: vec![None, description.statements[1].span],
+            name: None,
         });
         // And one placed outside the body's source, at the class's name, as a
         // class that writes no superclass clause places its superclass's.
@@ -1364,6 +1463,8 @@ mod tests {
             json!([null, [1, 2, 1, 5]]),
             "{record}"
         );
+        // A send whose instruction names no selector has no name.
+        assert_eq!(record["sends"][0]["name"], Value::Null, "{record}");
     }
 
     /// Where the file's text does not hold the body at its span -- a body
@@ -1821,5 +1922,27 @@ mod tests {
         assert!(instructions[1]["at"].is_null(), "{record}");
         assert_eq!(instructions[2]["out-of-line"], false, "{record}");
         assert_eq!(instructions[2]["at"], 1, "{record}");
+    }
+
+    /// An instruction's annotations are joined by the separator a reader
+    /// splits them at.
+    #[test]
+    fn annotations_are_joined_by_their_separator() {
+        let texts = [Annotation::Leaf("miss"), Annotation::Cell { site: 0 }]
+            .iter()
+            .map(listing::annotation_text);
+        assert_eq!(joined_annotations(texts), "leaf miss; cell site 0");
+    }
+
+    /// An annotation whose own text holds the separator would be read
+    /// back as two: a debug build refuses to write it.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an annotation holds the separator its record joins them with")]
+    fn an_annotation_holding_the_separator_is_refused() {
+        let texts = [Annotation::Leaf("miss"), Annotation::Target("one; two")]
+            .iter()
+            .map(listing::annotation_text);
+        joined_annotations(texts);
     }
 }

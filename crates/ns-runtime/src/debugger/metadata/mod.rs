@@ -19,7 +19,7 @@ pub(crate) mod breakable;
 mod cache;
 mod check;
 
-pub(crate) use cache::Cache;
+pub(crate) use cache::{Cache, synthesized_standing};
 
 /// The tables of one compiled body.
 #[derive(Debug, Clone, PartialEq, Eq)]

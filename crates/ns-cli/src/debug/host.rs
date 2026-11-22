@@ -167,7 +167,7 @@ impl HostLink {
 
 /// Reports a program a `terminate` ended between two host runs.
 pub(crate) fn report_terminated() -> ExitCode {
-    eprintln!("{TERMINATED_LINE}");
+    report_line!("{TERMINATED_LINE}");
     ExitCode::FAILURE
 }
 

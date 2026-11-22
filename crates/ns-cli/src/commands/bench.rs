@@ -28,10 +28,10 @@ struct BenchmarkStatistics {
 fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
         ns_runtime::HostSignal::Error(error) => {
-            eprintln!("error: Uncaught Newspeak error: {}", error.message);
+            report_line!("error: Uncaught Newspeak error: {}", error.message);
         }
         ns_runtime::HostSignal::Return => {
-            eprintln!("error: internal: non-local return escaped the entry send");
+            report_line!("error: internal: non-local return escaped the entry send");
         }
     }
     ExitCode::FAILURE
@@ -80,7 +80,7 @@ fn benchmark_entry(
     // A measurement never times the interpreter in the JIT's place: a JIT
     // that was wanted and is off refuses the benchmark, naming why.
     if let Some(reason) = loaded.interpreter.jit_unavailable() {
-        eprintln!("error: the JIT is off, and a benchmark would time the interpreter: {reason}");
+        report_line!("error: the JIT is off, and a benchmark would time the interpreter: {reason}");
         return Err(ExitCode::FAILURE);
     }
     entry::count_jit_if(&mut loaded.interpreter, jit_statistics);
@@ -141,13 +141,13 @@ pub(crate) fn execute(
     program_arguments: &[String],
 ) -> ExitCode {
     if cfg!(debug_assertions) {
-        eprintln!(
+        report_line!(
             "warning: this is a debug build; the timings below measure debug-build overhead, \
              not the runtime. Rebuild and re-run with `--release`."
         );
     }
     if iterations == 0 {
-        eprintln!("error: --iterations must be at least 1");
+        report_line!("error: --iterations must be at least 1");
         return ExitCode::FAILURE;
     }
     let program = match program::read_program(file) {
@@ -158,11 +158,13 @@ pub(crate) fn execute(
         Ok(arguments) => arguments,
         Err(code) => return code,
     };
-    println!(
+    if let Err(code) = entry::print_output(&format!(
         "timing: `main:args:` only, after assembling the application -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
-         {iterations} timed run(s), after one discarded warm-up run."
-    );
+         {iterations} timed run(s), after one discarded warm-up run.\n"
+    )) {
+        return code;
+    }
     match benchmark_entry(
         &program,
         iterations,
@@ -172,10 +174,12 @@ pub(crate) fn execute(
         &arguments,
     ) {
         Ok(statistics) => {
-            println!(
-                "median {:?} (min {:?}, max {:?}, n={})",
+            if let Err(code) = entry::print_output(&format!(
+                "median {:?} (min {:?}, max {:?}, n={})\n",
                 statistics.median, statistics.min, statistics.max, statistics.iterations
-            );
+            )) {
+                return code;
+            }
             if let Some(cache_statistics) = &statistics.cache_statistics {
                 entry::print_cache_statistics(cache_statistics);
             }

@@ -22,14 +22,14 @@ pub(crate) fn execute(
     let bytes = match std::fs::read(image) {
         Ok(bytes) => bytes,
         Err(error) => {
-            eprintln!("error: reading {}: {error}", image.display());
+            report_line!("error: reading {}: {error}", image.display());
             return ExitCode::FAILURE;
         }
     };
     let mut loaded = match ns_runtime::image::load(&bytes) {
         Ok(loaded) => loaded,
         Err(error) => {
-            eprintln!("error: loading {}: {error}", image.display());
+            report_line!("error: loading {}: {error}", image.display());
             return ExitCode::FAILURE;
         }
     };
@@ -37,19 +37,23 @@ pub(crate) fn execute(
         // The header's one flag says whether every module carries its source
         // or none does, so a module without one means the image has none.
         if loaded.modules.iter().any(|module| module.source.is_none()) {
-            eprintln!(
+            report_line!(
                 "error: {} carries no source (it was written with --strip-source)",
                 image.display()
             );
             return ExitCode::FAILURE;
         }
         for module in &loaded.modules {
-            print!("{}", module.source.as_deref().unwrap_or_default());
+            if let Err(code) =
+                crate::entry::print_output(module.source.as_deref().unwrap_or_default())
+            {
+                return code;
+            }
         }
         return ExitCode::SUCCESS;
     }
     if !loaded.start || loaded.roots.len() != 1 {
-        eprintln!(
+        report_line!(
             "error: {} is not a started image: `build` writes one, with the application as its \
              only root",
             image.display()

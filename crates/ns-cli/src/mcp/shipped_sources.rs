@@ -10,13 +10,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::own_directory::own_directory;
 use crate::target_runner;
 
-/// The directory in the user's own local data directory that holds what
-/// the server keeps (`own_directory`).
-const OWN_DIRECTORY: &str = "ns-next";
-
-/// The directory below `OWN_DIRECTORY` that holds the shipped sources, one
+/// The directory below the server's own (`own_directory`) that holds the shipped sources, one
 /// directory per fingerprint.
 const CORE_LIBRARY_DIRECTORY: &str = "core-library";
 
@@ -30,28 +27,6 @@ const STALE: Duration = Duration::from_secs(24 * 60 * 60);
 /// The file of a directory of shipped sources that names their
 /// fingerprint, which `shipped-sources` writes.
 const FINGERPRINT_FILE: &str = "fingerprint";
-
-/// The directory the server keeps its files in, the user's own: on
-/// Windows `ns-next` in the local application data directory
-/// (`%LOCALAPPDATA%`), elsewhere in the user's cache directory
-/// (`$XDG_CACHE_HOME`, or `~/.cache`). Never the shared temporary
-/// directory, where another user could put a file of their own first --
-/// sources the server would show.
-fn own_directory() -> Result<PathBuf, String> {
-    let absolute = |variable: &str| {
-        std::env::var_os(variable)
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-    };
-    let base = if cfg!(windows) {
-        absolute("LOCALAPPDATA").ok_or("LOCALAPPDATA names no directory")?
-    } else {
-        absolute("XDG_CACHE_HOME")
-            .or_else(|| absolute("HOME").map(|home| home.join(".cache")))
-            .ok_or("neither XDG_CACHE_HOME nor HOME names a directory")?
-    };
-    Ok(base.join(OWN_DIRECTORY))
-}
 
 /// Removes the directories of shipped sources untouched for `STALE` but
 /// the running binary's, which the sessions of this server most likely
@@ -98,10 +73,10 @@ fn older_than_stale(path: &Path) -> bool {
 /// The shipped sources of the binary `runtime` and their fingerprint: the
 /// directory in the user's own directory (`own_directory`) its fingerprint
 /// names, written by `runtime shipped-sources` when it is not there yet,
-/// under a name of this process's and renamed into place, and touched when
-/// it is, so that no server removes it as stale
-/// (`remove_stale_core_libraries`).
-pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> {
+/// under a name of this process's and the starting session's (`partial`)
+/// and renamed into place, and touched when it is, so that no server
+/// removes it as stale (`remove_stale_core_libraries`).
+pub(crate) fn core_library(runtime: &Path, session: u32) -> Result<(PathBuf, String), String> {
     let fingerprint = run(runtime, &["shipped-sources", "--fingerprint"])?;
     let fingerprint = fingerprint.trim().to_string();
     // It names a directory: anything but a hex number is refused.
@@ -120,7 +95,7 @@ pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> 
             .and_then(|file| file.set_modified(std::time::SystemTime::now()));
         return Ok((directory, fingerprint));
     }
-    let partial = root.join(format!("{fingerprint}.{}.partial", std::process::id()));
+    let partial = partial(&root, &fingerprint, std::process::id(), session);
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("creating {}: {error}", root.display()))?;
@@ -137,6 +112,15 @@ pub(crate) fn core_library(runtime: &Path) -> Result<(PathBuf, String), String> 
         }
     }
     Ok((directory, fingerprint))
+}
+
+/// The directory in `root` the sources of `fingerprint` are written into
+/// before they are renamed into place, named by the process and its
+/// session: two sessions of one server that start together write the
+/// same sources, and neither may remove or rename the other's half
+/// written directory.
+fn partial(root: &Path, fingerprint: &str, process: u32, session: u32) -> PathBuf {
+    root.join(format!("{fingerprint}.{process}-{session}.partial"))
 }
 
 /// Whether `directory` holds shipped sources of `fingerprint`.
@@ -163,4 +147,18 @@ fn run(runtime: &Path, arguments: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_sessions_of_one_server_write_apart() {
+        let root = Path::new("core-library");
+        let first = partial(root, "abc", 7, 1);
+        let second = partial(root, "abc", 7, 2);
+        assert_ne!(first, second);
+        assert_eq!(first, root.join("abc.7-1.partial"));
+    }
 }

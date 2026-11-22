@@ -28,7 +28,7 @@ const REFUSED_OPTION: u8 = 2;
 /// Reports `refusal` of a trace option and answers the status it exits
 /// with.
 fn refuse_trace(refusal: &str) -> ExitCode {
-    eprintln!("error: {refusal}");
+    report_line!("error: {refusal}");
     ExitCode::from(REFUSED_OPTION)
 }
 

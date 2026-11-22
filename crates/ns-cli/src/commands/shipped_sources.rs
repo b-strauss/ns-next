@@ -15,18 +15,21 @@ const FINGERPRINT_FILE: &str = "fingerprint";
 /// so a mistyped path never has its own files overwritten.
 pub(crate) fn execute(directory: Option<&Path>, fingerprint: bool) -> ExitCode {
     if fingerprint {
-        println!("{}", ns_runtime::shipped_sources_fingerprint());
-        return ExitCode::SUCCESS;
+        let line = format!("{}\n", ns_runtime::shipped_sources_fingerprint());
+        return match crate::entry::print_output(&line) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(code) => code,
+        };
     }
     let Some(directory) = directory else {
         // clap's required group makes this unreachable.
-        eprintln!("error: shipped-sources needs a directory or --fingerprint");
+        report_line!("error: shipped-sources needs a directory or --fingerprint");
         return ExitCode::FAILURE;
     };
     match write(directory) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("error: {message}");
+            report_line!("error: {message}");
             ExitCode::FAILURE
         }
     }

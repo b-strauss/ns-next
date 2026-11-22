@@ -32,17 +32,17 @@ pub(crate) fn execute(
     let bytes = match bytes {
         Ok(bytes) => bytes,
         Err(error) => {
-            eprintln!("error: build failed: {error}");
+            report_line!("error: build failed: {error}");
             return ExitCode::FAILURE;
         }
     };
     match std::fs::write(out, bytes) {
-        Ok(()) => {
-            println!("wrote {}", out.display());
-            ExitCode::SUCCESS
-        }
+        Ok(()) => match crate::entry::print_output(&format!("wrote {}\n", out.display())) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(code) => code,
+        },
         Err(error) => {
-            eprintln!("error: writing {}: {error}", out.display());
+            report_line!("error: writing {}: {error}", out.display());
             ExitCode::FAILURE
         }
     }
