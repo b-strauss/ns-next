@@ -2939,11 +2939,9 @@ pub(crate) fn decide_at<'gc>(
     // its receiver and its current class: compiled and entered as a
     // method's body is, below. One that stands for too many arguments
     // takes another count than the send places; only the push lays its
-    // frame out. Every miss counts the entry: the interpreter's push of a
-    // factory runs its first two instructions itself
-    // (`Mutator::enter_factory_body`) and never enters its body at its
-    // start, where a push counts, so a count left to it would never
-    // compile the body.
+    // frame out. Every miss counts the entry, as the interpreter's push of
+    // a factory counts its own (`jit::entered_factory`): neither runs the
+    // body from its start, where a push counts a method's.
     if let Resolved::Factory { level, code, .. } = &resolved {
         if code.argument_count != argument_count {
             return MissAnswer::Refuse;

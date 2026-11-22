@@ -7300,6 +7300,39 @@ impl JitState {
     }
 }
 
+/// The interpreter's push of the factory activation `activation`, whose
+/// body `code` has an armed slot: counts the entry, unless the body is
+/// compiled into this zone already, as `entered` counts a push's at
+/// program counter 0, which a factory's push never starts at
+/// (`Mutator::enter_factory_body`). The factory goes on interpreted; its
+/// machine code serves the sends machine code makes, through its cells.
+#[cold]
+#[inline(never)]
+pub(crate) fn entered_factory(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    code: &Rc<CompiledCode>,
+) {
+    if code.jit.is_abandoned() && mutator.jit.enabled {
+        mutator.jit.statistics.abandoned_entries_out_of_line += 1;
+        mutator.jit.note_abandoned_entry(code);
+        after_compile_trigger(mutator);
+        return;
+    }
+    if mutator.jit.is_entered_here(code) {
+        return;
+    }
+    let feedback_base = mutator.heap.activation_feedback_base(activation);
+    note_entry(
+        &mut mutator.jit,
+        code,
+        feedback_base,
+        None,
+        CompileTrigger::Entry,
+    );
+    after_compile_trigger(mutator);
+}
+
 /// A push of `activation`, whose body `code` has an armed slot, at
 /// program counter 0: counts the entry, unless the body is compiled into
 /// this zone already, and runs the body's machine code when it has some

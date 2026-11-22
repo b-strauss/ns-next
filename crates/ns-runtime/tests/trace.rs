@@ -3059,6 +3059,54 @@ const FACTORIES: &str = indoc! {"
     )
 "};
 
+/// A factory's body is compiled though no machine code sends it: the
+/// interpreter's push counts its entry, as a push at a method's start
+/// counts a method's. Under the cache stress mode, which vacates every
+/// cache at every safepoint, the run's sends of `Point x:` are the
+/// interpreter's, the block that sends them leaving its machine code at
+/// each of them.
+#[cfg(debug_assertions)]
+#[test]
+fn a_factory_the_interpreter_alone_sends_is_compiled() {
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let sink = Box::new(Describing(Rc::clone(&received)));
+    run_source_made_by(
+        FACTORIES,
+        Factory::Plain,
+        |interpreter| {
+            interpreter.set_jit_stress(false);
+            interpreter.set_optimize_stress(false);
+            interpreter.set_optimization_budget(i64::MAX);
+            interpreter.set_stress_caches(true);
+            interpreter.set_trace(
+                tracing(
+                    TraceCategories::default().with(TraceCategory::Compile),
+                    TraceFilter::everything(),
+                ),
+                sink,
+            );
+        },
+        |_| false,
+    );
+    let received = received.take();
+    let compiled: Vec<&str> = events_of(&received)
+        .into_iter()
+        .filter(|event| matches!(event.kind, TraceEventKind::Compiled { .. }))
+        .filter_map(|event| event.body.as_ref())
+        .map(|body| body.name.as_str())
+        .collect();
+    for factory in [
+        "Demo/Point class>>x:",
+        "Demo class>>new",
+        "Demo/Empty class>>new",
+    ] {
+        assert!(
+            compiled.contains(&factory),
+            "{factory} is not compiled: {compiled:?}"
+        );
+    }
+}
+
 /// What `source`'s `run` delivers to a describing sink that also prints
 /// every body's bytecode, which names every body of each mixin made: the
 /// `compile` category's events and the bodies' descriptions.

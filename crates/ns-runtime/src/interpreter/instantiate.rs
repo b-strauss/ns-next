@@ -716,6 +716,14 @@ impl<'gc> Mutator<'gc> {
         registers: FactoryRegisters,
         arguments: Arguments<'_, 'gc>,
     ) -> Result<(ActivationReference, usize), Signal<'gc>> {
+        // The push starts the body past program counter 0, where a push
+        // counts its body's entry, so the entry is counted here: a factory
+        // sent only from interpreted code is compiled as any method is,
+        // never only when machine code sends it.
+        let code = self.heap.activation_code(factory);
+        if code.jit.push_is_armed() {
+            crate::jit::entered_factory(self, factory, &code);
+        }
         let decided = self.decide_instance_initializer(class, Value::nil(), arguments);
         // Read where the decision left it rather than moved out whole: a
         // move read back in sixteen-byte pieces what the decision had just

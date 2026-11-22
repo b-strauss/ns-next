@@ -14041,8 +14041,8 @@ the baseline JIT's foundation moved" that of the first two.
       a tenth of one once the wait is capped. Deterministic, since it
       counts entries, never time; and machine code pays nothing for it,
       since only the interpreted pushes of an abandoned body
-      (`JitSlot::push_is_armed`, inline) and a factory's miss
-      (`decide_at`) count; a
+      (`JitSlot::push_is_armed`, inline), a factory's interpreted push
+      (`jit::entered_factory`) and a factory's miss (`decide_at`) count; a
       method's miss, the initializer leaf and the forcing leaf count no
       entry of an abandoned body (`note_entry_by_call`), and every one
       of them still passes through `jit::after_compile_trigger`, which
@@ -14280,6 +14280,12 @@ sends and the inline caches in machine code.
   compiled (`jit::cell_entry`), and the body's prologue makes the class
   object it runs on, its receiver, its current class as well
   (`baseline::BodyRole::Factory`), whatever class a hit walked to. Its
+  entries are counted at the miss and at the interpreter's push of the
+  factory alike (`jit::entered_factory`), which starts the body past
+  program counter 0, where a push counts a method's, so that a factory
+  only interpreted code sends -- every send of it, while the cache
+  stress mode makes its senders leave their machine code -- is compiled
+  as a method is. Its
   `AllocateInstance` bumps an ordinary instance inline: the receiver a
   class object, by its format, whose builtin field and value class
   refusal are nil, read afresh at every instantiation, as
