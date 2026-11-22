@@ -1,11 +1,12 @@
 //! A trace event's bodies named as the debugger names a frame
 //! (`debugger/stack.rs`'s `frame_name`): the owner qualified from its
 //! module down (`qualified_name`, `docs/design/modules.md`, decision 8),
-//! then `>>` and the selector, ` initializer` or ` superclass clause`, a
-//! block `[] in ` and the name of the body it is created in -- and
-//! numbered, since a name does not identify a body: every block of a
-//! method is `[] in <method>`, and a class's initializer bodies share one
-//! name (`docs/design/developer-tool.md`, decision 18).
+//! then `>>` and the selector, ` initializer` (`, own part` or
+//! `, standalone` after it for the other two initializer bodies,
+//! `instantiate::initializer_name`) or ` superclass clause`, a block
+//! `[] in ` and the name of the body it is created in -- and numbered,
+//! since a name does not identify a body: every block of a method is
+//! `[] in <method>` (`docs/design/developer-tool.md`, decision 18).
 //!
 //! A pending event holds a body as its code alone, and code knows neither
 //! its mixin nor its member, so a body is found by an index over every
@@ -19,7 +20,7 @@ use super::BodyName;
 use crate::bytecode::CompiledCode;
 use crate::debugger::metadata::again::{BodyOrigin, Member};
 use crate::interpreter::Mutator;
-use crate::interpreter::instantiate::InitializerBody;
+use crate::interpreter::instantiate::{InitializerBody, initializer_name};
 use crate::mixin::{MethodEntry, Mixin};
 
 /// The name of a body no mixin of the heap holds.
@@ -357,7 +358,7 @@ impl BodyNames {
             if let Some(code) = kind.code_of(side) {
                 roots.push((
                     code,
-                    format!("{owner} initializer"),
+                    initializer_name(&owner, kind),
                     Member::Initializer(kind),
                 ));
             }
@@ -473,6 +474,24 @@ mod tests {
           public main: platform args: arguments = (
             ^[ arguments ].
           )
+        )
+    "};
+
+    /// A module whose class `Account` applies a mixin by a `<:` clause and
+    /// has a body, so that its mixin carries all three initializer bodies.
+    const APPLYING: &str = indoc! {"
+        class Demo = Object new () (
+          class Extra = Object new (
+            |
+              public extra ::= 3.
+            |
+          ) ()
+
+          public class Account = Object new <: Extra new (
+            |
+              public balance ::= 0.
+            |
+          ) ()
         )
     "};
 
@@ -674,6 +693,22 @@ mod tests {
                 .clone()
                 .expect("a superclass clause");
             assert_eq!(name_of(mutator, &clause), "Demo/Account superclass clause");
+        });
+        let (mut interpreter, class) = load(APPLYING, None, "Account");
+        interpreter.enter(|mutator| {
+            let demo = root_mixin(mutator, &class);
+            let account = nested(mutator, &demo, "Account");
+            let body = |kind: InitializerBody| kind.code_of(&account).expect("each body");
+            let full = name_of(mutator, &body(InitializerBody::Full));
+            let own_part = name_of(mutator, &body(InitializerBody::OwnPart));
+            let standalone = name_of(mutator, &body(InitializerBody::Standalone));
+            assert_eq!(full, "Demo/Account initializer");
+            assert_eq!(own_part, "Demo/Account initializer, own part");
+            assert_eq!(standalone, "Demo/Account initializer, standalone");
+            assert_eq!(
+                initializer_name("Demo/Account", InitializerBody::OwnPart),
+                own_part
+            );
         });
     }
 

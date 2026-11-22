@@ -21,6 +21,7 @@ use super::values::StopValues;
 use crate::bytecode::{CompiledCode, HEADER_REGISTERS};
 use crate::heap::{ActivationReference, ClassReference, FrameReference, Heap};
 use crate::interpreter::Mutator;
+use crate::interpreter::instantiate::initializer_name;
 use crate::mixin::{MethodEntry, Mixin};
 use crate::types::ActivationKind;
 use crate::{Root, Value};
@@ -674,7 +675,9 @@ fn family_holds(root: &Rc<CompiledCode>, code: &Rc<CompiledCode>) -> bool {
 }
 
 /// What a frame runs, as a reader names it: `Foo>>bar`, `Foo class>>bar`,
-/// `[] in Foo>>bar`, `Foo initializer`, `Foo superclass clause`,
+/// `[] in Foo>>bar`, `Foo initializer` -- `Foo initializer, own part`
+/// and `Foo initializer, standalone` for the other two initializer bodies
+/// (`instantiate::initializer_name`) --, `Foo superclass clause`,
 /// `Foo class>>new:` for a factory and `top level`, `Foo` its
 /// declaration's `qualified` name -- its module's id and version, and
 /// `/` before a class inside the module, `com.acme.util.Util@1.0.0/Inner`
@@ -697,11 +700,13 @@ fn frame_name<'gc>(
         ActivationKind::Method(selector) => format!("{owner}>>{selector}"),
         ActivationKind::Closure(_) => match origin.map(|origin| &origin.member) {
             Some(Member::Method(selector)) => format!("[] in {owner}>>{selector}"),
-            Some(Member::Initializer(_)) => format!("[] in {owner} initializer"),
+            Some(Member::Initializer(body)) => {
+                format!("[] in {}", initializer_name(&owner, *body))
+            }
             Some(Member::SuperclassClause) => format!("[] in {owner} superclass clause"),
             Some(Member::Factory) | None => format!("[] in {owner}"),
         },
-        ActivationKind::Initializer(..) => format!("{owner} initializer"),
+        ActivationKind::Initializer(_, body) => initializer_name(&owner, body),
         ActivationKind::SuperclassClause(_) => format!("{owner} superclass clause"),
         ActivationKind::Factory(_) => {
             let selector = crate::mixin::factory_entry_selector(

@@ -1514,6 +1514,33 @@ impl InitializerBody {
     }
 }
 
+/// The suffix of every initializer body's name after its class
+/// (`initializer_name`).
+pub(crate) const INITIALIZER_SUFFIX: &str = " initializer";
+
+/// What follows `INITIALIZER_SUFFIX` in the name of an own part
+/// (`InitializerBody::OwnPart`).
+pub(crate) const OWN_PART_SUFFIX: &str = ", own part";
+
+/// What follows `INITIALIZER_SUFFIX` in the name of a standalone body
+/// (`InitializerBody::Standalone`).
+pub(crate) const STANDALONE_SUFFIX: &str = ", standalone";
+
+/// The name of `owner`'s initializer body of `kind`, as a frame and a
+/// traced body read it: the full body keeps `<owner> initializer`, the
+/// name of the body a program's instantiation runs, and the other two
+/// carry their kind after a comma, which occurs in no class name and no
+/// id, so that the three bodies of a declaration with `<:` clauses are
+/// told apart.
+pub(crate) fn initializer_name(owner: &str, kind: InitializerBody) -> String {
+    let part = match kind {
+        InitializerBody::Full => "",
+        InitializerBody::OwnPart => OWN_PART_SUFFIX,
+        InitializerBody::Standalone => STANDALONE_SUFFIX,
+    };
+    format!("{owner}{INITIALIZER_SUFFIX}{part}")
+}
+
 /// The body of the one factory entry the metaclass of `class` holds, for
 /// a frame of a factory activation, whose body is derived rather than
 /// carried. `None` for a class object whose class holds none -- one a host

@@ -11,15 +11,13 @@
 //! version of its id, as a method breakpoint does (`ModuleName::covers`).
 
 use crate::debugger::{ClassName, ModuleName};
+use crate::interpreter::instantiate::{INITIALIZER_SUFFIX, OWN_PART_SUFFIX, STANDALONE_SUFFIX};
 use crate::modules;
 use crate::tool_names::{self, ClassRefusal, KnownModule, MethodName};
 
 /// The prefix of a block's name, before the name of the body it is
 /// created in (`debugger/stack.rs`'s `frame_name`).
 const BLOCK_PREFIX: &str = "[] in ";
-
-/// The suffix of an initializer's name after its class.
-const INITIALIZER_SUFFIX: &str = " initializer";
 
 /// The suffix of a superclass clause's name after its class.
 const SUPERCLASS_CLAUSE_SUFFIX: &str = " superclass clause";
@@ -324,7 +322,7 @@ fn body_parts(name: &str) -> Option<BodyParts> {
     }
     let (class, selector) = if let Some((class, selector)) = name.split_once(">>") {
         (class, Some(selector.to_string()))
-    } else if let Some(class) = name.strip_suffix(INITIALIZER_SUFFIX) {
+    } else if let Some(class) = initializer_owner(name) {
         (class, None)
     } else {
         (name.strip_suffix(SUPERCLASS_CLAUSE_SUFFIX)?, None)
@@ -335,6 +333,16 @@ fn body_parts(name: &str) -> Option<BodyParts> {
         class_side,
         selector,
     })
+}
+
+/// The class whose initializer body `name` names -- the full body, its
+/// own part or its standalone body (`instantiate::initializer_name`).
+fn initializer_owner(name: &str) -> Option<&str> {
+    let name = name
+        .strip_suffix(OWN_PART_SUFFIX)
+        .or_else(|| name.strip_suffix(STANDALONE_SUFFIX))
+        .unwrap_or(name);
+    name.strip_suffix(INITIALIZER_SUFFIX)
 }
 
 #[cfg(test)]
@@ -432,6 +440,16 @@ mod tests {
         assert!(!main.matches("[] in Demo>>run"));
         let initializer = filter("Demo/Account...");
         assert!(initializer.matches("[] in Demo/Account initializer"));
+    }
+
+    #[test]
+    fn an_initializer_s_own_part_is_read() {
+        let account = filter("Demo/Account...");
+        assert!(account.matches("Demo/Account initializer, own part"));
+        assert!(account.matches("[] in Demo/Account initializer, standalone"));
+        let deposit = filter("Demo/Account>>deposit:");
+        assert!(!deposit.matches("Demo/Account initializer, own part"));
+        assert!(!deposit.matches("[] in Demo/Account initializer, standalone"));
     }
 
     #[test]

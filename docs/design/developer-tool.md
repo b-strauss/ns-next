@@ -344,8 +344,7 @@ metadata (`debugger/metadata/`), which the DAP agent already turns into
 lines and columns -- and every event, listing and position refers to
 it. Only the runtime knows which source a bytecode index came from:
 the plugin has no compiler, and a body's name does not identify it,
-since every block of a method is `[] in <method>` and a class's three
-initializer bodies share one name. V8 writes `code-source-info` with
+since every block of a method is `[] in <method>`. V8 writes `code-source-info` with
 offsets and an inlining table (`v8/src/logging/log.cc:1385-1490`),
 Turbolizer's positions are `{scriptOffset, inliningId}`
 (`v8/src/codegen/source-position.cc:118-127`); HotSpot logs a method and

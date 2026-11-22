@@ -15,7 +15,7 @@ use crate::compiler::Lowering;
 use crate::heap::MixinId;
 use crate::interpreter::Mutator;
 use crate::interpreter::core_library::{LAZY_SHIPPED_MODULES, shipped_module_text};
-use crate::interpreter::instantiate::InitializerBody;
+use crate::interpreter::instantiate::{InitializerBody, initializer_name};
 use crate::mixin::{MethodEntry, Mixin};
 use crate::{Interpreter, Symbol};
 
@@ -260,16 +260,16 @@ fn too_large(code: &CompiledCode) -> bool {
 
 /// `body` named for a failure.
 fn describe(level: &str, body: &Checked) -> String {
-    let member = match &body.member {
-        Member::Method(selector) => format!(">>{selector}"),
-        Member::Initializer(_) => " initializer".to_string(),
-        Member::SuperclassClause => " superclass clause".to_string(),
-        Member::Factory => " factory".to_string(),
-    };
     let side = if body.side.is_class_side() {
         " class"
     } else {
         ""
+    };
+    let member = match &body.member {
+        Member::Method(selector) => format!(">>{selector}"),
+        Member::Initializer(kind) => initializer_name("", *kind),
+        Member::SuperclassClause => " superclass clause".to_string(),
+        Member::Factory => " factory".to_string(),
     };
     let block = if body.enclosing.is_empty() {
         String::new()

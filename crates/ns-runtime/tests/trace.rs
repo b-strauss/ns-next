@@ -2943,7 +2943,7 @@ fn every_initializer_body_of_an_applied_class_is_described() {
         .iter()
         .filter_map(|item| match item {
             Received::Body(description)
-                if description.body.name.ends_with("initializer")
+                if description.body.name.contains(" initializer")
                     || description.body.name.contains("clause") =>
             {
                 Some(description)
@@ -2956,6 +2956,11 @@ fn every_initializer_body_of_an_applied_class_is_described() {
         names.iter().any(|name| name.starts_with("Demo/Applied")),
         "{names:?}"
     );
+    // The level the `<:` clause adds runs `Mixed`'s own part, and
+    // `Mixed new:` its full initializer: each named as its kind.
+    for name in ["Demo/Mixed initializer, own part", "Demo/Mixed initializer"] {
+        assert!(names.contains(&name), "{name} in {names:?}");
+    }
     for body in bodies {
         let source = slice(body.source);
         assert!(
