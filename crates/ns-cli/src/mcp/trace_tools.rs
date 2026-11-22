@@ -7,6 +7,8 @@
 //! so that the trace of a program that runs, or of a wait in progress, can
 //! be asked.
 
+use std::collections::HashMap;
+
 use ns_runtime::TraceCategory;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -713,6 +715,12 @@ const LONGEST_CYCLE: usize = 8;
 /// is one entry, as many repetitions as follow, and a step that starts no
 /// such cycle is an entry of its own. A run of thousands of rounds of one
 /// body's abandonment and revival reads as one entry, its count beside it.
+/// The journal folds its events' shapes -- category and event word --
+/// rather than their whole texts, so that a round whose fields differ, a
+/// revival by decay among revivals by entries or a compile of other
+/// bytes, stays in its run; the fields that differ are summarized beside
+/// the entry (`folded_text`). That departs, for the journal alone, from
+/// comparing whole entry texts.
 pub(crate) fn fold(texts: &[u32]) -> Vec<Folded> {
     let mut steps: Vec<(usize, Repeat)> = Vec::new();
     for (position, &text) in texts.iter().enumerate() {
@@ -798,8 +806,12 @@ pub(crate) fn journal(
             None => counted(events.len() as u64, "entry", "entries"),
         };
         format!(
-            "events ({entries}, folding {})",
-            counted(folded_events as u64, "event", "events")
+            "events ({entries}, folding {}; every event, caches included: {})",
+            counted(folded_events as u64, "lifecycle event", "lifecycle events"),
+            call_text(
+                "debug_trace_events",
+                &json!({ "session": session.number, "method": method })
+            )
         )
     };
     let sends_head = |taken: Option<usize>| match taken {
@@ -1303,11 +1315,25 @@ fn inlined_line(index: &TraceIndex, number: u32) -> Option<String> {
     Some(line)
 }
 
-/// The events of `bodies`, each body's apart in file order and folded --
-/// a cycle is one body's, and another's events between its rounds would
-/// hide it; `debug_trace_events` gives the run-wide order --, each entry
-/// one line under its body's head line; the head lines; and how many
-/// events they are.
+/// The categories whose events the journal's events part holds: a body's
+/// lifecycle. Its cache transitions are its sends' (the sends part), and
+/// every event is `debug_trace_events`'.
+const LIFECYCLE: [TraceCategory; 5] = [
+    TraceCategory::Compile,
+    TraceCategory::Osr,
+    TraceCategory::Optimize,
+    TraceCategory::Deoptimize,
+    TraceCategory::CodeZone,
+];
+
+/// The most values of a field a summary names before `…`.
+const VARIANTS_SHOWN: usize = 3;
+
+/// The lifecycle events of `bodies`, each body's apart in file order and
+/// folded by their shapes -- a cycle is one body's, and another's events
+/// between its rounds would hide it; `debug_trace_events` gives the
+/// run-wide order --, each entry one line under its body's head line; the
+/// head lines; and how many events they are.
 fn journal_events(index: &TraceIndex, bodies: &[u32]) -> (Vec<Entry>, Vec<String>, usize) {
     let events = index.events();
     let mut entries = Vec::new();
@@ -1317,28 +1343,41 @@ fn journal_events(index: &TraceIndex, bodies: &[u32]) -> (Vec<Entry>, Vec<String
         let Some(tally) = index.body(number) else {
             continue;
         };
-        if tally.events.is_empty() {
-            continue;
-        }
-        let texts: Vec<u32> = tally
+        let own: Vec<u32> = tally
             .events
             .iter()
-            .map(|event| events[*event as usize].text())
+            .copied()
+            .filter(|event| LIFECYCLE.contains(&events[*event as usize].category()))
             .collect();
-        let folded = fold(&texts);
+        if own.is_empty() {
+            continue;
+        }
+        // An event's shape: its category and its line's word.
+        let mut shapes: HashMap<(TraceCategory, u32), u32> = HashMap::new();
+        let keys: Vec<u32> = own
+            .iter()
+            .map(|event| {
+                let event = &events[*event as usize];
+                let next = u32::try_from(shapes.len()).unwrap_or(u32::MAX);
+                *shapes
+                    .entry((event.category(), event.word()))
+                    .or_insert(next)
+            })
+            .collect();
+        let folded = fold(&keys);
         let name = index
             .body_name(number)
             .map_or_else(|| "(not described)".to_string(), str::to_string);
         groups.push(format!(
             "  #{number} {name} — {}, folding {}",
             counted(folded.len() as u64, "entry", "entries"),
-            counted(texts.len() as u64, "event", "events")
+            counted(own.len() as u64, "event", "events")
         ));
         let group = groups.len() - 1;
-        total += texts.len();
+        total += own.len();
         entries.extend(folded.iter().map(|entry| Entry {
             group: Some(group),
-            text: format!("    {}", folded_text(index, entry)),
+            text: format!("    {}", folded_text(index, entry, &own)),
         }));
     }
     (entries, groups, total)
@@ -1353,39 +1392,156 @@ fn without_body(text: &str) -> &str {
     }
 }
 
-/// A folded entry as the journal writes it: a step as its event's text,
-/// with `×<count>` after it where it came several times in a row; a cycle
-/// in parentheses, its steps joined by ` → `, its first step's
-/// `[<category>] ` written once before it and every other step's
-/// category only where it differs, `×<repetitions>` after it.
-fn folded_text(index: &TraceIndex, folded: &Folded) -> String {
-    let step_text = |step: &Repeat, category: Option<&str>| {
-        let text = without_body(index.text(step.text));
-        let text = category
-            .and_then(|category| text.strip_prefix(category))
-            .unwrap_or(text);
-        if step.count > 1 {
-            format!("{text} ×{}", thousands(step.count as u64))
-        } else {
-            text.to_string()
+/// The fields of an event's text line, ` key={Bounce} at=3`, as names and
+/// values, braces kept.
+fn fields_of(fields: &str) -> Vec<(&str, &str)> {
+    let mut depth = 0usize;
+    let mut token_start = 0;
+    let mut tokens = Vec::new();
+    for (position, byte) in fields.bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b' ' if depth == 0 => {
+                tokens.push(&fields[token_start..position]);
+                token_start = position + 1;
+            }
+            _ => {}
         }
-    };
-    if let [step] = folded.cycle.as_slice() {
-        return step_text(step, None);
     }
-    let first = without_body(index.text(folded.cycle[0].text));
-    let category = first.find("] ").map(|end| &first[..end + 2]);
-    let steps: Vec<String> = folded
+    tokens.push(&fields[token_start..]);
+    tokens
+        .into_iter()
+        .filter_map(|token| token.split_once('='))
+        .collect()
+}
+
+/// What the events of one step say of each field whose value differs
+/// among them, beside its word: a number's range, `bytes 6,208–6,400`;
+/// otherwise each value and how often, the most first, `by=entries ×520,
+/// by=decay ×34`, at most `VARIANTS_SHOWN` of them, then `…`.
+fn varying_fields(index: &TraceIndex, word: &str, events: &[u32]) -> Vec<String> {
+    let all = index.events();
+    let mut names: Vec<&str> = Vec::new();
+    let mut values: Vec<Vec<&str>> = Vec::new();
+    for event in events {
+        for (name, value) in fields_of(index.fields(&all[*event as usize])) {
+            match names.iter().position(|known| *known == name) {
+                Some(position) => values[position].push(value),
+                None => {
+                    names.push(name);
+                    values.push(vec![value]);
+                }
+            }
+        }
+    }
+    let mut summaries = Vec::new();
+    for (name, values) in names.into_iter().zip(values) {
+        if values.iter().all(|value| *value == values[0]) && values.len() == events.len() {
+            continue;
+        }
+        let numbers: Option<Vec<u64>> = values.iter().map(|value| value.parse().ok()).collect();
+        match numbers {
+            Some(numbers) if numbers.len() == events.len() => {
+                let lowest = numbers.iter().min().copied().unwrap_or(0);
+                let highest = numbers.iter().max().copied().unwrap_or(0);
+                summaries.push(format!(
+                    "{word} {name} {}–{}",
+                    thousands(lowest),
+                    thousands(highest)
+                ));
+            }
+            _ => {
+                let mut counts: Vec<(&str, u32)> = Vec::new();
+                for value in &values {
+                    count_into(&mut counts, value);
+                }
+                let ranked = ranked(&counts);
+                let mut shown: Vec<String> = ranked
+                    .iter()
+                    .take(VARIANTS_SHOWN)
+                    .map(|(value, count)| {
+                        format!("{name}={value} ×{}", thousands(u64::from(*count)))
+                    })
+                    .collect();
+                if ranked.len() > VARIANTS_SHOWN {
+                    shown.push("…".to_string());
+                }
+                summaries.push(format!("{word} {}", shown.join(", ")));
+            }
+        }
+    }
+    summaries
+}
+
+/// Counts `value` into `counts`, its first-seen order kept.
+fn count_into<'value>(counts: &mut Vec<(&'value str, u32)>, value: &'value str) {
+    match counts.iter_mut().find(|(known, _)| *known == value) {
+        Some((_, count)) => *count += 1,
+        None => counts.push((value, 1)),
+    }
+}
+
+/// A folded entry as the journal writes it, from the events `own` its
+/// positions count in: each step as its first event's text -- the first
+/// round's fields --, with `×<count>` after it where it came several times
+/// in a row; a cycle in parentheses, its steps joined by ` → `, its first
+/// step's `[<category>] ` written once before it and every other step's
+/// category only where it differs, `×<repetitions>` after it; then, after
+/// ` — `, each field whose value differs among a step's events, by step.
+fn folded_text(index: &TraceIndex, folded: &Folded, own: &[u32]) -> String {
+    let all = index.events();
+    // The events of each step, over every round.
+    let mut steps: Vec<Vec<u32>> = vec![Vec::new(); folded.cycle.len()];
+    let mut position = folded.first;
+    for _ in 0..folded.repetitions {
+        for (step, repeat) in folded.cycle.iter().enumerate() {
+            steps[step].extend_from_slice(&own[position..position + repeat.count]);
+            position += repeat.count;
+        }
+    }
+    let text_of = |events: &[u32]| without_body(index.text(all[events[0] as usize].text()));
+    let first = text_of(&steps[0]);
+    let category = (folded.cycle.len() > 1)
+        .then(|| first.find("] ").map(|end| &first[..end + 2]))
+        .flatten();
+    let written: Vec<String> = folded
         .cycle
         .iter()
-        .map(|step| step_text(step, category))
+        .zip(&steps)
+        .map(|(repeat, events)| {
+            let text = text_of(events);
+            let text = category
+                .and_then(|category| text.strip_prefix(category))
+                .unwrap_or(text);
+            if repeat.count > 1 {
+                format!("{text} ×{}", thousands(repeat.count as u64))
+            } else {
+                text.to_string()
+            }
+        })
         .collect();
-    format!(
-        "{}({}) ×{}",
-        category.unwrap_or(""),
-        steps.join(" → "),
-        thousands(folded.repetitions as u64)
-    )
+    let mut text = match written.as_slice() {
+        [step] => step.clone(),
+        _ => format!(
+            "{}({}) ×{}",
+            category.unwrap_or(""),
+            written.join(" → "),
+            thousands(folded.repetitions as u64)
+        ),
+    };
+    let summaries: Vec<String> = steps
+        .iter()
+        .flat_map(|events| {
+            let word = index.text(all[events[0] as usize].word());
+            varying_fields(index, word, events)
+        })
+        .collect();
+    if !summaries.is_empty() {
+        text.push_str(" — ");
+        text.push_str(&summaries.join("; "));
+    }
+    text
 }
 
 /// The value of the field `name` in an event's fields as its text line
@@ -2096,14 +2252,12 @@ mod tests {
             "bodies: #12 method (line 14), #13 [] in Bounce/Ball>>bounce (line 16), #15 [] in Bounce/Ball>>bounce (line 19)",
             "copies of #12: baseline 4 (code 1–2), twin 1 (code 3), optimized key={Bounce/Ball} entered={Bounce/Ball} 2 (code 4–5; inlining 1–2)",
             "inlined #12 into: Bounce>>run #4 ×1 (key={Bounce}); declined ×1 (over-weight 1)",
-            "events (7 of 7 entries, folding 19 events)",
-            "  #12 Bounce/Ball>>bounce — 6 entries, folding 15 events",
-            "    [compile] compiled trigger=call bytes=1216",
-            "    [compile] (abandoned exits=64 → revived by=decay → compiled trigger=entry bytes=1216) ×3",
+            "events (5 of 5 entries, folding 17 lifecycle events; every event, caches included: debug_trace_events {\"session\":1,\"method\":\"Bounce/Ball>>bounce\"})",
+            "  #12 Bounce/Ball>>bounce — 4 entries, folding 13 events",
+            "    [compile] (compiled trigger=call bytes=1216 → abandoned exits=64 → revived by=decay) ×3 — compiled trigger=entry ×2, trigger=call ×1",
+            "    [compile] compiled trigger=entry bytes=1216",
             "    [compile] compiled-twin bytes=2000",
-            "    [inlining] inlined key={Bounce/Ball} entered={Bounce/Ball} in-body={#12} callee={#30} at=0",
             "    [optimize] optimized key={Bounce/Ball} entered={Bounce/Ball} bytes=900 inlined-scopes=1 inlined-sites=1 type-case-arms=0 eliminated-blocks=0 ×2",
-            "    [caches] vacant->monomorphic selector=#x: site=0 receiver={Bounce/Ball}",
             "  #13 [] in Bounce/Ball>>bounce — 1 entry, folding 4 events",
             "    [osr] osr-entered at=3 ×4",
             "sends (3 of 3)",
@@ -2119,7 +2273,7 @@ mod tests {
             [
                 r"[] in Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns:16 — session 1",
                 "bodies: #13 [] in Bounce/Ball>>bounce (line 16)",
-                "events (1 of 1 entry, folding 4 events)",
+                "events (1 of 1 entry, folding 4 lifecycle events; every event, caches included: debug_trace_events {\"session\":1,\"method\":\"#13\"})",
                 "  #13 [] in Bounce/Ball>>bounce — 1 entry, folding 4 events",
                 "    [osr] osr-entered at=3 ×4",
                 "sends: none",
@@ -2149,11 +2303,11 @@ mod tests {
             page.lines().collect::<Vec<_>>(),
             [
                 r"Bounce/Ball>>bounce — Bounce@1.0.0, D:\work\Bounce.ns:14 — session 1",
-                "events (7 entries, folding 19 events)",
-                "  #12 Bounce/Ball>>bounce — 6 entries, folding 15 events",
+                "events (5 entries, folding 17 lifecycle events; every event, caches included: debug_trace_events {\"session\":1,\"method\":\"Bounce/Ball>>bounce\"})",
+                "  #12 Bounce/Ball>>bounce — 4 entries, folding 13 events",
                 "    [compile] compiled-twin bytes=2000",
-                "    [inlining] inlined key={Bounce/Ball} entered={Bounce/Ball} in-body={#12} callee={#30} at=0",
-                r##"Showing 3–4 of 7 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":4,"count":2}"##,
+                "    [optimize] optimized key={Bounce/Ball} entered={Bounce/Ball} bytes=900 inlined-scopes=1 inlined-sites=1 type-case-arms=0 eliminated-blocks=0 ×2",
+                r##"Showing 3–4 of 5 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":4,"count":2}"##,
             ]
         );
         let last =
@@ -2164,14 +2318,17 @@ mod tests {
         );
         let head = journal(&index, &handle, method, None, None, Some(2)).expect("a journal");
         let lines: Vec<&str> = head.lines().collect();
-        assert_eq!(lines[4], "events (2 of 7 entries, folding 19 events)");
+        assert_eq!(
+            lines[4],
+            "events (2 of 5 entries, folding 17 lifecycle events; every event, caches included: debug_trace_events {\"session\":1,\"method\":\"Bounce/Ball>>bounce\"})"
+        );
         assert_eq!(
             lines[5],
-            "  #12 Bounce/Ball>>bounce — 6 entries, folding 15 events"
+            "  #12 Bounce/Ball>>bounce — 4 entries, folding 13 events"
         );
         assert_eq!(
             lines[8],
-            r##"Showing 1–2 of 7 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":2,"count":2}"##
+            r##"Showing 1–2 of 5 — next: debug_trace_method {"session":1,"method":"Bounce/Ball>>bounce","part":"events","start":2,"count":2}"##
         );
         assert_eq!(lines[9], "sends (2 of 3)");
         assert_eq!(
@@ -2235,16 +2392,21 @@ mod tests {
             755,
             json!([]),
         ));
+        let root = |fields: Value| event_of("compile", Some(48), &fields);
+        scratch.record(&root(
+            json!({ "event": "compiled", "trigger": "call", "bytes": 12224 }),
+        ));
         let block = |fields: Value| event_of("compile", Some(55), &fields);
-        for site in 0..50 {
-            scratch.record(&block(
-                json!({ "event": "compiled", "trigger": "entry", "bytes": 6208 }),
-            ));
+        for round in 0..50_u64 {
+            // Every tenth round is compiled larger and revived by decay.
+            let tenth = round % 10 == 9;
+            scratch.record(&block(json!({ "event": "compiled", "trigger": "entry",
+                        "bytes": if tenth { 6400 } else { 6208 } })));
             scratch.record(&event_of(
                 "caches",
                 Some(48),
                 &json!({ "event": "transition", "before": "vacant", "after": "monomorphic",
-                         "selector": "compareTo:", "site": site, "receiver": "CD/Node" }),
+                         "selector": "compareTo:", "site": round, "receiver": "CD/Node" }),
             ));
             scratch.record(&block(json!({ "event": "compiled-twin", "bytes": 8384 })));
             scratch.record(&block(json!({ "event": "abandoned", "exits": 64 })));
@@ -2256,7 +2418,9 @@ mod tests {
                              "tier": "baseline", "cause": "abandoned" }),
                 ));
             }
-            scratch.record(&block(json!({ "event": "revived", "by": "entries" })));
+            scratch.record(&block(json!({
+                "event": "revived", "by": if tenth { "decay" } else { "entries" },
+            })));
         }
         let (_registry, handle) = stopped_session();
         let index = scratch.caught_up();
@@ -2267,29 +2431,53 @@ mod tests {
             "Bounce/Tree>>treeAt:insert:",
             Some(Part::Events),
             None,
-            Some(200),
+            None,
         )
         .expect("a journal");
-        let lines: Vec<&str> = answer.lines().collect();
         assert_eq!(
-            lines[1], "events (51 entries, folding 350 events)",
+            answer.lines().collect::<Vec<_>>(),
+            [
+                r"Bounce/Tree>>treeAt:insert: — Bounce@1.0.0, D:\work\Bounce.ns:752 — session 1",
+                r##"events (2 entries, folding 301 lifecycle events; every event, caches included: debug_trace_events {"session":1,"method":"Bounce/Tree>>treeAt:insert:"})"##,
+                "  #48 Bounce/Tree>>treeAt:insert: — 1 entry, folding 1 event",
+                "    [compile] compiled trigger=call bytes=12224",
+                "  #55 [] in Bounce/Tree>>treeAt:insert: — 1 entry, folding 300 events",
+                "    [compile] (compiled trigger=entry bytes=6208 → compiled-twin bytes=8384 → abandoned exits=64 → [code-zone] freed tier=baseline cause=abandoned ×2 → revived by=entries) ×50 — compiled bytes 6,208–6,400; revived by=entries ×45, by=decay ×5",
+                "Showing 1–2 of 2",
+            ],
             "{answer}"
         );
+    }
+
+    /// A single repeat whose fields differ folds as a cycle does, its
+    /// values summarized, at most three of a field's named.
+    #[test]
+    fn a_repeat_s_differing_fields_are_summarized() {
+        let mut scratch = Scratch::new("journal-repeat");
+        scratch.header(&["compile"], &[]);
+        scratch.record(&bounce_body(1, "Bounce>>run", None, 0, json!([])));
+        for (trigger, bytes) in [
+            ("call", 96),
+            ("entry", 128),
+            ("back-edge", 96),
+            ("forced", 96),
+            ("call", 100),
+        ] {
+            scratch.record(&event_of(
+                "compile",
+                Some(1),
+                &json!({ "event": "compiled", "trigger": trigger, "bytes": bytes }),
+            ));
+        }
+        let (_registry, handle) = stopped_session();
+        let index = scratch.caught_up();
+        let answer =
+            journal(&index, &handle, "#1", Some(Part::Events), None, None).expect("a journal");
         assert_eq!(
-            lines[2],
-            "  #48 Bounce/Tree>>treeAt:insert: — 50 entries, folding 50 events"
-        );
-        assert_eq!(
-            lines[3],
-            "    [caches] vacant->monomorphic selector=#compareTo: site=0 receiver={CD/Node}"
-        );
-        assert_eq!(
-            lines[53..],
-            [
-                "  #55 [] in Bounce/Tree>>treeAt:insert: — 1 entry, folding 300 events",
-                "    [compile] (compiled trigger=entry bytes=6208 → compiled-twin bytes=8384 → abandoned exits=64 → [code-zone] freed tier=baseline cause=abandoned ×2 → revived by=entries) ×50",
-                "Showing 1–51 of 51",
-            ],
+            answer.lines().nth(3),
+            Some(
+                "    [compile] compiled trigger=call bytes=96 ×5 — compiled trigger=call ×2, trigger=entry ×1, trigger=back-edge ×1, …; compiled bytes 96–128"
+            ),
             "{answer}"
         );
     }
@@ -2311,7 +2499,7 @@ mod tests {
                 "#44 (not described) — session 1",
                 "bodies: #44 (not described)",
                 "copies of #44: baseline 2",
-                "events (1 of 1 entry, folding 2 events)",
+                "events (1 of 1 entry, folding 2 lifecycle events; every event, caches included: debug_trace_events {\"session\":1,\"method\":\"#44\"})",
                 "  #44 (not described) — 1 entry, folding 2 events",
                 "    [compile] compiled trigger=call bytes=96 ×2",
                 "sends: none",
@@ -2332,12 +2520,29 @@ mod tests {
             })
             .collect();
         scratch.record(&bounce_body(1, "Bounce>>run", None, 0, json!(sends)));
-        for bytes in 0..300 {
-            scratch.record(&event_of(
-                "compile",
-                Some(1),
-                &json!({ "event": "compiled", "trigger": "x".repeat(200), "bytes": bytes }),
-            ));
+        // The number of 1s between consecutive 0s of the Thue–Morse
+        // sequence: a word over three shapes with no square in it, which no
+        // fold shortens.
+        let mut shapes = Vec::new();
+        let mut ones = 0;
+        let mut place = 1_u32;
+        while shapes.len() < 300 {
+            if place.count_ones() % 2 == 1 {
+                ones += 1;
+            } else {
+                shapes.push(ones);
+                ones = 0;
+            }
+            place += 1;
+        }
+        let long = "x".repeat(200);
+        for shape in shapes {
+            let fields = match shape {
+                0 => json!({ "event": "compiled", "trigger": long, "bytes": 1 }),
+                1 => json!({ "event": "held", "trigger": long, "reason": long }),
+                _ => json!({ "event": "refused", "trigger": long, "reason": long }),
+            };
+            scratch.record(&event_of("compile", Some(1), &fields));
         }
         let (_registry, handle) = stopped_session();
         let index = scratch.caught_up();
