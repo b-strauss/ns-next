@@ -8752,6 +8752,14 @@ where the analyzer changed).
 - `1520120d` -- the factory test reads its bodies from the bytecode
   listing, whether or not the run compiles them.
 
+Every gate passed at `880c9d14`: the batch's end (the image round trips,
+the cache contention, the benchmark programs, the release checks, the
+codegen budgets, the suite under every stress mode and without the JIT,
+`run-corpus` plain and under each mode, "ran 6, failed 0, skipped
+205"), the plugin's verification against six IDEs, and `linux` and
+`aarch64` in Docker, the first to compile the POSIX half of the trace
+files.
+
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
 stage 6, hot swap, edit-and-continue and `ActivationMirror`; and the
 developer tool's stage 4, the shell.
