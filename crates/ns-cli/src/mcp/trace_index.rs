@@ -2404,7 +2404,16 @@ pub(crate) mod tests {
             assert!(std::time::Instant::now() < deadline, "never let go");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!path.exists(), "{} is still there", path.display());
+        // The count falls as the last holder's drop begins, before the
+        // drop has deleted the file.
+        while path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} is still there",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
