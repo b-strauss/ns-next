@@ -1,3 +1,4 @@
 stdout = '''
 outer/derived
 '''
+rules = ["syntax.super"]

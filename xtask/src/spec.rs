@@ -60,7 +60,11 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
         .next()
         .filter(|first| *first == '`' || *first == '~')?;
     let length = rest.chars().take_while(|next| *next == character).count();
-    (length >= 3).then_some((character, length))
+    // A backtick fence's info string may hold no backtick, so a line that
+    // opens with a code span opens no fence.
+    let info = &rest[length..];
+    let opens = length >= 3 && !(character == '`' && info.contains('`'));
+    opens.then_some((character, length))
 }
 
 /// Calls `visit` with each line of `markdown`, its 1-based number, and
@@ -242,6 +246,76 @@ pub fn book_rules(book: &Path) -> Result<Vec<Rule>, String> {
     }
     if refusals.is_empty() {
         Ok(rules)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// `relative` taken from the directory of `chapter`, `..` resolved, as a
+/// path relative to the book.
+fn resolve_link(chapter: &Path, relative: &str) -> PathBuf {
+    let mut parts: Vec<String> = chapter
+        .parent()
+        .map(|directory| {
+            directory
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other.to_string()),
+        }
+    }
+    parts.iter().collect()
+}
+
+/// Checks that every link to a rule, `(#r-<identifier>)` or
+/// `(<chapter>#r-<identifier>)`, names a rule the chapter it points to
+/// declares, so that no anchor of the rendered book dangles.
+pub fn check_links(book: &Path) -> Result<(), String> {
+    let rules = book_rules(book)?;
+    let mut refusals = Vec::new();
+    for chapter in book_chapters(book)? {
+        let markdown = read(&book.join(&chapter))?;
+        walk_markdown(&markdown, |line, text, outside| {
+            if !outside {
+                return;
+            }
+            let mut rest = text;
+            while let Some(start) = rest.find("](") {
+                rest = &rest[start + 2..];
+                let Some(end) = rest.find(')') else { break };
+                let target = &rest[..end];
+                rest = &rest[end..];
+                let Some((path, identifier)) = target.split_once("#r-") else {
+                    continue;
+                };
+                let pointed = if path.is_empty() {
+                    chapter.clone()
+                } else {
+                    resolve_link(&chapter, path)
+                };
+                let declared = rules
+                    .iter()
+                    .any(|rule| rule.identifier == identifier && rule.chapter == pointed);
+                if !declared {
+                    refusals.push(format!(
+                        "{}:{line}: the link to `{identifier}` names no rule of {}",
+                        display(&chapter),
+                        display(&pointed)
+                    ));
+                }
+            }
+        });
+    }
+    if refusals.is_empty() {
+        Ok(())
     } else {
         Err(refusals.join("\n"))
     }
@@ -466,6 +540,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     let rules = book_rules(&book)?;
     let references = references_in(root)?;
     check_references(&rules, &references)?;
+    check_links(&book)?;
     check_mdbook()?;
     let chapters = book_chapters(&book)?;
     let source = output.join("src");
@@ -581,6 +656,18 @@ mod tests {
         assert_eq!(identifiers(&rules), ["lex.after"]);
     }
 
+    /// CommonMark: a backtick fence's info string holds no backtick, so a
+    /// line that opens with a code span of three backticks opens no fence.
+    #[test]
+    fn a_line_opening_with_a_code_span_is_no_fence() {
+        let rules = rules_in(
+            "r[syntax.first]\nrefused,\n``` `super` is followed (§5.10) ```.\n\nr[syntax.second]\n",
+            Path::new("grammar.md"),
+        )
+        .expect("well formed");
+        assert_eq!(identifiers(&rules), ["syntax.first", "syntax.second"]);
+    }
+
     #[test]
     fn a_malformed_identifier_is_refused() {
         for (identifier, line) in [
@@ -678,6 +765,29 @@ mod tests {
             refusal.contains("syntax.nothing") && refusal.contains("outer.toml"),
             "{refusal}"
         );
+    }
+
+    #[test]
+    fn a_link_to_no_rule_is_refused() {
+        let scratch = Scratch::new("links");
+        scratch.write("SUMMARY.md", "# Summary\n\n- [A](a.md)\n- [B](part/b.md)\n");
+        scratch.write(
+            "a.md",
+            "# A\n\nr[lex.here]\nSee [here](#r-lex.here) and [there](part/b.md#r-syntax.there).\n",
+        );
+        scratch.write(
+            "part/b.md",
+            "# B\n\nr[syntax.there]\nSee [a](../a.md#r-lex.here), [gone](../a.md#r-lex.gone) and [wrong](#r-lex.here).\n",
+        );
+        let refusal = check_links(&scratch.0).expect_err("two dangling links");
+        assert!(refusal.contains("lex.gone"), "{refusal}");
+        assert!(refusal.contains("part/b.md:4"), "{refusal}");
+        assert_eq!(refusal.lines().count(), 2, "{refusal}");
+    }
+
+    #[test]
+    fn every_link_of_the_book_names_a_rule_of_its_chapter() {
+        check_links(&repository_root().join("docs/spec")).expect("every rule link resolves");
     }
 
     #[test]

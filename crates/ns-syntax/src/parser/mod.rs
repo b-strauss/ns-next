@@ -620,6 +620,7 @@ mod tests {
         (expression, parser.diagnostics)
     }
 
+    // spec: syntax.primary
     #[test]
     fn bare_identifier() {
         match parse_expression("foo").kind {
@@ -628,6 +629,7 @@ mod tests {
         }
     }
 
+    // spec: syntax.literal.number
     #[test]
     fn integer_versus_float_literal() {
         assert!(matches!(
@@ -644,6 +646,7 @@ mod tests {
         ));
     }
 
+    // spec: syntax.literal
     #[test]
     fn nil_true_false_are_literals() {
         assert!(matches!(
@@ -656,6 +659,7 @@ mod tests {
         ));
     }
 
+    // spec: syntax.primary
     #[test]
     fn parenthesized() {
         assert!(matches!(
@@ -664,6 +668,7 @@ mod tests {
         ));
     }
 
+    // spec: syntax.precedence
     #[test]
     fn unary_chain() {
         // foo bar baz  ==  ((foo bar) baz)
@@ -675,6 +680,7 @@ mod tests {
         assert!(matches!(send.receiver.kind, ExpressionKind::Send(_)));
     }
 
+    // spec: syntax.precedence
     #[test]
     fn binary_left_associative_and_below_unary() {
         // a + b foo  ==  a + (b foo)
@@ -689,6 +695,7 @@ mod tests {
         ));
     }
 
+    // spec: syntax.precedence
     #[test]
     fn keyword_below_binary() {
         // d at: i + 1 put: x  ==  d at:(i+1) put:x  (one keyword send, selector at:put:)
@@ -700,6 +707,7 @@ mod tests {
         assert_eq!(send.message.arguments.len(), 2);
     }
 
+    // spec: lex.assignment-refused
     #[test]
     fn a_module_spelling_colon_equals_does_not_parse() {
         let source = indoc::indoc! {"
@@ -718,6 +726,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.cascade
     #[test]
     fn cascade() {
         let expression = parse_expression("s add: 1; add: 2; yourself");
@@ -728,6 +737,7 @@ mod tests {
         assert_eq!(cascade.first.selector, Selector::Keyword("add:".into()));
     }
 
+    // spec: syntax.expression
     #[test]
     fn setter_keyword_at_head_is_assign() {
         let expression = parse_expression("x:: 42");
@@ -751,6 +761,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
     }
 
+    // spec: syntax.literal
     #[test]
     fn string_and_symbol_literals() {
         let ExpressionKind::Literal(Literal::String { value, .. }) = parse_expression("'hi'").kind
@@ -765,6 +776,7 @@ mod tests {
         assert_eq!(value, "foo");
     }
 
+    // spec: syntax.expression
     #[test]
     fn a_setter_keyword_after_a_receiver_is_refused() {
         // §5.4.3: `keywordMsg` takes a keyword, never a setter keyword, so
@@ -778,6 +790,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.expression
     #[test]
     fn nested_setter_keyword_at_head_is_nested_assign() {
         let expression = parse_expression("x:: y:: 1");
@@ -791,6 +804,8 @@ mod tests {
         assert_eq!(inner.name, "y");
     }
 
+    // spec: syntax.block
+    // spec: syntax.code-body
     #[test]
     fn block_with_parameters_and_temporaries() {
         let expression = parse_expression("[:x :y | | t | t:: x. t + y ]");
@@ -812,6 +827,7 @@ mod tests {
         assert_eq!(block.body.statements.len(), 2);
     }
 
+    // spec: syntax.block
     #[test]
     fn empty_block() {
         let expression = parse_expression("[]");
@@ -821,6 +837,7 @@ mod tests {
         assert!(block.parameters.is_empty() && block.body.statements.is_empty());
     }
 
+    // spec: syntax.tuple
     #[test]
     fn dynamic_array() {
         let expression = parse_expression("{ 1. 2 + 3. foo }");
@@ -830,6 +847,7 @@ mod tests {
         assert_eq!(elements.len(), 3);
     }
 
+    // spec: syntax.binary-operator
     #[test]
     fn equals_and_relational_are_binary_sends() {
         // The lexer emits lone `=` / `<` / `>` as punctuation tokens; in
@@ -855,6 +873,7 @@ mod tests {
         assert!(matches!(send.receiver.kind, ExpressionKind::Send(_)));
     }
 
+    // spec: syntax.implicit-keyword-send
     #[test]
     fn keyword_here_send_has_implicit_self_receiver() {
         // `selector: argument` with no explicit receiver — grammar
@@ -873,6 +892,7 @@ mod tests {
         assert_eq!(receiver.name, "self");
     }
 
+    // spec: syntax.statements
     #[test]
     fn return_statement_in_body() {
         // exercised via block body
@@ -888,6 +908,8 @@ mod tests {
 
     // --- Type annotations and other grammar corners ---
 
+    // spec: syntax.block
+    // spec: syntax.type-annotation
     #[test]
     fn typed_block_parameters() {
         let expression = parse_expression("[:x <Integer> :y <{A. B}> | x + y ]");
@@ -910,6 +932,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.unreserved-word
     #[test]
     fn class_is_a_pseudo_variable_and_a_unary_selector() {
         // `self class` — `class` as unary send.
@@ -927,6 +950,7 @@ mod tests {
         assert_eq!(receiver.name, "class");
     }
 
+    // spec: syntax.binary-operator
     #[test]
     fn bar_is_a_binary_operator_in_operand_position() {
         // `a | b` and `a || b` are ordinary binary sends once a left operand
@@ -941,6 +965,7 @@ mod tests {
         assert_eq!(send.message.selector, Selector::Binary("||".into()));
     }
 
+    // spec: syntax.eventual-send
     #[test]
     fn an_eventual_send_runs_as_an_ordinary_one() {
         // `x <-: new` — async unary send, built as the ordinary send `x new`.
@@ -981,6 +1006,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.eventual-send
     #[test]
     fn an_eventual_send_is_marked() {
         let expression = parse_expression("a <-: foo: 3");
@@ -1005,6 +1031,7 @@ mod tests {
         assert_eq!(lexeme_body("'é'"), "é");
     }
 
+    // spec: syntax.pattern
     #[test]
     fn pattern_literal_produces_a_pattern_node() {
         // `parse_pattern_literal` fires for a `<...>` in expression position.
@@ -1024,6 +1051,7 @@ mod tests {
     /// A double-quoted string is a string literal (§5.1.5), with no escape:
     /// a doubled quote inside one is two quotes, and a single quote is
     /// itself. The one-character form `"""` is the string `"`.
+    // spec: lex.string.double-quoted
     #[test]
     fn a_double_quoted_string_produces_a_string_literal() {
         for (source, expected) in [
@@ -1044,6 +1072,7 @@ mod tests {
         }
     }
 
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_parentheses_recover_without_overflow() {
         // Public `parse` must return diagnostics, not abort. Completes fast.
@@ -1060,6 +1089,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn generic_instantiation_keeps_type_arguments() {
         // `Array[E] new: n` — `[E]` type arguments on a primary.
@@ -1078,6 +1108,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.primary
     #[test]
     fn parentheses_are_recorded_innermost_first() {
         let expression = parse_expression("((a foo)) bar");
@@ -1095,6 +1126,7 @@ mod tests {
         assert!(matches!(receiver.kind, ExpressionKind::Send(_)));
     }
 
+    // spec: syntax.implicit-keyword-send
     #[test]
     fn the_implicit_receiver_is_marked_synthesized() {
         let expression = parse_expression("foo: 3");
@@ -1114,6 +1146,7 @@ mod tests {
             .join(" ")
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn type_arguments_after_a_unary_selector_are_kept() {
         let source = "a foo[E] bar";
@@ -1133,6 +1166,7 @@ mod tests {
         assert!(outer.receiver.type_arguments.is_none());
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn type_arguments_after_a_parenthesis_are_kept() {
         let expression = parse_expression("(Box)[Integer] new");
@@ -1162,6 +1196,7 @@ mod tests {
         assert!(send.receiver.parentheses[0].type_arguments.is_none());
     }
 
+    // spec: syntax.eventual-send
     #[test]
     fn every_form_of_eventual_send_is_marked() {
         for (source, selector) in [
@@ -1185,6 +1220,7 @@ mod tests {
         }
     }
 
+    // spec: syntax.eventual-send
     #[test]
     fn every_form_of_eventual_cascade_message_is_marked() {
         let expression = parse_expression("a foo; <-: bar; <-: + 3; <-: at: 3; baz");
@@ -1225,6 +1261,7 @@ mod tests {
         }
     }
 
+    // spec: syntax.literal.number
     #[test]
     fn a_split_negative_number_keeps_its_spelling() {
         // `3 -4` subtracts: the lexer's `-4` is split into the selector and

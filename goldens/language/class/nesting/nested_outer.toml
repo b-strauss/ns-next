@@ -1,3 +1,4 @@
 stdout = '''
 from inner
 '''
+rules = ["syntax.outer.send"]

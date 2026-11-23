@@ -3298,6 +3298,8 @@ mod specification_tests {
     /// §4.2's `decimalNum → ["-"] digits ...` stands where a literal can, and
     /// `binaryMsg → binarySelector unaryExpression` where a binary message
     /// can: `3 -4` subtracts, `foo: -4` passes a negative number.
+    // spec: syntax.literal.number
+    // spec: lex.number.sign
     #[test]
     fn a_negative_number_is_one_only_where_a_literal_stands() {
         for source in ["3 -4", "3-4", "3 - 4"] {
@@ -3331,6 +3333,7 @@ mod specification_tests {
 
     /// §5.4.3: a setter keyword begins an expression -- chained, as the
     /// section's rationale gives `w::x::y` -- and nowhere else.
+    // spec: syntax.expression
     #[test]
     fn a_setter_keyword_begins_an_expression_and_nothing_else() {
         accepted("probe = ( | a b | a:: b:: 3 )");
@@ -3341,6 +3344,8 @@ mod specification_tests {
 
     /// §5.4.4: `cascadedMessageExpression → primary [msgCascade]`,
     /// `msgCascade → nonEmptyMessages cascadeMsg*`.
+    // spec: syntax.cascade
+    // spec: syntax.implicit-keyword-send
     #[test]
     fn a_cascade_follows_a_primary_and_a_message_to_it() {
         accepted("probe = ( ^self foo; bar; + 1; = 2; at: 3 )");
@@ -3353,6 +3358,8 @@ mod specification_tests {
     /// §5.9 and §5.10: `super` is followed by a message, `outer` by a class's
     /// name -- and `outer N` alone is the enclosing object, decided with the
     /// user on 2026-09-27.
+    // spec: syntax.super
+    // spec: syntax.outer.send
     #[test]
     fn super_takes_a_message_and_outer_a_name() {
         accepted("probe = ( ^super foo )");
@@ -3367,6 +3374,7 @@ mod specification_tests {
     }
 
     /// §5.6: `<-:` stands before a message sent to an explicit receiver.
+    // spec: syntax.eventual-send
     #[test]
     fn an_eventual_send_stands_before_a_message() {
         accepted("probe = ( ^self <-: foo )");
@@ -3378,6 +3386,7 @@ mod specification_tests {
     }
 
     /// §5.1.9's pattern literal.
+    // spec: syntax.pattern
     #[test]
     fn a_pattern_literal_follows_its_grammar() {
         for pattern in [
@@ -3402,6 +3411,7 @@ mod specification_tests {
     /// §5.1.8's `statements → returnStatement | statementSequence | empty`,
     /// `statementSequence → expression [dot statements]`,
     /// `returnStatement → hat expression [dot]`.
+    // spec: syntax.statements
     #[test]
     fn a_dot_ends_a_statement_and_nothing_else() {
         accepted("probe = ( self foo. self bar. )");
@@ -3537,6 +3547,8 @@ mod specification_tests {
     /// and 36 and every digit is below it; the canonical parser refuses the
     /// rest while it parses, and so does this one. A fraction or an exponent
     /// makes a number non-integral, a radix one included.
+    // spec: syntax.literal.number
+    // spec: lex.number.radix
     #[test]
     fn a_radix_number_denotes_a_number() {
         for number in ["2r1010", "36rZ", "16r1.8", "2r1e3", "16r-1F", "8r7.7e-2"] {

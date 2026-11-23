@@ -265,3 +265,215 @@ header to that class. One immediately before a module's class declaration
 belongs to the module's class. Several metadata comments may belong to
 one target. A metadata comment that stands next to none of these belongs
 to nothing.
+
+## Code bodies and statements
+
+r[syntax.code-body]
+A code body -- a method's, a block's -- is an optional temporary section,
+a slot section with the full form of slot definitions
+([`syntax.slot-definition`](#r-syntax.slot-definition)), and then its
+statements: `| x = 1. y |` declares an initialized immutable temporary
+`x` and an uninitialized mutable one `y`.
+
+```text
+codeBody → [slotSection] statements
+```
+
+r[syntax.statements]
+Statements are expressions separated by single dots, a dot after the
+last one allowed, and may end with a return statement, `^` and an
+expression with an optional dot after it. Nothing follows a return:
+``expected the end of the body after a return (§7.2)``. A dot that ends
+no statement is refused, ``a `.` ends a statement, and none is here``:
+`( . self foo )`, `( self foo.. self bar )`.
+
+```text
+statements → "^" expression ["."]
+           | expression ["." statements]
+           | empty
+```
+
+## Expressions
+
+r[syntax.expression]
+An expression is any number of setter keywords followed by a send
+expression: `a:: b:: 3`. A setter keyword stands only at the head of an
+expression -- ``a setter send `name:: value` stands only at the start of
+an expression (§5.4.3)`` -- so `self foo:: 3` and `self foo; bar:: 3` are
+refused, and a setter keyword never begins a message pattern. Bracha
+§5.4.3 writes one optional setter keyword, yet gives as its rationale "to
+enable chaining of setter sends, e.g., `w::x::y`"; the chain is accepted.
+
+```text
+expression → setterKeyword* sendExpression
+sendExpression → keywordMessage | primary [messages]
+```
+
+r[syntax.implicit-keyword-send]
+A keyword message with no receiver before it is sent to the implicit
+receiver: `at: 1 put: 2` alone is a send expression. It cannot be
+cascaded: ``a keyword send to the implicit receiver cannot be cascaded
+(§5.4.4)``.
+
+r[syntax.precedence]
+After a primary come unary messages, then binary messages, then at most
+one keyword message: unary binds tighter than binary and binary tighter
+than keyword, and binary messages associate to the left. A binary
+message's argument is a primary with its unary messages; each argument of
+a keyword message is a primary with its unary and binary messages.
+
+```text
+messages → unarySelector+ binaryMessage* [keywordMessage] [cascade]
+         | binaryMessage+ [keywordMessage] [cascade]
+         | keywordMessage [cascade]
+binaryMessage → binaryOperator primary unarySelector*
+keywordMessage → (keyword primary unarySelector* binaryMessage*)+
+```
+
+r[syntax.binary-operator]
+Wherever a binary message can stand, its selector is a binary selector or
+one of the punctuation tokens `=`, `<`, `>`, `|` and `||`: `a = b`,
+`a < b`, `a | b`. A selector with no operand after it is not taken as a
+message, so the `|` that closes a slot section stays one.
+
+```text
+binaryOperator → binarySelector | "=" | "<" | ">" | "|" | "||"
+```
+
+r[syntax.cascade]
+A cascade follows a primary and at least one message sent to it; each
+`;` and a unary, binary or keyword message sends that message to the same
+receiver as the message before the first `;`. A cascade after a primary
+alone is refused, ``a cascade follows a message sent to its receiver
+(§5.4.4)``: `self; foo`, `(self foo); bar`. A `;` with no message after it
+is refused, ``expected a message after `;` ``.
+
+```text
+cascade → (";" (keywordMessage | binaryMessage | unarySelector))+
+```
+
+r[syntax.eventual-send]
+An asynchronous send writes `<-:` before its message, wherever a unary,
+binary or keyword message or a cascade's message stands: `self <-: foo`,
+`self <-: + 1`, `self <-: at: 1`, `self foo; <-: bar`. A `<-:` with no message after it is
+refused, ``expected a message after `<-:` (§5.6)``. What an asynchronous
+send does is the semantics' to say ([Semantics](semantics.md)).
+
+## Primaries
+
+r[syntax.primary]
+A primary is a name, a literal, a block, a parenthesized expression,
+`self`, `super` with its message, or an outer send. A parenthesized
+expression is `(`, an expression and `)`; parentheses change grouping and
+nothing else. A name followed by type arguments, `Box[Integer] new`, is a
+name ([`syntax.type-annotation`](#r-syntax.type-annotation)).
+
+```text
+primary → identifier [typeArguments]
+        | literal
+        | block
+        | "(" expression ")" [typeArguments]
+        | "self"
+        | "super" message
+        | outerSend
+```
+
+r[syntax.self]
+`self` is a primary, the receiver of the current method. `true`, `false`
+and `nil` are literals ([`syntax.literal`](#r-syntax.literal)).
+
+r[syntax.super]
+`super` is always followed by a message, unary, binary or keyword: a
+`super` without one is refused, ``` `super` is followed by a message
+(§5.10) ```.
+
+r[syntax.outer.send]
+An outer send is `outer`, the name of a lexically enclosing class, and a
+message: `outer Bank balance`. `outer` not followed by a name is refused,
+``` `outer` is followed by the name of an enclosing class (§5.9) ```. A
+name that names no enclosing class is an error of the resolver's
+([Semantics](semantics.md)).
+
+r[syntax.outer.alone]
+`outer` and the name of an enclosing class with no message after them is
+a primary of its own, the enclosing object an outer send to that class
+would send its message to: `outer Bank` alone answers the enclosing
+`Bank`. Bracha §5.9 defines `outer N` only as a send's receiver; see the
+appendix.
+
+```text
+outerSend → "outer" identifier [message]
+```
+
+## Literals
+
+r[syntax.literal]
+A literal is a number, a string, a symbol, a tuple, a pattern, or one of
+`true`, `false` and `nil`. Bracha's character constant is a one-character
+string ([`lex.string.one-character`](lexical-structure.md#r-lex.string.one-character)).
+
+r[syntax.literal.number]
+A number token stands as a literal wherever a primary stands. Where a
+binary message stands, a number token that begins with `-` is read as the
+binary operator `-` and the number without its sign
+([`lex.number.sign`](lexical-structure.md#r-lex.number.sign)): `3 -4` is
+`3 - 4`, while `{3. -4}` and `foo: -4` hold negative numbers. A radix
+number's radix is between 2 and 36, and each of its digits is less than
+its radix: ``the radix of `37r1` is not between 2 and 36 (§5.1.1)``,
+``` `2` is not a digit of radix 2 in `2r12` (§5.1.1) ```.
+
+r[syntax.tuple]
+A tuple is `{`, expressions separated by single dots, a dot after the
+last one allowed, and `}`: `{}`, `{1. 2}`, `{1. 2.}`. Two elements without
+a dot between them are refused, ``expected `.` between a tuple's
+elements``.
+
+```text
+tuple → "{" [expression ("." expression)* ["."]] "}"
+```
+
+r[syntax.block]
+A block is `[`, optional parameters -- each `:` and a name with an
+optional type annotation, the last followed by `|` -- a code body, and
+`]`: `[:each | each + 1]`, `[:x :y | | sum | sum:: x + y. sum]`, `[]`.
+
+```text
+block → "[" [(":" parameter)+ "|"] codeBody "]"
+```
+
+r[syntax.pattern]
+A pattern literal is `<`, a pattern and `>`: `_`, a literal -- a number,
+a symbol, a string or a tuple -- or one or more keywords each with an
+optional value, `_`, a literal, `?` and a name, or a nested pattern.
+`<x: <y: 1>>` closes two patterns with the one token `>>`, which the
+parser reads as two `>`. A pattern none of these forms is refused,
+``expected `_`, a literal or a keyword in a pattern (§5.1.9)``. What a
+pattern literal evaluates to is the semantics' to say
+([Semantics](semantics.md)).
+
+```text
+pattern → "<" ("_" | patternLiteral | (keyword [patternValue])+) ">"
+patternLiteral → number | symbol | string | tuple
+patternValue → "_" | patternLiteral | "?" identifier | pattern
+```
+
+## Gaps
+
+r[syntax.gap.object-literal]
+Bracha §5.1.10 defines object literals, `objectLiteral → [identifier
+[keywordMsg]] classBody`, an anonymous class declaration that evaluates
+to a new object, and marks them *Unimplemented*. ns-next does not parse
+them: the production is reachable from no other, so Bracha does not say
+where one may stand, and it is ambiguous with a parenthesized expression
+and a keyword send. This is a gap.
+
+r[syntax.gap.chain]
+Bracha §5.4.4 describes chains, `e :| μ`, equivalent to `(e) μ`, marks
+them *Unimplemented*, gives them no grammar, and leaves open whether they
+stay in the language. ns-next does not parse them, and `:|` is no token.
+This is a gap.
+
+r[syntax.gap.class-expression]
+Bracha §6 intends a class declaration to be permitted as an ordinary
+expression inside a method or a closure, and marks it *Unimplemented*.
+ns-next does not parse one there. This is a gap.

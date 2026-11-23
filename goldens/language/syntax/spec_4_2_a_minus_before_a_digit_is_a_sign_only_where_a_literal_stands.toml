@@ -7,4 +7,4 @@ stdout = '''
 -31
 10
 '''
-rules = ["lex.number.sign"]
+rules = ["lex.number.sign", "syntax.literal.number"]
