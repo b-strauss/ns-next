@@ -8825,6 +8825,9 @@ leave [README.md](design/README.md)'s table of deviations.
 - `25e71b40` -- the review's findings: two chapters stated more exactly,
   the parser's pattern values, the table of words read by the lexer, a
   golden's `rules` read as TOML.
+- `5750ad7f` -- the book's reader checks fences in list items, rule
+  lines, unclosed fences, chapter links and the tests a `// spec:` line
+  belongs to; the gaps have tests.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's second batch, the language's semantics and the run-time
