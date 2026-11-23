@@ -125,6 +125,94 @@ The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
 "Planned: the complete install") resumes after the fifth, and changes the
 specification as it changes the runtime.
 
+## The second batch's deviations
+
+Each of [README.md](README.md)'s remaining deviations is decided with the
+user before the second batch's plan is written; the plan carries each
+decision into the book -- a rule of ours in the appendix, or Bracha's
+rule with ns-next's behaviour marked a gap -- and into the design
+document it belongs to. Decided so far, on 2026-11-23 and 2026-11-24:
+
+1. **Non-integral literals (Bracha §5.1.1).** `2.5` stays a binary
+   `Float`: a rule of ours, in the appendix. An exact decimal is a class
+   of its own, `Decimal`, reached through a protected accessor on
+   `Object` as `Float` and `Fraction` are (Bracha §3.2), with a literal
+   of its own: a decimal number, then `s` and an optional scale --
+   `2.50s` (scale 2, from the digits written), `2.5s2`, `3s2` (`3.00`),
+   `-0.1s` -- as ANSI Smalltalk's scaled decimal writes it; no radix. An
+   `s` followed by anything but digits is not the literal's (`2.5sec` is
+   `2.5` and the send `sec`). Class and literal are a gap until a batch
+   builds them; the meaning of a scale below the digits written
+   (`3.14159s2`) is decided in that batch's plan. Alternatives weighed:
+   Bracha's `FixedPointNumber` for every non-integral literal, an exact
+   `Fraction` as Primordial Soup and Bracha's parser make it
+   (`NewspeakPredictiveParsing.ns`, `scanMaybeFraction:`), and the
+   suffixes `m` (C#) and `M` (Clojure, which collides with a radix's
+   digits).
+2. **String literals and Unicode normal form C (Bracha §5.1.5).** A string
+   literal holds the code points its source text holds: a rule of ours,
+   in the appendix. No language normalizes its literals, nor do
+   Bracha's implementations; normalizing only literals leaves every
+   string built at run time as it was, which is where decomposed text
+   comes from, and costs about 127 KB of tables
+   (`unicode-normalization`, measured 2026-11-24). A normalization method
+   of the library, if wanted, is a decision of its own.
+3. **Tuple literals (Bracha §5.1.7).** `{e1. e2}` is an `ImmutableArray`,
+   shallowly immutable, as Bracha's rule says: a gap until the
+   collections below are built. With it the collections get read-only
+   and value variants, in Kotlin's direction rather than Java's -- a
+   class that cannot write has no writing method, rather than one that
+   fails -- built from mixins:
+   - **The mixins**, protocol without slots, so that they apply to
+     `Object` and to `Value` alike: `Collection` (`do:`, `size`,
+     `collect:`, `select:`, `inject:into:` …), `OrderedCollection` (a
+     defined order: `first`, `last`, `reverseDo:`, `reversed`,
+     `do:separatedBy:`), `IndexedCollection` (`at:`, `indexOf:`,
+     `copyFrom:to:` …, reading only), `MutableIndexedCollection`
+     (`at:put:`, `replaceFrom:to:with:startingAt:`, `sort:`, which leave
+     `IndexedCollection`), `GrowableCollection` (`add:`, `addAll:`,
+     `remove:` …), `KeyedCollection` (`at:`, `includesKey:`, `keysDo:` …)
+     and `MutableKeyedCollection` (`at:put:`, `removeKey:` …).
+     `addFirst:`, `addLast:`, `removeFirst` and `removeLast` stay
+     `List`'s own.
+   - **The classes**: `Array`, `ByteArray`, `WeakArray` and `TypedArray`
+     are `Object <: Collection <: OrderedCollection <: IndexedCollection
+     <: MutableIndexedCollection`; `List` adds `GrowableCollection`;
+     `ImmutableArray` stops at `IndexedCollection`, and `ValueArray` is
+     the same on `Value`, holding values only. `Map` is `Object <:
+     Collection <: OrderedCollection <: KeyedCollection <:
+     MutableKeyedCollection` (`IdentityMap` stays `Map`'s subclass),
+     `ImmutableMap` stops at `KeyedCollection`, `ValueMap` is the same on
+     `Value`. `Set` is `Object <: Collection <: OrderedCollection <:
+     GrowableCollection`, `ImmutableSet` stops at `OrderedCollection`,
+     `ValueSet` is the same on `Value`. The views `asReadOnly` answers,
+     forwarding to their original and copying nothing, are
+     `ReadOnlyArray` (over `Array`, `List`, `ByteArray` and a
+     `TypedArray`), `ReadOnlyMap` and `ReadOnlySet`, each with only the
+     reading mixins.
+   - **The conversions**: `asArray` a mutable copy, as today;
+     `asImmutable` a shallowly immutable copy; `asValueArray`,
+     `asValueMap`, `asValueSet` a deeply immutable one, failing on an
+     element that is not a value (not `asValue`, a `ValueHolder`'s
+     selector in Smalltalk); `asReadOnly` a view.
+   - **`String` and `Symbol` stay outside the hierarchy**: what a
+     string's element is -- a code point, a one-character string, a
+     grapheme -- is not one answer, and `indexOf:` finds a substring
+     there. `codePoints` answers a `ValueArray` of `Integer`s.
+   - **Where they live**: `ImmutableArray`, `ValueArray`, `ReadOnlyArray`,
+     `Decimal` and the seven mixins in the kernel; `ImmutableArray` and
+     `Decimal`, the classes of literals, get an accessor on `Object`
+     (Bracha §3.2); the mixins are handed out by `platform collections`,
+     as `Collection` is today; `List`, `Map`, `IdentityMap` and `Set`
+     stay in `CollectionsFactory.ns` as they are, and their immutable,
+     value and read-only variants are reached only as the answers of
+     those conversions.
+   The names `Array`, `List`, `Map` and `Set` stay mutable, as Primordial
+   Soup's API has them. Alternatives weighed: a mutable `Array` as our
+   rule, and the prefixes `ReadOnly` and `Frozen` and the mixin names
+   `ExtensibleCollection` (ANSI Smalltalk) and `SequencedCollection`
+   (Java 21's JEP 431).
+
 ## Open
 
 - Whether an executable oracle checks the specification later -- a naive
