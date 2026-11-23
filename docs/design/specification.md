@@ -5,7 +5,9 @@ run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
 decided and in which order it is built. The first batch is built: the
-book under `docs/spec/`, `cargo xtask spec`, which checks its rule
+book under `docs/spec/`, its title page and introduction followed by an
+informal overview of the language that states no rule
+(`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
 identifiers, the tests' references to them and its links and renders it,
 the commit gate's step, the rule of `CLAUDE.md` that a change keeps the
 book with it, and the language's lexical structure and grammar, each
