@@ -1,0 +1,695 @@
+//! The specification's book (`docs/spec/`): its rules, the tests' references
+//! to them, and the HTML `cargo xtask spec` renders into `target/spec/`
+//! (`docs/design/specification.md`, decisions 5 and 6).
+
+use std::path::{Path, PathBuf};
+
+/// A rule of the book: its identifier and where it is declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rule {
+    pub identifier: String,
+    pub chapter: PathBuf,
+    pub line: usize,
+}
+
+/// A test's reference to a rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub identifier: String,
+    pub test: PathBuf,
+    pub line: usize,
+}
+
+/// The mdBook release the book is rendered with.
+pub const MDBOOK_VERSION: &str = "0.5.4";
+
+/// The line that tells a test's reference to a rule in a Rust source.
+const RUST_REFERENCE: &str = "// spec:";
+
+/// Whether `identifier` is one: segments joined by `.`, each a lowercase
+/// letter followed by lowercase letters, digits and `-`.
+fn is_identifier(identifier: &str) -> bool {
+    identifier.split('.').all(|segment| {
+        let mut characters = segment.chars();
+        characters
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
+            && characters.all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+            })
+    })
+}
+
+/// The lines of `text` without their line ends, CRLF or LF.
+fn lines_of(text: &str) -> impl Iterator<Item = &str> {
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+}
+
+/// The fence a line opens or closes: its character and its length, for a
+/// line that starts, after up to three spaces, with three or more backticks
+/// or tildes (CommonMark's fenced code blocks).
+fn fence_of(line: &str) -> Option<(char, usize)> {
+    let indented = line.len() - line.trim_start_matches(' ').len();
+    if indented > 3 {
+        return None;
+    }
+    let rest = &line[indented..];
+    let character = rest
+        .chars()
+        .next()
+        .filter(|first| *first == '`' || *first == '~')?;
+    let length = rest.chars().take_while(|next| *next == character).count();
+    (length >= 3).then_some((character, length))
+}
+
+/// Calls `visit` with each line of `markdown`, its 1-based number, and
+/// whether it stands outside every fenced code block.
+fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) {
+    let mut open: Option<(char, usize)> = None;
+    for (index, line) in lines_of(markdown).enumerate() {
+        match (open, fence_of(line)) {
+            (None, Some(fence)) => {
+                open = Some(fence);
+                visit(index + 1, line, false);
+            }
+            (Some((character, length)), Some((closing, closing_length)))
+                if closing == character
+                    && closing_length >= length
+                    && line.trim().chars().all(|next| next == character) =>
+            {
+                open = None;
+                visit(index + 1, line, false);
+            }
+            (Some(_), _) => visit(index + 1, line, false),
+            (None, None) => visit(index + 1, line, true),
+        }
+    }
+}
+
+/// The identifier of a rule line, `r[<identifier>]` alone on its line.
+fn rule_line(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("r[")
+        .and_then(|rest| rest.strip_suffix(']'))
+}
+
+/// A path as the book and its messages write it, with `/`.
+fn display(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Every rule `markdown` declares, read from `chapter`.
+pub fn rules_in(markdown: &str, chapter: &Path) -> Result<Vec<Rule>, String> {
+    let mut rules = Vec::new();
+    let mut refusals = Vec::new();
+    walk_markdown(markdown, |line, text, outside| {
+        if !outside {
+            return;
+        }
+        {
+            if let Some(identifier) = rule_line(text) {
+                if is_identifier(identifier) {
+                    rules.push(Rule {
+                        identifier: identifier.to_string(),
+                        chapter: chapter.to_path_buf(),
+                        line,
+                    });
+                } else {
+                    refusals.push(format!(
+                        "{}:{line}: `{identifier}` is no rule identifier: segments joined by `.`, \
+                         each a lowercase letter followed by lowercase letters, digits and `-`",
+                        display(chapter)
+                    ));
+                }
+            }
+        }
+    });
+    if refusals.is_empty() {
+        Ok(rules)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// The chapters `SUMMARY.md` links to, in its order, relative to the book.
+fn summary_chapters(summary: &str) -> Vec<PathBuf> {
+    let mut chapters = Vec::new();
+    for line in lines_of(summary) {
+        let mut rest = line;
+        while let Some(start) = rest.find("](") {
+            rest = &rest[start + 2..];
+            if let Some(end) = rest.find(')') {
+                let target = &rest[..end];
+                if target.ends_with(".md") {
+                    chapters.push(PathBuf::from(target));
+                }
+                rest = &rest[end..];
+            }
+        }
+    }
+    chapters
+}
+
+/// Every file below `directory` whose name ends in `extension`, skipping
+/// `target` and hidden directories.
+fn files_below(directory: &Path, extension: &str, found: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: cannot be read: {error}", display(directory)))?;
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    paths.sort();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+        let name = name.unwrap_or_default();
+        if path.is_dir() {
+            if name != "target" && !name.starts_with('.') {
+                files_below(&path, extension, found)?;
+            }
+        } else if name.ends_with(extension) {
+            found.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn read(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|error| format!("{}: cannot be read: {error}", display(path)))
+}
+
+/// The chapters of the book at `book`, in `SUMMARY.md`'s order, each
+/// checked to exist, and every Markdown file of the book checked to be one.
+fn book_chapters(book: &Path) -> Result<Vec<PathBuf>, String> {
+    let chapters = summary_chapters(&read(&book.join("SUMMARY.md"))?);
+    let mut refusals = Vec::new();
+    for chapter in &chapters {
+        if !book.join(chapter).is_file() {
+            refusals.push(format!(
+                "SUMMARY.md lists {}, which the book does not have",
+                display(chapter)
+            ));
+        }
+    }
+    let mut files = Vec::new();
+    files_below(book, ".md", &mut files)?;
+    for file in files {
+        let relative = file.strip_prefix(book).unwrap_or(&file).to_path_buf();
+        if relative != Path::new("SUMMARY.md") && !chapters.contains(&relative) {
+            refusals.push(format!(
+                "{} is not in SUMMARY.md, so the book would leave it out",
+                display(&relative)
+            ));
+        }
+    }
+    if refusals.is_empty() {
+        Ok(chapters)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// Every rule of the book at `book`, chapter by chapter in `SUMMARY.md`'s order.
+pub fn book_rules(book: &Path) -> Result<Vec<Rule>, String> {
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut refusals = Vec::new();
+    for chapter in book_chapters(book)? {
+        match rules_in(&read(&book.join(&chapter))?, &chapter) {
+            Ok(found) => {
+                for rule in found {
+                    if let Some(first) = rules
+                        .iter()
+                        .find(|known| known.identifier == rule.identifier)
+                    {
+                        refusals.push(format!(
+                            "`{}` is declared twice: {}:{} and {}:{}",
+                            rule.identifier,
+                            display(&first.chapter),
+                            first.line,
+                            display(&rule.chapter),
+                            rule.line
+                        ));
+                    } else {
+                        rules.push(rule);
+                    }
+                }
+            }
+            Err(refusal) => refusals.push(refusal),
+        }
+    }
+    if refusals.is_empty() {
+        Ok(rules)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// The identifiers of a golden's `rules = ["…", …]` line.
+fn golden_rules_line(line: &str) -> Option<Vec<String>> {
+    let rest = line
+        .trim()
+        .strip_prefix("rules")?
+        .trim_start()
+        .strip_prefix('=')?;
+    let list = rest.trim().strip_prefix('[')?.strip_suffix(']')?;
+    Some(
+        list.split(',')
+            .map(|entry| entry.trim().trim_matches('"').to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect(),
+    )
+}
+
+/// The references a golden's `.toml` makes, skipping its multi-line strings.
+fn golden_references(text: &str, test: &Path, references: &mut Vec<Reference>) {
+    let mut open: Option<&str> = None;
+    for (index, line) in lines_of(text).enumerate() {
+        if open.is_none()
+            && let Some(identifiers) = golden_rules_line(line)
+        {
+            references.extend(identifiers.into_iter().map(|identifier| Reference {
+                identifier,
+                test: test.to_path_buf(),
+                line: index + 1,
+            }));
+            continue;
+        }
+        for delimiter in ["'''", "\"\"\""] {
+            let count = line.matches(delimiter).count();
+            if count % 2 == 1 {
+                match open {
+                    None => open = Some(delimiter),
+                    Some(current) if current == delimiter => open = None,
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+}
+
+/// Every reference the tests below `root` make to a rule.
+pub fn references_in(root: &Path) -> Result<Vec<Reference>, String> {
+    let mut references = Vec::new();
+    let mut refusals = Vec::new();
+    let mut goldens = Vec::new();
+    if root.join("goldens").is_dir() {
+        files_below(&root.join("goldens"), ".toml", &mut goldens)?;
+    }
+    for golden in goldens {
+        let relative = golden.strip_prefix(root).unwrap_or(&golden).to_path_buf();
+        golden_references(&read(&golden)?, &relative, &mut references);
+    }
+    let mut sources = Vec::new();
+    for directory in ["crates", "xtask"] {
+        if root.join(directory).is_dir() {
+            files_below(&root.join(directory), ".rs", &mut sources)?;
+        }
+    }
+    for source in sources {
+        let relative = source.strip_prefix(root).unwrap_or(&source).to_path_buf();
+        for (index, line) in lines_of(&read(&source)?).enumerate() {
+            if let Some(rest) = line.trim().strip_prefix(RUST_REFERENCE) {
+                references.push(Reference {
+                    identifier: rest.trim().to_string(),
+                    test: relative.clone(),
+                    line: index + 1,
+                });
+            }
+        }
+    }
+    for reference in &references {
+        if !is_identifier(&reference.identifier) {
+            refusals.push(format!(
+                "{}:{}: `{}` is no rule identifier",
+                display(&reference.test),
+                reference.line,
+                reference.identifier
+            ));
+        }
+    }
+    if refusals.is_empty() {
+        Ok(references)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// Checks that every reference names one of `rules`.
+pub fn check_references(rules: &[Rule], references: &[Reference]) -> Result<(), String> {
+    let refusals: Vec<String> = references
+        .iter()
+        .filter(|reference| {
+            !rules
+                .iter()
+                .any(|rule| rule.identifier == reference.identifier)
+        })
+        .map(|reference| {
+            format!(
+                "{}:{}: `{}` names no rule of the specification",
+                display(&reference.test),
+                reference.line,
+                reference.identifier
+            )
+        })
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// `text` with the characters HTML gives a meaning escaped.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The tests that name `identifier`, each path once, in order.
+fn tests_of<'a>(identifier: &str, references: &'a [Reference]) -> Vec<&'a Path> {
+    let mut tests: Vec<&Path> = Vec::new();
+    for reference in references {
+        if reference.identifier == identifier && !tests.contains(&reference.test.as_path()) {
+            tests.push(&reference.test);
+        }
+    }
+    tests
+}
+
+/// A chapter with each rule line made an anchor that lists the rule's tests.
+fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
+    let mut processed = String::new();
+    walk_markdown(markdown, |_, line, outside| {
+        match rule_line(line).filter(|_| outside) {
+            Some(identifier) => {
+                let tests = tests_of(identifier, references);
+                let listed = if tests.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    tests
+                        .iter()
+                        .map(|test| format!("<code>{}</code>", escape(&display(test))))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                processed.push_str(&format!(
+                    "<div class=\"rule\" id=\"r-{identifier}\"><a href=\"#r-{identifier}\">[{identifier}]</a> \
+                     <span class=\"rule-tests\">tests: {listed}</span></div>\n\n"
+                ));
+            }
+            None => {
+                processed.push_str(line);
+                processed.push('\n');
+            }
+        }
+    });
+    processed
+}
+
+/// The appendix of the rules no test names, chapter by chapter.
+fn untested_rules(rules: &[Rule], references: &[Reference], chapters: &[PathBuf]) -> String {
+    let mut text = String::from(
+        "# Untested rules\n\nThe rules no golden and no Rust test names yet, chapter by chapter.\n",
+    );
+    let mut any = false;
+    for chapter in chapters {
+        let untested: Vec<&Rule> = rules
+            .iter()
+            .filter(|rule| {
+                &rule.chapter == chapter && tests_of(&rule.identifier, references).is_empty()
+            })
+            .collect();
+        if untested.is_empty() {
+            continue;
+        }
+        any = true;
+        text.push_str(&format!("\n## {}\n\n", display(chapter)));
+        for rule in untested {
+            let page = display(chapter).replace(".md", ".html");
+            text.push_str(&format!(
+                "- [`{}`]({page}#r-{})\n",
+                rule.identifier, rule.identifier
+            ));
+        }
+    }
+    if !any {
+        text.push_str("\nEvery rule has a test.\n");
+    }
+    text
+}
+
+/// Fails unless `mdbook --version` names the release the book is rendered with.
+fn check_mdbook() -> Result<(), String> {
+    let wanted = format!(
+        "the specification needs mdBook {MDBOOK_VERSION}: cargo install mdbook --locked --version {MDBOOK_VERSION}"
+    );
+    let output = std::process::Command::new("mdbook")
+        .arg("--version")
+        .output()
+        .map_err(|_| wanted.clone())?;
+    let version = String::from_utf8_lossy(&output.stdout);
+    if version.trim() == format!("mdbook v{MDBOOK_VERSION}") {
+        Ok(())
+    } else {
+        Err(format!("{wanted} (found {})", version.trim()))
+    }
+}
+
+/// Checks the book and renders it into `output`: the processed chapters in
+/// `output/src`, the HTML in `output/html`.
+pub fn render(root: &Path, output: &Path) -> Result<(), String> {
+    let book = root.join("docs/spec");
+    let rules = book_rules(&book)?;
+    let references = references_in(root)?;
+    check_references(&rules, &references)?;
+    check_mdbook()?;
+    let chapters = book_chapters(&book)?;
+    let source = output.join("src");
+    let _ = std::fs::remove_dir_all(output);
+    let write = |path: &Path, contents: &str| -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: cannot be created: {error}", display(parent)))?;
+        }
+        std::fs::write(path, contents)
+            .map_err(|error| format!("{}: cannot be written: {error}", display(path)))
+    };
+    for chapter in &chapters {
+        let markdown = read(&book.join(chapter))?;
+        write(
+            &source.join(chapter),
+            &processed_chapter(&markdown, &references),
+        )?;
+    }
+    let mut summary = read(&book.join("SUMMARY.md"))?.replace("\r\n", "\n");
+    if !summary.ends_with('\n') {
+        summary.push('\n');
+    }
+    summary.push_str("- [Untested rules](untested-rules.md)\n");
+    write(&source.join("SUMMARY.md"), &summary)?;
+    write(
+        &source.join("untested-rules.md"),
+        &untested_rules(&rules, &references, &chapters),
+    )?;
+    let configuration = read(&book.join("book.toml"))?
+        .replace("\r\n", "\n")
+        .replace("src = \".\"", "src = \"src\"")
+        .replace("[build]\n", "[build]\nbuild-dir = \"html\"\n");
+    write(&output.join("book.toml"), &configuration)?;
+    let status = std::process::Command::new("mdbook")
+        .arg("build")
+        .arg(output)
+        .status()
+        .map_err(|error| format!("mdbook build: could not start: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("mdbook build ({status})"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scratch directory of the test's own below the system's temporary
+    /// directory, removed when it is dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let path = std::env::temp_dir()
+                .join(format!("ns-next-xtask-spec-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create the scratch directory");
+            Scratch(path)
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.0.join(relative);
+            std::fs::create_dir_all(path.parent().expect("a parent"))
+                .expect("create the directory");
+            std::fs::write(path, contents).expect("write the file");
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn repository_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask lies inside the repository")
+            .to_path_buf()
+    }
+
+    fn identifiers(rules: &[Rule]) -> Vec<&str> {
+        rules.iter().map(|rule| rule.identifier.as_str()).collect()
+    }
+
+    #[test]
+    fn a_rule_line_outside_a_fenced_block_is_a_rule() {
+        let rules = rules_in(
+            "intro\r\n\r\nr[lex.comment.line]\r\nA comment ...\r\n",
+            Path::new("lexical.md"),
+        )
+        .expect("well formed");
+        assert_eq!(
+            rules,
+            [Rule {
+                identifier: "lex.comment.line".to_string(),
+                chapter: PathBuf::from("lexical.md"),
+                line: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_rule_line_inside_a_fenced_block_is_text() {
+        let rules = rules_in(
+            "```\nr[lex.inside]\n```\n\n````text\n```\nr[lex.deeper]\n```\n````\nr[lex.after]\n",
+            Path::new("lexical.md"),
+        )
+        .expect("well formed");
+        assert_eq!(identifiers(&rules), ["lex.after"]);
+    }
+
+    #[test]
+    fn a_malformed_identifier_is_refused() {
+        for (identifier, line) in [
+            ("Lex.comment", 2),
+            ("lex..comment", 2),
+            ("lex.", 2),
+            ("9lex", 2),
+            ("lex.comment_line", 2),
+            ("", 2),
+        ] {
+            let markdown = format!("intro\nr[{identifier}]\n");
+            let refusal =
+                rules_in(&markdown, Path::new("lexical.md")).expect_err("a malformed identifier");
+            assert!(
+                refusal.contains("lexical.md") && refusal.contains(&format!(":{line}")),
+                "`{identifier}`: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duplicate_identifier_is_refused() {
+        let scratch = Scratch::new("duplicate");
+        scratch.write("SUMMARY.md", "# Summary\n\n- [A](a.md)\n- [B](b.md)\n");
+        scratch.write("a.md", "# A\n\nr[syntax.outer.alone]\nText.\n");
+        scratch.write("b.md", "# B\n\nr[syntax.outer.alone]\nText.\n");
+        let refusal = book_rules(&scratch.0).expect_err("a duplicate");
+        assert!(
+            refusal.contains("syntax.outer.alone")
+                && refusal.contains("a.md")
+                && refusal.contains("b.md"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn a_chapter_missing_from_the_summary_is_refused() {
+        let scratch = Scratch::new("missing");
+        scratch.write("SUMMARY.md", "# Summary\n\n[Intro](intro.md)\n");
+        scratch.write("intro.md", "# Intro\n");
+        scratch.write("part/orphan.md", "# Orphan\n");
+        let refusal = book_rules(&scratch.0).expect_err("an orphan chapter");
+        assert!(refusal.contains("orphan.md"), "{refusal}");
+    }
+
+    #[test]
+    fn a_summary_entry_without_a_file_is_refused() {
+        let scratch = Scratch::new("absent");
+        scratch.write("SUMMARY.md", "# Summary\n\n- [Gone](gone.md)\n");
+        let refusal = book_rules(&scratch.0).expect_err("an absent chapter");
+        assert!(refusal.contains("gone.md"), "{refusal}");
+    }
+
+    #[test]
+    fn a_golden_and_a_rust_test_refer_to_rules() {
+        let scratch = Scratch::new("references");
+        scratch.write(
+            "goldens/language/outer.toml",
+            "stdout = '''\nrules = not this one\n'''\nrules = [\"syntax.outer.alone\", \"lex.identifier\"]\n",
+        );
+        scratch.write(
+            "crates/ns-syntax/src/parser.rs",
+            "fn code() {}\n\n    // spec: syntax.outer.send\n    #[test]\n    fn outer() {}\n",
+        );
+        let mut references = references_in(&scratch.0).expect("readable");
+        references.sort_by(|left, right| left.identifier.cmp(&right.identifier));
+        let found: Vec<(&str, usize)> = references
+            .iter()
+            .map(|reference| (reference.identifier.as_str(), reference.line))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("lex.identifier", 4),
+                ("syntax.outer.alone", 4),
+                ("syntax.outer.send", 3)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reference_to_no_rule_is_reported() {
+        let rules = [Rule {
+            identifier: "syntax.outer.alone".to_string(),
+            chapter: PathBuf::from("grammar.md"),
+            line: 3,
+        }];
+        let references = [Reference {
+            identifier: "syntax.nothing".to_string(),
+            test: PathBuf::from("goldens/language/outer.toml"),
+            line: 4,
+        }];
+        let refusal = check_references(&rules, &references).expect_err("no such rule");
+        assert!(
+            refusal.contains("syntax.nothing") && refusal.contains("outer.toml"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn every_rule_of_the_book_is_well_formed_and_unique() {
+        book_rules(&repository_root().join("docs/spec")).expect("the book's rules");
+    }
+
+    #[test]
+    fn every_reference_names_a_rule_of_the_book() {
+        let root = repository_root();
+        let rules = book_rules(&root.join("docs/spec")).expect("the book's rules");
+        let references = references_in(&root).expect("the tests' references");
+        check_references(&rules, &references).expect("every reference names a rule");
+    }
+}

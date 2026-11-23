@@ -14,11 +14,14 @@
 //! profiles that leave them out (`unreached.rs`). `mcp` copies the
 //! debug build to `target/mcp/`, which `.mcp.json` starts the repository's
 //! MCP server from, so that the server never locks the build (`mcp.rs`).
+//! `spec` checks the specification's book (`docs/spec/`) and the tests'
+//! references to its rules, and renders it into `target/spec/` (`spec.rs`).
 
 #![forbid(unsafe_code)]
 
 mod codegen;
 mod mcp;
+mod spec;
 mod unreached;
 
 use std::path::{Path, PathBuf};
@@ -32,9 +35,10 @@ usage: cargo xtask gates <group>...
        cargo xtask unreached-tests
        cargo xtask nextest-config
        cargo xtask mcp
+       cargo xtask spec
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
-  commit               fmt, clippy, the suite with the reach record checked against the list of unreached tests, the doctests, parse-corpus, the plugin's check
+  commit               fmt, clippy, the suite with the reach record checked against the list of unreached tests, the doctests, the specification's book, parse-corpus, the plugin's check
   analyzer             the hints' behaviour oracle (profile hints)
   images               every golden through build then load (profile images)
   caches               every golden with a two-entry global cache (profile caches)
@@ -545,6 +549,10 @@ fn group(name: &str) -> Option<Vec<Part>> {
             Part::Steps(vec![
                 Step::cargo("doctests", &["test", "--workspace", "--doc"]),
                 Step::cargo(
+                    "spec book",
+                    &["run", "--quiet", "-p", "xtask", "--", "spec"],
+                ),
+                Step::cargo(
                     "corpus parse",
                     &[
                         "run",
@@ -769,6 +777,13 @@ fn main() -> ExitCode {
     }
     if task == "mcp" && groups.is_empty() {
         return mcp::place(&repository_root());
+    }
+    if task == "spec" && groups.is_empty() {
+        let root = repository_root();
+        let output = root.join("target").join("spec");
+        return report_outcome(spec::render(&root, &output).map(|()| {
+            println!("{}", output.join("html").join("index.html").display());
+        }));
     }
     if task == "nextest-config" && groups.is_empty() {
         return report_outcome(
@@ -1634,6 +1649,18 @@ mod tests {
     fn the_commit_group_checks_the_reach_record() {
         let labels = labels_of(&group("commit").expect("a group")).join(",");
         assert!(labels.contains("lint,recorded suite,doctests"), "{labels}");
+    }
+
+    /// Every commit builds the specification's book, so that a broken rule,
+    /// reference or link fails at once (`docs/design/specification.md`,
+    /// decision 6).
+    #[test]
+    fn the_commit_group_builds_the_specification() {
+        let labels = labels_of(&group("commit").expect("a group")).join(",");
+        assert!(
+            labels.contains("doctests,spec book,corpus parse"),
+            "{labels}"
+        );
     }
 
     #[test]
