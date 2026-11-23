@@ -1,8 +1,15 @@
-# Introduction
+# The ns-next Specification
+
+*A living document: it describes ns-next as it is today, and has no
+versions or editions.*
+
+## Introduction
 
 This book specifies ns-next: the Newspeak language it runs, the run-time
 semantics of its operations, its bytecode, its image format, and the
-invariants its implementation keeps. It is self-contained. Gilad Bracha's
+invariants its implementation keeps. It is self-contained. The chapter
+"Overview of Newspeak" introduces the language informally; the parts
+after it are normative. Gilad Bracha's
 *Newspeak Programming Language Draft Specification*
 (`docs/references/newspeak-spec.pdf`, transcribed in
 `docs/references/newspeak-spec.md`) is its source: where ns-next follows
@@ -13,7 +20,7 @@ ns-next's rule and the appendix "Differences from Bracha's Newspeak" says
 how it differs and why. A section of Bracha's document is cited as
 "Bracha §5.9".
 
-## The parts
+### The parts
 
 1. **The language**: the lexical structure, the grammar, and the meaning
    of a program.
@@ -29,7 +36,7 @@ how it differs and why. A section of Bracha's document is cited as
 The first is the language every implementation of it would share; the
 other four are this implementation's.
 
-## Conventions
+### Conventions
 
 **Rules.** Every normative rule is preceded by its identifier, a line of
 the form `r[lex.comment.line]` alone on its line and at its start; a line
@@ -65,8 +72,7 @@ abstract operations in numbered steps. Machine-readable tables stand in
 fenced blocks whose info string begins with `spec-table`, and tests hold
 them to the code.
 
-**Changes.** The book is living: it describes ns-next as it is, and has
-no versions or editions of its own. A change to ns-next that changes
+**Changes.** Because the book is living, a change to ns-next that changes
 observable behaviour, a format or an invariant changes the rule for it in
 this book in the same commit, and a rule no longer true is rewritten,
 never kept beside its successor.
