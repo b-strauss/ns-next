@@ -66,7 +66,9 @@ Rust 1.100.0 (edition 2024), pinned by `rust-toolchain.toml` — `rustup` picks 
 The test suites run under `cargo-nextest`, installed once per machine with
 `cargo install cargo-nextest --locked`. The `codegen` gate needs `cargo-show-asm`
 (`cargo install cargo-show-asm --locked`) and the target `x86_64-pc-windows-msvc`;
-the `benchmarks` gate needs a JDK and a `python` on `PATH`. The project has no external runtime
+the `benchmarks` gate needs a JDK and a `python` on `PATH`; the commit gate
+builds the specification's book with mdBook 0.5.4
+(`cargo install mdbook --locked --version 0.5.4`). The project has no external runtime
 dependencies. On x86_64 the binaries require an x86-64-v2 processor (SSE4.2,
 POPCNT) and say so at start when theirs lacks one. On Windows it needs
 Windows 10 version 1803 or Windows Server 2019, for the placeholders the JIT's
@@ -144,8 +146,8 @@ first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
 
 ```bash
 # every commit: cargo fmt --all, clippy warning-free, the suite with every
-# golden under both lowerings, the doctests, the parser corpus and the
-# plugin's check
+# golden under both lowerings, the doctests, the specification's book, the
+# parser corpus and the plugin's check
 cargo xtask gates commit
 # a commit touching crates/ns-analyzer: the hints' behaviour oracle
 cargo xtask gates analyzer
@@ -183,6 +185,10 @@ cargo xtask shipped-code
 cargo xtask shipped-code --check
 # the codegen budgets against another checkout, e.g. an exported older commit
 cargo xtask codegen .temp/stage2
+# check the specification's book -- rule identifiers, chapters, the tests'
+# references to rules, links -- and render it into
+# target/spec/html/index.html, which opens in a browser; needs mdBook 0.5.4
+cargo xtask spec
 ```
 
 ## Usage
@@ -311,12 +317,13 @@ crates/ns-analyzer   the `ns-next-analyzer` binary: the language server, parse, 
 crates/ns-tooling    what both binaries share: loading and resolving a source, collecting `.ns` files, diagnostics
 crates/ns-memory     reserved, committed and protected memory, the JIT's code zone: the only crate with unsafe
 crates/ns-assembler  the JIT's machine operations and their x64 and AArch64 encoders
-xtask/               the repository's own tasks: the gates, shipped-code, mcp
+xtask/               the repository's own tasks: the gates, shipped-code, mcp, spec
 editors/jetbrains/   the JetBrains plugin, over ns-next-analyzer (see its README.md)
 corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
 benchmarks/          Are We Fast Yet with its Java and Python counterparts, and the microbenchmarks
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
+docs/spec/           the specification of ns-next, an mdBook: `cargo xtask spec` renders it
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology
 docs/OPEN-WORK.md    everything still to be done, in detail
