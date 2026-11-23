@@ -8822,6 +8822,9 @@ leave [README.md](design/README.md)'s table of deviations.
 - `2b340cff`, `2ce34208` -- the appendix, the rule that keeps the book,
   and the book living and unversioned.
 - `3ac9dee8` -- the commit gate builds the book in its own process.
+- `25e71b40` -- the review's findings: two chapters stated more exactly,
+  the parser's pattern values, the table of words read by the lexer, a
+  golden's `rules` read as TOML.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's second batch, the language's semantics and the run-time
