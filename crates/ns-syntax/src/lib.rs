@@ -13,6 +13,8 @@ mod parser;
 mod positions;
 mod printer;
 pub mod span;
+#[cfg(test)]
+mod spec_tables;
 pub mod token;
 
 pub use ast::Module;

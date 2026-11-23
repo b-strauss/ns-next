@@ -592,6 +592,17 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
 
+    // spec: lex.reserved-words
+    #[test]
+    fn the_reserved_words_are_the_specifications() {
+        let mut table = crate::spec_tables::lexical_table("reserved-words");
+        let mut reserved: Vec<String> =
+            RESERVED_WORDS.iter().map(|word| word.to_string()).collect();
+        table.sort_unstable();
+        reserved.sort_unstable();
+        assert_eq!(table, reserved);
+    }
+
     fn parse_expression(source: &str) -> Expression {
         let tokens = crate::lex(source).expect("lex");
         let mut parser = Parser::new(source, tokens);

@@ -555,6 +555,7 @@ mod tests {
 
     /// A nested comment is one span, outer `(*` to outer `*)`; a `(*` in a
     /// string opens none; an unterminated one runs to the end.
+    // spec: lex.comment.block
     #[test]
     fn comment_spans_are_kept_on_request() {
         let source = "a (* outer (* inner *) still *) 'not (* a comment' (* open";
@@ -568,6 +569,65 @@ mod tests {
         assert_eq!(lexed.diagnostics.len(), 1, "the unterminated comment");
     }
 
+    // spec: lex.special-characters
+    #[test]
+    fn the_special_characters_are_the_specifications() {
+        let mut table: Vec<u8> = crate::spec_tables::lexical_table("special-characters")
+            .iter()
+            .map(|entry| {
+                assert_eq!(entry.len(), 1, "`{entry}` is one character");
+                entry.as_bytes()[0]
+            })
+            .collect();
+        let mut special = SPECIAL.to_vec();
+        table.sort_unstable();
+        special.sort_unstable();
+        assert_eq!(table, special);
+    }
+
+    // spec: lex.unreserved-words
+    #[test]
+    fn the_words_with_tokens_of_their_own_are_the_specifications() {
+        let table = crate::spec_tables::lexical_table("words-with-tokens");
+        for word in &table {
+            assert_ne!(
+                kinds(word)[0],
+                Identifier,
+                "`{word}` has a token of its own"
+            );
+        }
+        // Every word a declaration or a send could plausibly begin with: one
+        // that lexes as anything but an identifier is in the table.
+        let candidates = [
+            "class",
+            "public",
+            "protected",
+            "private",
+            "lazy",
+            "self",
+            "super",
+            "outer",
+            "true",
+            "false",
+            "nil",
+            "inner",
+            "value",
+            "module",
+            "mixin",
+            "new",
+            "thisContext",
+        ];
+        for word in candidates {
+            let lexed = kinds(word)[0];
+            assert!(
+                lexed == Identifier || table.iter().any(|entry| entry == word),
+                "`{word}` lexes as {lexed:?}, which the table does not list"
+            );
+        }
+    }
+
+    // spec: lex.identifier
+    // spec: lex.keyword
     #[test]
     fn identifiers_and_keywords() {
         assert_eq!(
@@ -576,11 +636,13 @@ mod tests {
         );
     }
 
+    // spec: lex.identifier
     #[test]
     fn leading_underscore_identifier() {
         assert_eq!(kinds("_x"), vec![Identifier, EndOfInput]);
     }
 
+    // spec: lex.unreserved-words
     #[test]
     fn reserved_words() {
         assert_eq!(
@@ -589,6 +651,8 @@ mod tests {
         );
     }
 
+    // spec: lex.punctuation
+    // spec: lex.binary-selector
     #[test]
     fn punctuation_versus_binary_selector() {
         assert_eq!(
@@ -605,6 +669,7 @@ mod tests {
         );
     }
 
+    // spec: lex.assignment-refused
     #[test]
     fn smalltalk_assignment_is_refused_by_name() {
         // §5.4.3 gives Newspeak one assignment form, the setter send. Both the
@@ -629,6 +694,7 @@ mod tests {
         }
     }
 
+    // spec: lex.binary-selector
     #[test]
     fn binary_selectors() {
         assert_eq!(
@@ -644,6 +710,7 @@ mod tests {
         );
     }
 
+    // spec: lex.punctuation
     #[test]
     fn mixin_operator_is_one_token_and_leaves_less_than_alone() {
         // `<:` is §6.2's `mixinOperator`, one token. Everything else that
@@ -671,11 +738,13 @@ mod tests {
         );
     }
 
+    // spec: lex.setter-keyword
     #[test]
     fn setter_keyword() {
         assert_eq!(kinds("x:: 3"), vec![SetterKeyword, Number, EndOfInput]);
     }
 
+    // spec: lex.special-characters
     #[test]
     fn backslash_is_a_binary_selector() {
         assert_eq!(
@@ -684,6 +753,7 @@ mod tests {
         );
     }
 
+    // spec: lex.setter-keyword
     #[test]
     fn setter_keyword_initializer_without_spaces() {
         assert_eq!(
@@ -692,6 +762,7 @@ mod tests {
         );
     }
 
+    // spec: lex.number
     #[test]
     fn decimal_numbers() {
         assert_eq!(
@@ -700,11 +771,13 @@ mod tests {
         );
     }
 
+    // spec: lex.number.radix
     #[test]
     fn radix_numbers() {
         assert_eq!(kinds("16rFF 2r1010"), vec![Number, Number, EndOfInput]);
     }
 
+    // spec: lex.number.sign
     #[test]
     fn negative_number_versus_subtraction() {
         assert_eq!(kinds("-42"), vec![Number, EndOfInput]);
@@ -717,6 +790,7 @@ mod tests {
 
     /// A `-` against a digit is a negative number wherever it stands; the
     /// parser splits it where the grammar has a binary message.
+    // spec: lex.number.sign
     #[test]
     fn a_minus_against_a_digit_is_a_negative_number() {
         assert_eq!(kinds("a-42"), vec![Identifier, Number, EndOfInput]);
@@ -724,6 +798,7 @@ mod tests {
     }
 
     /// §4.2's `binSel → (specialCharacter | "-") specialCharacter*`.
+    // spec: lex.binary-selector
     #[test]
     fn a_minus_only_starts_a_binary_selector() {
         let source = "a +-1 -> b --c";
@@ -734,6 +809,7 @@ mod tests {
     }
 
     /// §5.6's asynchronous send token.
+    // spec: lex.punctuation
     #[test]
     fn an_eventual_send_is_one_token() {
         assert_eq!(
@@ -744,6 +820,8 @@ mod tests {
 
     /// §4.2's `num`: a radix needs an extended digit after its `r`, only an
     /// unsigned number has one, and a fraction needs a digit after its dot.
+    // spec: lex.number
+    // spec: lex.number.radix
     #[test]
     fn each_part_of_a_number_is_taken_only_when_complete() {
         let texts = |source: &'static str| -> Vec<&'static str> {
@@ -765,6 +843,7 @@ mod tests {
     }
 
     /// §4.2's `sym → str | kws | binSel | id`, `kws → kw+`.
+    // spec: lex.symbol
     #[test]
     fn a_symbols_keywords_each_end_in_a_colon() {
         let texts = |source: &'static str| -> Vec<&'static str> {
@@ -776,6 +855,7 @@ mod tests {
         assert_eq!(texts("#-> #+-"), vec!["#->", "#+", "-", ""]);
     }
 
+    // spec: lex.string.single-quoted
     #[test]
     fn strings_with_escaped_quote() {
         let (tokens, diagnostics) = Lexer::new("'it''s'").run();
@@ -784,6 +864,7 @@ mod tests {
         assert_eq!(tokens[0].span.text("'it''s'"), "'it''s'");
     }
 
+    // spec: lex.symbol
     #[test]
     fn symbols() {
         assert_eq!(
@@ -792,6 +873,7 @@ mod tests {
         );
     }
 
+    // spec: lex.literal-array-refused
     #[test]
     fn a_literal_array_is_refused_by_name() {
         let (_, diagnostics) = Lexer::new("#(1)").run();
@@ -805,6 +887,7 @@ mod tests {
         );
     }
 
+    // spec: lex.string.double-quoted
     #[test]
     fn double_quoted_strings() {
         assert_eq!(
@@ -815,6 +898,7 @@ mod tests {
 
     /// The one-character form takes whatever single character stands between
     /// the quotes, `"` included, so the corpus's `"""` is the string `"`.
+    // spec: lex.string.one-character
     #[test]
     fn a_one_character_double_quoted_string_may_be_a_double_quote() {
         let source = r#"(char: """) x"#;
@@ -839,12 +923,14 @@ mod tests {
         );
     }
 
+    // spec: lex.string.double-quoted
     #[test]
     fn unterminated_double_quoted_string_is_diagnostic() {
         let (_tokens, diagnostics) = Lexer::new("\"oops").run();
         assert_eq!(diagnostics.len(), 1);
     }
 
+    // spec: lex.string.single-quoted
     #[test]
     fn unterminated_string_is_diagnostic() {
         let (_tokens, diagnostics) = Lexer::new("'oops").run();
@@ -861,6 +947,9 @@ mod tests {
             .collect()
     }
 
+    // spec: lex.comment.line
+    // spec: lex.comment.block
+    // spec: lex.whitespace
     #[test]
     fn line_and_block_comments_are_trivia() {
         assert_eq!(
@@ -881,6 +970,8 @@ mod tests {
 
     /// §4.2's `binSel` would take `+///` whole; ns-next ends every selector
     /// before `///`, the deviation `docs/design/README.md` records.
+    // spec: lex.comment.line
+    // spec: lex.binary-selector
     #[test]
     fn a_line_comment_ends_every_selector_before_it() {
         let texts = |source: &'static str| -> Vec<(crate::token::TokenKind, &'static str)> {
@@ -932,6 +1023,7 @@ mod tests {
         );
     }
 
+    // spec: lex.symbol
     #[test]
     fn a_hash_before_a_line_comment_names_no_symbol() {
         let (_, diagnostics) = Lexer::new("#/// x").run();
@@ -940,6 +1032,8 @@ mod tests {
     }
 
     /// Neither form sees the other, and a string sees neither.
+    // spec: lex.comment.line
+    // spec: lex.comment.block
     #[test]
     fn the_two_comment_forms_do_not_see_each_other() {
         assert_eq!(
@@ -1008,6 +1102,7 @@ mod tests {
         );
     }
 
+    // spec: lex.comment.block
     #[test]
     fn comments_nest() {
         assert_eq!(
@@ -1016,6 +1111,7 @@ mod tests {
         );
     }
 
+    // spec: lex.comment.block
     #[test]
     fn unterminated_comment_is_diagnostic() {
         let (_t, diagnostics) = Lexer::new("a (* oops").run();
@@ -1028,12 +1124,14 @@ mod tests {
         assert!(crate::lex("class Foo = ()").is_ok());
     }
 
+    // spec: lex.longest-token
     #[test]
     fn token_stream_ends_with_end_of_input() {
         let tokens = crate::lex("foo").unwrap();
         assert_eq!(tokens.last().unwrap().kind, EndOfInput);
     }
 
+    // spec: lex.source
     #[test]
     fn stray_non_ascii_character_is_one_codepoint_aligned_diagnostic() {
         let source = "é";
@@ -1043,6 +1141,8 @@ mod tests {
         assert_eq!(diagnostics[0].span.text(source), "é");
     }
 
+    // spec: lex.source
+    // spec: lex.string.double-quoted
     #[test]
     fn a_double_quoted_string_may_hold_a_multibyte_character() {
         for source in ["\"é\"", "\"éé\""] {
@@ -1054,6 +1154,7 @@ mod tests {
         }
     }
 
+    // spec: lex.comment.metadata
     #[test]
     fn literalmessage_pragma_comment_is_plain_trivia() {
         // `(* :literalmessage: ... *)` is an ordinary block comment: no tokens,

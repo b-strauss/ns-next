@@ -4,3 +4,4 @@ public protected private lazy class: x
 true
 5
 '''
+rules = ["lex.unreserved-words"]

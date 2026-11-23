@@ -828,6 +828,7 @@ mod tests {
 
     /// `Metadata::read` reads a comment by its span alone, so that a
     /// comment no target takes in is metadata to it too.
+    // spec: lex.comment.metadata
     #[test]
     fn a_comment_reads_as_metadata_whatever_its_target() {
         let source = "1 (* :after: x *) (* plain *)";
@@ -844,6 +845,7 @@ mod tests {
         assert_eq!(super::Metadata::read(plain, source), None);
     }
 
+    // spec: lex.comment.metadata
     #[test]
     fn an_untagged_comment_is_no_metadata() {
         let source = indoc! {"

@@ -5,3 +5,4 @@ it's "quoted"
 " '
 0 4
 '''
+rules = ["lex.string.double-quoted", "lex.string.one-character"]

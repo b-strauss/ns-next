@@ -6,3 +6,4 @@ a /// b
 after the block
 after the line
 '''
+rules = ["lex.comment.line", "lex.comment.block"]
