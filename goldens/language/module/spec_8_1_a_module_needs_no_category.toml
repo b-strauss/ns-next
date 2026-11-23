@@ -1,3 +1,4 @@
 stdout = '''
 no category
 '''
+rules = ["syntax.compilation-unit", "syntax.language-id"]

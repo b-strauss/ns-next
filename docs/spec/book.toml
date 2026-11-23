@@ -1,0 +1,10 @@
+[book]
+title = "The ns-next Specification"
+language = "en"
+src = "."
+
+[build]
+create-missing = false
+
+[output.html]
+no-section-label = false

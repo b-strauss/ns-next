@@ -906,6 +906,107 @@ editing kernel methods (the open question below); `ActivationMirror` and
 edit-and-continue; and scoping the invalidation ("Caches and their
 dependency keys" above).
 
+### Planned: the complete install
+
+The debugger's hot swap is split into three batches (decided with the
+user on 2026-11-22): **A**, the complete install in the VM and
+`MirrorsFactory.ns`; **B**, hot swap in the debugger -- saved module
+texts installed over DAP, the plugin and the MCP server, breakpoints set
+again, frames running old code marked, "Create Method" and the forced
+`nil` ([debugger.md](debugger.md), "Hot swap and edit-and-continue",
+"Exceptions"); **C**, developing a whole application in the debugger,
+from an empty world: a run without a program, evaluation without a
+stopped frame, new modules joining the project. Everything is to be
+changeable: a superclass, a class added or removed, a method added,
+changed or removed, the factory and the initializer. The Newspeak
+implementations are the models (`prior-art/newspeak/AtomicInstaller.ns`,
+`prior-art/primordialsoup/newspeak/Mirrors.ns`); JVMTI's
+`RedefineClasses`, which permits only method bodies to change, is not.
+Batch A waits for the specification of the current state, which comes
+first (decided with the user on 2026-11-23). Its decisions so far, each
+taken with the user on 2026-11-22:
+
+1. **A superclass change re-evaluates the clause for every existing
+   class object.** A nested class's superclass is computed per enclosing
+   instance (§6, `newspeak-spec.pdf` pp. 39-40), so the new superclass and
+   `<:` clauses are evaluated before the commit, once per existing class
+   object in its enclosing instance's context, as program code against
+   the unchanged world; a failure, or an answer that is no class, changes
+   nothing. The commit, which still runs no code and polls no safepoint,
+   re-applies each class object over its new superclass, keeping its
+   identity, migrates its instances by `FieldName` -- a slot of a level
+   the chain loses goes, one of a level it gains starts `nil`, no
+   initializer runs again -- and refuses a cycle; an install between the
+   evaluation and the commit fails the commit, told by an install epoch.
+   Neither prior art does this: `AtomicInstaller.ns` keeps the old
+   superclass (`:187-188`) and its class comment names the change as
+   unaddressed (`:4-6`), as does Primordial Soup (`Mirrors.ns:433-434`).
+2. **Nested classes are paired by their path of names.** The same name is
+   the same declaration -- its id, class objects and instances kept, its
+   instances migrated, an `addFromSource:` of an existing name included,
+   unlike Primordial Soup's fresh mixin (`Mirrors.ns:1475-1501`) -- a new
+   name a new mixin, a missing one removed.
+3. **A removed class lives on, obsolete, and the image carries it.** Its
+   accessor and its hidden slots go, the enclosing instances migrating,
+   so a send of its name is not understood; its class objects, its
+   instances and its subclasses keep running its last version until a
+   full collection frees it, as `AtomicInstaller.ns:234-240` leaves it.
+   The image writes every reachable obsolete mixin as a row of its own
+   outside its module's declaration tree, marked removed, with its last
+   version's code and its declaration's text, and loads it back
+   obsolete, so a running world with its heap stays serializable
+   ([image-format.md](image-format.md), "Planned: suspend and resume").
+4. **A rename keeps the class's identity**, after Primordial Soup's
+   `ClassHeaderBuilder>>name:` (`Mirrors.ns:764-798`): a new name in the
+   header, or `name:`, renames; a sibling of that name is refused; the
+   accessor changes its selector and the names of the classes nested in
+   it follow, unlike `AtomicInstaller.ns:55-58`. A hot swap from text
+   cannot tell a rename from a removal and an addition, so batch B takes
+   a rename from its client.
+5. **A nested class's access can change.** The accessor carries the
+   access in the enclosing class's method table
+   (`interpreter/edit.rs`'s refusal), so an access change or a rename
+   makes the enclosing declaration part of the install, compiled again
+   and re-applied without migration.
+6. **The invalidation is scoped to the applications the install
+   re-applies.** It vacates exactly the cache entries -- sites,
+   polymorphic slots, the global cache, baseline cells, the verified
+   pair -- that name one, by `InlineCaches::forget_freed`'s criterion,
+   and keeps every other one warm; the optimized copies are found through
+   a list per application of the copies depending on it, as HotSpot's
+   dependencies (`code/dependencies.hpp:105-170`) and V8's `DependentCode`
+   (`objects/dependent-code.h:37-70`) are, not by a scan of every copy
+   (`JitState::copies_depending`); a stress mode checks every remaining
+   entry against a fresh lookup after each install.
+7. **A top-level declaration from source is a module.** `ClassDeclarationBuilder
+   fromSource:` installs a module whose `:module:` is read and checked
+   as the loader reads it, an id and version the world already has
+   refused; it is registered with its tree of ids, its text its current
+   text, and answered as a declaration mirror; one without `:module:`
+   has no identity and is named by its class. The image's module section
+   admits a module without a path. The manifest a running application
+   holds is unchanged; wiring a new module into it is batch C's.
+8. **`installAtomically:` installs several builders as one.** Each
+   builder's operations are spliced into its module's text in the order
+   given, the builders of one module composing on one intermediate text;
+   every module is prepared and every clause evaluated, then one walk,
+   one commit and one invalidation; two builders of one declaration, or
+   one whose declaration another removes or replaces, are refused, naming
+   both -- the check `MirrorsForSqueak.ns:1698` marks `#BOGUS` as
+   missing -- and any failure changes nothing. Proposed with it, not
+   decided on its own: Primordial Soup's `nestedClasses` group
+   (`addFromSource:`, `removeMirrorNamed:`), the header builder's
+   `name:`, `ClassDeclarationBuilder fromSource:`, and
+   `installAtomically:` on the mirrors facet.
+
+Open: what an install that changes a module's identity -- its
+`:module:` id or version, or its root class's name -- does: change it in
+place, keeping the module's mixin ids, class objects and instances; make
+a new module beside the old; or refuse it. Every decision of the batch
+names, per option, what it does to the hot path, to what the optimizing
+JIT can still generate, to the warm-up after the install, and to the
+image, the image of a running world included.
+
 ### Edited programs in images
 
 A program a MirrorBuilder edited is written to an image and loads back

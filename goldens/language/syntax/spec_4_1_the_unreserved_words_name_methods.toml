@@ -5,3 +5,4 @@ class-side public
 class-side class
 a private method named lazy
 '''
+rules = ["lex.unreserved-words", "syntax.unreserved-word"]

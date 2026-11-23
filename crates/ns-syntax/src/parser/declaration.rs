@@ -1803,6 +1803,7 @@ mod slot_tests {
         slots
     }
 
+    // spec: syntax.slot-definition
     #[test]
     fn immutable_and_mutable_slots() {
         let slots = slots("| private List = platform collections List. count ::= 0. name. |");
@@ -1813,11 +1814,13 @@ mod slot_tests {
         assert_eq!(slots[2].mutability, SlotMutability::MutableBare);
     }
 
+    // spec: syntax.slot-section
     #[test]
     fn empty_section() {
         assert!(slots("| |").is_empty());
     }
 
+    // spec: syntax.slot-section
     #[test]
     fn simultaneous_section() {
         let slots = slots("|| a = 1. b = 2. ||");
@@ -1826,6 +1829,7 @@ mod slot_tests {
 
     // --- Slot type annotations, and `class` as a name ---
 
+    // spec: syntax.type-annotation
     #[test]
     fn slot_type_annotation() {
         let slots = slots("| public foo <Bar> = 1. x <Baz[Y]> ::= 2. n <Q>. |");
@@ -1836,6 +1840,7 @@ mod slot_tests {
         assert_eq!(slots[2].mutability, SlotMutability::MutableBare);
     }
 
+    // spec: syntax.unreserved-word
     #[test]
     fn slot_named_class() {
         // `| class |` locals appear in the mirror libraries.
@@ -2023,6 +2028,7 @@ mod class_tests {
     // trailing `.` mandatory) must not have its section-closing `|` eaten as
     // a binary `|` operator, which cascades into and swallows the following
     // G2 declaration.
+    // spec: syntax.slot-definition
     #[test]
     fn dotless_final_slot_initializer_does_not_swallow_following_declaration() {
         let source = indoc! {"
@@ -2053,6 +2059,7 @@ mod class_tests {
 
     // The boolean-or case still works: `|` with a primary after it is a binary
     // send even in a slot initializer.
+    // spec: syntax.slot-definition
     #[test]
     fn bar_operator_in_slot_initializer() {
         let module = module(indoc! {"
@@ -2079,6 +2086,8 @@ mod class_tests {
         assert_eq!(argument.name, "b");
     }
 
+    // spec: syntax.compilation-unit
+    // spec: syntax.class-body
     #[test]
     fn minimal_module() {
         // Real grammar: G1 `()` then G2 `()` (both empty).
@@ -2098,6 +2107,7 @@ mod class_tests {
         assert!(module.root_class.instance_side.methods().next().is_none());
     }
 
+    // spec: syntax.inheritance-clause
     #[test]
     fn superclass_clause_with_send() {
         let module = module(indoc! {"
@@ -2108,6 +2118,7 @@ mod class_tests {
         assert_eq!(superclass.messages.len(), 1);
     }
 
+    // spec: syntax.mixin-application
     #[test]
     fn a_mixin_application_carries_its_clauses_in_order() {
         let module = module(indoc! {"
@@ -2129,6 +2140,7 @@ mod class_tests {
         assert_eq!(applications[1].messages.len(), 1);
     }
 
+    // spec: syntax.mixin-application
     #[test]
     fn a_mixin_application_may_end_with_a_dot_instead_of_a_body() {
         let module = module(indoc! {"
@@ -2150,6 +2162,7 @@ mod class_tests {
         assert!(module.root_class.mixin_applications.is_empty());
     }
 
+    // spec: syntax.instance-side
     #[test]
     fn slots_methods_and_nested_class() {
         // Comment + `|..|` slot section + initializer expressions live in G1; methods and
@@ -2174,6 +2187,7 @@ mod class_tests {
         assert_eq!(comment.span.text(source), "(* a comment *)");
     }
 
+    // spec: syntax.class-side
     #[test]
     fn class_side_block() {
         let source = indoc! {"
@@ -2192,6 +2206,7 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.compilation-unit
     #[test]
     fn trailing_garbage_is_an_error() {
         assert!(
@@ -2206,6 +2221,7 @@ mod class_tests {
     // Malformed G1 input must terminate with a diagnostic, not hang:
     // `parse_expression` can return a recovery node without consuming a token,
     // so `parse_header_body`'s loop needs an explicit forward-progress guard.
+    // spec: syntax.instance-side
     #[test]
     fn malformed_body_caret_is_error() {
         assert!(
@@ -2216,6 +2232,7 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.instance-side
     #[test]
     fn malformed_body_semicolon_is_error() {
         assert!(
@@ -2226,6 +2243,7 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.instance-side
     #[test]
     fn malformed_body_binary_selector_is_error() {
         assert!(
@@ -2237,6 +2255,7 @@ mod class_tests {
     }
 
     // A `|..|` slot section inside G2 is malformed (it belongs to G1).
+    // spec: syntax.instance-side
     #[test]
     fn slot_section_in_g2_is_error() {
         assert!(
@@ -2249,6 +2268,7 @@ mod class_tests {
 
     // --- corpus-shaped tests (real two-group grammar) ---
 
+    // spec: syntax.class-body
     #[test]
     fn two_group_with_class_side() {
         // Exact shape of corpus/modules/ADummyPush.ns.
@@ -2265,6 +2285,7 @@ mod class_tests {
         assert!(module.root_class.class_side.is_some());
     }
 
+    // spec: syntax.instance-side
     #[test]
     fn nested_class_two_group() {
         let source = indoc! {"
@@ -2286,6 +2307,7 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.class-header
     #[test]
     fn initializer_expressions_in_g1_only() {
         let module = module(indoc! {"
@@ -2296,6 +2318,7 @@ mod class_tests {
         assert!(body.methods().next().is_none());
     }
 
+    // spec: syntax.lazy-slot
     #[test]
     fn lazy_slot_in_g2() {
         let module = module(indoc! {"
@@ -2314,6 +2337,7 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.lazy-slot
     #[test]
     fn lazy_slot_modifier_first_in_g2() {
         let module = module(indoc! {"
@@ -2332,6 +2356,7 @@ mod class_tests {
         assert!(body.slots().next().expect("a slot").lazy);
     }
 
+    // spec: syntax.lazy-slot
     #[test]
     fn a_header_slot_is_never_lazy() {
         let module = module(indoc! {"
@@ -2343,6 +2368,7 @@ mod class_tests {
     }
 
     // A method literally named `lazy` must not be mistaken for a lazy slot.
+    // spec: syntax.lazy-slot
     #[test]
     fn method_named_lazy_is_not_a_slot() {
         let module = module(indoc! {"
@@ -2355,6 +2381,7 @@ mod class_tests {
 
     // --- I2: a leading string in the class header body is an initializer expression,
     // not a class comment. ---
+    // spec: syntax.class-header
     #[test]
     fn leading_string_in_header_is_an_initializer_expression_not_a_comment() {
         let module = module(indoc! {"
@@ -2483,6 +2510,7 @@ mod class_tests {
     }
 
     // --- C1: recursion-depth guard. None of these may abort the process. ---
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_open_parentheses_do_not_overflow() {
         assert!(crate::parse(&"(".repeat(10_000)).is_err());
@@ -2490,6 +2518,7 @@ mod class_tests {
 
     /// A chain of setter keywords recurses once per keyword; past the
     /// nesting limit it is a diagnostic, never a stack overflow.
+    // spec: syntax.nesting-limit
     #[test]
     fn a_long_setter_chain_does_not_overflow() {
         let source = format!(
@@ -2508,6 +2537,7 @@ mod class_tests {
 
     /// Nested pattern literals recurse once per level, past the limit a
     /// diagnostic as well.
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_pattern_literals_do_not_overflow() {
         let source = format!(
@@ -2524,11 +2554,13 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_open_brackets_do_not_overflow() {
         assert!(crate::parse(&"[".repeat(10_000)).is_err());
     }
 
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_but_closed_reports_depth_diagnostic() {
         let source = format!("{}x{}", "(".repeat(5000), ")".repeat(5000));
@@ -2542,12 +2574,14 @@ mod class_tests {
         );
     }
 
+    // spec: syntax.nesting-limit
     #[test]
     fn deeply_nested_classes_do_not_overflow() {
         let source = "class C = () (".repeat(5000);
         assert!(crate::parse(&source).is_err());
     }
 
+    // spec: syntax.nesting-limit
     #[test]
     fn shallow_nesting_still_parses_clean() {
         let module = module(indoc! {"
@@ -2583,6 +2617,8 @@ mod method_tests {
         method
     }
 
+    // spec: syntax.method
+    // spec: syntax.message-pattern
     #[test]
     fn unary_method() {
         let method = method("greeting = ( ^ 'hi' )");
@@ -2590,6 +2626,8 @@ mod method_tests {
         assert_eq!(method.body.statements.len(), 1);
     }
 
+    // spec: syntax.method
+    // spec: syntax.access-modifier
     #[test]
     fn keyword_method_with_access() {
         let method = method("public at: k put: v = ( slot at: k put: v. ^ v )");
@@ -2600,6 +2638,8 @@ mod method_tests {
         assert_eq!(method.access, Some(AccessModifier::Public));
     }
 
+    // spec: syntax.method
+    // spec: syntax.message-pattern
     #[test]
     fn binary_method() {
         let method = method("+ other = ( ^ self addTo: other )");
@@ -2608,6 +2648,7 @@ mod method_tests {
 
     // --- Declaration-position `<Type>` annotations & friends ---
 
+    // spec: syntax.type-annotation
     #[test]
     fn keyword_method_parameter_type_annotation() {
         let method = method("at: k <Integer> put: v <Object> = ( ^ nil )");
@@ -2619,6 +2660,7 @@ mod method_tests {
         assert_eq!(parts[1].parameter.name.name, "v");
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn binary_method_parameter_type_annotation() {
         let method = method("+ other <Foo> = ( ^ self )");
@@ -2633,6 +2675,7 @@ mod method_tests {
         assert_eq!(parameter.name.name, "other");
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn nested_type_annotation_is_one_unit() {
         // `<Tuple[String]>` / `<Map[K, V]>` / `<{String. Namespace}>` /
@@ -2648,6 +2691,7 @@ mod method_tests {
         }
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn method_return_type_annotation() {
         let storage_key = method("storageKey ^<String> = ( ^ 'k' )");
@@ -2656,6 +2700,7 @@ mod method_tests {
         assert!(matches!(seed.pattern, MessagePattern::Keyword { .. }));
     }
 
+    // spec: syntax.message-pattern
     #[test]
     fn equals_and_bar_are_binary_operator_method_names() {
         for (source, expected_selector) in [
@@ -2671,6 +2716,7 @@ mod method_tests {
         }
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn selector_type_parameters_and_where_clause() {
         let list = method("List[E] = ( ^ MutableArrayList[E] )");
@@ -2680,6 +2726,7 @@ mod method_tests {
         assert!(matches!(reduce.pattern, MessagePattern::Keyword { .. }));
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn unterminated_type_annotation_recovers_without_panic() {
         // `take_type_annotation` must push a diagnostic and stop, not run away
@@ -2692,6 +2739,7 @@ mod method_tests {
 
     // `codeBody` temporaries: `temporaries = slotDecls` (grammar :148-150).
 
+    // spec: syntax.slot-section
     #[test]
     fn empty_double_bar_temporaries() {
         // Lone `||` is the degenerate empty simultaneous temporary list; the body
@@ -2707,6 +2755,7 @@ mod method_tests {
         ));
     }
 
+    // spec: syntax.slot-section
     #[test]
     fn empty_sequence_bar_temporaries() {
         let method = method("foo = ( | | ^ 1 )");
@@ -2716,6 +2765,7 @@ mod method_tests {
 
     // A well-formed (dot-terminated) single initialized local: the closing `|`
     // is the section terminator, not a binary operator.
+    // spec: syntax.slot-definition
     #[test]
     fn single_initialized_local_temporary_with_dot() {
         let method = method("foo = ( | x = 1. | ^ x )");
@@ -2737,6 +2787,7 @@ mod method_tests {
         ));
     }
 
+    // spec: syntax.slot-section
     #[test]
     fn plain_sequence_temporaries() {
         let method = method("foo = ( | a b | ^ a )");
@@ -2751,6 +2802,7 @@ mod method_tests {
         );
     }
 
+    // spec: syntax.slot-definition
     #[test]
     fn initialized_local_slot_temporaries() {
         // The `| x = expression. |` full slot-declaration form: the initializer
@@ -2774,6 +2826,7 @@ mod method_tests {
         ));
     }
 
+    // spec: syntax.slot-definition
     #[test]
     fn temporaries_keep_their_full_declaration_including_mutability() {
         // `| x = 1. y ::= 2. z |`: three declarations, their mutabilities and
@@ -2835,6 +2888,7 @@ mod reserved_word_tests {
         );
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_name_a_parameter() {
         for word in RESERVED_WORDS {
@@ -2843,6 +2897,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_name_a_method() {
         for word in RESERVED_WORDS {
@@ -2850,6 +2905,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_name_a_slot_or_a_temporary() {
         for word in RESERVED_WORDS {
@@ -2861,6 +2917,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_name_a_block_parameter() {
         for word in RESERVED_WORDS {
@@ -2872,6 +2929,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_name_a_class() {
         for word in RESERVED_WORDS {
@@ -2883,6 +2941,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_be_assigned() {
         for word in RESERVED_WORDS {
@@ -2890,6 +2949,7 @@ mod reserved_word_tests {
         }
     }
 
+    // spec: syntax.reserved-word
     #[test]
     fn a_reserved_word_cannot_be_a_unary_selector() {
         for word in RESERVED_WORDS {
@@ -2908,6 +2968,7 @@ mod reserved_word_tests {
 
     /// The legal uses stay legal: each as an expression, `super` and `outer`
     /// as a send's receiver, and a keyword that merely begins with one.
+    // spec: syntax.reserved-word
     #[test]
     fn the_legal_uses_of_the_reserved_words_are_not_refused() {
         for member in [
@@ -2968,6 +3029,7 @@ mod unreserved_word_tests {
         );
     }
 
+    // spec: syntax.unreserved-word
     #[test]
     fn every_word_is_a_name_in_an_expression() {
         for word in WORDS {
@@ -2986,6 +3048,7 @@ mod unreserved_word_tests {
         }
     }
 
+    // spec: syntax.unreserved-word
     #[test]
     fn every_word_names_a_parameter() {
         for word in WORDS {
@@ -3000,6 +3063,7 @@ mod unreserved_word_tests {
         }
     }
 
+    // spec: syntax.unreserved-word
     #[test]
     fn every_word_names_a_class_and_a_superclass() {
         for word in WORDS {
@@ -3015,6 +3079,7 @@ mod unreserved_word_tests {
     /// modifier's word as the modifier whenever it stands first, so one names
     /// a slot or a temporary only behind a modifier; the other two words need
     /// none.
+    // spec: syntax.unreserved-word
     #[test]
     fn every_word_names_a_slot_and_a_temporary_where_the_grammar_lets_it() {
         for word in WORDS {
@@ -3037,6 +3102,7 @@ mod unreserved_word_tests {
 
     /// `methodDecl → [accessModifier] messagePattern ...` (§6.3.4), the same
     /// rule, on both sides.
+    // spec: syntax.unreserved-word
     #[test]
     fn every_word_names_a_method_where_the_grammar_lets_it() {
         for word in WORDS {
@@ -3061,6 +3127,8 @@ mod unreserved_word_tests {
     /// `lazySlotDecl → ((lazyModifier [accessModifier]) | (accessModifier
     /// lazyModifier)) slotDecl ...` (§6.3.3): the modifiers first, then the
     /// name.
+    // spec: syntax.unreserved-word
+    // spec: syntax.lazy-slot
     #[test]
     fn every_word_names_a_lazy_slot_where_the_grammar_lets_it() {
         for word in WORDS {
@@ -3089,6 +3157,7 @@ mod unreserved_word_tests {
         }
     }
 
+    // spec: syntax.peg
     #[test]
     fn a_declaration_is_what_its_whole_production_matches() {
         // No lazy slot: a private method named `lazy`.
@@ -3142,6 +3211,7 @@ mod unreserved_word_tests {
     /// `accessModifier` and §6.3.3's `lazyModifier` end in `whitespace`, which
     /// would make `| public= 1. |` a slot named `public` beside an erroneous
     /// `| public = 1. |`. Both are the same tokens here, and both are refused.
+    // spec: syntax.whitespace-free
     #[test]
     fn a_modifier_needs_no_whitespace_after_it() {
         assert_refused("class Box = Object new ( | public= 1. | ) ()");
@@ -3149,6 +3219,7 @@ mod unreserved_word_tests {
         assert_accepted("lazy public public= 1.");
     }
 
+    // spec: syntax.slot-definition
     #[test]
     fn an_initializer_ends_with_a_dot() {
         for (member, expected) in [
@@ -3227,6 +3298,8 @@ mod specification_tests {
     /// §4.2's `decimalNum → ["-"] digits ...` stands where a literal can, and
     /// `binaryMsg → binarySelector unaryExpression` where a binary message
     /// can: `3 -4` subtracts, `foo: -4` passes a negative number.
+    // spec: syntax.literal.number
+    // spec: lex.number.sign
     #[test]
     fn a_negative_number_is_one_only_where_a_literal_stands() {
         for source in ["3 -4", "3-4", "3 - 4"] {
@@ -3260,6 +3333,7 @@ mod specification_tests {
 
     /// §5.4.3: a setter keyword begins an expression -- chained, as the
     /// section's rationale gives `w::x::y` -- and nowhere else.
+    // spec: syntax.expression
     #[test]
     fn a_setter_keyword_begins_an_expression_and_nothing_else() {
         accepted("probe = ( | a b | a:: b:: 3 )");
@@ -3270,6 +3344,8 @@ mod specification_tests {
 
     /// §5.4.4: `cascadedMessageExpression → primary [msgCascade]`,
     /// `msgCascade → nonEmptyMessages cascadeMsg*`.
+    // spec: syntax.cascade
+    // spec: syntax.implicit-keyword-send
     #[test]
     fn a_cascade_follows_a_primary_and_a_message_to_it() {
         accepted("probe = ( ^self foo; bar; + 1; = 2; at: 3 )");
@@ -3282,6 +3358,8 @@ mod specification_tests {
     /// §5.9 and §5.10: `super` is followed by a message, `outer` by a class's
     /// name -- and `outer N` alone is the enclosing object, decided with the
     /// user on 2026-09-27.
+    // spec: syntax.super
+    // spec: syntax.outer.send
     #[test]
     fn super_takes_a_message_and_outer_a_name() {
         accepted("probe = ( ^super foo )");
@@ -3296,6 +3374,7 @@ mod specification_tests {
     }
 
     /// §5.6: `<-:` stands before a message sent to an explicit receiver.
+    // spec: syntax.eventual-send
     #[test]
     fn an_eventual_send_stands_before_a_message() {
         accepted("probe = ( ^self <-: foo )");
@@ -3307,6 +3386,7 @@ mod specification_tests {
     }
 
     /// §5.1.9's pattern literal.
+    // spec: syntax.pattern
     #[test]
     fn a_pattern_literal_follows_its_grammar() {
         for pattern in [
@@ -3320,6 +3400,10 @@ mod specification_tests {
             "<x: _ y: ?z>",
             "<x: <y: 1>>",
             "<x: <y: <z: 1>>>",
+            "<x: y: 1>",
+            "<x: y:>",
+            "<x: ? z>",
+            "<x: ?class>",
         ] {
             accepted(&format!("probe = ( ^{pattern} )"));
         }
@@ -3331,6 +3415,17 @@ mod specification_tests {
     /// §5.1.8's `statements → returnStatement | statementSequence | empty`,
     /// `statementSequence → expression [dot statements]`,
     /// `returnStatement → hat expression [dot]`.
+    // spec: syntax.gap.object-literal
+    // spec: syntax.gap.chain
+    // spec: syntax.gap.class-expression
+    #[test]
+    fn the_gaps_are_refused() {
+        refused("probe = ( ^() ( ^1 ) )");
+        refused("probe = ( ^self foo :| bar )");
+        refused("probe = ( ^class Inner = () () )");
+    }
+
+    // spec: syntax.statements
     #[test]
     fn a_dot_ends_a_statement_and_nothing_else() {
         accepted("probe = ( self foo. self bar. )");
@@ -3344,6 +3439,8 @@ mod specification_tests {
 
     /// §6.3's `initExprs → [expression (dot expression)* [dot]]`, and
     /// `sideDecl` and `classSideDecl`, which have no separator at all.
+    // spec: syntax.class-header
+    // spec: syntax.instance-side
     #[test]
     fn dots_in_a_class_stand_between_initializer_expressions_only() {
         accepted("class Box = Object new ( self foo. self bar. ) ()");
@@ -3360,6 +3457,7 @@ mod specification_tests {
     }
 
     /// §6.1's `inheritanceClause → [inheritancePrefix] unarySelector [message]`.
+    // spec: syntax.inheritance-clause
     #[test]
     fn a_superclass_clause_sends_one_message() {
         accepted("class Box = Object new () ()");
@@ -3377,6 +3475,7 @@ mod specification_tests {
 
     /// §6.3's `classBody → classHeader sideDecl [classSideDecl]`, and §6.2's
     /// `mixinAppSuffix → (mixinOperator inheritanceClause)+ (dot | classBody)`.
+    // spec: syntax.class-body
     #[test]
     fn a_class_has_an_instance_side_and_may_have_a_class_side() {
         accepted("class Box = Object new () ()");
@@ -3387,6 +3486,8 @@ mod specification_tests {
 
     /// §8.1's `compilationUnit → languageId toplevelClass`,
     /// `toplevelClass → classCategory classDeclaration`, `classCategory → [string]`.
+    // spec: syntax.compilation-unit
+    // spec: syntax.module-class-access
     #[test]
     fn a_module_has_an_optional_category_and_no_access_modifier() {
         assert!(parse_module_source("Newspeak3\nclass Root = () ()\n").is_ok());
@@ -3400,6 +3501,7 @@ mod specification_tests {
     /// access modifiers are unreserved words (§4.1), so each is a language id
     /// exactly when a `toplevelClass` follows it, and opens the declaration
     /// otherwise.
+    // spec: syntax.language-id
     #[test]
     fn a_module_may_leave_its_language_id_out() {
         let language_id_of = |source: &str| {
@@ -3424,6 +3526,7 @@ mod specification_tests {
         );
     }
 
+    // spec: syntax.language-id
     #[test]
     fn the_prologue_is_kept_when_present_and_absent_otherwise() {
         let with = parse_module_source("Newspeak3\n'Root'\nclass A = () ()").expect("a module");
@@ -3435,6 +3538,7 @@ mod specification_tests {
     }
 
     /// A name is expected where the grammar has an `identifier`.
+    // spec: syntax.class-declaration
     #[test]
     fn a_declaration_names_what_it_declares() {
         assert!(parse_module_source("class 3 = () ()\n").is_err());
@@ -3445,6 +3549,7 @@ mod specification_tests {
 
     /// §6.3.4's `binaryMsgPattern → binarySelector slotDecl`, any binary
     /// selector, `||` and a negative-looking `-` included.
+    // spec: syntax.message-pattern
     #[test]
     fn every_binary_selector_declares_a_binary_method() {
         for selector in ["+", "=", "<", ">", "|", "||", "->", "-", "<=", "\\\\"] {
@@ -3456,6 +3561,8 @@ mod specification_tests {
     /// and 36 and every digit is below it; the canonical parser refuses the
     /// rest while it parses, and so does this one. A fraction or an exponent
     /// makes a number non-integral, a radix one included.
+    // spec: syntax.literal.number
+    // spec: lex.number.radix
     #[test]
     fn a_radix_number_denotes_a_number() {
         for number in ["2r1010", "36rZ", "16r1.8", "2r1e3", "16r-1F", "8r7.7e-2"] {
@@ -3481,6 +3588,7 @@ mod specification_tests {
     /// §6's `classDeclaration` tries `messagePattern equalSign` before
     /// `empty equalSign`, so an `=` with a parameter and another `=` after it
     /// is a binary factory, not the end of the header.
+    // spec: syntax.class-declaration
     #[test]
     fn a_binary_factory_may_be_named_equals() {
         let module = parse_module_source("class Pair = other = Object new () ()\n")
@@ -3508,6 +3616,7 @@ mod specification_tests {
     /// and in a code body (§5.1.8's `temporaries → slotDecls`) alike: an
     /// empty sequential section may be written `||`, and a simultaneous one
     /// declares slots between `||` and `||`.
+    // spec: syntax.slot-section
     #[test]
     fn a_slot_section_is_sequential_or_simultaneous_everywhere() {
         accepted("class Box = Object new ( || ) ( probe = ( || ^1 ) )");
@@ -3532,6 +3641,7 @@ mod specification_tests {
     /// §6.3.2: a declaration remembers which clause it stood in, since a
     /// simultaneous clause initializes differently. A lone `||` is still the
     /// empty sequential section, and a lazy slot belongs to no clause.
+    // spec: syntax.slot-section
     #[test]
     fn a_slot_declaration_records_whether_its_clause_is_simultaneous() {
         let source = indoc::indoc! {"
@@ -3578,6 +3688,7 @@ mod specification_tests {
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
     /// identifier)* rbracket rangleBracket`, kept as its tokens like every type.
+    // spec: syntax.type-parameters
     #[test]
     fn a_class_declares_its_type_parameters_as_the_specification_writes_them() {
         accepted("class Map <[K, V]> new: capacity <Integer> = Object new () ()");
@@ -3797,6 +3908,7 @@ mod type_annotation_tests {
             .join(" ")
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn every_type_annotation_is_kept() {
         let module = module(indoc! {"
@@ -3890,6 +4002,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn an_unannotated_declaration_has_no_annotations() {
         let module = module(indoc! {"
@@ -3923,6 +4036,7 @@ mod type_annotation_tests {
         assert!(lazy_slot.type_annotation.is_none());
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_binary_parameter_keeps_its_type() {
         let module = module(indoc! {"
@@ -3946,6 +4060,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_unary_pattern_keeps_its_type_parameters() {
         let source = indoc! {"
@@ -3976,6 +4091,7 @@ mod type_annotation_tests {
         assert!(type_parameters.is_none());
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_where_clause_is_kept() {
         let source = indoc! {"
@@ -4019,6 +4135,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_factory_keeps_its_return_type_and_where_clause() {
         let source = indoc! {"
@@ -4041,6 +4158,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_lazy_slot_keeps_its_type() {
         let module = module(indoc! {"
@@ -4060,6 +4178,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-annotation
     #[test]
     fn a_superclass_receiver_keeps_its_type_arguments() {
         let module = module(indoc! {"
@@ -4077,6 +4196,7 @@ mod type_annotation_tests {
         );
     }
 
+    // spec: syntax.type-parameters
     #[test]
     fn a_class_keeps_its_bracketed_type_parameters() {
         let module = module(indoc! {"

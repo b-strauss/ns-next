@@ -70,6 +70,7 @@ first.
 | The developer tool: designed in thirty-five decisions and four stages; stage 1, tracing -- typed events with their reasons in seven categories (`ns_runtime::trace_events`), delivered to a sink the host installs, `ns-next run --trace` and `--trace-filter`, one line each on standard error, the tools' one name grammar in `ns-runtime` (`tool_names`), `debug_start`'s `trace`; stage 2, printing code -- listings in the trace's queue of every body's bytecode when its mixin is made, every install's machine code annotated by the macro assembler on request, its bytes unchanged, and every optimizing compile's inlining plan with its outcome, `ns-next run --print-bytecode`, `--print-code`, `--print-inlining` and `--print-filter`, machine code decoded by `iced-x86` and `yaxpeax-arm` in `ns-cli`, a stopped frame's code through `Command::FrameCode`, `nsNext/frameCode` and `debug_code`; stage 3, the IDE -- bodies numbered and described with their source positions, `ns-next run --trace-file`'s typed JSON lines, the analyzer's `newspeak/methodNames` and `newspeak/moduleIdentity`, and in the plugin the "Developer Tool" tab, watched methods, the "Newspeak JIT" tool window (Methods, Events, Code, Inlining), gutter state icons, inlay hints at the sends, code editor tabs linked to the source and Show Frame Code; then what the user met in the IDE -- closable run tabs that drop their data, the Code tab shown at once, its chooser's labels whole, its scroll with the editor in both directions on request, the frame's line coloured as the execution point, and a restored line breakpoint that keeps its properties; then what a run keeps -- its machine-code listings and plans as places in the trace file, read back when a view shows one, and a rerun replacing its configuration's ended, unpinned tab under the same executor, as the Run window does | Partial (stages 1 to 3 of 4) | 2026-11-21 | [developer-tool-stage-1-tracing](superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md), [developer-tool-stage-2-printing-code](superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md), [developer-tool-stage-3-the-ide](superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md) |
 | The MCP server's sessions and trace tools -- numbered sessions served concurrently, each by a worker thread a pause, a stop, a cancellation and the server's end reach during a wait; a traced session's `--trace-file` written into a file the server owns in the user's own directory, claimed by a held lock, and indexed as it grows; the `trace:` line and four bounded tools, `debug_trace`, `debug_trace_method`, `debug_trace_listing` and `debug_trace_events`, every cut answer ending in its exact next call, and `debug_code`, `debug_stack` and `debug_variables` paged alike; a class's three initializer bodies named apart; every body the compiler synthesizes described; and a closed standard output ending the run with status 1 | Complete | 2026-11-22 | [mcp-trace](superpowers/plans/2026-11-22-0310-mcp-trace.md) |
 | The JIT tool window's filters and grouping -- the Methods tab filtered by name as the Events tab is, both in a search field with a clear button; both tabs grouped by nothing, the method or the class; the Events tab's categories in a popup | Complete | 2026-11-22 | -- |
+| The specification's foundation and syntax -- ns-next specified in a book of its own under `docs/spec/`, Markdown rendered by mdBook, each rule named and listing the tests that name it, checked and built at every commit by `cargo xtask spec`; the language's lexical structure and grammar written, five syntax decisions adopted as rules, the appendix of the differences from Bracha; the complete install's decisions recorded before it | Complete | 2026-11-23 | [specification-foundation-and-syntax](superpowers/plans/2026-11-23-0137-specification-foundation-and-syntax.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -2875,8 +2876,9 @@ user on 2026-09-25; [frontend.md](design/frontend.md), "Lexer"). A
 double-quoted string has no escape and ends at the next `"`, so each kind of
 string holds the other's quote freely; any single character between two
 quotes is a one-character string, `"` included, so the corpus's `"""` still
-reads as a quote and `parse-corpus` stays at 210/0/1/0. `README.md`'s
-deviations table records the difference from §5.1.4's `""""`.
+reads as a quote and `parse-corpus` stays at 210/0/1/0. The
+specification's appendix, "Differences from Bracha's Newspeak", records
+the difference from §5.1.4's `""""`.
 
 The `Character` class, its three mirror rows (65 remain), `Object`'s
 accessor for it and `Mutator::new_character` are gone. Its literal tag 6
@@ -8785,7 +8787,50 @@ The commit gates passed on every commit, and the plugin's verification
 against six IDEs at the batch's end; the batch changed the plugin
 alone.
 
-What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
-stage 6, hot swap, edit-and-continue and `ActivationMirror`. The
-developer tool's stage 4, the shell, is set back, when to take it up
-not decided.
+## The specification's foundation and syntax (2026-11-23)
+
+[specification.md](design/specification.md). Before the debugger's stage
+6 goes on, ns-next is specified in a book of its own, `docs/spec/`, with
+Bracha's document its source and no longer its measure: decided with
+the user in seven decisions, and the hot swap work split into three
+batches, the first of which, the complete install, has its decisions
+recorded and waits ([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"). An executable model in Lean 4 written
+in Verso was weighed and dropped. The book is Markdown rendered by
+mdBook 0.5.4, each normative rule preceded by an identifier as the Rust
+Reference has them; `cargo xtask spec` (`xtask/src/spec.rs`) checks the
+identifiers, the chapters of `SUMMARY.md`, the tests' references --
+`rules = [...]` in a golden's `.toml`, `// spec:` above a Rust test --
+and every link to a rule, and renders the book into `target/spec/html`,
+each rule listing its tests and an appendix the untested ones; the
+commit gate builds it. The language's lexical structure and grammar are
+written, every rule but the three marked gaps named by a test, the
+special characters, the reserved words and the words with tokens of
+their own as tables the lexer's and the parser's tests hold to the code;
+five syntax decisions, each decided with the user, are adopted as rules
+and listed in the appendix of the differences from Bracha's Newspeak --
+the optional language id, the `///` line comment, no character
+literals, whitespace that only separates tokens, `outer N` alone -- and
+leave [README.md](design/README.md)'s table of deviations.
+
+- `f73f06df` -- the complete install's decisions.
+- `59bd516e`, `223bc7a7` -- the specification's decisions.
+- `8bd7d595` -- the book's skeleton and `cargo xtask spec`.
+- `01d6a9ee` -- a golden names its rules.
+- `ce75c350` -- the lexical structure.
+- `46d673eb` -- the grammar of modules, classes and members.
+- `010f58b6` -- the grammar of expressions.
+- `2b340cff`, `2ce34208` -- the appendix, the rule that keeps the book,
+  and the book living and unversioned.
+- `3ac9dee8` -- the commit gate builds the book in its own process.
+- `25e71b40` -- the review's findings: two chapters stated more exactly,
+  the parser's pattern values, the table of words read by the lexer, a
+  golden's `rules` read as TOML.
+- `5750ad7f` -- the book's reader checks fences in list items, rule
+  lines, unclosed fences, chapter links and the tests a `// spec:` line
+  belongs to; the gaps have tests.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+specification's second batch, the language's semantics and the run-time
+semantics. The developer tool's stage 4, the shell, is set back, when to
+take it up not decided.

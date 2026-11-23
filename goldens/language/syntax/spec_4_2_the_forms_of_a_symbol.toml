@@ -5,3 +5,4 @@ stdout = '''
 #two words
 true
 '''
+rules = ["lex.symbol"]

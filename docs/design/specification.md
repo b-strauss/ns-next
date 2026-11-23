@@ -1,0 +1,130 @@
+# The specification of ns-next
+
+ns-next gets a specification of its own: the language it runs, the
+run-time semantics, the bytecode, the image format and the invariants the
+implementation keeps, written in Markdown, rendered as an HTML book, and
+bound to the tests that check each rule. This document records what was
+decided and in which order it is built. The first batch is built: the
+book under `docs/spec/`, `cargo xtask spec`, which checks its rule
+identifiers, the tests' references to them and its links and renders it,
+the commit gate's step, the rule of `CLAUDE.md` that a change keeps the
+book with it, and the language's lexical structure and grammar, each
+rule with its tests, the special characters, the reserved words and the
+words with tokens of their own as tables the lexer's and the parser's
+tests hold to the code, and the appendix of the differences from
+Bracha's Newspeak. The parts after the grammar say what they will cover
+and are not written yet.
+
+## Why
+
+The rules ns-next keeps are spread over the design documents, the
+invariants of `CLAUDE.md` and the code, each told in prose beside its
+reasoning, its prior art and its mechanism. A question such as what an
+install does to a removed class's objects had to be answered from five
+documents at once, and every invariant of `CLAUDE.md` has already produced
+a real defect. Bracha's specification (`docs/references/newspeak-spec.pdf`)
+leaves parts open or marked *Unimplemented*, and ns-next has already
+decided syntax it departs from ([README.md](README.md), "Deviations from
+the language specification"). The specification states the rules once,
+normatively; the design documents keep the reasoning and the mechanism and
+point at the rules (decided with the user on 2026-11-23, before the
+complete install, [liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned: the complete install", goes on).
+
+## The decisions
+
+Each decided with the user on 2026-11-23.
+
+1. **A self-contained specification of ns-next, Bracha's document its
+   source.** It defines the language as ns-next implements it, derived
+   from Bracha's document where that holds and completed where it is
+   silent; Bracha's document is no longer the measure, so the principle
+   that a deviation from the specification is a defect
+   ([README.md](README.md), "Principles") refers to this one once it
+   stands. An appendix lists where it differs from Bracha's Newspeak and
+   why.
+2. **Five parts.** (1) The language: its lexical structure, its grammar
+   and its semantics, modules, their identity and metadata included. (2)
+   The run-time semantics as abstract operations: lookup and access,
+   instantiation, slot access, `outer`, unwinding and exceptions,
+   `become:`, the install and the mirrors, the VM mirror as a capability,
+   the depth limit and what a program observes of memory. (3) The
+   bytecode: the instructions, their encoding, each one's register
+   effects, and the rules the decoder checks. (4) The image format: its
+   structure, sections and tags, its validation and its bounds. (5)
+   Separately, the VM's invariants: the internal rules no program sees
+   whose breach is silent wrong output -- the write barrier, handles and
+   the brand, what the collector traces, the rules of machine code --
+   each naming the rule of parts 1 to 4 it protects.
+3. **For the language and the run-time semantics, every current deviation
+   is decided on its own.** It is adopted as a normative rule, or marked
+   in the text as a gap, as Bracha marks what is *Unimplemented*; what was
+   never discussed stays a marked gap and nothing is invented for it. For
+   the formats the current state is the contract.
+4. **Prose in fixed forms.** The grammar is a PEG over tokens, with a
+   lexical grammar beneath it; the semantics are named abstract
+   operations in numbered steps, as ECMA-262 writes them; each instruction
+   has a page in the frame of the JVM specification's chapter 6 --
+   operands, encoding, the registers read and written, outer reach, jump
+   targets, effect, errors; the image is structure tables with numbered
+   validation rules.
+5. **Markdown, rendered by mdBook, each rule named as the Rust Reference
+   names its rules.** The source is Markdown under `docs/spec/`, a chapter
+   per part and the appendix, readable on GitHub as it is. Every normative
+   rule is preceded by an identifier line, `r[runtime.lookup.public]`, as
+   the Rust Reference's `mdbook-spec` has it
+   ([its dev guide](https://rust-lang.github.io/reference/dev-guide/tooling/mdbook-spec.html)).
+   A preprocessor of `xtask`'s own, in Rust, checks the identifiers --
+   unique, well formed -- turns them into anchors and links, and collects
+   the tests that name a rule: a golden in a line of its `.toml`, a Rust
+   test in a comment, as a test of `rust-lang/rust` names its rule in a
+   `//@ reference:` header. The book shows each rule's tests, and an
+   appendix the rules no test names yet. The grammar, the instruction
+   table and the tag table stand in marked, machine-readable blocks that
+   Rust tests hold to the code -- `opcodes.rs` to the tag table among
+   them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
+   opened in a browser. mdBook is a development tool, installed as
+   `cargo-nextest` is, and reaches no binary. The alternatives weighed
+   were Sphinx (WebAssembly, Python, the Ferrocene Language
+   Specification), ecmarkup (ECMA-262) and Bikeshed (W3C, WHATWG), and,
+   before them, an executable model in Lean 4 written in Verso, dropped
+   because the toolchain it would take on is more than the specification
+   needs now: Verso's precompiled libraries do not link on Windows at
+   v4.36.0.
+6. **Every commit checks it.** The identifiers, the tests' references to
+   them and the machine-readable tables are checked by Rust tests in the
+   default `cargo nextest run`, and the commit gate builds the book, so a
+   broken link or block fails at once. A commit that changes observable
+   behaviour, a format or an invariant changes the specification's rule
+   for it in the same commit, for every part already written.
+7. **The specification is living.** It describes ns-next as it is at
+   every commit, as the design documents do, and has no versions or
+   editions of its own: a rule no longer true is rewritten, never kept
+   beside its successor (decided with the user on 2026-11-23).
+
+## The order of building it
+
+Semantics first (decided with the user on 2026-11-23), each its own plan,
+branch and end-of-batch gates:
+
+1. **The foundation and the syntax**, built: mdBook, the preprocessor, the checks
+   of identifiers and references, the rule in `CLAUDE.md`, the book's
+   skeleton of five parts and the appendix; and the lexical structure and
+   the grammar, the syntax deviations decided one by one, the parser's
+   tests and the syntax goldens naming their rules.
+2. **The language and the run-time semantics**, the other deviations
+   decided; the install as it is.
+3. **The image format**: the structure, the tags, the validation rules.
+4. **The bytecode**: the instruction table and the register effects.
+5. **The VM invariants**, and the design documents and `CLAUDE.md`
+   pointing at the rules by identifier.
+
+The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned: the complete install") resumes after the fifth, and changes the
+specification as it changes the runtime.
+
+## Open
+
+- Whether an executable oracle checks the specification later -- a naive
+  reference interpreter in Rust, or a mechanized model -- decided once the
+  prose stands and shows where it was ambiguous.

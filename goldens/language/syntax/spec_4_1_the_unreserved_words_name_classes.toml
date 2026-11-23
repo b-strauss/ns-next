@@ -2,3 +2,4 @@ stdout = '''
 public, public protected private lazy class, public
 a method named class
 '''
+rules = ["lex.unreserved-words", "syntax.unreserved-word"]

@@ -15,6 +15,22 @@ when they were written.
 
 ## Next
 
+**The specification of ns-next, its second batch: the language's
+semantics and the run-time semantics** (decided with the user on
+2026-11-23, before the debugger's stage 6 goes on;
+[specification.md](design/specification.md), "The order of building
+it", item 2): what a module means when it runs, and the operations it is
+built from as abstract operations -- lookup and access, instantiation,
+slot access, `outer`, unwinding and exceptions, `become:`, the install
+and the mirrors, the VM mirror as a capability, the depth limit, what a
+program observes of memory -- written into `docs/spec/` with their rules
+named by the goldens and tests that check them, and every remaining
+deviation of [README.md](design/README.md)'s table decided with the user
+one by one, adopted as a rule or marked a gap. The first batch, the book
+and the syntax, is built. The batches after it are that document's
+"The order of building it"; the complete install resumes after the
+fifth.
+
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
@@ -33,6 +49,12 @@ thread mirrors" below). With the install, "Create Method" for an
 uncaught `MessageNotUnderstood` and the forced `nil` from
 `Object>>doesNotUnderstand:` when it is declined ("Exceptions"). Over
 DAP, requests of ns-next's own, and in the plugin a hot-swap action.
+Hot swap is split into three batches, the complete install, hot swap in
+the debugger and developing in an empty world, and the first one's
+decisions are taken but for one, the change of a module's identity
+([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"); it waits for the specification of the
+current state, which comes first (decided with the user on 2026-11-23).
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
 at the safepoint", "Launching, the start and the end", "The MCP
 server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
@@ -232,6 +254,17 @@ description: a reconstruction runs and prints the right answer while
 measuring something else. The Are We Fast Yet benchmarks are in the tree
 and measured as [execution.md](design/execution.md), "The Are We Fast Yet
 benchmarks", describes.
+
+## The specification
+
+- **The grammar as a machine-readable block** (2026-11-23). Decision 5 of
+  [specification.md](design/specification.md) has the grammar, the
+  instruction table and the tag table stand in blocks tests hold to the
+  code; the lexical structure's three tables do, but the PEG of
+  `docs/spec/language/grammar.md` stands in `text` blocks nothing reads,
+  so a production and the parser can drift apart unnoticed. What a test
+  would check against it -- the parser's productions, or a parser
+  generated from it run over the corpus -- is undecided.
 
 ## The road to a high-performance VM
 

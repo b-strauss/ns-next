@@ -1,3 +1,4 @@
 stdout = '''
 [receiver once][inner one][inner two][inner three]
 '''
+rules = ["syntax.cascade"]

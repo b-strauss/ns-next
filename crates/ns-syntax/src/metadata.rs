@@ -494,6 +494,7 @@ mod tests {
         (target, tag.to_string(), payload.to_string())
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_module_metadata_stands_above_its_class() {
         let source = indoc! {"
@@ -530,6 +531,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_parameter_metadata_belongs_to_the_parameter() {
         let source = indoc! {"
@@ -547,6 +549,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_block_parameter_metadata_belongs_to_the_parameter() {
         let source = indoc! {"
@@ -577,6 +580,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_factory_metadata_follows_its_pattern() {
         let source = indoc! {"
@@ -594,6 +598,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_method_metadata_follows_its_pattern() {
         let source = indoc! {"
@@ -637,6 +642,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_slot_and_an_expression() {
         let source = indoc! {"
@@ -680,6 +686,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_nested_class_a_mixin_clause_and_parentheses() {
         let source = indoc! {"
@@ -729,6 +736,7 @@ mod tests {
         );
     }
 
+    // spec: syntax.metadata
     #[test]
     fn the_specification_s_example() {
         // §4.3's example, its slot's `(:type: Integer *)` written as the
@@ -828,6 +836,7 @@ mod tests {
 
     /// `Metadata::read` reads a comment by its span alone, so that a
     /// comment no target takes in is metadata to it too.
+    // spec: lex.comment.metadata
     #[test]
     fn a_comment_reads_as_metadata_whatever_its_target() {
         let source = "1 (* :after: x *) (* plain *)";
@@ -844,6 +853,7 @@ mod tests {
         assert_eq!(super::Metadata::read(plain, source), None);
     }
 
+    // spec: lex.comment.metadata
     #[test]
     fn an_untagged_comment_is_no_metadata() {
         let source = indoc! {"
@@ -862,6 +872,7 @@ mod tests {
         assert_eq!(targets(source), []);
     }
 
+    // spec: syntax.metadata
     #[test]
     fn a_metadata_with_anything_but_comments_between_has_no_target() {
         let source = indoc! {"

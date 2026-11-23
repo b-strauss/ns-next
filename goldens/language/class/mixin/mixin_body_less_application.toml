@@ -3,3 +3,4 @@ Marker answers mark
 Marker answers mark
 Base answers fromBase
 '''
+rules = ["syntax.mixin-application"]

@@ -98,6 +98,7 @@ pub fn benchmark_runs() -> Vec<BenchmarkRun> {
                     skipped: None,
                     arguments: vec![name],
                     reaches_a_table_limit: None,
+                    rules: Vec::new(),
                 },
             });
         }
@@ -336,6 +337,11 @@ pub struct Expectation {
     /// (`no_program_reaches_a_table_limit`).
     #[serde(default)]
     pub reaches_a_table_limit: Option<String>,
+    /// The identifiers of the specification's rules the golden checks
+    /// (`docs/spec/introduction.md`, "Conventions"), written on one line
+    /// and read by `cargo xtask spec`; nothing reads them at run time.
+    #[serde(default)]
+    pub rules: Vec<String>,
 }
 
 impl Expectation {
@@ -397,6 +403,7 @@ pub fn expectation_of(source: &Path) -> Expectation {
         skipped: recorded.skipped,
         arguments: recorded.arguments,
         reaches_a_table_limit: recorded.reaches_a_table_limit,
+        rules: recorded.rules,
     }
 }
 
