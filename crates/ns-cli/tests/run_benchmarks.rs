@@ -91,6 +91,7 @@ fn main() {
                 skipped: None,
                 arguments: vec![name.clone()],
                 reaches_a_table_limit: None,
+                rules: Vec::new(),
             };
             let checked = name.clone();
             trials.push(Trial::test(format!("{}::{name}", side.name()), move || {

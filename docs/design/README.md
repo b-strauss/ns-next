@@ -268,6 +268,9 @@ and so must machine code, which the suite runs wherever the JIT is built.
 A new golden's `.toml` is recorded from the interpreter, with
 `NS_NEXT_NO_JIT=1`, so that what pins machine code was never produced by
 it.
+A `.toml` may name the rules of the specification the golden checks on
+one line, `rules = ["syntax.outer.alone"]`; `cargo xtask spec` reads it
+(`docs/spec/introduction.md`, "Conventions"), and the run ignores it.
 That runner is a `harness = false` binary on `libtest-mimic`, one test per
 golden per lowering named by its path below `goldens/` --
 `golden::optimized::<path>` and `golden::reference::<path>`, with `<path>`

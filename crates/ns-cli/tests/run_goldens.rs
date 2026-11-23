@@ -27,6 +27,10 @@ fn main() {
             "every_golden_is_a_complete_pair",
             every_golden_is_a_complete_pair,
         ),
+        Trial::test(
+            "a_golden_may_name_the_rules_it_checks",
+            a_golden_may_name_the_rules_it_checks,
+        ),
     ];
     for source in common::golden_programs() {
         let name = common::golden_name(&source);
@@ -133,6 +137,21 @@ fn matches_with_a_two_entry_global_cache(source: &Path) -> Result<(), Failed> {
         .output()
         .map_err(|error| format!("run ns-next: {error}"))?;
     common::compare(&output, &expectation, "with a two-entry global cache").map_err(Failed::from)
+}
+
+/// A golden names the specification's rules it checks on one `rules` line,
+/// which `cargo xtask spec` reads and the run ignores; a misspelled key is
+/// refused like every unknown one, so a reference never silently vanishes.
+fn a_golden_may_name_the_rules_it_checks() -> Result<(), Failed> {
+    let expectation = toml::from_str::<common::Expectation>(
+        "stdout = \"1\\n\"\nrules = [\"syntax.outer.alone\"]\n",
+    )
+    .map_err(|error| Failed::from(error.to_string()))?;
+    assert_eq!(expectation.rules, ["syntax.outer.alone"]);
+    assert_eq!(expectation.stdout, "1\n");
+    let refused = toml::from_str::<common::Expectation>("rule = [\"syntax.outer.alone\"]\n");
+    assert!(refused.is_err(), "`rule` is no key of an expectation");
+    Ok(())
 }
 
 /// The two guards on `skipped` itself, which nothing else exercises. Either
