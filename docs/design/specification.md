@@ -97,6 +97,10 @@ Each decided with the user on 2026-11-23.
    broken link or block fails at once. A commit that changes observable
    behaviour, a format or an invariant changes the specification's rule
    for it in the same commit, for every part already written.
+7. **The specification is living.** It describes ns-next as it is at
+   every commit, as the design documents do, and has no versions or
+   editions of its own: a rule no longer true is rewritten, never kept
+   beside its successor (decided with the user on 2026-11-23).
 
 ## The order of building it
 
@@ -124,4 +128,3 @@ specification as it changes the runtime.
 - Whether an executable oracle checks the specification later -- a naive
   reference interpreter in Rust, or a mechanized model -- decided once the
   prose stands and shows where it was ambiguous.
-- How the specification is versioned against ns-next's own versions.

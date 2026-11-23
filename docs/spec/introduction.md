@@ -61,9 +61,11 @@ abstract operations in numbered steps. Machine-readable tables stand in
 fenced blocks whose info string begins with `spec-table`, and tests hold
 them to the code.
 
-**Changes.** A change to ns-next that changes observable behaviour, a
-format or an invariant changes the rule for it in this book in the same
-commit.
+**Changes.** The book is living: it describes ns-next as it is, and has
+no versions or editions of its own. A change to ns-next that changes
+observable behaviour, a format or an invariant changes the rule for it in
+this book in the same commit, and a rule no longer true is rewritten,
+never kept beside its successor.
 
 The book is rendered by `cargo xtask spec` into
 `target/spec/html/index.html`.

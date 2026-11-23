@@ -8790,7 +8790,7 @@ alone.
 [specification.md](design/specification.md). Before the debugger's stage
 6 goes on, ns-next is specified in a book of its own, `docs/spec/`, with
 Bracha's document its source and no longer its measure: decided with
-the user in six decisions, and the hot swap work split into three
+the user in seven decisions, and the hot swap work split into three
 batches, the first of which, the complete install, has its decisions
 recorded and waits ([liveness-and-reflection.md](design/liveness-and-reflection.md),
 "Planned: the complete install"). An executable model in Lean 4 written
