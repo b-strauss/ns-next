@@ -3415,6 +3415,16 @@ mod specification_tests {
     /// §5.1.8's `statements → returnStatement | statementSequence | empty`,
     /// `statementSequence → expression [dot statements]`,
     /// `returnStatement → hat expression [dot]`.
+    // spec: syntax.gap.object-literal
+    // spec: syntax.gap.chain
+    // spec: syntax.gap.class-expression
+    #[test]
+    fn the_gaps_are_refused() {
+        refused("probe = ( ^() ( ^1 ) )");
+        refused("probe = ( ^self foo :| bar )");
+        refused("probe = ( ^class Inner = () () )");
+    }
+
     // spec: syntax.statements
     #[test]
     fn a_dot_ends_a_statement_and_nothing_else() {

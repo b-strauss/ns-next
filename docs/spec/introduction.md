@@ -32,7 +32,9 @@ other four are this implementation's.
 ## Conventions
 
 **Rules.** Every normative rule is preceded by its identifier, a line of
-the form `r[lex.comment.line]` alone on its line. An identifier is one or
+the form `r[lex.comment.line]` alone on its line and at its start; a line
+that begins with `r[` is always one, and an indented `r[...]` is a
+sample. An identifier is one or
 more segments joined by `.`, each a lowercase letter followed by
 lowercase letters, digits and `-`; its first segment names the part --
 `lex` and `syntax` for the language's lexical structure and grammar, and,
@@ -43,10 +45,12 @@ tests that check its rule; the appendix "Untested rules" lists the rules
 no test names yet.
 
 **Tests name their rules.** A golden names the rules it checks in its
-`.toml`, `rules = ["syntax.outer.alone"]`, on one line; a Rust test in a
-comment line `// spec: syntax.outer.alone` directly above it, one line
-per rule. A reference to an identifier the book does not declare fails
-the suite.
+`.toml`, `rules = ["syntax.outer.alone"]`; a Rust test in a comment line
+`// spec: syntax.outer.alone` directly above its `#[test]`, one line per
+rule, which the book lists with the test's name. A reference to an
+identifier the book does not declare, or a `// spec:` line above no test,
+fails the suite, and so does a link to a chapter or a rule the book does
+not have.
 
 **Gaps.** Where this book describes a construct ns-next does not build --
 one Bracha marks *Unimplemented*, or one a decision left open -- the rule

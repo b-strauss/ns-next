@@ -12,11 +12,13 @@ pub struct Rule {
     pub line: usize,
 }
 
-/// A test's reference to a rule.
+/// A test's reference to a rule: the file, and for a Rust test the name of
+/// the test function, empty for a golden, whose file is its test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reference {
     pub identifier: String,
     pub test: PathBuf,
+    pub name: String,
     pub line: usize,
 }
 
@@ -47,14 +49,11 @@ fn lines_of(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// The fence a line opens or closes: its character and its length, for a
-/// line that starts, after up to three spaces, with three or more backticks
-/// or tildes (CommonMark's fenced code blocks).
+/// line that starts, after its indentation, with three or more backticks or
+/// tildes (CommonMark's fenced code blocks). Any indentation is taken, so
+/// that a fence inside a list item, indented to the item's text, counts.
 fn fence_of(line: &str) -> Option<(char, usize)> {
-    let indented = line.len() - line.trim_start_matches(' ').len();
-    if indented > 3 {
-        return None;
-    }
-    let rest = &line[indented..];
+    let rest = line.trim_start_matches(' ');
     let character = rest
         .chars()
         .next()
@@ -68,13 +67,16 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
 }
 
 /// Calls `visit` with each line of `markdown`, its 1-based number, and
-/// whether it stands outside every fenced code block.
-fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) {
+/// whether it stands outside every fenced code block; answers the line of a
+/// fence still open at the end, which hides every line after it.
+fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Option<usize> {
     let mut open: Option<(char, usize)> = None;
+    let mut opened_at = 0;
     for (index, line) in lines_of(markdown).enumerate() {
         match (open, fence_of(line)) {
             (None, Some(fence)) => {
                 open = Some(fence);
+                opened_at = index + 1;
                 visit(index + 1, line, false);
             }
             (Some((character, length)), Some((closing, closing_length)))
@@ -89,11 +91,13 @@ fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) {
             (None, None) => visit(index + 1, line, true),
         }
     }
+    open.map(|_| opened_at)
 }
 
-/// The identifier of a rule line, `r[<identifier>]` alone on its line.
+/// The identifier of a rule line, `r[<identifier>]` alone on its line and
+/// at its start, so that an indented code block's `r[...]` is a sample.
 fn rule_line(line: &str) -> Option<&str> {
-    line.trim()
+    line.trim_end()
         .strip_prefix("r[")
         .and_then(|rest| rest.strip_suffix(']'))
 }
@@ -107,9 +111,15 @@ fn display(path: &Path) -> String {
 pub fn rules_in(markdown: &str, chapter: &Path) -> Result<Vec<Rule>, String> {
     let mut rules = Vec::new();
     let mut refusals = Vec::new();
-    walk_markdown(markdown, |line, text, outside| {
+    let unclosed = walk_markdown(markdown, |line, text, outside| {
         if !outside {
             return;
+        }
+        if text.starts_with("r[") && rule_line(text).is_none() {
+            refusals.push(format!(
+                "{}:{line}: a line that begins with `r[` is a rule line, `r[<identifier>]` alone",
+                display(chapter)
+            ));
         }
         {
             if let Some(identifier) = rule_line(text) {
@@ -129,6 +139,12 @@ pub fn rules_in(markdown: &str, chapter: &Path) -> Result<Vec<Rule>, String> {
             }
         }
     });
+    if let Some(line) = unclosed {
+        refusals.push(format!(
+            "{}:{line}: this fence is never closed, which hides every rule after it",
+            display(chapter)
+        ));
+    }
     if refusals.is_empty() {
         Ok(rules)
     } else {
@@ -275,15 +291,17 @@ fn resolve_link(chapter: &Path, relative: &str) -> PathBuf {
     parts.iter().collect()
 }
 
-/// Checks that every link to a rule, `(#r-<identifier>)` or
+/// Checks that every link to a chapter names one the book has, and that
+/// every link to a rule, `(#r-<identifier>)` or
 /// `(<chapter>#r-<identifier>)`, names a rule the chapter it points to
-/// declares, so that no anchor of the rendered book dangles.
+/// declares, so that no link of the rendered book dangles; mdBook refuses
+/// neither.
 pub fn check_links(book: &Path) -> Result<(), String> {
     let rules = book_rules(book)?;
     let mut refusals = Vec::new();
     for chapter in book_chapters(book)? {
         let markdown = read(&book.join(&chapter))?;
-        walk_markdown(&markdown, |line, text, outside| {
+        let _ = walk_markdown(&markdown, |line, text, outside| {
             if !outside {
                 return;
             }
@@ -293,6 +311,17 @@ pub fn check_links(book: &Path) -> Result<(), String> {
                 let Some(end) = rest.find(')') else { break };
                 let target = &rest[..end];
                 rest = &rest[end..];
+                let path = target.split('#').next().unwrap_or_default();
+                if path.ends_with(".md")
+                    && !path.contains("://")
+                    && !book.join(resolve_link(&chapter, path)).is_file()
+                {
+                    refusals.push(format!(
+                        "{}:{line}: the link to {path} names no chapter of the book",
+                        display(&chapter)
+                    ));
+                    continue;
+                }
                 let Some((path, identifier)) = target.split_once("#r-") else {
                     continue;
                 };
@@ -348,10 +377,26 @@ fn golden_references(
         references.push(Reference {
             identifier: rule.into_inner(),
             test: test.to_path_buf(),
+            name: String::new(),
             line,
         });
     }
     Ok(())
+}
+
+/// The name of the test whose `#[test]` follows the run of `// spec:` lines
+/// at `index`, or `None` when no test follows it directly.
+fn test_below(lines: &[&str], index: usize) -> Option<String> {
+    let mut below = index;
+    while lines.get(below)?.trim().starts_with(RUST_REFERENCE) {
+        below += 1;
+    }
+    if lines.get(below)?.trim() != "#[test]" {
+        return None;
+    }
+    let signature = lines.get(below + 1)?.trim();
+    let name = signature.strip_prefix("fn ")?.split('(').next()?;
+    Some(name.to_string())
 }
 
 /// Every reference the tests below `root` make to a rule.
@@ -374,13 +419,24 @@ pub fn references_in(root: &Path) -> Result<Vec<Reference>, String> {
     }
     for source in sources {
         let relative = source.strip_prefix(root).unwrap_or(&source).to_path_buf();
-        for (index, line) in lines_of(&read(&source)?).enumerate() {
-            if let Some(rest) = line.trim().strip_prefix(RUST_REFERENCE) {
-                references.push(Reference {
+        let text = read(&source)?;
+        let lines: Vec<&str> = lines_of(&text).collect();
+        for (index, line) in lines.iter().enumerate() {
+            let Some(rest) = line.trim().strip_prefix(RUST_REFERENCE) else {
+                continue;
+            };
+            match test_below(&lines, index) {
+                Some(name) => references.push(Reference {
                     identifier: rest.trim().to_string(),
                     test: relative.clone(),
+                    name,
                     line: index + 1,
-                });
+                }),
+                None => refusals.push(format!(
+                    "{}:{}: a `// spec:` line stands directly above a `#[test]`",
+                    display(&relative),
+                    index + 1
+                )),
             }
         }
     }
@@ -433,12 +489,18 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The tests that name `identifier`, each path once, in order.
-fn tests_of<'a>(identifier: &str, references: &'a [Reference]) -> Vec<&'a Path> {
-    let mut tests: Vec<&Path> = Vec::new();
+/// The tests that name `identifier`, each once, in order: a golden's file,
+/// or a Rust test's file and its name.
+fn tests_of(identifier: &str, references: &[Reference]) -> Vec<String> {
+    let mut tests: Vec<String> = Vec::new();
     for reference in references {
-        if reference.identifier == identifier && !tests.contains(&reference.test.as_path()) {
-            tests.push(&reference.test);
+        let test = if reference.name.is_empty() {
+            display(&reference.test)
+        } else {
+            format!("{} ({})", display(&reference.test), reference.name)
+        };
+        if reference.identifier == identifier && !tests.contains(&test) {
+            tests.push(test);
         }
     }
     tests
@@ -447,7 +509,7 @@ fn tests_of<'a>(identifier: &str, references: &'a [Reference]) -> Vec<&'a Path> 
 /// A chapter with each rule line made an anchor that lists the rule's tests.
 fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
     let mut processed = String::new();
-    walk_markdown(markdown, |_, line, outside| {
+    let _ = walk_markdown(markdown, |_, line, outside| {
         match rule_line(line).filter(|_| outside) {
             Some(identifier) => {
                 let tests = tests_of(identifier, references);
@@ -456,7 +518,7 @@ fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
                 } else {
                     tests
                         .iter()
-                        .map(|test| format!("<code>{}</code>", escape(&display(test))))
+                        .map(|test| format!("<code>{}</code>", escape(test)))
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
@@ -523,6 +585,24 @@ fn check_mdbook() -> Result<(), String> {
     }
 }
 
+/// The book's `book.toml` pointed at the processed copy: its sources in
+/// `src`, its HTML in `html`; refused when the text is not the form those
+/// two edits expect, rather than left unpointed.
+fn output_configuration(configuration: &str) -> Result<String, String> {
+    let configuration = configuration.replace("\r\n", "\n");
+    for expected in ["src = \".\"", "[build]\n"] {
+        if !configuration.contains(expected) {
+            return Err(format!(
+                "docs/spec/book.toml: `{}` is where the copy is pointed, and it is missing",
+                expected.trim_end()
+            ));
+        }
+    }
+    Ok(configuration
+        .replace("src = \".\"", "src = \"src\"")
+        .replace("[build]\n", "[build]\nbuild-dir = \"html\"\n"))
+}
+
 /// Checks the book and renders it into `output`: the processed chapters in
 /// `output/src`, the HTML in `output/html`.
 pub fn render(root: &Path, output: &Path) -> Result<(), String> {
@@ -560,10 +640,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
         &source.join("untested-rules.md"),
         &untested_rules(&rules, &references, &chapters),
     )?;
-    let configuration = read(&book.join("book.toml"))?
-        .replace("\r\n", "\n")
-        .replace("src = \".\"", "src = \"src\"")
-        .replace("[build]\n", "[build]\nbuild-dir = \"html\"\n");
+    let configuration = output_configuration(&read(&book.join("book.toml"))?)?;
     write(&output.join("book.toml"), &configuration)?;
     let status = std::process::Command::new("mdbook")
         .arg("build")
@@ -656,6 +733,39 @@ mod tests {
         )
         .expect("well formed");
         assert_eq!(identifiers(&rules), ["syntax.first", "syntax.second"]);
+    }
+
+    #[test]
+    fn a_fence_inside_a_list_item_hides_its_rule_lines() {
+        let rules = rules_in(
+            "- an item:\n\n    ```text\n    r[lex.sample]\n    ```\n\nr[lex.after]\n",
+            Path::new("lexical.md"),
+        )
+        .expect("well formed");
+        assert_eq!(identifiers(&rules), ["lex.after"]);
+    }
+
+    /// A rule line stands at the start of its line, so an indented code
+    /// block's `r[...]` is a sample.
+    #[test]
+    fn an_indented_rule_line_is_text() {
+        let rules = rules_in("text\n\n    r[lex.indented]\n", Path::new("lexical.md"))
+            .expect("well formed");
+        assert!(rules.is_empty(), "{rules:?}");
+    }
+
+    #[test]
+    fn a_rule_line_with_words_after_it_is_refused() {
+        let refusal = rules_in("intro\nr[lex.a] and more\n", Path::new("lexical.md"))
+            .expect_err("words after the rule");
+        assert!(refusal.contains("lexical.md:2"), "{refusal}");
+    }
+
+    #[test]
+    fn an_unclosed_fence_is_refused() {
+        let refusal = rules_in("intro\n```text\nr[lex.a]\n", Path::new("lexical.md"))
+            .expect_err("an unclosed fence");
+        assert!(refusal.contains("lexical.md:2"), "{refusal}");
     }
 
     #[test]
@@ -794,6 +904,7 @@ mod tests {
         let references = [Reference {
             identifier: "syntax.nothing".to_string(),
             test: PathBuf::from("goldens/language/outer.toml"),
+            name: String::new(),
             line: 4,
         }];
         let refusal = check_references(&rules, &references).expect_err("no such rule");
@@ -819,6 +930,52 @@ mod tests {
         assert!(refusal.contains("lex.gone"), "{refusal}");
         assert!(refusal.contains("part/b.md:4"), "{refusal}");
         assert_eq!(refusal.lines().count(), 2, "{refusal}");
+    }
+
+    #[test]
+    fn a_link_to_no_chapter_is_refused() {
+        let scratch = Scratch::new("chapter-links");
+        scratch.write("SUMMARY.md", "# Summary\n\n- [A](a.md)\n- [B](part/b.md)\n");
+        scratch.write(
+            "a.md",
+            "# A\n\nSee [B](part/b.md), [gone](part/gone.md) and [web](https://example.org/x.md).\n",
+        );
+        scratch.write("part/b.md", "# B\n\nSee [A](../a.md#a).\n");
+        let refusal = check_links(&scratch.0).expect_err("one dangling link");
+        assert!(
+            refusal.contains("part/gone.md") && refusal.contains("a.md:3"),
+            "{refusal}"
+        );
+        assert_eq!(refusal.lines().count(), 1, "{refusal}");
+    }
+
+    /// A `// spec:` line belongs to the test right below it, which the book
+    /// names beside its file.
+    #[test]
+    fn a_rust_reference_stands_directly_above_a_test() {
+        let scratch = Scratch::new("rust-references");
+        scratch.write(
+            "crates/a/src/lib.rs",
+            "    // spec: lex.a\n    // spec: lex.b\n    #[test]\n    fn named() {}\n",
+        );
+        let references = references_in(&scratch.0).expect("readable");
+        let found: Vec<(&str, &str)> = references
+            .iter()
+            .map(|reference| (reference.identifier.as_str(), reference.name.as_str()))
+            .collect();
+        assert_eq!(found, [("lex.a", "named"), ("lex.b", "named")]);
+        scratch.write("crates/a/src/lib.rs", "// spec: lex.a\nfn helper() {}\n");
+        let refusal = references_in(&scratch.0).expect_err("no test below");
+        assert!(refusal.contains("lib.rs:1"), "{refusal}");
+    }
+
+    #[test]
+    fn a_book_toml_that_cannot_be_pointed_at_the_copy_is_refused() {
+        let pointed =
+            output_configuration("[book]\nsrc = \".\"\n\n[build]\ncreate-missing = false\n")
+                .expect("the book's own form");
+        assert!(pointed.contains("src = \"src\"") && pointed.contains("build-dir = \"html\""));
+        output_configuration("[book]\nsrc=\".\"\n").expect_err("another spelling");
     }
 
     #[test]

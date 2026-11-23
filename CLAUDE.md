@@ -1021,10 +1021,10 @@ A commit that changes observable behaviour, a format or an invariant
 changes the rule for it in the specification (`docs/spec/`) in the same
 commit, for every part the book already writes -- today the lexical
 structure and the grammar. A new test names the rules it checks: a
-golden on one line of its `.toml`, `rules = ["syntax.outer.alone"]`, a
-Rust test in a comment line `// spec: syntax.outer.alone` directly above
-its `#[test]`; a reference to a rule the book does not declare fails the
-suite (`xtask/src/spec.rs`).
+golden in its `.toml`, `rules = ["syntax.outer.alone"]`, a Rust test in a
+comment line `// spec: syntax.outer.alone` directly above its `#[test]`;
+a reference to a rule the book does not declare, and a `// spec:` line
+above no test, fail the suite (`xtask/src/spec.rs`).
 
 Never judge performance from a debug build (the `measuring-performance` skill).
 Only a build without debug assertions runs the size tests

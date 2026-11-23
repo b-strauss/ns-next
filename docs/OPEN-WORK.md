@@ -265,28 +265,6 @@ benchmarks", describes.
   so a production and the parser can drift apart unnoticed. What a test
   would check against it -- the parser's productions, or a parser
   generated from it run over the corpus -- is undecided.
-- **What the book's reader does not check yet** (the batch's review,
-  2026-11-23; `xtask/src/spec.rs`): a fenced block indented by four or
-  more spaces, inside a list item, is not seen, so a rule sample in it
-  counts as a rule, and an indented code block's `r[...]` likewise; a
-  line that begins with `r[` and has words after the bracket is prose
-  rather than refused; an unclosed fence hides every later rule without
-  a message; only links to rules are checked, not links to chapters,
-  which mdBook does not refuse either; `book.toml` is patched by exact
-  text, so a reformatted `src = "."` or a missing `[build]` goes
-  unpatched; and the commit gate finds a missing mdBook only after the
-  suite.
-- **What a rule's tests are** (2026-11-23). A `// spec:` line is accepted
-  anywhere in a Rust source, not only above a `#[test]`, and the book
-  lists the file, not the test, so a rule shows `parser/declaration.rs`
-  as its test; a weak reference, such as `lex.longest-token`'s, checks
-  only part of its rule, and the three gap rules have no test that the
-  forms they name are refused.
-- **The specification's tests run under every stress mode** (2026-11-23):
-  `xtask`'s `spec::tests` and `ns-cli`'s
-  `a_golden_may_name_the_rules_it_checks` reach no runtime and are not in
-  `xtask/unreached-tests.txt`; `cargo xtask unreached-tests` measures the
-  list afresh.
 
 ## The road to a high-performance VM
 

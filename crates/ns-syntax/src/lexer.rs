@@ -1113,6 +1113,25 @@ mod tests {
 
     // spec: lex.longest-token
     #[test]
+    fn a_token_is_the_longest_that_begins_at_its_position() {
+        assert_eq!(
+            kinds("<= ::= <-: || <: foo: foo:: foo"),
+            vec![
+                BinarySelector,
+                ColonColonEquals,
+                EventualSendOperator,
+                DoubleBar,
+                MixinOperator,
+                Keyword,
+                SetterKeyword,
+                Identifier,
+                EndOfInput
+            ]
+        );
+    }
+
+    // spec: lex.longest-token
+    #[test]
     fn token_stream_ends_with_end_of_input() {
         let tokens = crate::lex("foo").unwrap();
         assert_eq!(tokens.last().unwrap().kind, EndOfInput);
