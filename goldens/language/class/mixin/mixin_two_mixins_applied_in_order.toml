@@ -4,3 +4,4 @@ InOrder chain: Second, First, Base
 Reversed who: First
 Reversed chain: First, Second, Base
 '''
+rules = ["syntax.mixin-application"]

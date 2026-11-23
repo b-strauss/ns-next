@@ -5,3 +5,4 @@ stdout = '''
 15
 19
 '''
+rules = ["lex.unreserved-words", "syntax.unreserved-word"]

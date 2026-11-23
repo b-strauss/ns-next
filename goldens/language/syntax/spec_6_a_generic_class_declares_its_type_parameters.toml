@@ -2,3 +2,4 @@ stdout = '''
 4
 1
 '''
+rules = ["syntax.type-parameters"]

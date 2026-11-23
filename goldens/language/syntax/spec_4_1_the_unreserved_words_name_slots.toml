@@ -4,3 +4,4 @@ abcde
 ABCDE
 1234E
 '''
+rules = ["lex.unreserved-words", "syntax.unreserved-word"]

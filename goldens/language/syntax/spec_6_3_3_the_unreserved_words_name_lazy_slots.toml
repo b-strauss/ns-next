@@ -5,3 +5,4 @@ abcde
 abc
 after: abcde
 '''
+rules = ["syntax.lazy-slot", "syntax.unreserved-word"]
