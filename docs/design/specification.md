@@ -2,8 +2,8 @@
 
 ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
-implementation keeps, written as one document with an executable model in
-Lean 4 beside each rule it models. Nothing of it is built yet; this
+implementation keeps, written in Markdown, rendered as an HTML book, and
+bound to the tests that check each rule. Nothing of it is built yet; this
 document records what was decided and in which order it is built.
 
 ## Why
@@ -52,86 +52,67 @@ Each decided with the user on 2026-11-23.
    in the text as a gap, as Bracha marks what is *Unimplemented*; what was
    never discussed stays a marked gap and nothing is invented for it. For
    the formats the current state is the contract.
-4. **Prose in fixed forms, and a mechanized, executable semantics.** The
-   grammar is a PEG over tokens, with a lexical grammar beneath it; the
-   semantics are named abstract operations in numbered steps, as
-   ECMA-262 writes them; each instruction has a page in the frame of the
-   JVM specification's chapter 6 -- operands, encoding, the registers read
-   and written, outer reach, jump targets, effect, errors; the image is
-   structure tables with numbered validation rules.
-5. **The model is Lean 4.** It is executable, compiled to native code,
-   and fit for proofs. Cedar, whose Rust implementation is tested
-   differentially against its Lean model, is the precedent.
-6. **The model runs every program at the source and at the bytecode
-   level.** A Lean parser of its own, after the specified grammar, whose
-   trees are compared with `ns-syntax`'s; a definitional interpreter of
-   the source that runs the shipped core library unchanged, only the VM
-   mirror's leaves modelled in Lean, the whole Rust boundary
-   ([core-library.md](core-library.md), "The VM mirror is the whole Rust
-   boundary"); every golden and every runnable corpus module run in it
-   and held to its outcome; the image decoder's validation rules
-   modelled and fuzzed against `image::load`; and a semantics of the
-   bytecode, which runs the bodies the compiler emits under both
-   lowerings and compares them with the source semantics -- translation
-   validation per program -- checking the register invariants and each
-   instruction's declared register effects on the way. Proofs, when they
-   come, are made over the same executable model.
-7. **One source: Verso.** A Lake project, `spec/`, at the repository's
-   root holds the specification as a Verso document -- Lean's own
-   documentation system, in which the Lean Language Reference is written
-   -- and the model's modules. Each normative rule is a section with a
-   stable tag, and its Lean definition stands beside it or is included,
-   type-checked as the document builds. The grammar, the instruction
-   table and the tag table are Lean data, which the document renders and
-   an export writes as JSON for the Rust tests: `opcodes.rs` checked
-   against the tag table, whose numbers' uniqueness is a property in
-   Lean. A `cargo xtask` task builds the HTML. The design documents, code
-   comments and `CLAUDE.md` point at a rule by its tag rather than state
-   it again, and the transcription of Bracha's document stays under
-   `docs/references/` as the source. Lean and Verso are pinned together.
-   The alternatives laid out were Markdown beside a separate model, and a
-   DSL of the repository's own in the manner of WebAssembly's SpecTec,
-   which generates prose, formal rules and prover definitions from one
-   definition; Ott and Lem, K, Sail, ecmarkup and Kaitai Struct were
-   weighed as tools for one part or another.
-8. **The gates are staggered, and a change keeps the specification with
-   it.** Every commit that changes more than Markdown builds the Lake
-   project, runs the tests of the JSON exports, and compares the Lean
-   parser's trees with `ns-syntax`'s over every `.ns`; the end of a batch
-   that changed the runtime or `spec/` runs a new group, `spec`, part of
-   `end-of-batch`: every golden run differentially at the source and the
-   bytecode level under both lowerings, and the decoder fuzzed against
-   the model for a fixed time. A commit that changes observable
-   behaviour, a format or an invariant changes the specification in the
-   same commit. Lean is pinned by `lean-toolchain`, installed with `elan`
-   on a working machine and in the gates' Docker image.
+4. **Prose in fixed forms.** The grammar is a PEG over tokens, with a
+   lexical grammar beneath it; the semantics are named abstract
+   operations in numbered steps, as ECMA-262 writes them; each instruction
+   has a page in the frame of the JVM specification's chapter 6 --
+   operands, encoding, the registers read and written, outer reach, jump
+   targets, effect, errors; the image is structure tables with numbered
+   validation rules.
+5. **Markdown, rendered by mdBook, each rule named as the Rust Reference
+   names its rules.** The source is Markdown under `docs/spec/`, a chapter
+   per part and the appendix, readable on GitHub as it is. Every normative
+   rule is preceded by an identifier line, `r[runtime.lookup.public]`, as
+   the Rust Reference's `mdbook-spec` has it
+   ([its dev guide](https://rust-lang.github.io/reference/dev-guide/tooling/mdbook-spec.html)).
+   A preprocessor of `xtask`'s own, in Rust, checks the identifiers --
+   unique, well formed -- turns them into anchors and links, and collects
+   the tests that name a rule: a golden in a line of its `.toml`, a Rust
+   test in a comment, as a test of `rust-lang/rust` names its rule in a
+   `//@ reference:` header. The book shows each rule's tests, and an
+   appendix the rules no test names yet. The grammar, the instruction
+   table and the tag table stand in marked, machine-readable blocks that
+   Rust tests hold to the code -- `opcodes.rs` to the tag table among
+   them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
+   opened in a browser. mdBook is a development tool, installed as
+   `cargo-nextest` is, and reaches no binary. The alternatives weighed
+   were Sphinx (WebAssembly, Python, the Ferrocene Language
+   Specification), ecmarkup (ECMA-262) and Bikeshed (W3C, WHATWG), and,
+   before them, an executable model in Lean 4 written in Verso, dropped
+   because the toolchain it would take on is more than the specification
+   needs now: Verso's precompiled libraries do not link on Windows at
+   v4.36.0.
+6. **Every commit checks it.** The identifiers, the tests' references to
+   them and the machine-readable tables are checked by Rust tests in the
+   default `cargo nextest run`, and the commit gate builds the book, so a
+   broken link or block fails at once. A commit that changes observable
+   behaviour, a format or an invariant changes the specification's rule
+   for it in the same commit, for every part already written.
 
 ## The order of building it
 
 Semantics first (decided with the user on 2026-11-23), each its own plan,
 branch and end-of-batch gates:
 
-1. **The foundation**: the Lake and Verso project, the toolchain, the
-   `spec` gate group and the commit gate's steps, the rule in `CLAUDE.md`,
-   and the document's skeleton of five parts and the appendix.
-2. **The syntax**: the lexical structure and the grammar, the Lean parser
-   and the comparison of its trees with `ns-syntax`'s, and the syntax
-   deviations decided one by one.
-3. **The language and the run-time semantics**: the source interpreter,
-   the mirror leaves, every golden run differentially, and the other
-   deviations decided; the install as it is.
-4. **The image format**: the structure, the validation rules as a model,
-   and the decoder fuzzed against it.
-5. **The bytecode**: the instruction table and the register effects as
-   Lean data, the bytecode semantics and the translation validation.
-6. **The VM invariants**, and the design documents and `CLAUDE.md`
-   pointing at the rules by tag.
+1. **The foundation and the syntax**: mdBook, the preprocessor, the checks
+   of identifiers and references, the rule in `CLAUDE.md`, the book's
+   skeleton of five parts and the appendix; and the lexical structure and
+   the grammar, the syntax deviations decided one by one, the parser's
+   tests and the syntax goldens naming their rules.
+2. **The language and the run-time semantics**, the other deviations
+   decided; the install as it is.
+3. **The image format**: the structure, the tags, the validation rules.
+4. **The bytecode**: the instruction table and the register effects.
+5. **The VM invariants**, and the design documents and `CLAUDE.md`
+   pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install") resumes after the sixth, and changes the
-specification and the model as it changes the runtime.
+"Planned: the complete install") resumes after the fifth, and changes the
+specification as it changes the runtime.
 
 ## Open
 
-- Which properties are proved first over the model, once it runs.
+- Whether an executable oracle checks the specification later -- a naive
+  reference interpreter in Rust, or a mechanized model -- decided once the
+  prose stands and shows where it was ambiguous.
 - How the specification is versioned against ns-next's own versions.

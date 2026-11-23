@@ -15,14 +15,17 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its first batch: the foundation**
-(decided with the user on 2026-11-23, before the debugger's stage 6 goes
-on; [specification.md](design/specification.md)): the Lake and Verso
-project `spec/`, the pinned Lean toolchain, the commit gate's steps and
-the `spec` group, the rule in `CLAUDE.md` that a change keeps the
-specification with it, and the document's skeleton of five parts and
-the appendix. The batches after it are that document's "The order of
-building it"; the complete install resumes after the sixth.
+**The specification of ns-next, its first batch: the foundation and the
+syntax** (decided with the user on 2026-11-23, before the debugger's
+stage 6 goes on; [specification.md](design/specification.md)): mdBook
+and `xtask`'s preprocessor of rule identifiers, the checks of the
+identifiers and of the tests' references to them, the rule in
+`CLAUDE.md` that a change keeps the specification with it, the book's
+skeleton of five parts and the appendix; and the lexical structure and
+the grammar, the syntax deviations decided one by one with the user,
+the parser's tests and the syntax goldens naming their rules. The
+batches after it are that document's "The order of building it"; the
+complete install resumes after the fifth.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
