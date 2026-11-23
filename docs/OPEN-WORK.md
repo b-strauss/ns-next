@@ -15,17 +15,21 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its first batch: the foundation and the
-syntax** (decided with the user on 2026-11-23, before the debugger's
-stage 6 goes on; [specification.md](design/specification.md)): mdBook
-and `xtask`'s preprocessor of rule identifiers, the checks of the
-identifiers and of the tests' references to them, the rule in
-`CLAUDE.md` that a change keeps the specification with it, the book's
-skeleton of five parts and the appendix; and the lexical structure and
-the grammar, the syntax deviations decided one by one with the user,
-the parser's tests and the syntax goldens naming their rules. The
-batches after it are that document's "The order of building it"; the
-complete install resumes after the fifth.
+**The specification of ns-next, its second batch: the language's
+semantics and the run-time semantics** (decided with the user on
+2026-11-23, before the debugger's stage 6 goes on;
+[specification.md](design/specification.md), "The order of building
+it", item 2): what a module means when it runs, and the operations it is
+built from as abstract operations -- lookup and access, instantiation,
+slot access, `outer`, unwinding and exceptions, `become:`, the install
+and the mirrors, the VM mirror as a capability, the depth limit, what a
+program observes of memory -- written into `docs/spec/` with their rules
+named by the goldens and tests that check them, and every remaining
+deviation of [README.md](design/README.md)'s table decided with the user
+one by one, adopted as a rule or marked a gap. The first batch, the book
+and the syntax, is built. The batches after it are that document's
+"The order of building it"; the complete install resumes after the
+fifth.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the

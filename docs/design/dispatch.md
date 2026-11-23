@@ -311,7 +311,8 @@ The parser normalizes several forms, and the resolver keys off those shapes:
   (`outer public s`); nothing about its spelling decides the shape.
 - **`outer N`** with no message after it is the object `outer N m` would send
   to, as in canonical Newspeak; §5.9 defines `outer N` only as a receiver
-  (decided with the user on 2026-09-27). The resolver records
+  (decided with the user on 2026-09-27; the specification's
+  `syntax.outer.alone`). The resolver records
   `Binding::EnclosingObject { depth }` on it, both lowerings emit
   `LoadEnclosingObject`, and the VM answers `dispatch::kth_enclosing_object`
   through `interpreter::sends::enclosing_object` -- a load, no send, so no

@@ -442,7 +442,19 @@ builds and starts nothing: it copies `target/debug/ns-next` to
 from that copy, so that neither the server nor its programs lock the
 build; refreshing it is deleting `target/mcp/` while no server runs from
 it and running the task again (`mcp.rs`; `debugger.md`, "The MCP
-server", "Starting it").
+server", "Starting it"); and `spec`, which checks the specification's
+book -- every rule identifier well formed and unique, every chapter in
+`SUMMARY.md`, every test's reference and every link naming a rule -- and
+renders it with mdBook into `target/spec/html/index.html`, each rule
+listing the tests that name it (`spec.rs`; `specification.md`).
+
+`docs/spec/` — the specification of ns-next, an mdBook of Markdown
+chapters: the language (its lexical structure and grammar written, its
+semantics not yet), the run-time semantics, the bytecode, the image
+format and the VM invariants, each normative rule preceded by an
+identifier line `r[lex.comment.line]`, and an appendix of the
+differences from Bracha's Newspeak, which is the book's source and no
+longer its measure (`docs/design/specification.md`).
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -936,7 +948,9 @@ still recurses (`OPEN-WORK.md`) (`frontend.md`, "Recovery", rule 7).
 
 ## Working in this repository
 
-The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`).
+The suites run under `cargo-nextest` (`cargo install cargo-nextest --locked`),
+and the commit gate builds the specification with mdBook 0.5.4
+(`cargo install mdbook --locked --version 0.5.4`).
 The gates need, beyond that, the rustup targets of `memory`
 (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `aarch64-pc-windows-msvc`) and `release-checks`
 (`aarch64-pc-windows-msvc`, `aarch64-apple-darwin`), `cargo-show-asm` for
@@ -971,7 +985,7 @@ share the machine's threads among them by their measured lengths
 
 | Group | Runs | When |
 |---|---|---|
-| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, six test tasks, each rerun by Gradle only when what it runs can change, never for a binary's bytes alone (`editors/jetbrains/build.gradle.kts`): `test`, the tests that start no binary, on the plugin and the `.ns` under `goldens/`, the core library and `benchmarks/`; `lexerComparisonTest`, on the plugin, the `.ns` under those and `corpus/modules`, the Rust sources `dump-tokens` runs and the workspace's build settings; and `dapSessionTest`, `debugProcessTest`, `breakpointTypesTest` and `traceFileTest`, which run the debug build of `ns-next`, on the plugin, the sources of `ns-cli`, `ns-runtime` (the core library included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and the build settings -- so a runtime change reruns those four and a change to the analyzer alone none of them -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
+| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; the specification's book, `cargo xtask spec`, its rules, the tests' references to them and its links checked and the book rendered; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, six test tasks, each rerun by Gradle only when what it runs can change, never for a binary's bytes alone (`editors/jetbrains/build.gradle.kts`): `test`, the tests that start no binary, on the plugin and the `.ns` under `goldens/`, the core library and `benchmarks/`; `lexerComparisonTest`, on the plugin, the `.ns` under those and `corpus/modules`, the Rust sources `dump-tokens` runs and the workspace's build settings; and `dapSessionTest`, `debugProcessTest`, `breakpointTypesTest` and `traceFileTest`, which run the debug build of `ns-next`, on the plugin, the sources of `ns-cli`, `ns-runtime` (the core library included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and the build settings -- so a runtime change reruns those four and a change to the analyzer alone none of them -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
 | `analyzer` | the hints' behaviour oracle, profile `hints` | a commit touching `crates/ns-analyzer` |
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
@@ -1002,6 +1016,15 @@ in the same commit. Runtime work changes neither the lexer nor the grammar
 under `crates/ns-syntax`; what it may add there is an entry into the
 existing parser for source it compiles outside a module, as the
 debugger's `parse_code_body` is.
+
+A commit that changes observable behaviour, a format or an invariant
+changes the rule for it in the specification (`docs/spec/`) in the same
+commit, for every part the book already writes -- today the lexical
+structure and the grammar. A new test names the rules it checks: a
+golden on one line of its `.toml`, `rules = ["syntax.outer.alone"]`, a
+Rust test in a comment line `// spec: syntax.outer.alone` directly above
+its `#[test]`; a reference to a rule the book does not declare fails the
+suite (`xtask/src/spec.rs`).
 
 Never judge performance from a debug build (the `measuring-performance` skill).
 Only a build without debug assertions runs the size tests

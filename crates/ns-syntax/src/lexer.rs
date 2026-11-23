@@ -129,8 +129,9 @@ impl<'a> Lexer<'a> {
     /// Whether ns-next's `///` line comment starts `offset` bytes ahead.
     /// It is a deviation from §4.2, whose `binSel` admits `///` and every
     /// run of special characters containing it; a comment wherever it
-    /// stands is what a reader expects (`docs/design/README.md`,
-    /// "Deviations from the language specification").
+    /// stands is what a reader expects (`docs/spec/`, the rule
+    /// `lex.comment.line`, and its appendix's "Differences from Bracha's
+    /// Newspeak").
     fn starts_line_comment(&self, offset: usize) -> bool {
         let start = self.position + offset;
         self.bytes.get(start..start + 3) == Some(b"///".as_slice())

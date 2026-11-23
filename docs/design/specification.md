@@ -3,8 +3,17 @@
 ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
-bound to the tests that check each rule. Nothing of it is built yet; this
-document records what was decided and in which order it is built.
+bound to the tests that check each rule. This document records what was
+decided and in which order it is built. The first batch is built: the
+book under `docs/spec/`, `cargo xtask spec`, which checks its rule
+identifiers, the tests' references to them and its links and renders it,
+the commit gate's step, the rule of `CLAUDE.md` that a change keeps the
+book with it, and the language's lexical structure and grammar, each
+rule with its tests, the special characters, the reserved words and the
+words with tokens of their own as tables the lexer's and the parser's
+tests hold to the code, and the appendix of the differences from
+Bracha's Newspeak. The parts after the grammar say what they will cover
+and are not written yet.
 
 ## Why
 
@@ -94,7 +103,7 @@ Each decided with the user on 2026-11-23.
 Semantics first (decided with the user on 2026-11-23), each its own plan,
 branch and end-of-batch gates:
 
-1. **The foundation and the syntax**: mdBook, the preprocessor, the checks
+1. **The foundation and the syntax**, built: mdBook, the preprocessor, the checks
    of identifiers and references, the rule in `CLAUDE.md`, the book's
    skeleton of five parts and the appendix; and the lexical structure and
    the grammar, the syntax deviations decided one by one, the parser's

@@ -8785,7 +8785,41 @@ The commit gates passed on every commit, and the plugin's verification
 against six IDEs at the batch's end; the batch changed the plugin
 alone.
 
-What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the debugger's
-stage 6, hot swap, edit-and-continue and `ActivationMirror`. The
-developer tool's stage 4, the shell, is set back, when to take it up
-not decided.
+## The specification's foundation and syntax (2026-11-23)
+
+[specification.md](design/specification.md). Before the debugger's stage
+6 goes on, ns-next is specified in a book of its own, `docs/spec/`, with
+Bracha's document its source and no longer its measure: decided with
+the user in six decisions, and the hot swap work split into three
+batches, the first of which, the complete install, has its decisions
+recorded and waits ([liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"). An executable model in Lean 4 written
+in Verso was weighed and dropped. The book is Markdown rendered by
+mdBook 0.5.4, each normative rule preceded by an identifier as the Rust
+Reference has them; `cargo xtask spec` (`xtask/src/spec.rs`) checks the
+identifiers, the chapters of `SUMMARY.md`, the tests' references --
+`rules = [...]` in a golden's `.toml`, `// spec:` above a Rust test --
+and every link to a rule, and renders the book into `target/spec/html`,
+each rule listing its tests and an appendix the untested ones; the
+commit gate builds it. The language's lexical structure and grammar are
+written, every rule but the three marked gaps named by a test, the
+special characters, the reserved words and the words with tokens of
+their own as tables the lexer's and the parser's tests hold to the code;
+five syntax decisions, each decided with the user, are adopted as rules
+and listed in the appendix of the differences from Bracha's Newspeak --
+the optional language id, the `///` line comment, no character
+literals, whitespace that only separates tokens, `outer N` alone -- and
+leave [README.md](design/README.md)'s table of deviations.
+
+- `f73f06df` -- the complete install's decisions.
+- `59bd516e`, `223bc7a7` -- the specification's decisions.
+- `8bd7d595` -- the book's skeleton and `cargo xtask spec`.
+- `01d6a9ee` -- a golden names its rules.
+- `ce75c350` -- the lexical structure.
+- `46d673eb` -- the grammar of modules, classes and members.
+- `010f58b6` -- the grammar of expressions.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+specification's second batch, the language's semantics and the run-time
+semantics. The developer tool's stage 4, the shell, is set back, when to
+take it up not decided.
