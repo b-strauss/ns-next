@@ -262,9 +262,11 @@ impl<'a> Parser<'a> {
     fn parse_pattern_literal_inner(&mut self) -> Literal {
         let start = self.bump(); // `<`
         if self.at_kind(TokenKind::Keyword) {
+            // `kwPatternPair → keyword [kwPatternValue]`: a keyword's value
+            // is optional before the next keyword too, `<x: y: 1>`.
             while self.at_kind(TokenKind::Keyword) {
                 self.bump();
-                if !self.at_pattern_end() {
+                if !self.at_pattern_end() && !self.at_kind(TokenKind::Keyword) {
                     self.parse_pattern_value();
                 }
             }
@@ -288,11 +290,12 @@ impl<'a> Parser<'a> {
             let _ = self.parse_pattern_literal();
             return;
         }
-        // `variablePattern`: `?` against an identifier.
+        // `variablePattern`: `?` and a name, which whitespace may separate
+        // and which may be any word that names (`docs/spec/`, the rules
+        // `syntax.whitespace-free` and `syntax.unreserved-word`).
         if self.at_kind(TokenKind::BinarySelector)
             && self.text(self.current()) == "?"
-            && self.peek2() == TokenKind::Identifier
-            && self.tokens[self.position + 1].span.start == self.current().span.end
+            && super::is_name(self.peek2())
         {
             self.bump();
             self.bump();

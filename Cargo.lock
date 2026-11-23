@@ -743,6 +743,8 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "ns-runtime",
+ "serde",
+ "toml",
 ]
 
 [[package]]

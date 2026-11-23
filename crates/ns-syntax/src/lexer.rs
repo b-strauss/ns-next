@@ -29,6 +29,17 @@ pub struct Lexed {
 /// more, so `+-` is `+` followed by `-`, and `x +-1` adds a negative one.
 const SPECIAL: &[u8] = b"+*/\\~<>=&|@%,?!";
 
+/// The words lexed as tokens of their own, so that a declaration can be
+/// recognized by its first token; each is a name wherever the grammar takes
+/// an identifier (`docs/spec/`, the rule `lex.unreserved-words`, whose
+/// table the lexer's tests hold this one to).
+const WORDS_WITH_TOKENS: [(&str, TokenKind); 4] = [
+    ("class", TokenKind::Class),
+    ("private", TokenKind::Private),
+    ("public", TokenKind::Public),
+    ("protected", TokenKind::Protected),
+];
+
 /// Whether `byte` can start a binary selector.
 fn starts_binary_selector(byte: u8) -> bool {
     byte == b'-' || SPECIAL.contains(&byte)
@@ -312,13 +323,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn word_kind(&self, start: usize, end: usize) -> TokenKind {
-        match &self.source[start..end] {
-            "class" => TokenKind::Class,
-            "private" => TokenKind::Private,
-            "public" => TokenKind::Public,
-            "protected" => TokenKind::Protected,
-            _ => TokenKind::Identifier,
-        }
+        let word = &self.source[start..end];
+        WORDS_WITH_TOKENS
+            .iter()
+            .find(|(spelling, _)| *spelling == word)
+            .map_or(TokenKind::Identifier, |(_, kind)| *kind)
     }
 
     fn lex_operator(&mut self) {
@@ -589,42 +598,18 @@ mod tests {
     // spec: lex.unreserved-words
     #[test]
     fn the_words_with_tokens_of_their_own_are_the_specifications() {
-        let table = crate::spec_tables::lexical_table("words-with-tokens");
-        for word in &table {
-            assert_ne!(
-                kinds(word)[0],
-                Identifier,
-                "`{word}` has a token of its own"
-            );
+        let mut table = crate::spec_tables::lexical_table("words-with-tokens");
+        let mut words: Vec<std::string::String> = WORDS_WITH_TOKENS
+            .iter()
+            .map(|(word, _)| word.to_string())
+            .collect();
+        table.sort_unstable();
+        words.sort_unstable();
+        assert_eq!(table, words);
+        for (word, kind) in WORDS_WITH_TOKENS {
+            assert_eq!(kinds(word)[0], kind, "`{word}`");
         }
-        // Every word a declaration or a send could plausibly begin with: one
-        // that lexes as anything but an identifier is in the table.
-        let candidates = [
-            "class",
-            "public",
-            "protected",
-            "private",
-            "lazy",
-            "self",
-            "super",
-            "outer",
-            "true",
-            "false",
-            "nil",
-            "inner",
-            "value",
-            "module",
-            "mixin",
-            "new",
-            "thisContext",
-        ];
-        for word in candidates {
-            let lexed = kinds(word)[0];
-            assert!(
-                lexed == Identifier || table.iter().any(|entry| entry == word),
-                "`{word}` lexes as {lexed:?}, which the table does not list"
-            );
-        }
+        assert_eq!(kinds("lazy")[0], Identifier);
     }
 
     // spec: lex.identifier
@@ -970,7 +955,8 @@ mod tests {
     }
 
     /// §4.2's `binSel` would take `+///` whole; ns-next ends every selector
-    /// before `///`, the deviation `docs/design/README.md` records.
+    /// before `///`, the rule `lex.binary-selector` of the specification
+    /// (`docs/spec/`), whose appendix records the difference.
     // spec: lex.comment.line
     // spec: lex.binary-selector
     #[test]

@@ -3400,6 +3400,10 @@ mod specification_tests {
             "<x: _ y: ?z>",
             "<x: <y: 1>>",
             "<x: <y: <z: 1>>>",
+            "<x: y: 1>",
+            "<x: y:>",
+            "<x: ? z>",
+            "<x: ?class>",
         ] {
             accepted(&format!("probe = ( ^{pattern} )"));
         }

@@ -17,7 +17,8 @@ matches, and of alternatives the first that matches wins.
 r[lex.source]
 A module's source is Unicode text, encoded as UTF-8. Every token is
 written in ASCII characters; a character outside ASCII may stand only
-inside a comment or a string literal. Any other character outside both
+inside a comment, a string literal or a symbol quoted as a string,
+`#'é'`. Any other character outside both
 is refused, one diagnostic per character, `unexpected character 'é'`.
 
 r[lex.whitespace]
@@ -143,12 +144,14 @@ is the selector `+` followed by `-`, `a +/// x` is `a +` followed by a
 comment, and `//` is a binary selector. Where a binary selector would be
 exactly `=`, `<` or `>`, the token is the punctuation of that name instead;
 the grammar accepts each of them as a binary selector where a binary
-message stands. A `|` begins a binary selector only when a special
-character other than the start of `///` follows it; otherwise it is the
-punctuation `|` or `||`.
+message stands. Two `|` are always the punctuation `||`, read before any
+binary selector: `|||` is `||` followed by `|`, and `||=` is `||` followed
+by `=`. A single `|` begins a binary selector only when a special
+character other than `|` follows it, and not the start of `///`: `|>` is a
+selector; otherwise it is the punctuation `|`.
 
 ```text
-binarySelector → ("-" | specialCharacter) (!"///" specialCharacter)*
+binarySelector → !"||" ("-" | specialCharacter) (!"///" specialCharacter)*
 ```
 
 r[lex.punctuation]

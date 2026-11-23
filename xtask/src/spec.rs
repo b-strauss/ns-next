@@ -321,47 +321,37 @@ pub fn check_links(book: &Path) -> Result<(), String> {
     }
 }
 
-/// The identifiers of a golden's `rules = ["…", …]` line.
-fn golden_rules_line(line: &str) -> Option<Vec<String>> {
-    let rest = line
-        .trim()
-        .strip_prefix("rules")?
-        .trim_start()
-        .strip_prefix('=')?;
-    let list = rest.trim().strip_prefix('[')?.strip_suffix(']')?;
-    Some(
-        list.split(',')
-            .map(|entry| entry.trim().trim_matches('"').to_string())
-            .filter(|entry| !entry.is_empty())
-            .collect(),
-    )
+/// The part of a golden's `.toml` the book reads: its `rules`, each with
+/// where it stands. Every other key is the run's.
+#[derive(serde::Deserialize)]
+struct GoldenRules {
+    #[serde(default)]
+    rules: Vec<toml::Spanned<String>>,
 }
 
-/// The references a golden's `.toml` makes, skipping its multi-line strings.
-fn golden_references(text: &str, test: &Path, references: &mut Vec<Reference>) {
-    let mut open: Option<&str> = None;
-    for (index, line) in lines_of(text).enumerate() {
-        if open.is_none()
-            && let Some(identifiers) = golden_rules_line(line)
-        {
-            references.extend(identifiers.into_iter().map(|identifier| Reference {
-                identifier,
-                test: test.to_path_buf(),
-                line: index + 1,
-            }));
-            continue;
-        }
-        for delimiter in ["'''", "\"\"\""] {
-            let count = line.matches(delimiter).count();
-            if count % 2 == 1 {
-                match open {
-                    None => open = Some(delimiter),
-                    Some(current) if current == delimiter => open = None,
-                    Some(_) => {}
-                }
-            }
-        }
+/// The references a golden's `.toml` makes: its `rules`, a list of
+/// identifiers, read as TOML, so that every spelling of the list counts,
+/// each placed at the line it stands on.
+fn golden_references(
+    text: &str,
+    test: &Path,
+    references: &mut Vec<Reference>,
+) -> Result<(), String> {
+    let golden: GoldenRules = toml::from_str(text).map_err(|error| {
+        format!(
+            "{}: its `rules` are no list of the specification's rule identifiers: {error}",
+            display(test)
+        )
+    })?;
+    for rule in golden.rules {
+        let line = text[..rule.span().start].matches('\n').count() + 1;
+        references.push(Reference {
+            identifier: rule.into_inner(),
+            test: test.to_path_buf(),
+            line,
+        });
     }
+    Ok(())
 }
 
 /// Every reference the tests below `root` make to a rule.
@@ -374,7 +364,7 @@ pub fn references_in(root: &Path) -> Result<Vec<Reference>, String> {
     }
     for golden in goldens {
         let relative = golden.strip_prefix(root).unwrap_or(&golden).to_path_buf();
-        golden_references(&read(&golden)?, &relative, &mut references);
+        golden_references(&read(&golden)?, &relative, &mut references)?;
     }
     let mut sources = Vec::new();
     for directory in ["crates", "xtask"] {
@@ -746,6 +736,52 @@ mod tests {
                 ("syntax.outer.send", 3)
             ]
         );
+    }
+
+    /// The identifiers a golden's `.toml` names, read through `references_in`.
+    fn golden_identifiers(name: &str, toml: &str) -> Result<Vec<String>, String> {
+        let scratch = Scratch::new(name);
+        scratch.write("goldens/a.toml", toml);
+        Ok(references_in(&scratch.0)?
+            .into_iter()
+            .map(|reference| reference.identifier)
+            .collect())
+    }
+
+    /// Every TOML spelling of the list counts, so that no reference a
+    /// golden makes can escape the check.
+    #[test]
+    fn every_toml_spelling_of_a_goldens_rules_is_read() {
+        for (name, toml) in [
+            ("multi-line", "rules = [\n  \"lex.a\",\n  \"lex.b\",\n]\n"),
+            ("commented", "rules = [\"lex.a\", \"lex.b\"] # the two\n"),
+            (
+                "after-a-quote",
+                "stdout = \"\\\"\\\"\\\"\"\nrules = [\"lex.a\", \"lex.b\"]\n",
+            ),
+            (
+                "literal",
+                "stdout = '''\nrules = [\"lex.no\"]\n'''\nrules = ['lex.a', 'lex.b']\n",
+            ),
+        ] {
+            assert_eq!(
+                golden_identifiers(name, toml).expect(name),
+                ["lex.a", "lex.b"],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_goldens_rules_that_are_no_list_of_identifiers_are_refused() {
+        for (name, toml) in [
+            ("string", "rules = \"lex.a\"\n"),
+            ("number", "rules = [1]\n"),
+            ("invalid", "rules = [\n"),
+        ] {
+            let refusal = golden_identifiers(name, toml).expect_err(name);
+            assert!(refusal.contains("a.toml"), "{name}: {refusal}");
+        }
     }
 
     #[test]

@@ -1,10 +1,14 @@
 # Grammar
 
 How the tokens of the lexical structure form a module. The grammar is
-written over tokens: a quoted `"x"` is the token spelled `x`, a name in
-italics-free lowercase is a production, and `identifier`, `keyword`,
-`setterKeyword`, `binarySelector`, `number`, `string` and `symbol` are the
-tokens of [Lexical structure](lexical-structure.md).
+written over tokens: a quoted `"x"` is the token spelled `x`, a lowercase
+name is a production, `[x]` is optional, `empty` derives nothing, and
+`identifier`, `keyword`, `setterKeyword`, `binarySelector`, `number`,
+`string` and `symbol` are the tokens of
+[Lexical structure](lexical-structure.md). `name` is an identifier or one
+of the words with tokens of their own
+([`syntax.unreserved-word`](#r-syntax.unreserved-word)), and
+`unarySelector` is a name.
 
 ## How the grammar is read
 
@@ -28,8 +32,10 @@ and `| public = 1. |` are the same tokens and are refused alike (Bracha
 r[syntax.reserved-word]
 A reserved word ([`lex.reserved-words`](lexical-structure.md#r-lex.reserved-words))
 may not name a parameter, a block parameter, a slot or a temporary, a
-class or a method, may not be the target of a setter send (`nil:: 3`),
-and may not stand as a unary selector (`3 nil`, `3 printString; self`).
+class, a superclass, an enclosing class after `outer` in a superclass
+clause, a type parameter or a method, may not be the target of a setter
+send (`nil:: 3`), and may not stand as a unary selector (`3 nil`,
+`3 printString; self`).
 Each such use is refused naming what the word may not be:
 ``  `nil` is a reserved word and cannot name a parameter (§4.1) ``. A
 keyword that merely begins with a reserved word, `ifNil:` or `selfish:`,
@@ -63,7 +69,7 @@ may follow it but whitespace and comments:
 
 ```text
 compilationUnit → [languageId] [classCategory] classDeclaration
-languageId → identifier
+languageId → name
 classCategory → string
 ```
 
@@ -93,7 +99,7 @@ first, so `class Pair = other = Object new () ()` has the binary factory
 `=`. A declaration without a message pattern has the factory `new`.
 
 ```text
-classDeclaration → "class" identifier [typeParameters] [messagePattern] "="
+classDeclaration → "class" name [typeParameters] [messagePattern] "="
                    (classBody | inheritanceClause (classBody | mixinApplications))
 ```
 
@@ -106,8 +112,9 @@ expressions. A second message is refused, `a superclass clause sends at
 most one message to the class it names (§6.1)`: `Object new foo`.
 
 ```text
-inheritanceClause → [inheritancePrefix] identifier [typeArguments] [message]
-inheritancePrefix → "outer" identifier | "self" | "super"
+inheritanceClause → [inheritancePrefix] name [typeArguments] [message]
+inheritancePrefix → "outer" name | "self" | "super"
+message → unaryMessage | binaryMessage | keywordMessage
 ```
 
 r[syntax.mixin-application]
@@ -190,7 +197,7 @@ slot's initializer (§6.3.2)``; after an uninitialized slot it is optional.
 
 ```text
 slotDefinition → [accessModifier] slotName [("=" | "::=") expression "." | "."]
-slotName → identifier [typeAnnotation]
+slotName → name [typeAnnotation]
 ```
 
 r[syntax.lazy-slot]
@@ -224,10 +231,10 @@ never begins a message pattern. A parameter is an identifier with an
 optional type annotation.
 
 ```text
-messagePattern → identifier [returnType]
-               | binarySelector parameter [returnType]
+messagePattern → name [typeParameters] [returnType]
+               | binaryOperator parameter [returnType]
                | (keyword parameter)+ [returnType]
-parameter → identifier [typeAnnotation]
+parameter → name [typeAnnotation]
 ```
 
 ## Type annotations
@@ -241,7 +248,10 @@ parameters `[T]` after a class's name or a selector, type arguments
 `[E]` after a superclass or a mixin clause's receiver and at a value
 (`Box[Integer] new`, `a foo[E]`, `(Box)[Integer]`), and a `where { … }`
 constraint clause. Inside a `<…>` annotation and a `where { … }` clause,
-`<:` is the bound operator. An annotation is kept as the tokens written; an
+`<:` is the bound operator. The productions `typeAnnotation` (`<…>`),
+`returnType` (`^<…>`), `typeParameters` and `typeArguments` (`[…]`) and
+`whereClause` (`where { … }`) each take the tokens up to the bracket that
+closes their own, nested brackets of the same kind included. An annotation is kept as the tokens written; an
 unclosed one is refused, ``unterminated `<...>` type annotation``,
 ``unterminated `[...]` type arguments``, ``unterminated `where { ... }`
 clause``.
@@ -323,11 +333,12 @@ message's argument is a primary with its unary messages; each argument of
 a keyword message is a primary with its unary and binary messages.
 
 ```text
-messages → unarySelector+ binaryMessage* [keywordMessage] [cascade]
+messages → unaryMessage+ binaryMessage* [keywordMessage] [cascade]
          | binaryMessage+ [keywordMessage] [cascade]
          | keywordMessage [cascade]
-binaryMessage → binaryOperator primary unarySelector*
-keywordMessage → (keyword primary unarySelector* binaryMessage*)+
+unaryMessage → ["<-:"] unarySelector [typeArguments]
+binaryMessage → ["<-:"] binaryOperator primary unaryMessage*
+keywordMessage → ["<-:"] (keyword primary unaryMessage* binaryMessage*)+
 ```
 
 r[syntax.binary-operator]
@@ -349,14 +360,15 @@ alone is refused, ``a cascade follows a message sent to its receiver
 is refused, ``expected a message after `;` ``.
 
 ```text
-cascade → (";" (keywordMessage | binaryMessage | unarySelector))+
+cascade → (";" (keywordMessage | binaryMessage | unaryMessage))+
 ```
 
 r[syntax.eventual-send]
 An asynchronous send writes `<-:` before its message, wherever a unary,
 binary or keyword message or a cascade's message stands: `self <-: foo`,
-`self <-: + 1`, `self <-: at: 1`, `self foo; <-: bar`. A `<-:` with no message after it is
-refused, ``expected a message after `<-:` (§5.6)``. What an asynchronous
+`self <-: + 1`, `self <-: at: 1`, `self foo; <-: bar`: the optional `<-:` of the
+productions of [`syntax.precedence`](#r-syntax.precedence). A `<-:` with
+no message after it is refused, ``expected a message after `<-:` (§5.6)``. What an asynchronous
 send does is the semantics' to say ([Semantics](semantics.md)).
 
 ## Primaries
@@ -365,17 +377,19 @@ r[syntax.primary]
 A primary is a name, a literal, a block, a parenthesized expression,
 `self`, `super` with its message, or an outer send. A parenthesized
 expression is `(`, an expression and `)`; parentheses change grouping and
-nothing else. A name followed by type arguments, `Box[Integer] new`, is a
-name ([`syntax.type-annotation`](#r-syntax.type-annotation)).
+nothing else. Every primary may be followed by type arguments,
+`Box[Integer] new`, `(Box)[Integer]`, which have no meaning
+([`syntax.type-annotation`](#r-syntax.type-annotation)).
 
 ```text
-primary → identifier [typeArguments]
-        | literal
-        | block
-        | "(" expression ")" [typeArguments]
-        | "self"
-        | "super" message
-        | outerSend
+primary → (name
+          | literal
+          | block
+          | "(" expression ")"
+          | "self"
+          | "super" message
+          | outerSend) [typeArguments]
+literal → number | string | symbol | tuple | pattern | "true" | "false" | "nil"
 ```
 
 r[syntax.self]
@@ -402,7 +416,7 @@ would send its message to: `outer Bank` alone answers the enclosing
 appendix.
 
 ```text
-outerSend → "outer" identifier [message]
+outerSend → "outer" name [message]
 ```
 
 ## Literals
@@ -444,7 +458,9 @@ block → "[" [(":" parameter)+ "|"] codeBody "]"
 r[syntax.pattern]
 A pattern literal is `<`, a pattern and `>`: `_`, a literal -- a number,
 a symbol, a string or a tuple -- or one or more keywords each with an
-optional value, `_`, a literal, `?` and a name, or a nested pattern.
+optional value, `_`, a literal, `?` and a name, or a nested pattern; a
+keyword's value may be left out before `>` and before the next keyword,
+`<x:>`, `<x: y: 1>`.
 `<x: <y: 1>>` closes two patterns with the one token `>>`, which the
 parser reads as two `>`. A pattern none of these forms is refused,
 ``expected `_`, a literal or a keyword in a pattern (§5.1.9)``. What a
@@ -454,7 +470,7 @@ pattern literal evaluates to is the semantics' to say
 ```text
 pattern → "<" ("_" | patternLiteral | (keyword [patternValue])+) ">"
 patternLiteral → number | symbol | string | tuple
-patternValue → "_" | patternLiteral | "?" identifier | pattern
+patternValue → "_" | patternLiteral | "?" name | pattern
 ```
 
 ## Gaps

@@ -2875,8 +2875,9 @@ user on 2026-09-25; [frontend.md](design/frontend.md), "Lexer"). A
 double-quoted string has no escape and ends at the next `"`, so each kind of
 string holds the other's quote freely; any single character between two
 quotes is a one-character string, `"` included, so the corpus's `"""` still
-reads as a quote and `parse-corpus` stays at 210/0/1/0. `README.md`'s
-deviations table records the difference from §5.1.4's `""""`.
+reads as a quote and `parse-corpus` stays at 210/0/1/0. The
+specification's appendix, "Differences from Bracha's Newspeak", records
+the difference from §5.1.4's `""""`.
 
 The `Character` class, its three mirror rows (65 remain), `Object`'s
 accessor for it and `Mutator::new_character` are gone. Its literal tag 6
@@ -8818,6 +8819,9 @@ leave [README.md](design/README.md)'s table of deviations.
 - `ce75c350` -- the lexical structure.
 - `46d673eb` -- the grammar of modules, classes and members.
 - `010f58b6` -- the grammar of expressions.
+- `2b340cff`, `2ce34208` -- the appendix, the rule that keeps the book,
+  and the book living and unversioned.
+- `3ac9dee8` -- the commit gate builds the book in its own process.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's second batch, the language's semantics and the run-time

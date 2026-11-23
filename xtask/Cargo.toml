@@ -12,3 +12,5 @@ workspace = true
 
 [dependencies]
 ns-runtime = { path = "../crates/ns-runtime" }
+serde = { version = "1", features = ["derive"] }
+toml.workspace = true
