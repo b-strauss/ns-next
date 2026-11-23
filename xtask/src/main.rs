@@ -500,6 +500,10 @@ enum Part {
     ShippedCode,
     /// The codegen budgets over this checkout (`codegen.rs`).
     Codegen,
+    /// The specification's book checked and rendered (`spec.rs`), in this
+    /// process: a `cargo run -p xtask` step would rebuild the running
+    /// executable, which Windows keeps locked.
+    Spec,
 }
 
 /// `cargo xtask shipped-code`, run as a fresh process built in a target
@@ -546,12 +550,12 @@ fn group(name: &str) -> Option<Vec<Part>> {
                 ],
             )]),
             Part::RecordedSuite,
+            Part::Steps(vec![Step::cargo(
+                "doctests",
+                &["test", "--workspace", "--doc"],
+            )]),
+            Part::Spec,
             Part::Steps(vec![
-                Step::cargo("doctests", &["test", "--workspace", "--doc"]),
-                Step::cargo(
-                    "spec book",
-                    &["run", "--quiet", "-p", "xtask", "--", "spec"],
-                ),
                 Step::cargo(
                     "corpus parse",
                     &[
@@ -817,6 +821,7 @@ fn main() -> ExitCode {
             Part::RecordedSuite => run_recorded_suite(&root, &mut times),
             Part::StressSuites => run_stress_suites(&root, &mut times),
             Part::Codegen => run_codegen(&root, &mut times),
+            Part::Spec => run_spec(&root, &mut times),
         };
         if let Err(failure) = outcome {
             report(&times);
@@ -1146,6 +1151,19 @@ fn run_codegen(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), S
     outcome
 }
 
+/// The specification's book checked and rendered into `target/spec/`,
+/// timed as a step is.
+fn run_spec(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
+    println!(
+        "
+==> spec book"
+    );
+    let started = Instant::now();
+    let outcome = spec::render(root, &root.join("target").join("spec"));
+    times.push(("spec book".to_string(), started.elapsed()));
+    outcome
+}
+
 /// The suite under each stress mode and without the JIT at once, each
 /// into its own log under `.temp/`; then each log's summary line.
 fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
@@ -1246,9 +1264,11 @@ mod tests {
             .iter()
             .filter_map(|part| match part {
                 Part::Steps(steps) => Some(steps.iter().map(|step| step.label.as_str())),
-                Part::RecordedSuite | Part::StressSuites | Part::ShippedCode | Part::Codegen => {
-                    None
-                }
+                Part::RecordedSuite
+                | Part::StressSuites
+                | Part::ShippedCode
+                | Part::Codegen
+                | Part::Spec => None,
             })
             .flatten()
             .collect();
@@ -1282,6 +1302,7 @@ mod tests {
                 Part::StressSuites => vec!["stress suites"],
                 Part::ShippedCode => vec!["shipped code"],
                 Part::Codegen => vec!["codegen"],
+                Part::Spec => vec!["spec book"],
             })
             .collect()
     }
@@ -1654,6 +1675,35 @@ mod tests {
     /// Every commit builds the specification's book, so that a broken rule,
     /// reference or link fails at once (`docs/design/specification.md`,
     /// decision 6).
+    /// The gates run in `target/debug/xtask`, which a `cargo run -p xtask`
+    /// step would have to rebuild while it runs -- on Windows a locked file
+    /// -- so the book is built in this process, and the one step that runs
+    /// xtask again does so in a target directory of its own.
+    #[test]
+    fn no_step_rebuilds_the_running_xtask() {
+        let parts = group("commit").expect("a group");
+        assert!(
+            parts.contains(&Part::Spec),
+            "the book is built in this process"
+        );
+        for part in parts {
+            if let Part::Steps(steps) = part {
+                for step in steps {
+                    let runs_xtask = step.arguments.iter().any(|argument| argument == "xtask");
+                    let elsewhere = step
+                        .arguments
+                        .iter()
+                        .any(|argument| argument == "--target-dir");
+                    assert!(
+                        !runs_xtask || elsewhere,
+                        "{} rebuilds the running xtask",
+                        step.label
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_commit_group_builds_the_specification() {
         let labels = labels_of(&group("commit").expect("a group")).join(",");
