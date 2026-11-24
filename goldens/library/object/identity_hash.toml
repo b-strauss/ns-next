@@ -1,3 +1,4 @@
+rules = ["semantics.object"]
 stdout = '''
 1
 2

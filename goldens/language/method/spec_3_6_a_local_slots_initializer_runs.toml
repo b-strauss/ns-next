@@ -1,3 +1,4 @@
+rules = ["semantics.method.return"]
 stdout = '''
 the initializer ran
 '''

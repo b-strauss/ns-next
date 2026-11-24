@@ -1,3 +1,4 @@
+rules = ["semantics.method.return"]
 status = 1
 stderr = '''
 resolve error: method `shadow:` declares `value` twice, as a parameter and as a local (§3.6)

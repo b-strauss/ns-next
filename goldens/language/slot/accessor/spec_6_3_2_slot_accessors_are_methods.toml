@@ -1,3 +1,4 @@
+rules = ["semantics.slot.accessors"]
 stdout = '''
 no setter ran
 42

@@ -1,3 +1,4 @@
+rules = ["semantics.instantiation.factory", "semantics.instantiation.initializer-order"]
 stdout = '''
 init ran
 hi 2

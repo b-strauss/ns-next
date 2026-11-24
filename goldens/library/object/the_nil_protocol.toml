@@ -1,3 +1,4 @@
+rules = ["semantics.literal.boolean-and-nil"]
 stdout = '''
 true false
 false true

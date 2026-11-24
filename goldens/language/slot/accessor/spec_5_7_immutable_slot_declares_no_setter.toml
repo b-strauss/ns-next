@@ -1,3 +1,4 @@
+rules = ["semantics.slot.immutable"]
 stdout = '''
 3
 7

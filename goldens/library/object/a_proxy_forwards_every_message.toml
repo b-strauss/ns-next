@@ -1,3 +1,4 @@
+rules = ["semantics.send.does-not-understand"]
 stdout = '''
 7
 3

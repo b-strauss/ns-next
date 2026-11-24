@@ -1,4 +1,4 @@
-rules = ["semantics.send.super"]
+rules = ["semantics.send.super", "semantics.access.private"]
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #p

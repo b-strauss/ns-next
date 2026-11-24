@@ -1,3 +1,4 @@
+rules = ["semantics.class-side"]
 stdout = '''
 Foo
 Foo class

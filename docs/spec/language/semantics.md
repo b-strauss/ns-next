@@ -394,3 +394,141 @@ send does, and then signals an error, ``asynchronous send of
 `printString` needs actors, which ns-next does not build yet (§5.6)``,
 naming its message's selector. It fails when it runs, never when its
 module is compiled.
+
+## Methods and blocks
+
+r[semantics.method.return]
+A method runs in a new activation whose receiver is the object the
+message was sent to, its parameters bound to the message's arguments.
+`^e` ends the activation and answers the value of `e`; a method whose
+statements end without a `^` answers its receiver (Bracha §3.5, §7.2).
+Its parameters are immutable, and a parameter and a local of the same
+name in one method or block are a resolve error, ``method `shadow:`
+declares `value` twice, as a parameter and as a local (§3.6)``. A
+local, `| x |`, `| x ::= e. |` or `| x = e. |`, is initialized in the
+order it is declared, `nil` when it has no initializer, and one declared
+with `=` cannot be assigned: a send of its setter is not understood.
+
+r[semantics.block.closure]
+A block's activation runs with the receiver and the class of the
+activation the block was made in, and reads and writes that
+activation's parameters and locals for as long as the block lives, even
+after the activation has returned (Bracha §3.6, §5.1.8). A block's own
+parameters are immutable. Each evaluation of a block literal makes a new
+closure, and each closure that outlives its making shares the variables
+it closes over with every other closure made in the same activation.
+
+r[semantics.block.non-local-return]
+`^e` in a block ends the method activation the block was written in --
+its home -- and answers the value of `e` from it, ending every activation
+between them on the way (Bracha §5.1.8, §7.2); the blocks of
+`ensure:` and `ifCurtailed:` between them run as they are passed.
+
+r[semantics.block.cannot-return]
+A `^` in a block whose home has already returned signals `cannotReturn:
+the enclosing method activation has already returned`.
+
+r[semantics.gap.tail-calls]
+Bracha §3.6 eliminates tail calls to the extent that a program can
+observe them, and marks it *Unimplemented*. ns-next keeps every
+activation until it returns: a recursion of any kind is bounded by the
+depth limit.
+
+## Slots
+
+r[semantics.slot.accessors]
+A slot declared by a class is reached only by messages: its getter, the
+slot's name, and, for a mutable slot, its setter, the name with `:`
+appended, which stores its argument and answers the receiver (Bracha
+§6.3.2). Both are members with the slot's access modifier and may be
+overridden like any method; a slot's initialization is never a send of
+its setter.
+
+r[semantics.slot.immutable]
+A slot declared `x = e.` is immutable: it is set to the value of `e` when
+the instance is initialized and has no setter, so `x: 3` is not
+understood.
+
+r[semantics.slot.mutable]
+A slot declared `x ::= e.` is mutable and set to the value of `e` when
+the instance is initialized; a slot declared with no initializer, `x` or
+`x.`, is mutable and set to `nil`.
+
+r[semantics.slot.lazy]
+A lazy slot, `lazy x = e.` or `lazy x ::= e.`, in any order with its
+access modifier, holds `nil` until its getter is sent; while it holds
+`nil`, the getter evaluates `e` and stores the value, without its
+setter, and answers it, so an `e` that answers `nil` is evaluated again at
+the next read, and one that signals leaves the slot empty (Bracha
+§6.3.3). A lazy slot's expression is evaluated with the instance as its
+receiver and does not see the factory's parameters: a name only a
+factory parameter declares is sent to the instance.
+
+r[semantics.slot.simultaneous]
+The slots of a simultaneous clause, `|| a = e1. b = e2. ||`, and the
+temporaries of a code body written so, each start as a future of their
+expression; each future is computed the first time its value is needed
+and all are resolved once the clause's last slot is declared, so that a
+well-founded mutual recursion among them resolves (Bracha §6.3.2). A
+future is its value to every observer: equal, identical, an argument
+and a receiver like it. A future whose computation needs its own value
+signals `divergent evaluation: a future was forced while it was being
+computed`.
+
+## Access control
+
+r[semantics.access.public]
+A `public` member is reached by every send whose lookup meets it:
+ordinary, self, implicit-receiver, outer and super sends (Bracha
+§6.3.1).
+
+r[semantics.access.protected]
+A `protected` member, the default for a member written without a
+modifier, is reached by self, implicit-receiver, outer and super sends,
+never by an ordinary send, for which it ends the lookup with no method
+([`semantics.send.ordinary`](#r-semantics.send.ordinary)). The access of
+a top-level class is always public.
+
+r[semantics.access.private]
+A `private` member is reached only by a send whose lexical scope is its
+own declaration's: an implicit-receiver, self or outer send that names
+that declaration. Every lookup that starts at a class passes it over, so
+it is never overridden, never reached from a subclass or a superclass,
+and a private nested class is unreachable from outside.
+
+## Instantiation
+
+r[semantics.instantiation.factory]
+A class is instantiated by sending it its primary factory message, `new`
+when its declaration names none (Bracha §6). The factory makes a new
+object, distinct from every other, with one slot for every slot its
+class and superclasses declare, each `nil`, runs the instance
+initializer on it with the factory's arguments, and answers it. A
+factory sent with a number of arguments its pattern does not take
+signals `wrong number of factory arguments: factory takes 1, got 2`.
+The factory's parameters are immutable and are in scope in the
+initializer -- the slot declarations, the initializer's statements and
+the superclass and mixin clauses' messages -- and nowhere else in the
+class.
+
+r[semantics.instantiation.initializer-order]
+The instance initializer runs, in this order: the superclass clause's
+message is evaluated with the factory's arguments; the superclass's
+initializer runs with that message, wholly; the class's slot
+declarations are executed in the order they are written; then the
+initializer's statements run; and the factory answers the instance
+(Bracha §6.3). An applied mixin's level runs between the superclass's
+and the class's own
+([`semantics.mixin.clause-order`](#r-semantics.mixin.clause-order)).
+
+r[semantics.class-side]
+A class's class side, `: ( ... )` after its body, declares the methods of
+its class object, the instance of its metaclass; the primary factory is
+one of its members, and a class-side method sends it as `new` or with
+its pattern (Bracha §6.3). A metaclass is a direct subclass of `Class`:
+a subclass does not inherit its superclass's class-side methods, and a
+metaclass does not understand the factory of its class. `self class`
+on the class side is the metaclass, and the class of a class is its
+metaclass. A class-side method's lexical scope is its class's: an
+implicit-receiver or outer send reaches the enclosing declarations as
+an instance method's does.

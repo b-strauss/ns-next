@@ -1,4 +1,4 @@
-rules = ["semantics.send.outer"]
+rules = ["semantics.send.outer", "semantics.access.private"]
 stdout = '''
 1
 '''

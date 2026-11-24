@@ -1,3 +1,4 @@
+rules = ["semantics.block.closure", "semantics.block.cannot-return"]
 status = 1
 stdout = '''
 stashed

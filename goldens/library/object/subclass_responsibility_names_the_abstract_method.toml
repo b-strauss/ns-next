@@ -1,3 +1,4 @@
+rules = ["semantics.object"]
 stdout = '''
 area 9
 Shape>>area is abstract: Circle must implement it
