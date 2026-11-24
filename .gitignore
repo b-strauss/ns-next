@@ -12,3 +12,13 @@ Cargo.lock.orig
 
 # Python bytecode the benchmark harness leaves beside its sources.
 __pycache__/
+
+# The reference papers `cargo xtask references` downloads, third-party
+# works the repository names but does not carry (docs/references/PROVENANCE.md).
+/docs/references/newspeak-modules.pdf
+/docs/references/dyla-final.pdf
+/docs/references/mirrors.pdf
+/docs/references/newspeak.pdf
+/docs/references/objectsAsSoftwareServices.pdf
+/docs/references/newspeak-exemplars.pdf
+/docs/references/modularity-meets-inheritance.pdf

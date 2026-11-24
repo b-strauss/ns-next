@@ -31,6 +31,9 @@ any names the upstream file it comes from in a header:
   carries, and the Python translations of `RichardsTon80.ns` and
   `DeltaBlueTon80.ns` carry those files' Apache License 2.0 header.
 
+Beside the adapted code, `corpus/` holds Newspeak sources copied verbatim
+from the Newspeak project, unchanged, as the parser's test corpus (below).
+
 Each of these licences requires its notice below to accompany every copy.
 
 The upstream trees are checked out as submodules under `prior-art/`, at the
@@ -593,3 +596,24 @@ full under SOMns above.
 `richardston80/` and `deltablueton80/` are not from Are We Fast Yet: they
 are translated from `RichardsTon80.ns` and `DeltaBlueTon80.ns` and carry
 those files' Apache License 2.0 header, under Primordial Soup above.
+
+## The Newspeak project
+
+Upstream: https://github.com/newspeaklanguage/newspeak, commit
+`a76295549defe53047a65d464b63a9796d823a69` (`corpus/PROVENANCE.md`).
+`corpus/modules/` and `corpus/reference/NewspeakGrammar.ns` are copied from
+it verbatim. Its licence, `corpus/UPSTREAM-LICENSE`, is the upstream
+tree's `LICENSE`: code developed as part of the Newspeak project at
+Cadence Design Systems is licensed under the Apache License 2.0 and bears
+this notice, the licence given in full under Primordial Soup above:
+
+```
+Copyright 2008 Cadence Design Systems, Inc. Licensed under the Apache License, Version 2.0 (the ''License'');
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+```
+
+Code that is part of Squeak is licensed under the Squeak License
+(http://www.squeak.org/SqueakLicense/), and code contributed individually
+carries its own copyright and licence in its file's header, which the
+verbatim copies keep.

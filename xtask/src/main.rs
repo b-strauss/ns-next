@@ -21,6 +21,7 @@
 
 mod codegen;
 mod mcp;
+mod references;
 mod spec;
 mod unreached;
 
@@ -36,6 +37,7 @@ usage: cargo xtask gates <group>...
        cargo xtask nextest-config
        cargo xtask mcp
        cargo xtask spec
+       cargo xtask references
 
 groups (CLAUDE.md, \"The gates\", says when each runs):
   commit               fmt, clippy, the suite with the reach record checked against the list of unreached tests, the doctests, the specification's book, parse-corpus, the plugin's check
@@ -781,6 +783,9 @@ fn main() -> ExitCode {
     }
     if task == "mcp" && groups.is_empty() {
         return mcp::place(&repository_root());
+    }
+    if task == "references" && groups.is_empty() {
+        return references::fetch(&repository_root());
     }
     if task == "spec" && groups.is_empty() {
         let root = repository_root();

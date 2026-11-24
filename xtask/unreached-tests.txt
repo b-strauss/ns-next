@@ -1928,6 +1928,8 @@ xtask::bin/xtask codegen::tests::the_listing_gives_each_function_its_size
 xtask::bin/xtask mcp::tests::a_copy_already_there_stays
 xtask::bin/xtask mcp::tests::a_stale_partial_copy_is_removed_and_a_fresh_one_stays
 xtask::bin/xtask mcp::tests::the_build_is_copied_when_no_copy_is_there
+xtask::bin/xtask references::tests::every_paper_is_ignored_and_listed_with_its_checksum
+xtask::bin/xtask references::tests::the_hash_is_fips_180s
 xtask::bin/xtask mcp::tests::without_a_build_the_task_refuses
 xtask::bin/xtask spec::tests::a_book_toml_that_cannot_be_pointed_at_the_copy_is_refused
 xtask::bin/xtask spec::tests::a_chapter_missing_from_the_summary_is_refused

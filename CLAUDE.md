@@ -446,7 +446,11 @@ server", "Starting it"); and `spec`, which checks the specification's
 book -- every rule identifier well formed and unique, every chapter in
 `SUMMARY.md`, every test's reference and every link naming a rule -- and
 renders it with mdBook into `target/spec/html/index.html`, each rule
-listing the tests that name it (`spec.rs`; `specification.md`).
+listing the tests that name it (`spec.rs`; `specification.md`); and
+`references`, which downloads the reference papers the repository names
+but does not carry into `docs/references/`, which `.gitignore` keeps out
+of the tree, each held to its SHA-256 (`references.rs`;
+`docs/references/PROVENANCE.md`).
 
 `docs/spec/` — the specification of ns-next, an mdBook of Markdown
 chapters: an informal overview, the language (its lexical structure,
