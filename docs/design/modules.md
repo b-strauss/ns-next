@@ -63,7 +63,7 @@ identifies a module the same way, by its path relative to a base directory
 and its class's name (`prior-art/somns`, `MixinDefinition.java:865-889`),
 and loads two files declaring one class name side by side; canonical
 Newspeak and Primordial Soup key one flat map by the class's name, the last
-writer winning (`prior-art/newspeak/Namespacing.ns:35-71`,
+writer winning (`prior-art/newspeak/Namespacing.ns:35-82`,
 `prior-art/primordialsoup/newspeak/CompilerApp.ns:53-56`).
 
 **2. A module declares its id, fully, in metadata above its class.**
@@ -136,8 +136,8 @@ last part the class's name, outside the reserved namespace); the version
 stays the module's own or absent -- a version the project file claimed
 could pick the wrong module within a range silently. It exists for code
 written without this module system, which is all of canonical Newspeak's:
-27 files of the Newspeak and Primordial Soup repositories share a name
-(`prior-art/newspeak/tool/build.sh:128-130` copies one over the other), and
+26 files of the Newspeak and Primordial Soup repositories share a name
+(`prior-art/newspeak/tool/build.sh:124-126` copies one over the other), and
 for a fork beside its original, which declares the original's id. Refused
 before anything runs: two modules of one id with one version, or of one id
 where either has none (no request could pick between them), and an id in

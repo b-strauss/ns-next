@@ -1,6 +1,6 @@
 //! The scavenger (`docs/design/memory.md`, "Generations"): a Cheney copy
 //! of the nursery's survivors, as Spur's `doScavenge:`
-//! (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:48477`) and
+//! (`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:53614`) and
 //! Strongtalk's `Universe::scavenge`
 //! (`prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`) are. A
 //! survivor goes to the future survivor space, or to the old space once
@@ -119,7 +119,7 @@ impl<'space> Scavenger<'space> {
     /// followed along every forwarder, whatever made each link (the chains
     /// are the scavenger's own: a bulk forward leaves none behind), and copied
     /// if it is young and not already in the survivor space being filled,
-    /// as Spur's `scavengeReferentsOf:` decides (`cointerp.c:43316-43322`).
+    /// as Spur's `scavengeReferentsOf:` decides (`cointerp.c:48132-48137`).
     pub(in crate::heap) fn evacuate(&mut self, offset: NonZeroU64) -> NonZeroU64 {
         let offset = self.follow(offset);
         if self.stays(offset) {

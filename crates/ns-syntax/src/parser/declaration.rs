@@ -843,7 +843,7 @@ impl<'a> Parser<'a> {
     }
 
     /// The real Newspeak3 class grammar
-    /// (`corpus/reference/NewspeakGrammar.ns:189,200,208,212`):
+    /// (`corpus/reference/NewspeakGrammar.ns:199,200,208,212`):
     ///
     /// ```text
     /// classDeclaration = classHeader , sideDecl , classSideDecl?
@@ -1220,7 +1220,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
+    /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:199`):
     /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the members in
     /// source order. A `| .. |` slot section, a bare initializer expression or a
     /// class comment here is malformed (those belong to G1).
@@ -1246,7 +1246,7 @@ impl<'a> Parser<'a> {
                     self.push_error(
                         token.span,
                         "a `|...|` slot section is not allowed in the class body \
-                         (grammar line 189); it belongs in the class header",
+                         (grammar line 199); it belongs in the class header",
                     );
                 }
                 _ if self.at_nested_class() => {

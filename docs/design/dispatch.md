@@ -1528,7 +1528,7 @@ named before; a polymorphic site stays polymorphic with its matching slots
 vacant, and a megamorphic one holds no guard. Every other entry stays warm,
 since nothing about the live applications changed; Spur instead flushes
 its method cache and unlinks every send before each full collection
-(`preGCAction`, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:18983-18989`),
+(`preGCAction`, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:23004-23010`),
 and Primordial Soup clears its lookup cache after every collection
 (`prior-art/primordialsoup/vm/interpreter.cc:1891-1908`). A collection that
 freed nothing scrubs nothing (decided with the user on 2026-10-20).
@@ -1772,7 +1772,7 @@ which guards on the running method's or N's application rather than on the
 receiver's header, needs no check of the receiver for the forwarded format
 on a hit -- the read barriers Spur's lazy forwarders cost it on every send
 and explicitly in super sends (`ensureReceiverUnforwarded`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). What a
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6974-6980`). What a
 super or private slot accessor's hit still checks after a forward
 changed its receiver's shape is the recorded guard ("Slot accessors"
 above; [object-model.md](object-model.md), "What a slot access checks").

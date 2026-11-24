@@ -40,3 +40,6 @@
 	path = prior-art/jdk
 	url = https://github.com/openjdk/jdk.git
 	shallow = true
+[submodule "prior-art/eurasia"]
+	path = prior-art/eurasia
+	url = https://github.com/newspeaklanguage/eurasia.git

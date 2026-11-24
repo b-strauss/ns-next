@@ -15,7 +15,7 @@
 //! place, remaps every address outside the bodies that names one -- the
 //! cells and the machine entry rows -- slides the survivors' bytes down,
 //! and rewrites the JIT's own records, in the order of Cog's
-//! `compactCogCompiledCode` (`:5723-5744`).
+//! `compactCogCompiledCode` (`:5852-5873`).
 //!
 //! A body is position-independent: stubs and leaves are reached through
 //! the entry block's words, callees through cells, its data words relative
@@ -59,17 +59,17 @@ pub(crate) struct FreedBody {
 
 /// The usage a body is born with: what Cog's `initialMethodUsageCount`
 /// answers for a method whose primitive has no machine-code generator
-/// (`:8837-8850`), as no body here has one.
+/// (`:9392-9405`), as no body here has one.
 pub(crate) const INITIAL_USAGE: u8 = 2;
 
 /// The usage of a body an activation runs, Cog's `CMMaxUsageCount`
 /// (`:85`), which `markMethodAndReferents` sets an active method to
-/// (`:10073-10074`).
+/// (`:10648-10649`).
 pub(crate) const MAXIMUM_USAGE: u8 = 7;
 
 /// The usage a cell or a machine entry row written to name a body raises
 /// it to at most: Cog raises a linked send's target only while it is below
-/// `CMMaxUsageCount / 2` (`:8697-8698`), so that only an active body
+/// `CMMaxUsageCount / 2` (`:9207-9208`), so that only an active body
 /// reaches the maximum.
 pub(crate) const LINKED_USAGE_CEILING: u8 = MAXIMUM_USAGE / 2;
 
@@ -78,7 +78,7 @@ pub(crate) const LINKED_USAGE_CEILING: u8 = MAXIMUM_USAGE / 2;
 /// compaction in a row doubles it.
 ///
 /// Cog compacts at every compile that finds no room
-/// (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`), so its
+/// (`callForCogCompiledCodeCompaction`, `cointerp.c:15039-15045`), so its
 /// zone is never exhausted for longer than the next failed compile; here
 /// a compaction also walks every cell, so a zone full of active code
 /// would pay that walk at every held entry. Doubling bounds the fruitless
@@ -113,7 +113,7 @@ pub(crate) enum Freeing {
     /// then at most 1, and so on below `MAXIMUM_USAGE`, until a quarter of
     /// the bodies' room past the stubs is free, and at least what the
     /// compile that found no room needed (`freeOlderMethodsForCompaction`,
-    /// `:12897-12925`).
+    /// `:13512-13540`).
     ToAQuarter,
     /// The zone stress mode's: every body below `MAXIMUM_USAGE`, so every
     /// body no activation runs is freed and compiled again, and every
@@ -134,7 +134,7 @@ impl Freeing {
 /// Where a compaction puts each surviving body: the survivors in
 /// ascending order, each at the next multiple of its own alignment from
 /// the end of the stubs, which yields the old start to new start table
-/// Cog's `planCompaction` keeps in each method's header (`:13098-13113`).
+/// Cog's `planCompaction` keeps in each method's header (`:13713-13728`).
 pub(crate) struct CompactionPlan {
     /// The executable address of the zone's offset 0.
     base: u64,
@@ -481,7 +481,7 @@ impl JitState {
     /// and nothing runs it -- or that its slot no longer names, without
     /// waiting for the zone to fill, as Cog's full collection frees the
     /// machine code of every unmarked method (`freeUnmarkedMachineCode`,
-    /// `cogitX64SysV.c:7473-7505`, from `cointerp.c:54977`). Run by a full
+    /// `cogitX64SysV.c:7642-7674`, from `cointerp.c:60218`). Run by a full
     /// collection after the ids are reclaimed (`World::collect`), between
     /// entries. The bytes freed count towards the quarter the collection
     /// asks for a compaction at.
@@ -650,8 +650,8 @@ impl JitState {
     /// A full collection ran, after it freed the dead bodies' code
     /// (`free_dead_bodies`): once the bytes freed since the last
     /// compaction reach a quarter of the bodies' room -- what Cog keeps as
-    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:12887`)
-    /// against the quarter its compaction aims at (`:12907-12911`) -- a
+    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:13500`)
+    /// against the quarter its compaction aims at (`:13522-13526`) -- a
     /// compaction is asked for. Cog compacts only when a compile finds no
     /// room; asking here as well keeps the zone's committed end near what
     /// lives, and a compile from finding the zone full of dead code. A
@@ -991,7 +991,7 @@ impl JitState {
         self.bodies.iter().filter(|body| body.free).count()
     }
 
-    /// Step 1, Cog's `markActiveMethodsAndReferents` (`cointerp.c:17709-17725`):
+    /// Step 1, Cog's `markActiveMethodsAndReferents` (`cointerp.c:21728-21744`):
     /// every body an activation runs, on the activation stack or suspended
     /// into its frame, is set to `MAXIMUM_USAGE`, so that freeing by usage
     /// keeps it.
@@ -1033,7 +1033,7 @@ impl JitState {
         }
     }
 
-    /// Step 3, Cog's `freeOlderMethodsForCompaction` (`:12897-12925`):
+    /// Step 3, Cog's `freeOlderMethodsForCompaction` (`:13512-13540`):
     /// frees bodies by their usage as `freeing` says, each put back to
     /// counting its entries, until the freed bodies and the room past the
     /// last body count `wanted` bytes. Answers whether it freed any, and
@@ -1158,12 +1158,12 @@ impl JitState {
 
     /// Steps 6 to 8: slides each survivor's bytes, code and data words, down
     /// to its new start in ascending order, through a buffer the writer
-    /// reads back (Cog's `compactCompiledCode`, `:12740-12825`); rewrites the
+    /// reads back (Cog's `compactCompiledCode`, `:13353-13438`); rewrites the
     /// installed bodies, where each survivor's slot says its code lies (its
     /// exits kept, `JitSlot::relocated`), and the return sites keyed by
     /// zone offset, a freed body's dropped; moves the zone's next offset to
     /// the end of the last survivor; and halves every survivor's usage
-    /// (`:12756-12757`, `:12806-12807`).
+    /// (`:13369-13370`, `:13419-13420`).
     fn slide(&mut self, plan: &CompactionPlan) {
         let identity = self.zone_identity();
         let Some(zone) = self.zone.as_mut() else {
@@ -1278,7 +1278,7 @@ impl JitState {
         // Every byte the survivors no longer cover -- the gaps their
         // alignment leaves and the room freed past the last -- is filled
         // with stops, as Cog fills the freed end of its zone
-        // (`stopsFromto`, `compactCogCompiledCode`, `:5738`): an address a
+        // (`stopsFromto`, `compactCogCompiledCode`, `:5867`): an address a
         // holder failed to remap traps there rather than running stale code.
         let mut covered = zone.bodies_start;
         for body in &self.bodies {
@@ -1339,7 +1339,7 @@ fn fill_with_stops(_zone: &mut super::Zone, _start: u32, _end: u32) {}
 impl Mutator<'_> {
     /// Compacts the code zone at the run loop's safepoint, once a compile
     /// found no room (`JitState::compaction_requested`): Cog's
-    /// `compactCogCompiledCode` (`:5723-5744`), freeing the least used
+    /// `compactCogCompiledCode` (`:5852-5873`), freeing the least used
     /// bodies until a quarter of the bodies' room past the stubs is free,
     /// and at least what the compile that found no room needed.
     pub(crate) fn compact_code_zone(&mut self) {
@@ -1371,8 +1371,8 @@ impl Mutator<'_> {
     /// move, as Cog updates the stack zone and relocates its methods'
     /// references before it copies
     /// (`updateStackZoneReferencesToCompiledCodePreCompaction`,
-    /// `cointerp.c:21546-21596`; `relocateMethodsPreCompaction`,
-    /// `:13400-13417`); the bytes slid and the records rewritten; the
+    /// `cointerp.c:25573-25623`; `relocateMethodsPreCompaction`,
+    /// `:14015-14032`); the bytes slid and the records rewritten; the
     /// request cleared, and the exhaustion once that much is free.
     fn compact_code_zone_freeing(
         &mut self,

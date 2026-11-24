@@ -118,7 +118,7 @@ print functions are compiled into its production VM
 (`opensmalltalk-vm/platforms/unix/vm/sqUnixMain.c:1702-1716`), and
 Strongtalk keeps `PrintCompilation` among its product flags
 (`strongtalk/vm/runtime/debug.hpp:220`); V8 freezes `--print-code` in a
-release build (`v8/src/flags/flag-definitions.h:4210-4231`), which is the
+release build (`v8/src/flags/flag-definitions.h:4234-4255`), which is the
 choice not taken. Every event site is cold -- a compile, an optimization,
 a retirement, a cache miss -- and tests one flag; the hot path's budget is
 held by the `codegen` gate as before.
@@ -160,13 +160,13 @@ with the user on 2026-11-20). Beside it, the debugging API answers the code of a
 
 **6. The shell evaluates against a workspace object, as the Newspeak IDE
 does.** `ns-next shell [program]` runs in the process, as `d8`'s shell does
-(`v8/src/d8/d8.cc:5909-5950`). An input is a code body evaluated with a
+(`v8/src/d8/d8.cc:6257-6298`). An input is a code body evaluated with a
 workspace object as its receiver: `platform` is reachable, a temporary
 declared at the input's top lives on as a workspace variable, and with a
 program given its module declaration is reachable by its name. The
 canonical implementation's workspace is a generated class whose slots are
 the workspace variables
-(`newspeak/WorkspaceManager.ns:123,186-210`), and an expression is
+(`newspeak/WorkspaceManager.ns:93,159-170,190-196,209-218`), and an expression is
 compiled in its receiver's mixin and run against it
 (`primordialsoup/newspeak/Mirrors.ns:1585-1622`;
 `newspeak/Newspeak2SqueakCompilation.ns:2217-2262`). §3.8 (PDF pp. 19-20)
@@ -222,12 +222,12 @@ modules' from the embedded artifact and an image's from its code
 section; `--print-bytecode` prints each body the filter selects at that
 moment, its blocks indented under it as `disasm` prints them, whether or
 not it ever runs. V8 prints bytecode when an Ignition job is finalized
-(`v8/src/interpreter/interpreter.cc:254-283`), which its lazy compile
-makes the first call (`v8/src/codegen/compiler.cc:3100-3168`); here the
+(`v8/src/interpreter/interpreter.cc:255-284`), which its lazy compile
+makes the first call (`v8/src/codegen/compiler.cc:3207-3275`); here the
 making is the load, and printing at the first entry instead would test
 a bit at every push, in the interpreter and in machine code, the hot
 path the `codegen` gate holds. HotSpot prints bytecode only on demand
-(`jdk/src/hotspot/share/oops/method.cpp:1988-1997`). What runs is the
+(`jdk/src/hotspot/share/oops/method.cpp:1981-1990`). What runs is the
 trace's to say (`[compile] … trigger=entry`). Compiling a body's
 debugger metadata again makes no body and prints nothing, nor does an
 edit only checked. A body is printed at the first flush of the trace
@@ -248,7 +248,7 @@ names the scope, its innermost body and the program counter
 prints. Strongtalk keeps the scopes as a tree apart from the code
 (`strongtalk/vm/code/nmethod.cpp:782-807`); HotSpot repeats the whole
 chain at every annotated instruction
-(`jdk/src/hotspot/share/code/nmethod.cpp:4265-4397`), which the number
+(`jdk/src/hotspot/share/code/nmethod.cpp:4266-4398`), which the number
 spares a listing of deep inlining, and V8 marks a stretch by an
 inlining id resolved through a table
 (`v8/src/codegen/source-position.cc:14-81`). A number tells apart the
@@ -270,8 +270,8 @@ the copy installed, or the refusal's reason as the trace spells it -- so
 that the question why a body stayed unoptimized is answered by the plan
 that failed. HotSpot's C1, Strongtalk and V8's `--trace-turbo-inlining`
 print the decisions as they are made, whatever the outcome
-(`jdk/src/hotspot/share/c1/c1_GraphBuilder.cpp:4858-4880`,
-`v8/src/compiler/js-inlining.cc:695-766`); C2 prints the last attempt
+(`jdk/src/hotspot/share/c1/c1_GraphBuilder.cpp:4883-4905`,
+`v8/src/compiler/js-inlining.cc:702-773`); C2 prints the last attempt
 only (`jdk/src/hotspot/share/opto/c2compiler.cpp:244-245`). A body
 refused before its plan was made -- more instructions than a program
 counter holds -- has none to print. A listing of code stays bound to its
@@ -2075,5 +2075,5 @@ Each is decided in its stage's plan.
   (`FrameKind::TopLevel`) -- and how a new workspace variable becomes a
   slot (an atomic edit through `interpreter/edit.rs` and `install.rs`, or
   a workspace class rebuilt); whether earlier results are named (`r1`,
-  `r2`, as `newspeak/AI_IDE_Support.ns:2658-2659` does); how an
+  `r2`, as `newspeak/AI_IDE_Support.ns:4482-4483` does); how an
   interrupt stops a running input; line editing without a new dependency.

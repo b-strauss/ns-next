@@ -1,5 +1,5 @@
 /// The transcript's `print:` writes any object's `printString`, as canonical
-/// Newspeak's transcript does (`prior-art/newspeak/RuntimeForJS.ns`), while
+/// Newspeak's transcript does (`prior-art/newspeak/platform/JS/Runtime.ns`), while
 /// `show:` writes a string as it is: a `String`'s `printString` quotes it,
 /// so `print:` of a string shows the quotes and `show:` of the same string
 /// does not (decided with the user on 2026-09-27;

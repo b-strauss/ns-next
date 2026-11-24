@@ -325,8 +325,8 @@ pub(crate) fn executable_view_is_writable(mapping: &CodeMapping, committed: usiz
 /// the sections of the chunks committed so far, each mapped into both at
 /// the same offset -- read and execute in one, read and write in the
 /// other -- in place of its placeholders. ZGC's shape
-/// (`zMapper_windows.cpp:62-75`, `:258-312`), and HotSpot's
-/// placeholders (`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3573-3618`).
+/// (`zMapper_windows.cpp:62-75`, `:258-310`), and HotSpot's
+/// placeholders (`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3594-3639`).
 pub(crate) struct CodeMapping {
     pub(crate) executable: NonNull<u8>,
     pub(crate) writable: NonNull<u8>,

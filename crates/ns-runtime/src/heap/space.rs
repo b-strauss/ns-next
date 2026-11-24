@@ -26,7 +26,7 @@ pub(in crate::heap) const FIRST_OBJECT: usize = 16;
 /// decided with the user on 2026-10-04): the survivor spaces first, then
 /// eden, then the old space, as Spur and Strongtalk lay them out
 /// (`setHeapBase:memoryLimit:endOfMemory:`,
-/// `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60020`;
+/// `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:65254`;
 /// `prior-art/strongtalk/vm/memory/universe.cpp:64-79`), so that young is
 /// one comparison against `NURSERY_END`. The first survivor space starts at
 /// `FIRST_OBJECT`, so it is 16 bytes smaller than the second.
@@ -128,7 +128,7 @@ const MINIMUM_COMMIT: usize = 256 << 10;
 /// tells an overflow word from a header -- a header there never carries
 /// the mark, since only an object with an overflow word does
 /// (Spur's `numSlotsOfAny:` and `objectAfter:`,
-/// `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:55584`, `:55781`).
+/// `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60825`, `:60998`).
 const OVERFLOW_MARK: u64 = (WORD_COUNT_OVERFLOW as u64) << 56;
 const OVERFLOW_COUNT: u64 = (1 << 56) - 1;
 

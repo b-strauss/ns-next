@@ -25,6 +25,7 @@ that carry design weight.
 | Submodule | Upstream | Why it is here |
 |---|---|---|
 | `newspeak/` | [newspeaklanguage/newspeak](https://github.com/newspeaklanguage/newspeak) | The canonical Newspeak implementation, on Squeak. The reference for what the language actually does when the specification is silent or ambiguous. |
+| `eurasia/` | [newspeaklanguage/eurasia](https://github.com/newspeaklanguage/eurasia) | A Newspeak VM in Rust by Gilad Bracha, for native platforms and the web (wasm32) from one code base, which is to replace Primordial Soup as the reference implementation: V5 bytecode, a snapshot format of its own (`docs/SNAPSHOT_FORMAT.md`), and the VM-kernel contract the `newspeak` tree documents (`VM_KERNEL_CONTRACT_DESIGN_2026-11-09.md`, `BYTECODES_V5_SPEC_2026-07-13.md`). Young: its first commit is of 2026-11-17, and it moves fast. |
 | `newspeak-benchmarks/` | [newspeaklanguage/benchmarks](https://github.com/newspeaklanguage/benchmarks) | The same benchmarks in Newspeak, Smalltalk, Dart, Java and JavaScript. Useful both as workloads and as a cross-language baseline for what a given program *should* cost. |
 | `primordialsoup/` | [rmacnak/primordialsoup](https://github.com/rmacnak/primordialsoup) | A Newspeak VM in C++ by Ryan Macnak, with its own bytecode set, image format and garbage collector. The closest prior art to what this repository is building, and the most direct source of comparison for the image format and the collector. |
 | `somns/` | [smarr/SOMns](https://github.com/smarr/SOMns) | A Newspeak on Truffle/Graal by Stefan Marr. The reference for the optimizing end of the design: self-optimizing interpreters, specialization, and the measurement methodology behind them. |
@@ -44,19 +45,20 @@ A submodule records one commit. These are the ones this repository points at.
 
 | Submodule | Commit | Upstream date | Added |
 |---|---|---|---|
-| `newspeak` | `4c8677e2c8c39bad62a85d9479bc914a13a2ee95` | 2026-09-06 | 2026-09-10 |
+| `newspeak` | `c4aa0e46868b35435cfc3e9dc592c5c8e5e1a5a8` | 2026-11-23 | 2026-09-10 |
+| `eurasia` | `ddd32bd1a9a23f3184e7473e298bb2e6baa3b2c8` | 2026-11-23 | 2026-11-24 |
 | `newspeak-benchmarks` | `874ba34d48a84249e1e663061a70eeb608bcf601` | 2018-01-27 | 2026-09-10 |
-| `primordialsoup` | `338f0bb342a618f5608ab72ab1b1fae9b226e472` | 2026-05-03 | 2026-09-10 |
+| `primordialsoup` | `e7a7ece673f57fdeb43b586f297552e7e84c24ff` | 2026-09-26 | 2026-09-10 |
 | `somns` | `e56f4c2815cef4cae2045a9b05dc1fd190315ba6` | 2019-07-07 | 2026-09-10 |
-| `are-we-fast-yet` | `74306fec151070fd07157cefeacf19e7e0bcdc89` | 2026-03-22 | 2026-10-22 |
-| `nova` | `4eea7c6fae180a8a2eed45c3f6acd0d9256522b1` | 2026-06-13 | 2026-09-10 |
-| `opensmalltalk-vm` | `3ea6bd17fabb5aca6fcbd175185d2fccdd50d919` | 2026-09-07 | 2026-09-10 |
+| `are-we-fast-yet` | `f35aed0a61171594804a44efe9d75f1f35360700` | 2026-11-15 | 2026-10-22 |
+| `nova` | `591bf7ba0d35b095656dd31cdf397ef813a17fc2` | 2026-11-07 | 2026-09-10 |
+| `opensmalltalk-vm` | `886d66aa28357b985b356361981e5ca3af2d1efa` | 2026-11-20 | 2026-09-10 |
 | `strongtalk` | `e4ce7b69ad20e1013f07a53dfc11fdf57b6748cf` | 2010-01-06 | 2026-09-15 |
 | `num-bigint` | `41f0b035d12971c5c7f7501917e31f0f6439c26c` | 2026-08-21 | 2026-09-29 |
 | `num-integer` | `765fd9b3eb9397471d41b9f613e530f6d9d6383f` | 2026-08-11 | 2026-09-29 |
 | `num-rational` | `cf95d6719c585d4721645c7ace5dfe1dd5f063e2` | 2026-07-07 | 2026-09-29 |
-| `v8` | `630f172aad7057ce97707363023c2ed630be8a63` | 2026-10-27 | 2026-10-27 |
-| `jdk` | `f2259dcd24013c73f86539cea2cec57aea8de9b9` | 2026-10-27 | 2026-10-27 |
+| `v8` | `45e84925bff25c1fac5c750c3e08bc622a95a799` | 2026-11-24 | 2026-10-27 |
+| `jdk` | `c3b9d08dfdca3c8c3c6c93b80b7a675401b09673` | 2026-11-24 | 2026-10-27 |
 
 `strongtalk` is pinned on its `gcc-linux` branch, not its default `master`, and
 `.gitmodules` names that branch so `git submodule update --remote` follows it.
@@ -71,9 +73,11 @@ new commit by hash with `--depth 1` before checking it out.
 
 To move one forward: `git -C prior-art/<name> fetch && git -C prior-art/<name>
 checkout <commit>`, then commit the changed submodule pointer here and update
-the row above. There is no reason to keep them current on a schedule — a
-reference implementation is useful at whatever commit you read it at, and a
-moving pointer makes a citation in `docs/design/` unresolvable.
+the row above. Moving one forward moves the lines that `docs/design/` and
+the code's comments cite in it, so the same commit checks every citation
+of a line in that submodule against the new tree -- the construct it names
+found again, its numbers rewritten, and a claim the new code no longer
+bears out rewritten too; the seven that moved on 2026-11-24 were checked so.
 
 ## `newspeak/` is here twice, deliberately
 
@@ -134,6 +138,9 @@ code. `ns-next`'s own license is at `LICENSE`.
 - `newspeak-benchmarks` — no license file in the tree. Treat it as
   read-only reference material and do not copy code out of it without
   resolving that first.
+- `eurasia` — the three-clause BSD licence, Gilad Bracha 2026-2027; see
+  `prior-art/eurasia/LICENSE`, which also says it holds no code of
+  Primordial Soup's.
 - `nova` — Mozilla Public License 2.0; see `prior-art/nova/LICENSE.md`. Note
   that the MPL is file-level copyleft, which makes it the most restrictive
   license here for any purpose beyond reading.
@@ -170,10 +177,10 @@ submodule.
 
 Worth knowing before running `git submodule update --init` without an argument:
 `opensmalltalk-vm` is about **255 MB** checked out, several times larger than
-everything else here combined (`strongtalk` 38 MB, `newspeak` 17 MB, `nova`
+everything else here combined (`strongtalk` 38 MB, `newspeak` 32 MB, `nova`
 8 MB, `somns` 5.7 MB, `are-we-fast-yet` 3.3 MB, `primordialsoup` 2.8 MB,
 `num-bigint` 777 KB, `newspeak-benchmarks` 389 KB, `num-rational` 192 KB,
-`num-integer` 163 KB). It is mostly generated C sources and platform build
+`num-integer` 163 KB, `eurasia` 1.3 MB). It is mostly generated C sources and platform build
 trees, none of which is the interesting part — the Cog and Spur design lives in
 the Smalltalk-side sources and the comments. Initialize it by name when you
 want it rather than pulling everything.

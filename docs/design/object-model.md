@@ -64,16 +64,16 @@ rest is:
 | `011`, `101`, `111` | never produced, so that bit 0 alone tells a `SmallInteger` |
 
 The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag
-bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur writes a
-`SmallInteger` as `(value << 3) + 1` (`integerObjectOf`, `:41159`) and tests it
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2825` for the three tag
+bits, `:2883` for `smallIntegerTag`, `:2830` for `smallFloatTag`): Spur writes a
+`SmallInteger` as `(value << 3) + 1` (`integerObjectOf`, `:45697`) and tests it
 by bit 0 alone. Spur's `Character` tag, `010`, is taken for the constants:
 ns-next has no characters, and `nil`, `true` and `false` are immediates rather
 than heap singletons as in Spur and Soup, which is why nothing resembling an
 object store is needed to name them in a serialized image. A `SmallFloat64` is
 Spur's encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
 the exponent -- IEEE exponents 896 with a non-zero mantissa through 1151, about
-2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`;
+2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:45770`;
 `is_small_float_bits`) -- with the sign rotated down beside the tag. A release
 `Value` is the word and the zero-sized brand, eight bytes
 (`a_release_value_is_one_word`).
@@ -1600,7 +1600,7 @@ against that superclass, then the mixin's own part -- and never the
 mixin's own `<:` clauses, whose levels are not above it. Only the full
 initializer of the declaration that applied it runs it the `<:` way, its
 clause's message then the mixin's own part. Squeak-Newspeak deletes such a
-level's initializer (`prior-art/newspeak/squeak/KernelForSqueak.ns:968-985`), so both cases end in a
+level's initializer (`prior-art/newspeak/squeak/KernelForSqueak.ns:1055-1065`), so both cases end in a
 `doesNotUnderstand:` or silently run a higher initializer; SOMns flattens
 the levels into one class, so none is reachable; Primordial Soup has no
 `<:`. For `class Below y: y = L tag: …` over the level `L` that `Marker`
@@ -1732,7 +1732,7 @@ above). The three kernel classes
 declare no slot for any of it and carry behaviour only, as SOMns's do
 (`Class = Object ()`, `Metaclass = Class ()()` in
 `prior-art/somns/core-lib/Kernel.ns`, the state in the Java `SClass`) and as
-`KernelForJS.ns`'s do. Primordial Soup instead makes a class object an
+`platform/JS/InternalKernel.ns`'s do. Primordial Soup instead makes a class object an
 ordinary instance whose first six slots `Behavior` declares and the VM knows
 by position (`KernelForPrimordialSoup.ns`). The fields here sit by position
 too, but in a format of their own that no Newspeak declaration names, so no
@@ -2224,7 +2224,7 @@ reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
 `kFreeListElementCid = 2`, `kFirstLegalCid = 3`,
 `prior-art/primordialsoup/vm/object.h:64-68`), and Spur keeps its own
 puns below 32 (`isFreeObjectClassIndexPun` 0, `isForwardedObjectClassIndexPun`
-8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2815-2817`):
+8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2861-2863`):
 `DispatchId::NONE` is 0, `VACANT` 1 and `FORWARDED` 2, and the allocator
 (`heap/ids.rs`'s `DispatchIdAllocator`) mints from 3 below 2^22, answering
 `NONE` once every id is in use ("An application has two ids" below). So a
@@ -2291,7 +2291,7 @@ between marking and compaction, after `prune_canonical_symbols` and
 allocates an object. A scavenge frees no id. The design is Spur's, whose
 class table is weak and whose full collection frees the unmarked classes'
 indices (`expungeDuplicateAndUnmarkedClasses:`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:54844-54886`), and
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60085-60127`), and
 Primordial Soup's, which keeps freed class ids on a free list
 (`prior-art/primordialsoup/vm/heap.cc:1022-1070`); decided with the user on
 2026-10-03, its details on 2026-10-20.
@@ -2947,7 +2947,7 @@ lazy forwarders, which stay in the heap after
 `become:with:twoWay:copyHash:`, pay for every one of these: a read barrier
 on send through the forwarder's class index, an explicit one in super sends
 (`ensureReceiverUnforwarded`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`: "To
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6974-6980`: "To
 maintain the invariant that all receivers are unforwarded we need an
 explicit read barrier in the super send cases"), and primitives that
 unforward their arguments on failure. Each reader that forgets its check is

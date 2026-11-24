@@ -25,7 +25,8 @@ principles that decide between options are in `docs/design/README.md`,
    behaviour with a small program before calling something a deviation.
 2. **The prior art.** For each relevant system under `prior-art/`, say what it
    actually does, with file and line citations: Cog/OpenSmalltalk for
-   activations and dispatch, Primordial Soup and SOMns for Newspeak itself,
+   activations and dispatch, Primordial Soup, Eurasia (Gilad Bracha's Rust VM, Soup's successor as
+   the reference implementation) and SOMns for Newspeak itself,
    Strongtalk for inline caches and deoptimization, Nova for Rust arenas and
    handles, V8 (`v8`) and HotSpot (`jdk`) for the JIT tiers: baseline
    compilation, tiering, code caches and deoptimization.
