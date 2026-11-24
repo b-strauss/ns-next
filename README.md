@@ -144,6 +144,9 @@ Newspeak modules, kept as a non-regression gate for the parser; the six on
 `cargo xtask` runs the repository's own tasks (`xtask/`). Each gate group is
 one call; several groups also run in one call, one after another, and the
 first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
+The commit gate also runs on GitHub Actions, on Linux x64, Windows x64 and
+macOS on Apple silicon, at every push to `master` and every pull request
+(`.github/workflows/tests.yml`).
 
 ```bash
 # every commit: cargo fmt --all, clippy warning-free, the suite with every

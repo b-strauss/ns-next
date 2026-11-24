@@ -1,0 +1,68 @@
+# Runs the commit gate (`cargo xtask gates commit`; CLAUDE.md, "The
+# gates") on Linux x64, Windows x64 and macOS on Apple silicon at every push
+# to master and every pull request -- the last the one place the AArch64
+# JIT runs natively rather than under QEMU. The end-of-batch gates (stress
+# modes, benchmarks, codegen) stay local: they run too long for these
+# runners, and a measurement on a shared runner says nothing.
+
+name: Tests
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run before it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-gate:
+    name: commit gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # The default profile pins 18 threads for the development machine;
+      # these runners have three or four cores.
+      NEXTEST_TEST_THREADS: num-cpus
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it here.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,mdbook@0.5.4
+
+      # The plugin's Gradle build asks for a JDK 21 toolchain.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Commit gate
+        run: cargo xtask gates commit
+
+      # The gate's first step formats the sources in place; a diff means a
+      # commit that was not formatted.
+      - name: Sources are formatted
+        run: git diff --exit-code

@@ -1013,6 +1013,11 @@ share the machine's threads among them by their measured lengths
 and `stress` together; the Docker groups `linux` and `aarch64` are not part
 of it (decided with the user 2026-11-15, while the focus is elsewhere) and
 run on demand; none runs at a commit, nor under a stress mode.
+The `commit` group also runs on GitHub Actions (`.github/workflows/tests.yml`)
+on Linux x64, Windows x64 and macOS on Apple silicon -- the one place the
+AArch64 JIT runs natively -- at every push to `master` and every pull
+request that changes more than Markdown; work reaches `master` through a
+pull request, merged with a merge commit once the user agrees.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since
