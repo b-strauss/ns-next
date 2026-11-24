@@ -1548,7 +1548,7 @@ A timed run of all sixteen in one process slows the later ones: they share
 the `som` collections' call sites, which the earlier benchmarks have made
 megamorphic for the JIT (and, less so, for ns-next's inline caches).
 
-**The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
+**The baseline**, measured on 2026-10-02 at `7afe9a6` on one Windows 11
 machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,
 told apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to
 import no `VCRUNTIME140.dll` and to print `ok` for all sixteen. Three
@@ -1594,7 +1594,7 @@ which they include and whose share was not measured.
 
 ### Against Java
 
-Measured on 2026-11-09 at `0e40701f` (the baseline JIT and the optimizing
+Measured on 2026-11-09 at `33726ed2` (the baseline JIT and the optimizing
 tier through its third stage, inlining), asked for by the user: how far
 ns-next is from the JVM on the sixteen programs. Both harnesses ran with
 `--timed --warm-up 2000 --measure 3000`, a steady-state throughput: the
@@ -1634,7 +1634,7 @@ percents, is measured.
 | Towers | 5743.7 | 49376.6 | 8.6× |
 
 Java is faster by 21.0× on the geometric mean of the sixteen factors (the
-median 23.0×), from 4.4× on Queens to 196× on CD. At `b9abfd0c`, the
+median 23.0×), from 4.4× on Queens to 196× on CD. At `9b52c70f`, the
 baseline JIT alone, the geometric mean was 38.5×; Java's scores are
 within a few percent of that comparison's, so the difference is
 ns-next's. ns-next's nine values spread at most 10.4% of their median
@@ -1673,7 +1673,7 @@ comparisons' figures are not directly comparable.
 
 ### Against Java and CPython
 
-Measured on 2026-11-10 at `28bcb3f4`, as the baseline future optimization
+Measured on 2026-11-10 at `c1661ffc`, as the baseline future optimization
 is measured against, asked for by the user: how far ns-next is from the
 JVM and from CPython's interpreter on the sixteen programs, now that the
 three ports do the same work -- every port carries the SOM class library
@@ -1778,8 +1778,8 @@ programs against CPython, and the comparison in containers.
 
 Measured on 2026-10-02 on the machine of the baseline above (Windows 11,
 Intel Core Ultra 9 285K): the tree the branch `eight-byte-value` started
-from, `2204e8f` (the same code as `1792df5`), against the branch at
-`16c6022`, in one sitting. Three pinned release builds of each tree, told
+from, `8c8ca06` (the same code as `7afe9a6`), against the branch at
+`7f52e8b`, in one sitting. Three pinned release builds of each tree, told
 apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to import no
 `VCRUNTIME140.dll` and to print the expected output for every source.
 Three rounds, the six binaries' order rotated by one from round to round; in
@@ -1843,7 +1843,7 @@ to one fraction digit, are read from `bench` above):
 | Storage | 506.9 | 621.4 | **+22.6%** |
 | Towers | 226.1 | 270.3 | **+19.5%** |
 
-`vm::run` is one function of 6,978 instructions at `16c6022`, against the
+`vm::run` is one function of 6,978 instructions at `7f52e8b`, against the
 7,143 last recorded ("What the loop over locals moved"), with no
 `vm::run::closure` and no `run_stretch` of its own (`dumpbin /disasm` of a
 pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`). The
@@ -1861,8 +1861,8 @@ how much, since only the two ends were measured.
 ### What the compact instruction encoding moved
 
 Measured on 2026-10-02 on the same machine: the tree the branch
-`feature/compact-instruction-encoding` started from, `49e1fcc`, against the
-branch at `65ad13a`, in one sitting. Three pinned release builds of each
+`feature/compact-instruction-encoding` started from, `227e5c1`, against the
+branch at `ac35d48`, in one sitting. Three pinned release builds of each
 tree (`-C metadata=alpha`, `beta`, `gamma`), each checked to print `ok` for
 all sixteen programs; three rounds, the six binaries' order rotated from
 round to round; in each round every binary ran `bench --iterations 3 --
@@ -1920,7 +1920,7 @@ breaking out of its own kind's labelled block, removed it, and turned
 `bench_loop.ns` from 3.5% slower into the 1.9% faster above.
 
 `vm::run` is 8,498 instructions with a stack frame of 0x398 bytes at
-`51c4c49`, against 7,000 and 0x358 at `49e1fcc` (`dumpbin /disasm`, a
+`a4dcfd3`, against 7,000 and 0x358 at `227e5c1` (`dumpbin /disasm`, a
 pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`), with no
 `vm::run::closure` and no `run_stretch` of its own; `run_wide`, which runs
 every instruction that has no eight-byte form, is a function of its own.
@@ -1938,7 +1938,7 @@ that runs wide forms, which no measured program reaches.
 
 Measured on 2026-10-03 on the same machine (Windows 11, Intel Core Ultra 9
 285K): the tree the branch `feature/object-representation` started from,
-`d0e8b08`, against the branch at `e664c77`, in one sitting. Three pinned
+`5fc230b`, against the branch at `efc1854`, in one sitting. Three pinned
 release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`, with `-C
 target-feature=+crt-static -C llvm-args=-align-all-functions=6`), each checked
 to print `ok` for all sixteen programs and the expected output for the eight
@@ -1988,7 +1988,7 @@ block until road step 3b put the objects in the space ("What the object
 space moved" below).
 
 **Measured, profiled, measured again.** A first measurement of the branch at
-`3cdbd5e`, by the same protocol, showed DeltaBlue +42.0%, `bench_block.ns`
+`5d8af37`, by the same protocol, showed DeltaBlue +42.0%, `bench_block.ns`
 +41.2% and Sieve +38.5%. An `xperf` profile of the three (one trace per
 program per tree, 0.1221 ms sampling, one debug-info build each) reproduced
 the regressions (DeltaBlue +42.7%, `bench_block.ns` +40.4%, Sieve +31.2%) and
@@ -2002,7 +2002,7 @@ UTF-8 `String`, hashing it and probing the interner, on every call; the
 symbol-keyed lookups of `Strength of: #required` made one per constraint.
 A per-heap inverse map from a symbol object's index to its `Symbol`, kept in
 step with the canonical symbol table ([memory.md](memory.md), "Weak
-references"), made it one map probe (`e664c77`), which took DeltaBlue from
+references"), made it one map probe (`efc1854`), which took DeltaBlue from
 +42.0% to +6.1%.
 
 What the profile found in `bench_block.ns` and Sieve is a heap allocation per
@@ -2012,7 +2012,7 @@ exclusive time grew by 9,420 samples in `bench_block.ns` (66% of its added
 samples) and 5,622 in Sieve (57%), where the frame and the closure had been
 inline in the arena vectors. That is the per-object allocation road step 3b's
 bump allocation in the space replaced. The profile also found the temporary
-list of copied values every closure built and freed, which `e664c77` removed;
+list of copied values every closure built and freed, which `efc1854` removed;
 and about 5,800 (`bench_block.ns`) and 3,900 (Sieve) samples in the new
 out-of-line accessors (`pointer_words`, `frame_payload`, `register_code`),
 the format check through the block's pointer that the same step removed.
@@ -2029,10 +2029,10 @@ percent are not excluded, and which could not split code inlined into
 
 Measured on 2026-10-03 on the same machine (Windows 11, Intel Core Ultra 9
 285K), in two sittings: the tree the branch `feature/object-space` started
-from, `d3e9f6f` ("before", the arena of road step 3a), against the branch
-at three points -- `e187399`, after handles became 64-bit offsets, still on
-the arena; `a51ed31`, with the objects in the space and every allocation
-written in place; and `5d1b903`, `a51ed31` plus the inlining fix below, the
+from, `9507d02` ("before", the arena of road step 3a), against the branch
+at three points -- `bf97b79`, after handles became 64-bit offsets, still on
+the arena; `14b6aaa`, with the objects in the space and every allocation
+written in place; and `0260344`, `14b6aaa` plus the inlining fix below, the
 branch's head. Three pinned release builds of each tree (`-C
 metadata=alpha`, `beta`, `gamma`, with `-C target-feature=+crt-static -C
 llvm-args=-align-all-functions=6`), built in throwaway worktrees, each
@@ -2127,18 +2127,18 @@ Rust structure holds doubled from 4 bytes to 8, and every resolution a send
 returns, `Resolved`, grew from 16 bytes to 24 in a release build
 (`a_resolution_stays_the_size_the_hot_path_was_measured_at`,
 `interpreter/resolve.rs`); how the cost divides among them was not
-measured. The space at `a51ed31` won the allocating sources back and more,
+measured. The space at `14b6aaa` won the allocating sources back and more,
 but left four sources slower with separated ranges -- List by 6.1%,
 DeltaBlueTon80 by 5.3%, `bench_loop.ns` by 4.0% and Richards by 3.9%.
 
 **Profiled between the sittings.** An `xperf` profile (0.1221 ms sampling,
 one debug-info build per tree, one trace per program) of List,
 DeltaBlueTon80 and `bench_loop.ns` found `Heap::pointer_words` an outlined
-function at `a51ed31`, holding 5.3% (List), 8.2% (DeltaBlueTon80) and 5.7%
+function at `14b6aaa`, holding 5.3% (List), 8.2% (DeltaBlueTon80) and 5.7%
 (`bench_loop.ns`, plus 2.8% in `pointer_words_mut`) of the process's
 samples, where at the base it was inlined into its callers. The space had
 made `Heap::block` larger -- through `Space::words`, `Reservation::prefix`
-and `block_range` -- and `#[inline]` no longer sufficed. `5d1b903` marks
+and `block_range` -- and `#[inline]` no longer sufficed. `0260344` marks
 `pointer_words`, `pointer_words_mut` and `pointer_word` `#[inline(always)]`
 and `Reservation::prefix`, `prefix_mut` and `check_prefix` `#[inline]`;
 `dumpbin /disasm` of a debug-info build shows none of them as a function of
@@ -2181,9 +2181,9 @@ charge, which the working set does not show.
 ### What generations moved
 
 Measured on 2026-10-04 on the same machine (Windows 11 Pro 22631, Intel
-Core Ultra 9 285K, 24 cores): `master` at `664f5f07`, the tree road step 4
+Core Ultra 9 285K, 24 cores): `master` at `f7d8efdb`, the tree road step 4
 started from ("before", one space under the mark-compact collector),
-against `feature/generations` at `24a4e0e0` ("after", the nursery, the
+against `feature/generations` at `2b238e00` ("after", the nursery, the
 scavenger and the barrier; [memory.md](memory.md), "Generations"). Three
 pinned release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`,
 with `-C target-feature=+crt-static -C llvm-args=-align-all-functions=6`),
@@ -2354,13 +2354,13 @@ large-object limit.
 
 Measured on 2026-10-22 on the same machine (Windows 11 Pro 22631, Intel
 Core Ultra 9 285K, 24 cores, rustc 1.98.0) by the protocol of "What
-removing the re-entries moved": `master` at `dc7ae2f6`, the tree road
+removing the re-entries moved": `master` at `6b547b6d`, the tree road
 step 6 started from, against each of its five parts in order -- bump
-(`af894802`, the fast bump before the cold `allocate_block`), codeid
-(`cfadf647`, the code-id cache), templates (`8555b814`, closures, frames
+(`db933a60`, the fast bump before the cold `allocate_block`), codeid
+(`f43afaa2`, the code-id cache), templates (`97622c91`, closures, frames
 and boxed floats with a precomputed header, and the tests that prove the
-fast bump ran), arrays (`df7d55c9`, `Array new:`, `MakeArray` and
-`MakeVector` with no `Vec`) and new (`fee106bb`, `new` of a class with no
+fast bump ran), arrays (`efda979c`, `Array new:`, `MakeArray` and
+`MakeVector` with no `Vec`) and new (`91c1d424`, `new` of a class with no
 initializer code; [memory.md](memory.md), "Inline allocation";
 [object-model.md](object-model.md), "Instantiation"). Three pinned
 release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`, with
@@ -2724,7 +2724,7 @@ inferences from what each change removed; no profile was taken.
 ### What the trampoline moved
 
 The trampoline ("The trampoline" below) was measured whole against the commit
-it started from, `04e5fc0`, in one sitting, on 2026-09-12, the same way: the
+it started from, `96e6d43`, in one sitting, on 2026-09-12, the same way: the
 before-binary built in a throwaway worktree, `ns-next bench` over the three
 fixtures, three rounds, alternating the binaries within each round. Bytecode
 medians in ms:
@@ -2829,8 +2829,8 @@ limit.
 ### What the profiles show
 
 Two binaries were profiled on 2026-09-12, both release builds with debug
-information: the commit the trampoline started from (`04e5fc0`) and the
-trampoline's head (`641b8d2`). Each ran `ns-next bench` over `bench_block.ns`
+information: the commit the trampoline started from (`96e6d43`) and the
+trampoline's head (`5c8f5f4`). Each ran `ns-next bench` over `bench_block.ns`
 and `bench_send.ns` with 500 iterations under `samply record` (ETW sampling at
 1 kHz, Windows 11). samply resolved the system libraries but not ns-next's own
 frames, which were resolved afterwards against the PDB through `dbghelp`. Only
@@ -2875,8 +2875,8 @@ multiply ("What spec-conformant lookup moved" below).
 
 ### 3a's head, before the caches (2026-09-16)
 
-Before building the caches, 3a's head (`60ac69e`, the same code as the plan's
-`START`, `49a2a38`) was profiled to read the caches' ceiling off the send path
+Before building the caches, 3a's head (`91d8421`, the same code as the plan's
+`START`, `98b4041`) was profiled to read the caches' ceiling off the send path
 they will actually sit in front of, rather than assume it. One release build
 with debug information and the protocol's flags (`+crt-static`, the
 function-alignment pin), `samply record --save-only` at 500 iterations per
@@ -2933,7 +2933,7 @@ since `tick:` creates no closure, pops it without reifying (0.5%, against
 ### What removing the re-entries moved
 
 Taking the last re-entries of the loop from Rust away ("No re-entry from Rust"
-below) was measured whole against the commit it started from, `be3eb40`, in
+below) was measured whole against the commit it started from, `d804eaf`, in
 two sittings on 2026-09-13: the before-binary built in a throwaway worktree,
 `ns-next bench <source> --iterations 30` over seven sources, five rounds,
 alternating the binaries within each round. Besides the three fixtures, four
@@ -3086,10 +3086,10 @@ benchmark's path explains it. Code placement is the likely mechanism — a
 change elsewhere moving the hot functions into another 64-byte phase — but
 that was verified only for 2c, whose investigation found it and is why a
 measurement now pins function alignment ("What 2c moved" below, and the
-protocol above). The comparison with `be3eb40` is carried through
+protocol above). The comparison with `d804eaf` is carried through
 every measurement up to step 3; step 2b's ("What 2b moved" below) puts
 `bench_loop.ns` at +1.1% in both of its sittings, the groups overlapping, and
-`bench_block.ns` 2.5% faster than `be3eb40`.
+`bench_block.ns` 2.5% faster than `d804eaf`.
 
 Each change was measured against its parent on the way, in sittings of its
 own, so its figures are not compared with these:
@@ -3117,7 +3117,7 @@ own, so its figures are not compared with these:
   left about +1.8%. A chain of two levels with code still boxed both for every
   body but the last, which showed only once `bench_new2.ns` and
   `bench_newarg.ns` joined the measurement: 15.4% and 18.3% slower than
-  `be3eb40`.
+  `d804eaf`.
 - **Every body inline.** Carrying `Step::InitializerThen`,
   `Step::ClauseMessage` and `Step::SuperclassClause` inline instead of a
   boxed body description (the first two since gone with the walk, "What
@@ -3161,14 +3161,14 @@ Step 2b ([memory.md](memory.md), "Checked roots and a collector") put three
 things into a release build: the safepoint poll in the run loop ("The VM"
 above), a closure's payload inline in its object, and host roots at the host
 boundary; the tracing, the move and the stress mode exist only in a debug
-build. It was measured whole against the commit it started from, `4882a2c`,
-and against `be3eb40`, in two sittings on 2026-09-13, by the protocol of "What
+build. It was measured whole against the commit it started from, `4df2561`,
+and against `d804eaf`, in two sittings on 2026-09-13, by the protocol of "What
 removing the re-entries moved" above: both before-binaries built in throwaway
 worktrees, `ns-next bench <source> --iterations 30` over the same seven
 sources, five rounds, alternating the three binaries within each round.
 Medians in ms from the first sitting, and each group's mean:
 
-| Source | `be3eb40`, rounds 1–5 | mean | `4882a2c`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+| Source | `d804eaf`, rounds 1–5 | mean | `4df2561`, rounds 1–5 | mean | After, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.22, 11.16, 11.12, 11.34, 11.21 | 11.21 | 11.64, 11.19, 11.40, 11.28, 11.37 | 11.38 | 11.32, 11.44, 11.30, 11.32, 11.28 | 11.33 |
 | `bench_send.ns` | 14.07, 13.93, 14.09, 14.21, 13.87 | 14.03 | 14.03, 14.19, 14.12, 14.13, 14.15 | 14.12 | 14.01, 14.35, 14.10, 14.23, 14.11 | 14.16 |
@@ -3180,7 +3180,7 @@ Medians in ms from the first sitting, and each group's mean:
 
 The change of the after-group's mean in both sittings:
 
-| Source | Against `4882a2c`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+| Source | Against `4df2561`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 |
 |---|---|---|
 | `bench_loop.ns` | −0.4% / −0.9%, overlapping | +1.1% / +1.1%, overlapping |
 | `bench_send.ns` | +0.3% / −0.5%, overlapping | +0.9% / +1.4%, overlapping |
@@ -3190,22 +3190,22 @@ The change of the after-group's mean in both sittings:
 | `bench_new2.ns` | +0.4% / +0.8%, after entirely above in the second, by 0.01 ms | −0.8% / −0.6%, overlapping |
 | `bench_newarg.ns` | −0.3% / −0.4%, overlapping | −3.4% / −3.2%, after entirely below in both |
 
-**No source is slower than at `4882a2c` beyond the sittings' noise, and
+**No source is slower than at `4df2561` beyond the sittings' noise, and
 `bench_block.ns` is about 4% faster**, which is the closure split's (below).
 One group lay outside the rest: in the second sitting `bench_new2.ns`'s
 after-group sat entirely above its parent-group, 8.37–8.44 against 8.30–8.36
 ms. The first sitting overlapped, and a third, run to settle it, put it level
 (−0.2%, overlapping).
 
-**Against `be3eb40`, nothing is slower beyond the groups' spread.**
+**Against `d804eaf`, nothing is slower beyond the groups' spread.**
 `bench_loop.ns`, which 2a left 1.4–1.9% slower with its after-group entirely
 above, is +1.1% in both sittings, overlapping; `bench_block.ns`, which 2a left
 1.4–1.6% slower, is 2.5% faster. `bench_send.ns` is +0.9% and +1.4%,
 overlapping, where 2a measured +0.2% and +0.8%. That is 2a's figure read in
 other sittings rather than something 2b added: 2b's binary is level with
-`4882a2c`, and the unchanged `4882a2c` itself sat +0.6% and +1.9% above
-`be3eb40` in these two sittings, as the parents of the changes below sat +0.9%
-to +2.3% above it in theirs. Every other source is level with `be3eb40` or
+`4df2561`, and the unchanged `4df2561` itself sat +0.6% and +1.9% above
+`d804eaf` in these two sittings, as the parents of the changes below sat +0.9%
+to +2.3% above it in theirs. Every other source is level with `d804eaf` or
 faster.
 
 Two changes were measured against their parents on the way, each in a sitting
@@ -3250,7 +3250,7 @@ executes ("The VM" above); "The loop over locals" below says what runs
 between entries today. The brand itself is a zero-sized lifetime and changes no
 layout: `Object`, `FrameSlot` and `Result<Step, Signal>` kept their release
 sizes, 56, 136 and 56 bytes. The step was measured whole against the commit
-it started from, `a5d1e05`, and against `be3eb40`, in two sittings on
+it started from, `4999d05`, and against `d804eaf`, in two sittings on
 2026-09-14, by the protocol of "What removing the re-entries moved" above,
 every binary built with every function start pinned to a 64-byte boundary
 and `+crt-static` — the protocol's flag set; "The pin" below says where the
@@ -3259,11 +3259,11 @@ rule comes from — the before-binaries in throwaway worktrees through
 at the time (it no longer does; the protocol above says why), `ns-next
 bench <source> --iterations 30` over the same seven sources, five rounds,
 alternating the binaries within each round. A fourth binary ran in the same
-rounds — `a5d1e05` as its own configuration builds it, unpinned — to show
+rounds — `4999d05` as its own configuration builds it, unpinned — to show
 what the pin itself does. Medians in ms, and each group's mean, from the
 first sitting:
 
-| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+| Source | `d804eaf`, rounds 1–5 | mean | `4999d05`, rounds 1–5 | mean | `4999d05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.95, 11.01, 11.06, 11.12, 11.22 | 11.07 | 11.20, 11.14, 11.24, 11.19, 11.21 | 11.20 | 11.15, 11.17, 11.19, 11.16, 11.21 | 11.17 | 11.30, 11.27, 11.26, 11.24, 11.21 | 11.26 |
 | `bench_send.ns` | 13.63, 13.77, 13.74, 13.99, 13.73 | 13.77 | 14.08, 14.16, 14.17, 14.14, 14.03 | 14.12 | 13.89, 14.02, 14.15, 14.20, 14.00 | 14.05 | 14.04, 14.14, 14.38, 14.25, 14.19 | 14.20 |
@@ -3275,7 +3275,7 @@ first sitting:
 
 And from the second:
 
-| Source | `be3eb40`, rounds 1–5 | mean | `a5d1e05`, rounds 1–5 | mean | `a5d1e05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
+| Source | `d804eaf`, rounds 1–5 | mean | `4999d05`, rounds 1–5 | mean | `4999d05` unpinned, rounds 1–5 | mean | After, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.02, 11.03, 11.07, 11.10, 10.96 | 11.03 | 11.36, 11.16, 11.24, 11.19, 11.32 | 11.25 | 11.29, 11.26, 11.22, 11.20, 11.11 | 11.21 | 11.20, 11.25, 11.27, 11.18, 11.21 | 11.22 |
 | `bench_send.ns` | 13.70, 13.83, 13.80, 13.77, 13.84 | 13.79 | 14.23, 14.06, 14.26, 14.11, 14.11 | 14.16 | 14.15, 13.97, 14.13, 13.99, 14.05 | 14.06 | 14.09, 14.15, 14.13, 14.07, 14.03 | 14.09 |
@@ -3286,9 +3286,9 @@ And from the second:
 | `bench_newarg.ns` | 10.40, 10.31, 10.40, 10.42, 10.49 | 10.41 | 10.28, 10.20, 10.30, 10.16, 10.38 | 10.26 | 10.09, 10.18, 10.04, 10.14, 10.05 | 10.10 | 10.14, 10.15, 10.20, 10.16, 10.27 | 10.18 |
 
 The change of the after-group's mean in both sittings, and what the pin
-itself does — the unpinned `a5d1e05` against the pinned one:
+itself does — the unpinned `4999d05` against the pinned one:
 
-| Source | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 | `a5d1e05` unpinned against pinned, sitting 1 / 2 |
+| Source | Against `4999d05`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 | `4999d05` unpinned against pinned, sitting 1 / 2 |
 |---|---|---|---|
 | `bench_loop.ns` | +0.5% / −0.3%, overlapping | +1.7% / +1.7%, after entirely above in the second | −0.2% / −0.4%, overlapping |
 | `bench_send.ns` | +0.6% / −0.4%, overlapping | +3.1% / +2.2%, after entirely above in both | −0.4% / −0.7%, overlapping |
@@ -3298,30 +3298,30 @@ itself does — the unpinned `a5d1e05` against the pinned one:
 | `bench_new2.ns` | −0.5% / +0.2%, overlapping | −0.8% / −0.4%, overlapping | −1.8% / −0.5%, unpinned entirely below in the first |
 | `bench_newarg.ns` | −0.5% / −0.8%, overlapping | −2.9% / −2.1%, after entirely below in the second | −1.4% / −1.6%, overlapping |
 
-**Every source is level with `a5d1e05`**: the after-group overlaps its
+**Every source is level with `4999d05`**: the after-group overlaps its
 parent-group on all seven sources in both sittings, the change of the mean
 between −1.4% and +0.6%. A zero-sized lifetime and an entry that inlines away
 cost nothing at run time, as the design expected.
 
-**Against `be3eb40`**, the after-binary's shift is the parent's, read again:
-`a5d1e05` itself sits +2.5% and +2.7% above `be3eb40` on `bench_send.ns`
+**Against `d804eaf`**, the after-binary's shift is the parent's, read again:
+`4999d05` itself sits +2.5% and +2.7% above `d804eaf` on `bench_send.ns`
 and +1.1% and +2.0% on `bench_loop.ns` in these sittings — 2a's shift on
 those two sources ("What removing the re-entries moved" above) — and the
 after-binary +3.1% / +2.2% and +1.7% / +1.7%, level with its parent. No
-source's shift against `be3eb40` grew past what 2b left by more than either
+source's shift against `d804eaf` grew past what 2b left by more than either
 group's spread: `bench_send.ns`, which 2b left at +0.9% to +1.4%, grew by
-0.24 and 0.11 ms against `be3eb40`-group spreads of 0.36 and 0.14 ms, within
+0.24 and 0.11 ms against `d804eaf`-group spreads of 0.36 and 0.14 ms, within
 them, just so in the second sitting. `bench_block.ns` is 2.2% and 3.2%
-faster than `be3eb40`, `bench_do.ns` 2.5–3.5%, `bench_newarg.ns` 2.1–2.9%,
+faster than `d804eaf`, `bench_do.ns` 2.5–3.5%, `bench_newarg.ns` 2.1–2.9%,
 and `bench_new.ns` and `bench_new2.ns` are level with it.
 
-**What the pin itself does** is the last column: the unpinned `a5d1e05`
+**What the pin itself does** is the last column: the unpinned `4999d05`
 reads −0.1% to −1.8% against the pinned one, the groups overlapping on every
 source in both sittings but one (`bench_new2.ns` in the first, the unpinned
 group entirely below by 1.8%). So the unpinned binary is, if anything,
 slightly faster: the pin fixes the phase of every function start, not the
 phase the compiler's own layout gives the loop headers inside a function,
-and `a5d1e05`'s hot functions happened to sit well. What the pin buys is
+and `4999d05`'s hot functions happened to sit well. What the pin buys is
 that a change elsewhere can no longer move them, which is the history below.
 It costs about 110 KB of padding — 2,091,520 against 1,979,904 bytes, 5.6%,
 some 4,600 functions each padded to the next boundary. Padding that buys
@@ -3333,20 +3333,20 @@ it through `RUSTFLAGS`, and `.cargo/config.toml` stays as it was.
 and instantiation benchmarks, and finding out why is where the pin comes
 from. Two sittings of the same protocol on 2026-09-14, with the binaries as
 their configurations built them, put `bench_new2.ns` at +1.8% and +2.5%
-against `a5d1e05`, entirely above in both, `bench_block.ns` at +2.5% / +1.8%
+against `4999d05`, entirely above in both, `bench_block.ns` at +2.5% / +1.8%
 and `bench_newarg.ns` at +1.2% / +1.7%, each entirely above in one; the
 loop, the send and `do:` level. A bisection sitting over the step's commits
 — the four sources that moved, five rounds, the change of each group's mean
-against `a5d1e05` — placed the shift on the brand commit:
+against `4999d05` — placed the shift on the brand commit:
 
-| Source | `d27e40b` (the entry) | `7b41649` (the names written out) | `e59dc52` (hosts through `enter`) | `1549fb0` (the brand) | `2caf3e0` (no cast) |
+| Source | `118b672` (the entry) | `acea6f8` (the names written out) | `2d46d15` (hosts through `enter`) | `f11be51` (the brand) | `7cbe79b` (no cast) |
 |---|---|---|---|---|---|
 | `bench_send.ns` | +0.7% | +0.8% | +0.6% | +1.6% | +1.0% |
 | `bench_block.ns` | +0.5% | +1.1% | +1.4% | +2.8% | +3.1% |
 | `bench_new2.ns` | −0.3% | +0.0% | +0.7% | +1.6% | +1.5% |
 | `bench_newarg.ns` | +0.5% | +0.1% | +0.1% | +1.3% | +1.6% |
 
-`e59dc52` to `1549fb0` is the one step between neighbours that separates
+`2d46d15` to `f11be51` is the one step between neighbours that separates
 groups, though the brand commit's diff is types and signatures apart from
 `rebrand` and small reshapes the lifetimes required, and its binary 512
 bytes smaller. The post-LTO assembly of both commits, split into functions
@@ -3378,8 +3378,8 @@ the binary ("What the pin itself does" above). The tables above are that
 measurement, every binary aligned.
 
 One sitting of its own, so its figures are not compared with these: **the
-per-instruction entry** (Task 1 of the step, `d27e40b`, the step state moved
-behind `World::enter` with no lifetime yet), against `a5d1e05` in one
+per-instruction entry** (Task 1 of the step, `118b672`, the step state moved
+behind `World::enter` with no lifetime yet), against `4999d05` in one
 sitting on 2026-09-14, unpinned: level on every source, every group
 overlapping its parent's — `bench_loop.ns` +0.1%, `bench_send.ns` −0.3%,
 `bench_block.ns` −0.9%, `bench_do.ns` +0.4%, `bench_new.ns` +0.9%,
@@ -3407,8 +3407,8 @@ identity keys with one multiply and a rotation instead of SipHash
 ([object-model.md](object-model.md), "Identity-keyed tables hash with
 `hash::IdentityMap`").
 
-It was measured whole against the commit it started from, `59061ec`, and
-against `be3eb40`, in two sittings on 2026-09-15, by the protocol of "What
+It was measured whole against the commit it started from, `b41897d`, and
+against `d804eaf`, in two sittings on 2026-09-15, by the protocol of "What
 removing the re-entries moved" above: every binary built through `RUSTFLAGS`
 with `+crt-static` and the function-alignment pin, the before-binaries in
 throwaway worktrees, `ns-next bench <source> --iterations 30` over the seven
@@ -3428,7 +3428,7 @@ These are the three as every later measurement uses them, written under
 written out in the
 [2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
 "Measurement protocol". All four are spelled with the setter send, which every
-compared binary back to `be3eb40` parses; the 2c plan's copy spells `:=`,
+compared binary back to `d804eaf` parses; the 2c plan's copy spells `:=`,
 which the tree has refused since "M4 — Removing `:=`" ([PROGRESS.md](../PROGRESS.md)),
 and is the same program. The three print `20000`:
 
@@ -3513,7 +3513,7 @@ class BenchDo = Object new (
 
 Medians in ms, and each group's mean, from the first sitting:
 
-| Source | `59061ec`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+| Source | `b41897d`, rounds 1–5 | mean | `d804eaf`, rounds 1–5 | mean | After, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.22, 11.41, 11.45, 11.54, 11.42 | 11.41 | 11.39, 11.22, 11.10, 11.09, 11.23 | 11.21 | 11.29, 11.20, 11.32, 11.21, 11.19 | 11.24 |
 | `bench_send.ns` | 14.51, 14.09, 14.26, 14.18, 14.17 | 14.24 | 13.73, 13.95, 13.98, 13.90, 14.05 | 13.92 | 12.65, 12.51, 12.36, 12.52, 12.31 | 12.47 |
@@ -3525,7 +3525,7 @@ Medians in ms, and each group's mean, from the first sitting:
 
 And from the second:
 
-| Source | `59061ec`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | After, rounds 1–5 | mean |
+| Source | `b41897d`, rounds 1–5 | mean | `d804eaf`, rounds 1–5 | mean | After, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.30, 11.34, 11.32, 11.43, 11.34 | 11.34 | 11.13, 11.13, 11.30, 11.30, 11.15 | 11.20 | 11.27, 11.33, 11.36, 11.33, 11.17 | 11.29 |
 | `bench_send.ns` | 14.19, 14.29, 14.33, 14.30, 14.23 | 14.27 | 13.76, 13.90, 14.00, 13.81, 13.99 | 13.89 | 12.41, 12.46, 12.57, 12.53, 12.51 | 12.50 |
@@ -3537,7 +3537,7 @@ And from the second:
 
 The change of the after-group's mean in both sittings:
 
-| Source | Against `59061ec`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+| Source | Against `b41897d`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 |
 |---|---|---|
 | `bench_loop.ns` | −1.5% / −0.5%, overlapping | +0.3% / +0.8%, overlapping |
 | `bench_send.ns` | −12.5% / −12.4%, after entirely below in both | −10.4% / −10.1%, after entirely below in both |
@@ -3548,21 +3548,21 @@ The change of the after-group's mean in both sittings:
 | `bench_newarg.ns` | −4.3% / −4.7%, after entirely below in both | −6.8% / −7.9%, after entirely below in both |
 
 **No source is slower than either commit, and six are faster than both.**
-`bench_send.ns` gained most, 12.5% against `59061ec` and 10% against
-`be3eb40`. Every one of its iterations makes a setter-shaped lexical send,
+`bench_send.ns` gained most, 12.5% against `b41897d` and 10% against
+`d804eaf`. Every one of its iterations makes a setter-shaped lexical send,
 `self tick: sum`, which interned `tick` every time it ran. The others gained
 3.8–9.9%, every after-group but one entirely below its before-group in both
 sittings. `bench_loop.ns` makes only slot sends and native leaf sends, and it
-is level with both. So the shift against `be3eb40` that 2a left on the send and
+is level with both. So the shift against `d804eaf` that 2a left on the send and
 the loop, and that 2c carried ("What 2c moved" above), is gone: `bench_send.ns`
-now sits 10% below `be3eb40` and `bench_loop.ns` level with it.
+now sits 10% below `d804eaf` and `bench_loop.ns` level with it.
 
 **The accessors alone were slower, and the hasher is what made the step
 faster.** One sitting of its own, the same protocol, measured the step's last
 two code commits against their parents. Its figures are not compared with the
 tables above:
 
-| Source | `3cf7e3e` mean | `431da35` mean | `7b1901c` mean | Accessors, `431da35` against `3cf7e3e` | Hasher, `7b1901c` against `431da35` |
+| Source | `b1b5609` mean | `10cf73b` mean | `7a7ca3e` mean | Accessors, `10cf73b` against `b1b5609` | Hasher, `7a7ca3e` against `10cf73b` |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.87 | 14.02 | 11.26 | +18.1%, entirely above | −19.7%, entirely below |
 | `bench_send.ns` | 14.55 | 15.46 | 12.44 | +6.3%, entirely above | −19.5%, entirely below |
@@ -3572,7 +3572,7 @@ tables above:
 | `bench_new2.ns` | 8.61 | 8.93 | 7.81 | +3.8%, entirely above | −12.6%, entirely below |
 | `bench_newarg.ns` | 10.66 | 11.14 | 9.83 | +4.5%, entirely above | −11.8%, entirely below |
 
-Making the accessors method-table entries (`431da35`) slowed every source,
+Making the accessors method-table entries (`10cf73b`) slowed every source,
 `bench_loop.ns` most. Before it, a lexical slot send made one SipHash probe of
 the application's slot map, and a setter-shaped one interned its getter name
 first. After it, every lexical send made two probes of the method table: N's
@@ -3580,14 +3580,14 @@ for the private rule, then the receiver's for `lookupProtected`. The loop makes
 300,000 slot sends, four getters and two setters an iteration, and 2.15 ms more
 is about 7 ns a send, of the order of one SipHash probe of a 4-byte key. That
 is an inference from what the change did; no profile was taken. The hasher
-(`7b1901c`) made every probe a multiply, and took every source past where it
+(`7a7ca3e`) made every probe a multiply, and took every source past where it
 started.
 
 **Sparing the second probe measured level, so the lexical path keeps it.**
 When N is the receiver's class, which is the common case for a slot send,
 `lookupProtected`'s first level is N and it answers what N's own table
 already answered. Two variants reused the first probe, each measured against
-`7b1901c` in one sitting of its own. The first passed the receiver's class to
+`7a7ca3e` in one sitting of its own. The first passed the receiver's class to
 the private-member probe, which answered a visible member when that class was
 N. It came out level on every source, −0.4% to +2.2%, every group
 overlapping, so with the hasher the second probe costs nothing measurable. The
@@ -3606,9 +3606,9 @@ built) takes 12.7 s at 710 tests, and 189.9 s under `NS_NEXT_STRESS_MOVES=1`.
 The step that made every builtin's native an entry of its class's method
 table, found by the ordinary lookups instead of matched by
 `selector.as_str()` ([dispatch.md](dispatch.md), "Primitives"), was measured
-against the commit it started from, `883431b` ("start"), and against
-`be3eb40`, by the protocol of "What removing the re-entries moved" above:
-every binary — start's and `be3eb40`'s built in throwaway worktrees, the
+against the commit it started from, `87da203` ("start"), and against
+`d804eaf`, by the protocol of "What removing the re-entries moved" above:
+every binary — start's and `d804eaf`'s built in throwaway worktrees, the
 current tree's built in place — through the same `RUSTFLAGS`, `+crt-static`
 and the function-alignment pin; `ns-next bench <source> --iterations 30`
 over the same seven sources, five rounds, the order of the three binaries
@@ -3618,7 +3618,7 @@ else running on the machine during either.
 
 Sitting 1, means in ms:
 
-| Source | `be3eb40` mean | start mean | after mean | after − start | after − `be3eb40` | vs start | vs `be3eb40` |
+| Source | `d804eaf` mean | start mean | after mean | after − start | after − `d804eaf` | vs start | vs `d804eaf` |
 |---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.1225 | 11.1931 | 11.2503 | +0.51% | +1.15% | overlapping | overlapping |
 | `bench_send.ns` | 13.8138 | 12.4300 | 12.4673 | +0.30% | −9.75% | overlapping | entirely below |
@@ -3630,7 +3630,7 @@ Sitting 1, means in ms:
 
 Sitting 2, means in ms:
 
-| Source | `be3eb40` mean | start mean | after mean | after − start | after − `be3eb40` | vs start | vs `be3eb40` |
+| Source | `d804eaf` mean | start mean | after mean | after − start | after − `d804eaf` | vs start | vs `d804eaf` |
 |---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.1329 | 11.2409 | 11.3064 | +0.58% | +1.56% | overlapping | overlapping |
 | `bench_send.ns` | 13.8035 | 12.4302 | 12.6491 | +1.76% | −8.36% | overlapping | entirely below |
@@ -3643,18 +3643,18 @@ Sitting 2, means in ms:
 **Both sittings agree: no source's after-group lies entirely above its
 start-group in either one** (`bench_newarg.ns` is even entirely below
 start in the second sitting — faster than start, not merely level). Against
-`be3eb40`, six of the seven sources are faster by about 7–10% in both
+`d804eaf`, six of the seven sources are faster by about 7–10% in both
 sittings, entirely below throughout; `bench_loop.ns` is level, +1.15%/+1.56%,
 its group overlapping in both. `bench_loop.ns` makes three native sends and
 six lexical slot sends per iteration — 150,000 native sends and 300,000 slot
 sends in all — and no method send or instantiation, so it is the source that
 exercises the rebuilt decision path hardest with nothing else to gain from —
-level with `be3eb40` there is this step's whole answer for that path, where
+level with `d804eaf` there is this step's whole answer for that path, where
 the other six sources also gain from lookup and hashing work earlier steps
 already made faster.
 
 **What the first shape of this decision cost, and what recovered it.** The
-commit that put every native behind the ordinary lookup, `e4ec1bd`, first
+commit that put every native behind the ordinary lookup, `489809a`, first
 measured 5.5% to 22.4% slower than start on all seven sources, in two
 sittings — an order of magnitude past the 1–4% codegen jitter every earlier
 step's measurement had allowed for, and reproduced in a bisection across the
@@ -3675,28 +3675,28 @@ through on its way back to its sender:
   wider value. Removing it, so each of the five callers that can reach a
   `Lookup::Primitive` matches its `Lookup` directly, measured 6.5%
   (`bench_loop.ns`) and 5.1% (`bench_send.ns`) faster — the largest single
-  piece (`8a05621`).
+  piece (`53c0e9d`).
 - **The lookup rule as a run-time value.** The three per-lookup verdict
   closures had become one shared `walk` taking a `Rule` at run time; naming
   the rule as a literal again, so each of the three lookups gets its own
   specialized walk with `Rule::verdict` folded into a constant test, measured
-  2.0%/1.7% faster (`d295cac`).
+  2.0%/1.7% faster (`2cae47b`).
 - **`walk` stepping to the superclass before probing the level it stood
   on.** A lookup that answers where it starts — a slot accessor, a method the
   receiver's own class declares, a builtin's own primitive, which is most
   sends — paid an `Rc<MixinApplication>` clone and drop for a level it never
   read. Moving the step to the three places the search actually continues
-  measured 2.5%/1.6% faster (`8eb6360`); this one predates the primitive step
+  measured 2.5%/1.6% faster (`8912023`); this one predates the primitive step
   and would have cost the same regardless of it.
 - **The decision split across a function boundary.** The three finishers
   marked `#[inline(always)]`, with their continuations broken out into
   `#[cold]` helpers so only the hot half duplicates into the senders, measured
-  1.9%/2.6% faster (`0e71299`).
+  1.9%/2.6% faster (`f2589e8`).
 - **`doesNotUnderstand:` competing for room in the hot match.** Marking it and
   its `super` counterpart `#[cold]` measured a further 0.6–1.3% across three
   sources — the weakest of the five kept changes on its own numbers, but
   consistent in direction, and what turned `bench_send.ns` and `bench_do.ns`
-  from entirely above start into overlapping it (`1abe627`).
+  from entirely above start into overlapping it (`9f1c536`).
 
 Four further variants were measured and rejected: outlining the primitive
 arm into `#[inline(never)]` helpers; letting the class-object branch finish
@@ -3725,7 +3725,7 @@ below).
 
 3b, the inline caches ([dispatch.md](dispatch.md), "3b — The caches"), was
 measured in four parts, each against the commit it started from, and then
-whole, against 3a's head (`49a2a38`, "start") and `be3eb40`. Every part used
+whole, against 3a's head (`98b4041`, "start") and `d804eaf`. Every part used
 the protocol of "What removing the re-entries moved" above: every binary built
 with the same `RUSTFLAGS` (`+crt-static` and the function-alignment pin), the
 before-binaries in throwaway worktrees; each binary checked to print the
@@ -3749,12 +3749,12 @@ not disturb the timed build: `CARGO_PROFILE_RELEASE_DEBUG=true cargo build
 "entirely above" are the protocol's gate: all five after-medians below, or
 above, all five of the group compared with.
 
-**`feedback_base` on its own** (`f8fdcfa`, against its parent `401817a`).
+**`feedback_base` on its own** (`e944afc`, against its parent `477b9ad`).
 Every activation carries the base, `vm::run` holds it in a local and
 `Flow::Switch` carries it, and nothing reads it yet. Change of the mean,
 sitting 1 / sitting 2:
 
-| Source | vs parent | vs start | vs `be3eb40` |
+| Source | vs parent | vs start | vs `d804eaf` |
 |---|---|---|---|
 | `bench_loop.ns` | +0.44% / −1.39% | +0.01% / −0.59% | +1.05% / +1.17% |
 | `bench_send.ns` | +1.31% / +0.27% | +0.58% / +0.42% | −9.42% / −8.73% |
@@ -3771,7 +3771,7 @@ by the push beside the activation, another place in the entry, `run` loading
 it instead of `Flow::Switch` carrying it) was needed. `Result<Step, Signal>`
 stayed 56 bytes: `Step::Method`'s base fits its padding.
 
-**Resolve, then act** (`7d1f21d` and `1f4d6c6`, against `f8fdcfa`). The
+**Resolve, then act** (`3463173` and `4d14cba`, against `e944afc`). The
 split alone made every source 6.6–13.6% slower, entirely above in both
 sittings. `dumpbin /disasm` showed why: before the split, the run loop's
 per-instruction step, the lexical and `super` sends inlined into it, was part
@@ -3798,7 +3798,7 @@ accepted and carried into the caches' own measurement: the split exists only
 to put the caches between `resolve` and `act`, and the caches had to leave
 `bench_loop.ns` no slower than 3a's head.
 
-**The caches** (`ead0d85` and `a702875`, against `1f4d6c6`). On the caches'
+**The caches** (`1a15792` and `6c38016`, against `4d14cba`). On the caches'
 first shape the step had fallen out of line again. Four reshapings were
 tried and checked with `dumpbin` only, untimed, and each left
 `vm::run::closure$1` a function of its own: `send_super` kept out of line;
@@ -3810,7 +3810,7 @@ on the step closure, after which `vm::run` is 4,910 instructions with no call
 per instruction. Means in ms, and the change of the after-mean, sitting 1 /
 sitting 2:
 
-| Source | parent | after | vs parent | vs start | vs `be3eb40` |
+| Source | parent | after | vs parent | vs start | vs `d804eaf` |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.668 / 11.762 | 10.058 / 10.136 | −13.80% / −13.82% | −9.97% / −10.68% | −9.81% / −8.75% |
 | `bench_send.ns` | 12.651 / 12.681 | 11.123 / 11.210 | −12.07% / −11.60% | −11.21% / −10.28% | −19.50% / −19.20% |
@@ -3821,14 +3821,14 @@ sitting 2:
 | `bench_newarg.ns` | 9.919 / 9.888 | 9.148 / 9.145 | −7.77% / −7.51% | −5.81% / −5.58% | −14.79% / −13.74% |
 
 Every source's after-group lies entirely below the parent's, start's and
-`be3eb40`'s, in both sittings. The first shape of a cache — the design's —
+`d804eaf`'s, in both sittings. The first shape of a cache — the design's —
 was not timed, since its step was out of line.
 
-**The step whole** (`c9c3c0f`, after invalidation and the stress mode), with
+**The step whole** (`706981a`, after invalidation and the stress mode), with
 an attribution binary: start plus only the `#[inline(always)]` on the step
 closure, and nothing of the caches. Means in ms:
 
-| Source | `be3eb40` | start | attribution | after | after vs start | after vs `be3eb40` | attribution vs start |
+| Source | `d804eaf` | start | attribution | after | after vs start | after vs `d804eaf` | attribution vs start |
 |---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.1697 / 11.1888 | 11.4004 / 11.3034 | 11.4019 / 11.2734 | 10.1160 / 10.0541 | −11.27% / −11.05% | −9.43% / −10.14% | +0.01% / −0.27% |
 | `bench_send.ns` | 13.8400 / 13.8667 | 12.5251 / 12.5185 | 12.6298 / 12.5398 | 11.1194 / 11.1351 | −11.22% / −11.05% | −19.66% / −19.70% | +0.84% / +0.17% |
@@ -3839,8 +3839,8 @@ closure, and nothing of the caches. Means in ms:
 | `bench_newarg.ns` | 10.6245 / 10.6709 | 9.6230 / 9.6057 | 9.6614 / 9.8064 | 9.1644 / 9.1958 | −4.77% / −4.27% | −13.74% / −13.82% | +0.40% / +2.09% |
 
 **The step is 4.3–11.3% faster than 3a's head and 9.4–19.7% faster than
-`be3eb40`**, every after-group entirely below both in both sittings.
-`bench_loop.ns`, level with `be3eb40` before this step, is now clearly below
+`d804eaf`**, every after-group entirely below both in both sittings.
+`bench_loop.ns`, level with `d804eaf` before this step, is now clearly below
 it.
 
 **The forced inlining explains none of it.** The attribution binary is
@@ -3851,7 +3851,7 @@ gain; the forcing is what keeps it, once the caches' hit path makes the step
 too large for the inliner — the standing hazard [dispatch.md](dispatch.md)
 records.
 
-**The 16-byte entry** (an experiment measured against `c9c3c0f` and not
+**The 16-byte entry** (an experiment measured against `706981a` and not
 merged): an index into side
 tables of methods and mixins instead of an `Rc`, which makes a `Target` 12
 bytes and an entry 16. Change of the mean, sitting 1 / sitting 2:
@@ -3869,7 +3869,7 @@ stress mode cannot show, since it empties the tables at every safepoint. The use
 decided to keep the 24-byte entry.
 
 **What the caches hold** (`--cache-statistics`, a release build of
-`c9c3c0f`). An entry is 24 bytes, a polymorphic block 96, a global-cache
+`706981a`). An entry is 24 bytes, a polymorphic block 96, a global-cache
 entry 32, so the global cache is 32 KB whatever the program.
 
 | Source | Sites (filled) | Global entries filled |
@@ -3907,7 +3907,7 @@ moves nothing.
 The five refinements the user decided after 3b ([dispatch.md](dispatch.md),
 "Decisions", "Decided by the user … built before 3c") landed together, and
 were measured together and one at a time, on 2026-09-18, against the commit
-the step starts from (`f99a29f`) and against `be3eb40`. The protocol is the
+the step starts from (`dffb875`) and against `d804eaf`. The protocol is the
 one above: every binary, the current tree included, built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
 the earlier commits in throwaway worktrees; no binary imports
@@ -3921,10 +3921,10 @@ source that drives a megamorphic site — 50,000 iterations, the count the
 other fixtures use.
 
 **The step is 2.1–4.1% faster on the three instantiation sources and
-0.2–3.6% slower on the other five.** Change of the mean against `f99a29f`,
+0.2–3.6% slower on the other five.** Change of the mean against `dffb875`,
 sitting 1 / sitting 2, with the protocol's gate:
 
-| Source | `f99a29f`, rounds 1–5 | mean | after, rounds 1–5 | mean | change | gate |
+| Source | `dffb875`, rounds 1–5 | mean | after, rounds 1–5 | mean | change | gate |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 9.91, 9.99, 9.93, 10.05, 9.89 | 9.955 | 10.13, 10.28, 10.29, 10.58, 10.30 | 10.317 | **+3.64% / +0.79%** | entirely above in both |
 | `bench_send.ns` | 11.12, 11.01, 11.10, 11.06, 11.16 | 11.090 | 11.22, 11.25, 11.27, 11.28, 11.64 | 11.334 | **+2.20% / +2.37%** | entirely above in both |
@@ -3935,7 +3935,7 @@ sitting 1 / sitting 2, with the protocol's gate:
 | `bench_newarg.ns` | 9.12, 9.26, 9.18, 9.22, 9.17 | 9.190 | 8.94, 8.85, 8.84, 8.93, 9.10 | 8.932 | **−2.81% / −4.10%** | entirely below in both |
 | `bench_megamorphic.ns` | 16.51, 16.15, 16.19, 16.18, 16.25 | 16.254 | 16.37, 16.80, 16.82, 16.39, 16.77 | 16.628 | +2.30% / +1.78% | overlapping in both |
 
-**Every source stays well below `be3eb40`**, the comparison carried through
+**Every source stays well below `d804eaf`**, the comparison carried through
 every measurement up to step 3: `bench_loop.ns` −6.7% / −8.5%,
 `bench_send.ns` −18.2% / −17.6%, `bench_block.ns` −15.4% / −16.1%,
 `bench_do.ns` −13.0% / −14.0%, `bench_new.ns` −17.6% / −17.3%,
@@ -3947,7 +3947,7 @@ sittings.
 with debug information, on all five binaries — the base, the three
 intermediate checkpoints and the head — finds no `vm::run::closure` function
 in any of them: `vm::run` is one function of 4,910 instructions at
-`f99a29f`, then 4,860, 4,878, 4,878 and 4,926. It gained 16 instructions
+`dffb875`, then 4,860, 4,878, 4,878 and 4,926. It gained 16 instructions
 across the whole step and never approached the cliff that splitting
 `resolve` from `act` hit ("A standing hazard" in
 [dispatch.md](dispatch.md)).
@@ -3955,7 +3955,7 @@ across the whole step and never approached the cliff that splitting
 Each change was measured against its parent in the same two sittings, which
 is what attributes the movement. Means in ms, sitting 1 / sitting 2:
 
-| Source | `be3eb40` | `f99a29f` | after 1–3 | after 4 | after 5 | after 6 |
+| Source | `d804eaf` | `dffb875` | after 1–3 | after 4 | after 5 | after 6 |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 11.060 / 11.123 | 9.955 / 10.093 | 9.972 / 9.973 | 10.181 / 10.304 | 10.201 / 10.176 | 10.317 / 10.173 |
 | `bench_send.ns` | 13.855 / 13.753 | 11.090 / 11.072 | 11.164 / 11.062 | 11.415 / 11.358 | 11.301 / 11.363 | 11.334 / 11.334 |
@@ -3967,8 +3967,8 @@ is what attributes the movement. Means in ms, sitting 1 / sitting 2:
 | `bench_megamorphic.ns` | 17.897 / 17.891 | 16.254 / 16.209 | 16.196 / 16.248 | 16.441 / 16.395 | 16.438 / 16.431 | 16.628 / 16.498 |
 
 - **Flat metaclasses, the primary factory as an entry of the metaclass
-  mixin's method table, and the resolver's class-side name check** (`a466c5d`,
-  against `f99a29f`). **Instantiation is 3.3–4.6% faster**: `bench_new.ns`
+  mixin's method table, and the resolver's class-side name check** (`bb15df0`,
+  against `dffb875`). **Instantiation is 3.3–4.6% faster**: `bench_new.ns`
   −4.02% / −3.31%, `bench_new2.ns` −3.40% / −3.80%, `bench_newarg.ns`
   −3.45% / −4.57%, all three entirely below in both sittings. `X new` is now
   an ordinary cached send of an entry found by the ordinary lookup, where it
@@ -3982,21 +3982,21 @@ is what attributes the movement. Means in ms, sitting 1 / sitting 2:
   recorded three times ("What 2c moved" and the two findings in "What
   removing the re-entries moved", both above), and the function-alignment
   pin, which removes a 64-byte phase shift, does not remove it.
-- **The lexical global-cache key** (`da8beed`, against `a466c5d`). **This is
+- **The lexical global-cache key** (`43e32c4`, against `bb15df0`). **This is
   the change that costs the send benchmarks**: `bench_loop.ns` +2.10% /
   +3.32% and `bench_send.ns` +2.25% / +2.68%, each entirely above in the
   second sitting; `bench_megamorphic.ns` +1.51% / +0.91%, entirely above in
   the second; the other five overlapping, +0.10% to +1.71%, none below. A
   control binary bisected it into its two halves; see "Which half of the
   lexical key costs the send benchmarks" below.
-- **Call-site numbers off the wire** (`c9097d1`, against `da8beed`). Nothing
+- **Call-site numbers off the wire** (`5b71c5c`, against `43e32c4`). Nothing
   beyond noise anywhere, −1.24% to +0.95%, every group overlapping except
   `bench_loop.ns` entirely below in the second sitting and `bench_newarg.ns`
   entirely below in the first. That is the expected answer: the change is in
   the encoder, the decoder and the opcode table, and a run from source
   touches none of it. The step's instruction count did not change at all,
   4,878 before and after.
-- **The least-recently-used groups** (`393311f`, against `c9097d1`). Nothing
+- **The least-recently-used groups** (`7928289`, against `5b71c5c`). Nothing
   beyond noise either, −0.25% to +1.23% on seven sources, every group
   overlapping; `bench_do.ns` is −2.34% / −3.65%, entirely below in the second
   sitting, which nothing on its path explains and which gives back most of
@@ -4095,25 +4095,25 @@ knowing N at all, in whichever of the two shapes it is carried.
 
 3c moved the dispatch id a guard reads from the class object into the object
 header ([dispatch.md](dispatch.md), "3c — The dispatch id in the object
-header"). Two variants were measured on 2026-09-18 against `393311f`, the
-last commit before 3c that changed a send's path, and against `be3eb40`:
-**C2** (`681126d`), the id in the header, and **C2+** (`5d3aeff`), the id in
+header"). Two variants were measured on 2026-09-18 against `7928289`, the
+last commit before 3c that changed a send's path, and against `d804eaf`:
+**C2** (`7d2298f`), the id in the header, and **C2+** (`b94d515`), the id in
 the header with `ClassData` boxed out of `ObjectData`, which is what was
-kept. `fbd0bef`, the commit the step started from, ran beside them. The
+kept. `4a3cee9`, the commit the step started from, ran beside them. The
 protocol is the one above: every binary, the current tree included, built
 with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
 the earlier commits in throwaway worktrees; no binary imports
 `VCRUNTIME140.dll`; every binary checked to print the expected answer for all
-eight sources first, `be3eb40` included; `ns-next bench <source>
+eight sources first, `d804eaf` included; `ns-next bench <source>
 --iterations 30`, five rounds, the order of the five binaries rotating from
 round to round; two whole sittings, nothing else running.
 
-**C2+ is level with `393311f` on every source.** Change of the mean,
+**C2+ is level with `7928289` on every source.** Change of the mean,
 sitting 1 / sitting 2, with the protocol's gate; the rounds are sitting 1's
 medians in ms:
 
-| Source | `393311f`, rounds 1–5 | mean | C2+, rounds 1–5 | mean | change | gate |
+| Source | `7928289`, rounds 1–5 | mean | C2+, rounds 1–5 | mean | change | gate |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.59, 10.44, 10.58, 10.55, 10.66 | 10.563 | 10.57, 10.47, 10.34, 10.33, 10.35 | 10.413 | −1.41% / −2.00% | overlapping in both |
 | `bench_send.ns` | 11.58, 11.57, 11.58, 11.76, 11.72 | 11.641 | 11.51, 11.61, 11.56, 11.50, 11.59 | 11.554 | −0.75% / −2.78% | entirely below in the second |
@@ -4125,16 +4125,16 @@ medians in ms:
 | `bench_megamorphic.ns` | 16.94, 17.25, 17.26, 17.35, 17.12 | 17.183 | 16.67, 16.66, 16.75, 16.68, 16.94 | 16.740 | −2.58% / −1.62% | entirely below in the first |
 
 The means moved down in 14 of the 16 cells, by 0.4–2.8%, but **no source is
-entirely below `393311f` in both sittings**, which is what the protocol
+entirely below `7928289` in both sittings**, which is what the protocol
 accepts as a real change; the two single-sitting results do not repeat in
 the other sitting. C2 is level too: −0.25% to −2.44% in 15 of 16 cells and
 +0.30% on `bench_do.ns`'s first sitting, entirely below only on
-`bench_megamorphic.ns` in the first sitting. `fbd0bef` is level with
-`393311f` everywhere, −1.29% to +1.62%, every group overlapping.
+`bench_megamorphic.ns` in the first sitting. `4a3cee9` is level with
+`7928289` everywhere, −1.29% to +1.62%, every group overlapping.
 
 Means in ms, sitting 1 / sitting 2:
 
-| Source | `be3eb40` | `393311f` | `fbd0bef` | C2 | C2+ |
+| Source | `d804eaf` | `7928289` | `4a3cee9` | C2 | C2+ |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.461 / 11.436 | 10.563 / 10.575 | 10.685 / 10.561 | 10.488 / 10.428 | 10.413 / 10.363 |
 | `bench_send.ns` | 14.215 / 14.167 | 11.641 / 11.811 | 11.786 / 11.756 | 11.612 / 11.588 | 11.554 / 11.483 |
@@ -4145,15 +4145,15 @@ Means in ms, sitting 1 / sitting 2:
 | `bench_newarg.ns` | 10.932 / 10.885 | 9.161 / 9.243 | 9.209 / 9.175 | 9.061 / 9.071 | 9.127 / 9.049 |
 | `bench_megamorphic.ns` | 18.408 / 18.292 | 17.183 / 17.059 | 16.962 / 17.031 | 16.794 / 16.775 | 16.740 / 16.783 |
 
-**Every source stays well below `be3eb40`**, every group entirely below in
+**Every source stays well below `d804eaf`**, every group entirely below in
 both sittings. C2+: `bench_loop.ns` −9.1% / −9.4%, `bench_send.ns` −18.7% /
 −19.0%, `bench_block.ns` −15.2% / −15.3%, `bench_do.ns` −14.3% / −14.7%,
 `bench_new.ns` −19.4% / −19.0%, `bench_new2.ns` −16.7% / −16.3%,
 `bench_newarg.ns` −16.5% / −16.9%, `bench_megamorphic.ns` −9.1% / −8.3%.
 
 **`vm::run`'s step is still inline.** `dumpbin /disasm` on release builds
-with debug information finds no `vm::run::closure` function in `393311f`, C2
-or C2+: `vm::run` is one function of 4,926 instructions at `393311f` (the
+with debug information finds no `vm::run::closure` function in `7928289`, C2
+or C2+: `vm::run` is one function of 4,926 instructions at `7928289` (the
 count "What the step before 3c moved" recorded for the same commit), 4,863
 at C2 and 4,878 at C2+.
 
@@ -4164,7 +4164,7 @@ record minima 6 and 18 bytes, a frame-arena entry 136 bytes in release and
 
 | Binary | `Object`, release / debug | Amplification, release / debug | Peak working set, `run-corpus` | Peak working set, `bench_block.ns --iterations 30` |
 |---|---|---|---|---|
-| `393311f` | 56 B / 96 B | 16.9x / 24.9x | 4.598 MB | 454.699 MB |
+| `7928289` | 56 B / 96 B | 16.9x / 24.9x | 4.598 MB | 454.699 MB |
 | C2 | 64 B / 104 B | 18.2x / 26.2x | 4.598 MB | 466.559 MB |
 | C2+ | 56 B / 80 B | 16.9x / 22.2x | 4.590 MB | 454.727 MB |
 
@@ -4173,7 +4173,7 @@ record; the current ones are in [memory.md](memory.md), "What an object
 costs" and "The amplification bound of a rejected load".
 
 C2 costs `bench_block.ns`, which allocates heavily, 11.9 MB (2.6%) at its
-peak, its 8 bytes an object; C2+ is within 0.03 MB of `393311f`. Boxing
+peak, its 8 bytes an object; C2+ is within 0.03 MB of `7928289`. Boxing
 `ClassData` gave back exactly what the header's id took in release, and more
 than that in debug, where every handle `ClassData` held also carries its
 heap's id and a move epoch. `run-corpus` is too small to show either.
@@ -4192,18 +4192,18 @@ object header").
 The specification gaps ([PROGRESS.md](../PROGRESS.md), "M4 — The
 specification gaps") touch a send's compiled path in two places: a
 parameter's or an immutable local's register is never copied any more
-(Task 4, `ff1657d`, riding on Task 3's resolver guarantee), and a symbol
+(Task 4, `d340fd6`, riding on Task 3's resolver guarantee), and a symbol
 literal now names the heap's one canonical object for its text instead of a
-fresh `Symbol` per occurrence (Tasks 5–6, `7135854`, `67ba5c0`, `abd9bb4`).
+fresh `Symbol` per occurrence (Tasks 5–6, `4f71201`, `8541fa6`, `006afb4`).
 The other two gaps — the §5.7 member set keyed by a declaration instead of a
-class's simple name (Task 1, `df0f347`) and passing a setter send by a
-parameter or an immutable local (Task 3, `73921e1`), which the local-slot
-declaration fix (Task 2, `717300a`) sits beside — are resolver changes,
+class's simple name (Task 1, `6bfe3d5`) and passing a setter send by a
+parameter or an immutable local (Task 3, `299d63e`), which the local-slot
+declaration fix (Task 2, `b02f84d`) sits beside — are resolver changes,
 ahead of the run loop, and change nothing a send executes.
 
-Measured 2026-09-19: the branch head `abd9bb4` against `22a56f7`, the merge
-of 3c, with `be3eb40` carried as the reference. Three throwaway detached
-worktrees, one each for `22a56f7`, `be3eb40` and `abd9bb4`; every binary
+Measured 2026-09-19: the branch head `006afb4` against `e9f97f9`, the merge
+of 3c, with `d804eaf` carried as the reference. Three throwaway detached
+worktrees, one each for `e9f97f9`, `d804eaf` and `006afb4`; every binary
 built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
 none imports `VCRUNTIME140.dll` (`dumpbin /dependents`); every binary checked
@@ -4215,11 +4215,11 @@ local slot with an initializer or writes a parameter, so Tasks 2–3 change
 nothing any of them does and all eight stay comparable with earlier
 measurements.
 
-**The head is level with `22a56f7` on every source.** Sitting 1's medians in
+**The head is level with `e9f97f9` on every source.** Sitting 1's medians in
 ms, both means, the change of the head's mean in sitting 1 / sitting 2, and
 the gate in sitting 1 / sitting 2:
 
-| Source | `22a56f7`, rounds 1–5 | mean | head, rounds 1–5 | mean | change | gate |
+| Source | `e9f97f9`, rounds 1–5 | mean | head, rounds 1–5 | mean | change | gate |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.59, 10.39, 10.39, 10.16, 10.14 | 10.336 | 10.43, 10.19, 10.37, 10.41, 10.32 | 10.342 | +0.06% / +1.43% | overlapping in both |
 | `bench_send.ns` | 11.48, 11.46, 11.52, 11.32, 11.45 | 11.447 | 11.54, 11.55, 11.60, 11.59, 11.62 | 11.578 | +1.15% / +0.51% | entirely above in the first, overlapping in the second |
@@ -4230,7 +4230,7 @@ the gate in sitting 1 / sitting 2:
 | `bench_newarg.ns` | 9.11, 9.11, 9.09, 9.15, 9.12 | 9.116 | 9.07, 8.88, 9.16, 9.10, 9.06 | 9.051 | −0.71% / +0.52% | overlapping in both |
 | `bench_megamorphic.ns` | 16.66, 16.69, 16.70, 16.91, 16.74 | 16.742 | 16.66, 16.87, 16.79, 16.76, 16.84 | 16.783 | +0.25% / +0.13% | overlapping in both |
 
-No source is entirely above `22a56f7` in both sittings — the protocol's rule
+No source is entirely above `e9f97f9` in both sittings — the protocol's rule
 for a real regression — and none is entirely below in either. The one
 single-sitting result, `bench_send.ns` entirely above in sitting 1 (+1.15%),
 does not repeat in sitting 2 (+0.51%, overlapping). The means moved by
@@ -4239,7 +4239,7 @@ protocol treats as level.
 
 Means in ms, sitting 1 / sitting 2:
 
-| Source | `be3eb40` | `22a56f7` | head `abd9bb4` |
+| Source | `d804eaf` | `e9f97f9` | head `006afb4` |
 |---|---|---|---|
 | `bench_loop.ns` | 11.290 / 11.252 | 10.336 / 10.250 | 10.342 / 10.397 |
 | `bench_send.ns` | 14.090 / 13.986 | 11.447 / 11.491 | 11.578 / 11.550 |
@@ -4250,10 +4250,10 @@ Means in ms, sitting 1 / sitting 2:
 | `bench_newarg.ns` | 10.751 / 10.582 | 9.116 / 8.980 | 9.051 / 9.026 |
 | `bench_megamorphic.ns` | 18.296 / 18.077 | 16.742 / 16.554 | 16.783 / 16.576 |
 
-**Every source stays well below `be3eb40`**, every group entirely below in
-both sittings, for the head and for `22a56f7`:
+**Every source stays well below `d804eaf`**, every group entirely below in
+both sittings, for the head and for `e9f97f9`:
 
-| Source | head vs `be3eb40` | `22a56f7` vs `be3eb40` |
+| Source | head vs `d804eaf` | `e9f97f9` vs `d804eaf` |
 |---|---|---|
 | `bench_loop.ns` | −8.40% / −7.60% | −8.46% / −8.90% |
 | `bench_send.ns` | −17.82% / −17.42% | −18.75% / −17.84% |
@@ -4265,12 +4265,12 @@ both sittings, for the head and for `22a56f7`:
 | `bench_megamorphic.ns` | −8.27% / −8.30% | −8.49% / −8.43% |
 
 **`vm::run`'s step is still inline.** Release builds with debug information
-of `22a56f7` and `abd9bb4` (the same `RUSTFLAGS`, plus
+of `e9f97f9` and `006afb4` (the same `RUSTFLAGS`, plus
 `CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`, "What the
 inline caches moved" above), then `dumpbin /disasm`: no `vm::run::closure`
 function in either. `ns_runtime::vm::run` is one function of **4,878
-instructions at `22a56f7`** (the count "What 3c moved" records for C2+,
-`5d3aeff`) and **4,878 at `abd9bb4`**. With relocated addresses normalized
+instructions at `e9f97f9`** (the count "What 3c moved" records for C2+,
+`b94d515`) and **4,878 at `006afb4`**. With relocated addresses normalized
 the two streams differ in 192 lines, all of them displacements: the head's
 `rbx`-relative field offsets are 0x18 higher from `+0A8h` on — the heap's new
 canonical-symbol-table field — and some absolute data addresses moved; no
@@ -4296,12 +4296,12 @@ with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
 the three earlier commits in throwaway worktrees:
 
-- `efac7d2` — the `master` the branch started from (the merge of
+- `7aaaf04` — the `master` the branch started from (the merge of
   `feature/remove-assign`);
-- `be3eb40` — the reference carried since step 2c;
-- `a3f36a2` — the conversion alone (`feat: convert closures in the optimized
+- `d804eaf` — the reference carried since step 2c;
+- `62d0c16` — the conversion alone (`feat: convert closures in the optimized
   lowering`);
-- `fbd7d9f` — the head, the conversion plus the narrowed protective copies.
+- `9c0fdc2` — the head, the conversion plus the narrowed protective copies.
 
 The protocol is the one of "What removing the re-entries moved": no binary
 imports `VCRUNTIME140.dll` (`dumpbin /dependents`); every binary was checked to
@@ -4322,7 +4322,7 @@ made; the next one should take all four from execution.md too.
 
 **Level everywhere.** Means in ms, sitting 1 / sitting 2:
 
-| Source | `be3eb40` | `efac7d2` | `a3f36a2` (conversion) | `fbd7d9f` (head) |
+| Source | `d804eaf` | `7aaaf04` | `62d0c16` (conversion) | `9c0fdc2` (head) |
 |---|---|---|---|---|
 | `bench_loop.ns` | 11.185 / 11.271 | 10.257 / 10.216 | 10.336 / 10.392 | 10.475 / 10.323 |
 | `bench_send.ns` | 13.913 / 13.924 | 11.410 / 11.510 | 11.459 / 11.503 | 11.489 / 11.470 |
@@ -4337,18 +4337,18 @@ The gate is the protocol's: a source has moved only when its five-round range
 (min to max of the five medians) lies entirely above, or entirely below, the
 baseline's in **both** sittings.
 
-- **The conversion against `efac7d2`**: −2.18% to +1.73%, every source
+- **The conversion against `7aaaf04`**: −2.18% to +1.73%, every source
   overlapping in both sittings but one — `bench_do.ns`, entirely below in the
   second sitting only (−2.18%), which does not repeat in the first (+0.67%).
-  No source is entirely above. The conversion is level with `efac7d2` on all
+  No source is entirely above. The conversion is level with `7aaaf04` on all
   eight.
 - **The copies against the conversion**: −1.00% to +2.56%, every source
   overlapping in both sittings, `bench_block.ns` — the one source that
   exercises a write-after-capture block every iteration — included. Narrowing
   the protective copies moved nothing measurable.
-- **The head against `efac7d2`**: −0.39% to +2.12%, every source overlapping in
+- **The head against `7aaaf04`**: −0.39% to +2.12%, every source overlapping in
   both sittings. **No regression.**
-- **The head against `be3eb40`**: every source entirely below in both sittings,
+- **The head against `d804eaf`**: every source entirely below in both sittings,
   by **6–19%** — `bench_loop.ns` −6.4% / −8.4%, `bench_send.ns` −17.4% /
   −17.6%, `bench_block.ns` −14.8% / −15.6%, `bench_megamorphic.ns` −7.1% /
   −7.9%, `bench_do.ns` −14.2% / −13.4%, `bench_new.ns` −17.6% / −18.5%,
@@ -4377,13 +4377,13 @@ process exits, `bench bench_block.ns --iterations 30`, three runs each:
 
 | Binary | Three-run band |
 |---|---|
-| `efac7d2` | 454.719–454.754 MB |
-| `a3f36a2` (conversion only) | 466.406–467.598 MB |
-| `fbd7d9f` (head) | 466.418–466.469 MB |
+| `7aaaf04` | 454.719–454.754 MB |
+| `62d0c16` (conversion only) | 466.406–467.598 MB |
+| `9c0fdc2` (head) | 466.418–466.469 MB |
 
-**The rise belongs to the conversion.** `a3f36a2`'s band lies entirely above
-`efac7d2`'s, already at the head's level, and `fbd7d9f`'s band sits inside
-`a3f36a2`'s, so the copy-narrowing adds and removes nothing here. The
+**The rise belongs to the conversion.** `62d0c16`'s band lies entirely above
+`7aaaf04`'s, already at the head's level, and `9c0fdc2`'s band sits inside
+`62d0c16`'s, so the copy-narrowing adds and removes nothing here. The
 explanation — a block that writes a captured local now allocates an
 indirection-vector `Array` per activation of the body that declares it, in an
 arena that reclaims nothing — **is an inference from what changed, not a
@@ -4393,10 +4393,10 @@ removes; until then a vector is retained exactly as every other object the
 process has ever made.
 
 **`vm::run`'s step is still inline.** Release builds with debug information of
-`efac7d2` and the head (the same `RUSTFLAGS`, plus
+`7aaaf04` and the head (the same `RUSTFLAGS`, plus
 `CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
 `dumpbin /disasm`: no `vm::run::closure` function in either.
-`ns_runtime::vm::run` is one function of **4,878 instructions at `efac7d2`**
+`ns_runtime::vm::run` is one function of **4,878 instructions at `7aaaf04`**
 and **5,700 at the head**, +16.9% — the three vector instructions and the
 two-mode block-creation logic, all still inlined into the one function rather
 than split out. That is what the step's own size did; it cost none of the
@@ -4420,10 +4420,10 @@ interim cost, and the one question still open"), and it was measured against
 the expectation recorded in [memory.md](memory.md), "How the collector is
 measured", written before any of the numbers below existed.
 
-**Measured 2026-09-20, against `dc0ffe5` (the merge of closure conversion into
-`master`) and `be3eb40`, by the protocol of "What removing the re-entries
-moved" above.** Every binary — `dc0ffe5` and `be3eb40` built in throwaway
-worktrees, the head `014f0ff` in the current tree — built with
+**Measured 2026-09-20, against `baf524d` (the merge of closure conversion into
+`master`) and `d804eaf`, by the protocol of "What removing the re-entries
+moved" above.** Every binary — `baf524d` and `d804eaf` built in throwaway
+worktrees, the head `16be8e8` in the current tree — built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
 each checked to print the expected answer for all eight sources first;
 `ns-next bench <source> --iterations 30`, five rounds per sitting, the order
@@ -4448,7 +4448,7 @@ the step.** `PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize` through
 `run` and `bench --iterations 10` rows [memory.md](memory.md)'s table
 already carried:
 
-| Command | `dc0ffe5` | head |
+| Command | `baf524d` | head |
 |---|---|---|
 | `run`, `bench_loop.ns` | 4.7 MB | 4.7 MB |
 | `bench --iterations 10`, `bench_loop.ns` | 4.8 MB | 4.8 MB |
@@ -4463,10 +4463,10 @@ other two. [memory.md](memory.md)'s own peak-working-set table, spanning
 before the arena to after the collector, has the fourth column.
 
 **Throughput is level on seven of the eight sources, entirely below
-`be3eb40`, and one source is not level.** Medians in ms per round, then each
+`d804eaf`, and one source is not level.** Medians in ms per round, then each
 group's mean; sitting 1:
 
-| Source | head | mean | `dc0ffe5` | mean | `be3eb40` | mean | head vs `dc0ffe5` | head vs `be3eb40` |
+| Source | head | mean | `baf524d` | mean | `d804eaf` | mean | head vs `baf524d` | head vs `d804eaf` |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.55, 10.37, 10.53, 10.55, 10.32 | 10.46 | 10.37, 10.48, 10.34, 10.46, 10.45 | 10.42 | 11.35, 11.44, 11.48, 11.38, 11.53 | 11.43 | +0.4% | −8.5% |
 | `bench_send.ns` | 11.58, 11.97, 11.59, 11.58, 11.58 | 11.66 | 11.65, 11.81, 11.62, 11.59, 11.66 | 11.67 | 14.15, 14.33, 14.36, 14.12, 14.01 | 14.19 | −0.1% | −17.9% |
@@ -4479,7 +4479,7 @@ group's mean; sitting 1:
 
 Sitting 2:
 
-| Source | head | mean | `dc0ffe5` | mean | `be3eb40` | mean | head vs `dc0ffe5` | head vs `be3eb40` |
+| Source | head | mean | `baf524d` | mean | `d804eaf` | mean | head vs `baf524d` | head vs `d804eaf` |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.38, 10.51, 10.48, 10.52, 10.33 | 10.44 | 10.61, 10.66, 10.62, 10.46, 10.42 | 10.55 | 11.44, 11.38, 11.47, 11.54, 11.37 | 11.44 | −1.0% | −8.7% |
 | `bench_send.ns` | 11.72, 11.75, 11.58, 11.75, 11.58 | 11.68 | 11.67, 11.78, 11.54, 11.71, 11.67 | 11.67 | 14.25, 14.27, 14.11, 14.30, 14.34 | 14.26 | +0.0% | −18.1% |
@@ -4494,7 +4494,7 @@ Both sittings pooled, by group mean, with the protocol's gate — a source has
 moved only when its five-round range lies entirely above, or entirely below,
 the group compared with, in **both** sittings:
 
-| Source | head | `dc0ffe5` | `be3eb40` | vs `dc0ffe5` | vs `be3eb40` | groups overlap vs `dc0ffe5` |
+| Source | head | `baf524d` | `d804eaf` | vs `baf524d` | vs `d804eaf` | groups overlap vs `baf524d` |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 10.45 | 10.49 | 11.44 | −0.3% | −8.6% | yes |
 | `bench_send.ns` | 11.67 | 11.67 | 14.22 | −0.0% | −18.0% | yes |
@@ -4505,11 +4505,11 @@ the group compared with, in **both** sittings:
 | `bench_new2.ns` | 7.31 | 7.27 | 8.55 | +0.6% | −14.5% | yes |
 | `bench_newarg.ns` | 9.39 | 9.13 | 10.86 | +2.9% | −13.5% | yes |
 
-**Seven of the eight sources are level with `dc0ffe5`** — `bench_loop.ns`
+**Seven of the eight sources are level with `baf524d`** — `bench_loop.ns`
 through `bench_newarg.ns` above, means spanning −2.1% to +2.9% — **and
-5.3–18.0% below `be3eb40`.** Six of the seven overlap `dc0ffe5`'s group in
+5.3–18.0% below `d804eaf`.** Six of the seven overlap `baf524d`'s group in
 both sittings; `bench_newarg.ns`, the narrowest of the seven at +2.9%
-pooled, is entirely above `dc0ffe5` in the second sitting and overlaps it by
+pooled, is entirely above `baf524d` in the second sitting and overlaps it by
 only 0.01 ms in the first — and it is the source with the second-most
 collections of the eight, 107. `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` are the four
@@ -4519,9 +4519,9 @@ requires.
 
 **`bench_block.ns` is not level, and the honest reading is that the step
 cost it +12.2%.** Its pooled mean rose from 20.21 ms to 22.67 ms against
-`dc0ffe5` — the one source whose pooled groups do not overlap in either
-sitting, and the only one whose difference against `dc0ffe5` runs beyond a
-couple of percent — while it stays 5.3% below `be3eb40`. It is the only one
+`baf524d` — the one source whose pooled groups do not overlap in either
+sitting, and the only one whose difference against `baf524d` runs beyond a
+couple of percent — while it stays 5.3% below `d804eaf`. It is the only one
 of the eight sources that allocates a closure every iteration, and so the
 only one that collects enough to show: `bench --collector-statistics` over
 `bench --iterations 10` records
@@ -4544,7 +4544,7 @@ recorded as unexplained rather than guessed at.
 Setting each source's pause per entry send against the change actually
 measured separates what the collector itself costs from everything else it
 moved. The pause is the total over eleven entry sends — one warm-up and ten
-timed — and the change is the head's pooled median minus `dc0ffe5`'s:
+timed — and the change is the head's pooled median minus `baf524d`'s:
 
 | Source | Pause per send | Change per send | Not accounted for by pause |
 |---|---|---|---|
@@ -4562,7 +4562,7 @@ across four sources is not noise, and it is the part of this measurement
 most in need of explaining.
 
 What plausibly gives back: an arena that never passes its limit never
-doubles. Under `dc0ffe5` these sources grow both arenas to hold everything
+doubles. Under `baf524d` these sources grow both arenas to hold everything
 ever allocated — `bench_new.ns` reaches roughly 220,000 objects over eleven
 sends — and a growing `Vec` reallocates and copies periodically, in the
 mutator, counted in no pause. The head's arenas stay at a few thousand slots.
@@ -4592,7 +4592,7 @@ that tracks the collection count rather than the pause total is the cache
 after-effect rather than the work. `bench_do.ns`,
 `bench_new.ns`, `bench_new2.ns` and `bench_newarg.ns` collect too — 26 to 107
 times over ten iterations — at a fraction of the pause, and stay level with
-`dc0ffe5` — so
+`baf524d` — so
 collecting itself is not what shows on `bench_block.ns`; something about
 collecting *269 times in ten iterations*, an order of magnitude more often,
 is.
@@ -4640,7 +4640,7 @@ every *successful* operation also executes makes two dispatches out of one
 send, which should show as a smaller gain than the send count suggests, not
 as a regression.
 
-**Measured 2026-09-21, against `6f5a5b1`, the commit on `master` the branch
+**Measured 2026-09-21, against `a44f155`, the commit on `master` the branch
 was cut from**, by the protocol of "What removing the re-entries moved"
 above: both binaries built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`,
@@ -4659,7 +4659,7 @@ the moving collector, and the head **5,866** — the `IntegerBinary` arm adds
 
 Medians in ms per round, then each group's mean; sitting 1:
 
-| Source | Before (`6f5a5b1`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
+| Source | Before (`a44f155`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 10.29, 10.49, 10.49, 10.36, 10.52 | 10.43 | 7.17, 7.19, 7.42, 7.17, 7.21 | 7.23 | **−30.6%**, entirely below |
 | `bench_send.ns` | 11.54, 11.60, 11.76, 11.71, 11.72 | 11.67 | 8.69, 8.58, 8.59, 8.61, 8.77 | 8.65 | **−25.9%**, entirely below |
@@ -4672,7 +4672,7 @@ Medians in ms per round, then each group's mean; sitting 1:
 
 Sitting 2:
 
-| Source | Before (`6f5a5b1`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
+| Source | Before (`a44f155`), rounds 1–5 | mean | After, rounds 1–5 | mean | Change |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 10.52, 10.59, 10.39, 10.48, 10.51 | 10.50 | 7.15, 7.30, 7.14, 7.15, 7.27 | 7.20 | **−31.4%**, entirely below |
 | `bench_send.ns` | 11.58, 11.63, 11.78, 11.58, 11.83 | 11.68 | 8.57, 8.56, 8.50, 8.58, 8.57 | 8.55 | **−26.8%**, entirely below |
@@ -4765,12 +4765,12 @@ when the leaf declines ([dispatch.md](dispatch.md), "Primitive methods").
 measuring only, so the same binary shows what they recover.
 
 **The expectation, recorded before any binary was built.** With primitive
-methods on, against `e2bb31e`: level on every source. A leaf send that
+methods on, against `404ece6`: level on every source. A leaf send that
 `IntegerBinary` does not absorb costs one cached send plus one field test on
 the method, where it cost one cached send; the rest of the path is the same
 primitive. The one new cost on every method send is that field test; if a
 source that sends no leaf moves, that is where to look. Under
-`NS_NEXT_NO_PRIMITIVE_METHODS=1`, against `e2bb31e`: slower on every source
+`NS_NEXT_NO_PRIMITIVE_METHODS=1`, against `404ece6`: slower on every source
 that sends a leaf the fast path does not absorb, since each such send becomes
 an activation of the kernel method, a lexical send of `vmMirror` and a
 `SendMirror`. From their text those are `bench_block.ns` (`value:`, 50,000 a
@@ -4778,27 +4778,27 @@ run), `bench_megamorphic.ns` (`at:`, 50,000 a run) and `bench_do.ns` (`do:`,
 5,000 a run, each running ten block activations the leaf makes);
 `bench_loop.ns`, `bench_send.ns` and the three `bench_new*` sources send
 `printString`, `show:` and `newLine` only once, after their loop, and should
-be level. Start-up, against `e2bb31e`: slower by the kernel's parse,
+be level. Start-up, against `404ece6`: slower by the kernel's parse,
 resolution, compilation and instantiation, which did not exist.
 
-**Measured 2026-09-22, against `e2bb31e` (the merge of leaf inlining into
-`master`) and `be3eb40`, by the protocol of "What removing the re-entries
-moved" above.** Every binary -- `e2bb31e` and `be3eb40` built in throwaway
-worktrees, the head `52c242b` in the current tree -- built with
+**Measured 2026-09-22, against `404ece6` (the merge of leaf inlining into
+`master`) and `d804eaf`, by the protocol of "What removing the re-entries
+moved" above.** Every binary -- `404ece6` and `d804eaf` built in throwaway
+worktrees, the head `5e13ebd` in the current tree -- built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
 none imports `VCRUNTIME140.dll` (`dumpbin -dependents`); each checked to
 print the expected answer for all eight sources first, the head in both
 configurations; `ns-next bench <source> --iterations 30`, five rounds per
-sitting, the four configurations -- `e2bb31e`, `be3eb40`, the head, the head
+sitting, the four configurations -- `404ece6`, `d804eaf`, the head, the head
 under `NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary with the variable
 set for its runs only -- rotating by one position from round to round, two
 whole sittings, nothing else running.
 
 **`vm::run`'s step is still one function.** A release build with debug
-information of the head and of `e2bb31e` (the timed build's `RUSTFLAGS`
+information of the head and of `404ece6` (the timed build's `RUSTFLAGS`
 plus `CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir`), then
 `dumpbin -disasm`: one function label matching `vm::run`
-(`ns_runtime::vm::run`) in each, no `vm::run::closure` of its own. `e2bb31e`
+(`ns_runtime::vm::run`) in each, no `vm::run::closure` of its own. `404ece6`
 measures **5,866 instructions**, the figure leaf inlining recorded, and the
 head **6,385** -- 519 more, for the `SendMirror` arm and the primitive-method
 test in every inlined `act`. The step did not split, so no remedy was
@@ -4809,16 +4809,16 @@ listing: `vm::deliver`, `#[inline(always)]` and shared by `send` and
 `unwrap_or_else`, keeps that error out of line --
 `resolve::impl$2::act_with_base::closure$0` and `resolve::unhandled_error`
 are small functions of their own, called from three sites each in
-`vm::run`, where `e2bb31e` called the cold `act_above` and
+`vm::run`, where `404ece6` called the cold `act_above` and
 `act_handler_primitive` from four each. What the primitive methods add to
 the hot path is visible as calls: `vm::run` calls `builtins::execute` from
-eight sites, against four in `e2bb31e` (`mirror::execute_method` is inlined
+eight sites, against four in `404ece6` (`mirror::execute_method` is inlined
 into each method arm, and the leaf it runs stays out of line), and
 `mirror::run_leaf` from one, the `SendMirror` arm.
 
 Medians in ms per round, then each group's mean; sitting 1:
 
-| Source | `e2bb31e`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
+| Source | `404ece6`, rounds 1–5 | mean | `d804eaf`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 7.21, 7.14, 7.09, 7.20, 7.12 | 7.15 | 11.25, 11.10, 11.33, 11.26, 11.23 | 11.23 | 6.97, 7.13, 7.17, 7.09, 6.94 | 7.06 | 6.87, 7.06, 7.04, 7.04, 6.94 | 6.99 |
 | `bench_send.ns` | 8.43, 8.43, 8.51, 8.33, 8.51 | 8.44 | 13.73, 13.92, 14.03, 14.01, 13.95 | 13.93 | 8.16, 8.29, 8.40, 8.38, 8.41 | 8.33 | 8.33, 8.24, 8.40, 8.30, 8.41 | 8.33 |
@@ -4831,7 +4831,7 @@ Medians in ms per round, then each group's mean; sitting 1:
 
 Sitting 2:
 
-| Source | `e2bb31e`, rounds 1–5 | mean | `be3eb40`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
+| Source | `404ece6`, rounds 1–5 | mean | `d804eaf`, rounds 1–5 | mean | Head, rounds 1–5 | mean | Head, no primitive methods, rounds 1–5 | mean |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 7.24, 7.03, 7.08, 7.31, 7.20 | 7.17 | 11.17, 11.34, 11.22, 11.22, 11.14 | 11.22 | 7.00, 7.01, 7.10, 6.96, 7.11 | 7.04 | 7.04, 7.15, 7.05, 7.08, 7.03 | 7.07 |
 | `bench_send.ns` | 8.65, 8.53, 8.34, 8.38, 8.53 | 8.49 | 13.90, 13.94, 14.10, 13.95, 14.04 | 13.98 | 8.33, 8.26, 8.37, 8.50, 8.33 | 8.36 | 9.38, 8.26, 8.36, 8.34, 8.36 | 8.54 |
@@ -4845,7 +4845,7 @@ Sitting 2:
 The change of each head configuration's mean against each baseline,
 sitting 1 / sitting 2:
 
-| Source | Head against `e2bb31e` | No primitive methods against `e2bb31e` | Head against `be3eb40` | No primitive methods against `be3eb40` |
+| Source | Head against `404ece6` | No primitive methods against `404ece6` | Head against `d804eaf` | No primitive methods against `d804eaf` |
 |---|---|---|---|---|
 | `bench_loop.ns` | −1.3% / −1.9%, overlapping | −2.3% / −1.4%, entirely below in the first | −37.2% / −37.3%, entirely below | −37.8% / −37.0%, entirely below |
 | `bench_send.ns` | −1.3% / −1.5%, overlapping | −1.3% / +0.6%, overlapping | −40.2% / −40.2%, entirely below | −40.2% / −38.9%, entirely below |
@@ -4858,7 +4858,7 @@ sitting 1 / sitting 2:
 
 Both sittings pooled, means in ms:
 
-| Source | `e2bb31e` | `be3eb40` | Head | No primitive methods | Head against `e2bb31e` | No primitive methods against `e2bb31e` | No primitive methods against the head |
+| Source | `404ece6` | `d804eaf` | Head | No primitive methods | Head against `404ece6` | No primitive methods against `404ece6` | No primitive methods against the head |
 |---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 7.16 | 11.23 | 7.05 | 7.03 | −1.6% | −1.8% | −0.2% |
 | `bench_send.ns` | 8.46 | 13.96 | 8.34 | 8.44 | −1.4% | −0.3% | +1.1% |
@@ -4870,14 +4870,14 @@ Both sittings pooled, means in ms:
 | `bench_newarg.ns` | 8.15 | 10.63 | 8.01 | 8.35 | −1.7% | +2.5% | +4.3% |
 
 **With primitive methods on, moving the core library into Newspeak cost
-nothing measurable: the head is −4.5% to +2.1% against `e2bb31e`, and no
-head group lies entirely above its `e2bb31e` group in either sitting.** The
+nothing measurable: the head is −4.5% to +2.1% against `404ece6`, and no
+head group lies entirely above its `404ece6` group in either sitting.** The
 expectation said level, and that is what the suite shows: seven sources
 between −1.4% and −4.5%, four of them entirely below in one sitting, and
 `bench_do.ns` at +3.8% / +0.4%, overlapping, its first-sitting mean carried
 by one round at 6.23 ms against four between 5.66 and 5.81. The field test
 every method send now makes does not show: `bench_send.ns` activates one
-ordinary method per iteration, `tick:`, and is −1.4%. Against `be3eb40` the
+ordinary method per iteration, `tick:`, and is −1.4%. Against `d804eaf` the
 head is 24.7% to 40.2% faster on every source, entirely below in both
 sittings.
 
@@ -4894,7 +4894,7 @@ primitive method's fast path cost about 58 ns on `bench_megamorphic.ns`
 50,000 `value:`, whose leaf then activates the block, so the kernel method's
 own activation sits beneath the block's on the stack); on `bench_do.ns`, 0.19
 ms over 5,000 `do:` is about 38 ns each. Even so, every source without
-primitive methods stays 7.5% to 39.5% faster than `be3eb40`, pooled.
+primitive methods stays 7.5% to 39.5% faster than `d804eaf`, pooled.
 
 **What is left unexplained.** `bench_newarg.ns` is 2.5% slower without
 primitive methods in both sittings, entirely above, and `bench_new.ns` 2.4%
@@ -4906,7 +4906,7 @@ sites filled without primitive methods on every source, which fits the
 placement is not the explanation either; what differs between the two is the
 kernel's compiled bodies, and how that reaches an instantiation loop is not
 isolated. Nor is why
-`bench_block.ns` is 4.5% *faster* with primitive methods than `e2bb31e`,
+`bench_block.ns` is 4.5% *faster* with primitive methods than `404ece6`,
 entirely below in the first sitting: its `value:` went from a primitive
 entry of `Closure`'s method table, run by `act`'s `Primitive` arm, to a
 kernel method whose leaf runs from its `Method` arm, and nothing on that
@@ -4922,7 +4922,7 @@ no failing leaf. And a cached site
 whose target is a primitive method reserves feedback-table room for that
 method's family although the fast path never activates it:
 `ns-next run --cache-statistics` counts 23 site entries for `bench_loop.ns`
-against 15 in `e2bb31e`, 26 against 16 for `bench_block.ns` and 39 against
+against 15 in `404ece6`, 26 against 16 for `bench_block.ns` and 39 against
 29 for `bench_megamorphic.ns`, with the same number filled -- 8 to 10
 entries of 24 bytes, 192 to 240 bytes a run, for the `printString`, `show:`
 and `newLine` sent once.
@@ -4930,10 +4930,10 @@ and `newLine` sent once.
 **Start-up is 0.5 ms slower**, the kernel's parse, resolution, compilation
 and instantiation, as expected. The whole `ns-next run` of a module whose
 `main:args:` answers `0` at once, wall-clock from the parent process, 50
-runs of each binary alternating, in two sittings: `e2bb31e` median 3.56 ms
+runs of each binary alternating, in two sittings: `404ece6` median 3.56 ms
 and 3.55 ms (10th to 90th percentile 3.31–3.71 and 3.46–3.82), the head
 4.08 ms and 4.06 ms (3.84–4.35 and 3.96–4.31) -- +0.51 ms, 14%, the head's
-10th percentile above `e2bb31e`'s 90th in both. That is under a
+10th percentile above `404ece6`'s 90th in both. That is under a
 millisecond, so embedding the compiled kernel as an image generated at
 build time ([core-library.md](core-library.md), "Where the library source
 lives, and how modules are found") is not called for by this figure; it stays the named next step if
@@ -4963,11 +4963,11 @@ and `bench_newarg.ns`, the three that run one or two initializers per
 iteration, 20,000 iterations each. Every one of their stores is an immediate,
 so the check returns on its first test.
 
-**Measured 2026-09-23, `ab692b7` against `b0a771d`, by the protocol of "What
-removing the re-entries moved" above.** `b0a771d` is this branch's head before
-the first commit of the work (`1dc548a`) and is itself documentation only, so
-its tree is the code as it stood before; `ab692b7` is the last commit of the
-work, the one the figures below were taken at. `2ad6f30` landed afterwards --
+**Measured 2026-09-23, `7609458` against `7da04cb`, by the protocol of "What
+removing the re-entries moved" above.** `7da04cb` is this branch's head before
+the first commit of the work (`0443ab9`) and is itself documentation only, so
+its tree is the code as it stood before; `7609458` is the last commit of the
+work, the one the figures below were taken at. `3ab36c3` landed afterwards --
 a value's state is the slots its classes declare, so a nested class's cache
 slot is no longer compared or hashed -- and touches no path any of the eight
 sources runs: none of them declares a value class, and the change is confined
@@ -5117,7 +5117,7 @@ else:
   the applied clause was boxed, so a class object grew by one word (since road
   step 3a it is one packed field of eight).
 
-**Measured 2026-09-23, `06fd024` against `6833234`**, the commit before
+**Measured 2026-09-23, `5cc96e8` against `b8586d5`**, the commit before
 mixin application, by the protocol of "What removing the re-entries moved" above:
 three builds of each tree with the pinned flags, none importing
 `VCRUNTIME140.dll`, each checked to print the expected answer for every
@@ -5133,7 +5133,7 @@ debug information of each tree puts `vm::run` at 6,508 instructions in both,
 one function with no closure of its own. Means in ms, all three sittings
 pooled:
 
-| Source | `6833234` | `06fd024` | Change, pooled | Sitting 1 / 2 / 3 |
+| Source | `b8586d5` | `5cc96e8` | Change, pooled | Sitting 1 / 2 / 3 |
 |---|---|---|---|---|
 | `bench_loop.ns` | 7.02 | 7.04 | +0.3% | +0.2% / +0.7% / −0.1% |
 | `bench_send.ns` | 8.37 | 8.34 | −0.4% | −0.3% / −0.6% / −0.2% |
@@ -5154,7 +5154,7 @@ measured at 16% above.
 
 **Four instantiating sources still sit above the base**: `bench_new.ns`
 +0.5%, `bench_new2.ns` +0.9%, `bench_newarg2.ns` +1.4% and `bench_nested.ns`
-+1.0%, every build of `06fd024` above every build of `6833234` in every
++1.0%, every build of `5cc96e8` above every build of `b8586d5` in every
 sitting, while `bench_newarg.ns` sits 2.2% below. By the criterion of "What
 `Top`, `Value` and `Number` cost" that is a real difference, if a small one.
 Its cause is not isolated. Placement of data is the likely one: two builds of
@@ -5196,7 +5196,7 @@ on the value-class read in `decide_instantiation`, and only the instantiating
 sources reach it. Start-up is level too: one applied level is small beside the
 kernel's compilation.
 
-**Measured 2026-09-24, `d773380` against `cdc0257`**, the merge of mixin
+**Measured 2026-09-24, `97598a8` against `4fa3036`**, the merge of mixin
 application and this branch's start, by the protocol of "What removing the
 re-entries moved" above. Every binary was built with the pinned flags. None
 imports `VCRUNTIME140.dll` (`dumpbin -dependents`), and each was checked to
@@ -5222,7 +5222,7 @@ used here builds each tree three ways: unperturbed, and twice with an extra
 extra metadata changes every symbol hash, and with it the link order. About
 1.85 MB of the 2.4 MB binary differs between them. The tables below are three
 more sittings over those six binaries: `base`, `base-p` and `base-q` from
-`cdc0257`, and `head`, `head-p` and `head-q` from `d773380`.
+`4fa3036`, and `head`, `head-p` and `head-q` from `97598a8`.
 
 **`vm::run`'s step is still one function.** A release build with debug
 information of each tree has one function label matching `vm::run` in each,
@@ -5232,7 +5232,7 @@ the head 6,507. `decide_instantiation` grew from 441 to 503 instructions and
 (`instantiation_refusal_error`, `value_class_refusal_error`) are out of line.
 Until the review's fix (below), `decide_instantiation` cloned the class's
 `Option<ValueClassRefusal>` to test it, and `value_class_refusal_error` was
-inlined into it; since `7b2af64` it is **371 instructions**, below the base's
+inlined into it; since `fbf7a2f` it is **371 instructions**, below the base's
 441.
 
 Means in ms per build, over each sitting's five rounds; sittings 4, 5 and 6:
@@ -5277,7 +5277,7 @@ The three sittings pooled, the base's three layouts against the head's three,
 and, in the last column, the first three sittings' three identical copies of
 each tree, pooled the same way:
 
-| Source | `cdc0257` | `d773380` | Change, pooled | Sitting 4 / 5 / 6 | Sittings 1–3, identical copies |
+| Source | `4fa3036` | `97598a8` | Change, pooled | Sitting 4 / 5 / 6 | Sittings 1–3, identical copies |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 7.04 | 7.05 | +0.1% | −0.4% / +1.0% / −0.3% | +0.0% |
 | `bench_send.ns` | 8.35 | 8.40 | +0.6% | +0.7% / +0.9% / +0.3% | −0.1% |
@@ -5322,21 +5322,21 @@ separate the kernel's applied level from the Rust changes, the head with
 `kernel.rs` then asserted the kernel's root was `Object <: Value`. Nothing was
 profiled.
 
-**Re-measured 2026-09-24 after the review's fix, `7b2af64`.** The final
+**Re-measured 2026-09-24 after the review's fix, `fbf7a2f`.** The final
 review named the clone of `Option<ValueClassRefusal>` on
 `decide_instantiation`'s path, and the inlined refusal error behind it, as
 the concrete candidate for `bench_new.ns`. The fix tests for the refusal's
 presence and keeps both refusal errors `#[cold]` and `#[inline(never)]`. It
 was measured in a new session by the same protocol, over `bench_block.ns`
-and `bench_new.ns` only: three trees, `cdc0257` (`base`), `d9c3f33` (the
-head before the fix, `old`) and `7b2af64` (`head`), each built plain and with
+and `bench_new.ns` only: three trees, `4fa3036` (`base`), `1bc8d4b` (the
+head before the fix, `old`) and `fbf7a2f` (`head`), each built plain and with
 `-C metadata=layoutprobe` and `=secondprobe`, nine binaries rotating by one
 position from round to round, five rounds a sitting and six sittings. A
 rebuild of the plain base differed from the first in 24 bytes, as before.
 `vm::run` is still 6,507 instructions with no `vm::run::closure`.
 Means in ms per layout over the six sittings (plain, `-p`, `-q`):
 
-| Source | `cdc0257` | `d9c3f33` | `7b2af64` | `7b2af64` against `cdc0257`, pooled | against `d9c3f33` |
+| Source | `4fa3036` | `1bc8d4b` | `fbf7a2f` | `fbf7a2f` against `4fa3036`, pooled | against `1bc8d4b` |
 |---|---|---|---|---|---|
 | `bench_block.ns` | 17.27, 18.55, 18.53 | 19.43, 19.39, 19.34 | 19.43, 19.32, 19.33 | +6.9% (+6.7 to +7.1 per sitting) | −0.1% |
 | `bench_new.ns` | 4.30, 4.22, 4.23 | 4.34, 4.22, 4.22 | 4.34, 4.21, 4.23 | +0.2% (−1.3 to +0.9 per sitting) | +0.0% |
@@ -5365,7 +5365,7 @@ symbol id by one and with it every `IdentityMap<Symbol, …>` bucket. A
 throwaway build of the base with the same seed line, in the same three
 layouts, measured in six more sittings beside the base and the head:
 
-| Source | `cdc0257` | `cdc0257` + seed | `7b2af64` | head against base + seed, per sitting |
+| Source | `4fa3036` | `4fa3036` + seed | `fbf7a2f` | head against base + seed, per sitting |
 |---|---|---|---|---|
 | `bench_block.ns` | 17.30, 18.49, 18.51 | 18.53, 18.50, 18.54 | 19.44, 19.25, 19.26 | +4.3% (+3.6 to +4.6) |
 | `bench_new.ns` | 4.23, 4.23, 4.24 | 4.22, 4.23, 4.22 | 4.35, 4.22, 4.24 | +1.0% (+0.1 to +1.9) |
@@ -5416,12 +5416,12 @@ its loop makes 40,000 class-accessor sends (`SendLexical #Array` and
 `#OrderedCollection` in its disassembly) where the base made 40,000
 `LoadBuiltinClass`es.
 
-**Measured 2026-09-24, `dd1c70c` against `909bf40`**, the merge of the value
+**Measured 2026-09-24, `697b94f` against `2825ec9`**, the merge of the value
 conditions and this branch's start, by the protocol of "What removing the
 re-entries moved" above, with the layout variation of "What the value
 conditions cost": each tree built plain and with `-C metadata=layoutprobe` and
 `=secondprobe`, every build with the pinned flags. The measured tree was the
-branch head, `96d5a8d`, whose commits after `dd1c70c` change documentation
+branch head, `55f8511`, whose commits after `697b94f` change documentation
 only. The plain build and a `-C metadata` build of one tree differ in 1.55 to
 1.86 million bytes. None of the six imports `VCRUNTIME140.dll`, and each printed
 the expected answer for every source first. The timing is
@@ -5462,7 +5462,7 @@ Means in ms per layout, the four sittings pooled:
 
 The base's three layouts against the head's three:
 
-| Source | `909bf40` | `dd1c70c` | Change, pooled | Sitting 1 / 2 / 3 / 4 |
+| Source | `2825ec9` | `697b94f` | Change, pooled | Sitting 1 / 2 / 3 / 4 |
 |---|---|---|---|---|
 | `bench_loop.ns` | 7.27 | 7.21 | −0.9% | −1.4% / −1.1% / −0.7% / −0.2% |
 | `bench_send.ns` | 8.63 | 8.55 | −0.9% | −1.8% / −0.8% / +0.0% / −0.9% |
@@ -5528,9 +5528,9 @@ blocks and are inlined. One throwaway source exercises the change,
 `[taken:: taken + 1]` — four sent Boolean methods and three sent
 conditionals per iteration; it prints `300000` under both trees.
 
-**Measured 2026-09-24, `e8a2884` against `ddd9e4f`**, the `master` it started
+**Measured 2026-09-24, `e4be544` against `cf632a3`**, the `master` it started
 from -- before the fix that marks the block a control-flow step only for a
-Boolean receiver (`d4e7924`), one test of the receiver on the quick path,
+Boolean receiver (`c792be7`), one test of the receiver on the quick path,
 which was not measured separately -- by the protocol of "What removing the
 re-entries moved" above: two builds of each tree, every build with the pinned
 flags, the four binaries differing byte for byte;
@@ -5575,7 +5575,7 @@ with `Inner` a public nested class of `Outer` whose class side declares
 object `Inner` with its metaclass, one class-side send and one factory send.
 It prints `100000` under both trees.
 
-**Measured 2026-09-25, `1c1f624` against `3defb78`**, the `master` it started
+**Measured 2026-09-25, `8003a9d` against `faa39b0`**, the `master` it started
 from, by the protocol of "What removing the re-entries moved" above, with the
 layout variation of "What the value conditions cost": each tree built plain
 and with `-C metadata=layoutprobe` and `=secondprobe`, every build with the
@@ -5597,7 +5597,7 @@ the 20 round medians):
 The base's three layouts against the head's three, means of the round
 medians, and the range of every round median of each tree:
 
-| Source | `3defb78` | `1c1f624` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+| Source | `faa39b0` | `8003a9d` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 7.35 | 7.24 | −1.4% | −1.0% / −1.2% / −2.3% / −1.1% | 7.13–8.36 / 7.07–7.50 |
 | `bench_send.ns` | 8.59 | 8.64 | +0.5% | +0.5% / +0.8% / +0.1% / +0.8% | 8.41–9.62 / 8.48–9.63 |
@@ -5621,15 +5621,15 @@ iterations, some 56 ns for each `Outer new Inner make`: the metaclass built
 with each class object `Inner`. Every round of the head is above every round
 of the base.
 
-**The step `baf6f65` put on a hit, and its cause.** Measured at the branch's
-last feature commit, `f6e2b64`, the fixtures were not level: `bench_send.ns`
+**The step `d66f852` put on a hit, and its cause.** Measured at the branch's
+last feature commit, `296c4cf`, the fixtures were not level: `bench_send.ns`
 6.0% slower (8.58 → 9.10 ms), `bench_loop.ns` and `bench_megamorphic.ns`
 3.4% of the pooled medians before they are rounded to two places for display
 here (7.31 → 7.57, 11.73 → 12.12 -- recomputing from the rounded pair alone
 gives 3.6% and 3.3%), by the same protocol; `bench_metaclass.ns` was 17.3%
-slower at `f6e2b64` (38.76 → 45.45 ms), against the 14.5% it measures at
-`1c1f624` above. A pinned build of every commit put the whole step of the
-two send sources on `baf6f65`, "a class object's class is its metaclass".
+slower at `296c4cf` (38.76 → 45.45 ms), against the 14.5% it measures at
+`8003a9d` above. A pinned build of every commit put the whole step of the
+two send sources on `d66f852`, "a class object's class is its metaclass".
 Nothing on the path of a cache hit changed there -- the size of `Target`,
 `CacheEntry`, `Resolved` and `Step` did not move (only `ClassData` and
 `DispatchIds` shrank), `--cache-statistics`
@@ -5650,13 +5650,13 @@ receiver as a `Value`, and once LLVM's SROA split the key's copy into the
 pieces the hit path reads (the tag, a Boolean's byte for its immediate id, an
 object's handle), every later whole `Value` -- the temporary a native takes by
 value, `Step::Method`'s receiver, the key a megamorphic send hands `miss` --
-was stored back piece by piece. `baf6f65` removed `chain_start`'s class-side
+was stored back piece by piece. `d66f852` removed `chain_start`'s class-side
 arm, which read the key's receiver to find a metaclass; with it gone SROA
 split the key where before it had kept one memory copy. Putting a dead arm
 of the same shape back restores the base's time (8.61 against 9.13 ms on
 `bench_send.ns`, 11.67 against 12.19 on `bench_megamorphic.ns`), which is
 what located it; the arm alone, without the read of the receiver, restores
-about half. The fix is `1c1f624`: `SendKey` holds the receiver by
+about half. The fix is `8003a9d`: `SendKey` holds the receiver by
 reference, to the send's own local, so the local stays one object in memory
 and every whole copy of it is a single 16-byte move, whatever SROA does to
 the rest of the key. `vm::run` shrank from 6,989 to 6,741 instructions, its
@@ -5675,7 +5675,7 @@ description `push_step` writes as a doubleword and a quadword and reads as
 one 16-byte field. None of them moved with this branch. A value handed
 back in a form that is written the way it is read is what the one-word value
 gives ([object-model.md](object-model.md), "Values and objects"; "What the
-eight-byte value moved"). This profile predates `1d7587f` (below,
+eight-byte value moved"). This profile predates `a0c127b` (below,
 "What exceptions cost"), which moved `decide_slot_accessor`'s error out of
 line and with it the spill inside the accessor; the shares above have not
 been profiled again since.
@@ -5683,8 +5683,8 @@ been profiled again since.
 **`vm::run`'s step is still one function.** A release build with debug
 information of each tree, `dumpbin -disasm`: one function label
 `ns_runtime::vm::run` in each and no `vm::run::closure`. The base has **7,055
-instructions**, `f6e2b64` **6,989** and `1c1f624` **6,741**. From the base
-to `f6e2b64`, `resolve_public` grew from 148 to 178 instructions and
+instructions**, `296c4cf` **6,989** and `8003a9d` **6,741**. From the base
+to `296c4cf`, `resolve_public` grew from 148 to 178 instructions and
 `resolve_lexical` from 319 to 377, both now reaching `resolved_for`, which
 has no label of its own and so is inlined into each,
 `inline_cache::global_hit` (since folded into `inline_cache::decided_miss`)
@@ -5722,7 +5722,7 @@ Four throwaway sources, not fixtures, each printing what it accumulates:
 `platform kernel`, so they are measured on the head alone against their
 controls.
 
-**Measured 2026-09-26, `3d5f69c` against `3cbfd31`**, the `master` it
+**Measured 2026-09-26, `1ce5aee` against `0d05a27`**, the `master` it
 started from, by the protocol of "What `Behavior`, `Class` and `Metaclass`
 cost" above: each tree built plain and with `-C metadata=layoutprobe` and
 `=secondprobe`, every build with the pinned flags, the six binaries
@@ -5747,7 +5747,7 @@ round medians):
 The base's three layouts against the head's three, means of the layout
 medians, and the range of every round median of each tree:
 
-| Source | `3cbfd31` | `3d5f69c` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+| Source | `0d05a27` | `1ce5aee` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 7.32 | 7.21 | −1.6% | −1.0% / −1.1% / −1.2% / −1.5% | 7.15–8.48 / 7.04–8.30 |
 | `bench_send.ns` | 8.76 | 8.90 | +1.6% | +1.8% / +2.4% / +0.7% / +1.3% | 8.59–9.66 / 8.65–9.54 |
@@ -5762,7 +5762,7 @@ medians, and the range of every round median of each tree:
 two trees' rounds overlap.
 
 **Block activation and deep returns were slower, beyond noise, and the
-cause was two defects, one of them older than the branch.** At `3d5f69c`
+cause was two defects, one of them older than the branch.** At `1ce5aee`
 `bench_block.ns`, the bimodal source, was 5.0% slower slow layout against
 slow layout (the base drew one fast layout, 16.45, the head none),
 `bench_value.ns` 4.6% and `bench_deep.ns` 6.4%, with nothing of the
@@ -5770,16 +5770,16 @@ exception protocol running in either control. Bisected over the branch's
 commits, two builds of each, the two controls moved at different commits,
 and each has its own cause:
 
-- **`bench_deep.ns`: `Signal` grew.** It moved at `8aa49e8`, which gave
+- **`bench_deep.ns`: `Signal` grew.** It moved at `b593cdd`, which gave
   `Signal` a `Terminate(NewspeakError)` beside `Error(NewspeakError)`. With
   two variants holding a `NewspeakError` in place the others no longer fit
   in its niche: `Signal` went from 48 bytes to 56, `EvaluationResult` from
   48 to 56 and every `Result<Step, Signal>` a send decides from 56 to 64
   (`size_of` in release builds of both trees; `Step`, `Flow`,
   `Continuation` and `Popped` did not move). Boxing `Terminate` alone gave
-  back all of it (`f518988`), and a release-only test pins the three sizes.
+  back all of it (`5be5293`), and a release-only test pins the three sizes.
 - **`bench_value.ns` and `bench_block.ns`: an arena reallocated at every
-  collection.** `bench_value.ns` moved at `85d629d`, which changes no code
+  collection.** `bench_value.ns` moved at `9a75a72`, which changes no code
   on the path at all -- `vm::run` and `decide_slot_accessor` are the same
   instructions in both builds -- but declares the exception classes, so the
   live set a collection leaves grew from 57 objects to 72. A profile put
@@ -5795,7 +5795,7 @@ and each has its own cause:
   happened to fault less. Compaction now measures against the limit
   (`collection_limit`, which `reset_collection_limits` shares): a buffer
   within twice the limit is kept, one past it is cut back to the limit
-  (`c5b1f2b`) -- the old rule wherever the live set is above half the
+  (`0a87d21`) -- the old rule wherever the live set is above half the
   floor. That gave back all of `bench_value.ns` and more of
   `bench_block.ns` than the branch had cost it.
 
@@ -5818,10 +5818,10 @@ trees, so its cost moves with its surroundings rather than with anything the
 branch changed in it. It built its answer through `Option` combinators ending
 in an `ok_or_else` whose closure formats the error, and compiled in place that
 closure gave the accessor a frame. Written as early returns with the error in
-a `#[cold]`, `#[inline(never)]` function (`1d7587f`), the accessor is a leaf
+a `#[cold]`, `#[inline(never)]` function (`a0c127b`), the accessor is a leaf
 that moves the field straight into the step.
 
-**Measured 2026-09-26, `1d7587f` against `3cbfd31`**, by the same protocol:
+**Measured 2026-09-26, `a0c127b` against `0d05a27`**, by the same protocol:
 the same three base binaries, the head built plain and with
 `-C metadata=layoutprobe` and `=secondprobe`, pinned flags, four sittings of
 five rounds, rotating. Medians in ms per layout, the sittings pooled:
@@ -5835,7 +5835,7 @@ five rounds, rotating. Medians in ms per layout, the sittings pooled:
 | `bench_value.ns` | 43.71 | 43.81 | 43.96 | 38.30 | 37.83 | 38.15 |
 | `bench_deep.ns` | 16.53 | 16.12 | 16.17 | 15.88 | 15.87 | 15.83 |
 
-| Source | `3cbfd31` | `1d7587f` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
+| Source | `0d05a27` | `a0c127b` | Change, pooled | Sitting 1 / 2 / 3 / 4 | Rounds, base / head |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 7.27 | 5.50 | −24.3% | −25.0% / −24.0% / −25.7% / −25.1% | 7.16–8.40 / 5.40–6.65 |
 | `bench_send.ns` | 8.70 | 7.08 | −18.6% | −18.3% / −19.1% / −18.8% / −19.0% | 8.55–9.02 / 6.91–7.40 |
@@ -5858,7 +5858,7 @@ against a `master` carrying the same two fixes was not measured -- the
 per-commit attribution suggests about zero.
 
 **What the protocol costs when nothing is signalled**, measured at
-`3d5f69c`, before the three fixes above. `bench_ensure.ns`
+`1ce5aee`, before the three fixes above. `bench_ensure.ns`
 runs the same three block bodies as `bench_value.ns`, one as an `ensure:`
 receiver, one as its argument, one as an `on:do:` receiver: 60.47 ms
 against 46.01, about **145 ns an iteration for one `ensure:` and one
@@ -5875,7 +5875,7 @@ activation, and the unwind of the twenty activations and the handler's
 own to the `on:do:`.
 
 **`vm::run`'s step is still one function, and `push` still inlines.** At
-`3d5f69c`, a release build with debug information of each tree, pinned flags,
+`1ce5aee`, a release build with debug information of each tree, pinned flags,
 `dumpbin -disasm`: one function label `ns_runtime::vm::run` in each and no
 `vm::run::closure`. The base has **6,741 instructions** and the head
 **6,603**. `Mutator::push` has no label in either build: it is inlined into
@@ -5886,7 +5886,7 @@ five sites, so the path below the limit is the one compare it was. Other
 sizes that moved: `push_step` from 1,361 to 1,214 instructions, `vm::finish`
 from 606 to 716, `vm::unwind` from 177 to 1,942 (the unwinder's outcome
 handling, with `interpreter::unwind::unwind`, 439, out of line), and
-`Heap::reify` (258) now has a label of its own. At `d7a6680`, after the
+`Heap::reify` (258) now has a label of its own. At `f0fd6ba`, after the
 three fixes above, the same check finds one `ns_runtime::vm::run` label and no
 `vm::run::closure`, `vm::run` at 6,486 instructions, `vm::finish` at 664, and
 `decide_slot_accessor` at 80 with its error, `no_field_for_slot_accessor`
@@ -5911,13 +5911,13 @@ and `KernelNamespace`, previously builtin classes declared inside
 `Kernel.ns` (tags 13, 18, 19 and 29, now retired), moved into that module;
 `Collections` moved too, still answering the kernel's `OrderedCollection`
 for `List`. Combined, the two files grow from `Kernel.ns`'s 587 lines at
-`7c6bdbf` to 553 (`Kernel.ns`) plus 44 (`Platform.ns`), 597 in all — the
+`fd4a5af` to 553 (`Kernel.ns`) plus 44 (`Platform.ns`), 597 in all — the
 module split does not shrink what bootstrap compiles, it adds a second
 `resolve_shipped_module` call and ten lines net.
 
-**Measured 2026-09-27, `054e980` against `7c6bdbf`** (the plan commit Task 1
+**Measured 2026-09-27, `23e1c84` against `fd4a5af`** (the plan commit Task 1
 started from), by the protocol of "What removing the re-entries moved"
-above: `7c6bdbf` built in a throwaway worktree
+above: `fd4a5af` built in a throwaway worktree
 (`git worktree add`, removed afterwards), the head in the current tree, two
 builds of each with `RUSTFLAGS="-C target-feature=+crt-static -C
 llvm-args=-align-all-functions=6"`, the four binaries differing byte for
@@ -5931,7 +5931,7 @@ wall-clock from the parent process (a .NET `Process` under `Measure`-style
 binaries per sitting, five discarded warm-up runs each, the binaries'
 turn order rotated between the two sittings; nothing else running. This
 machine's per-process overhead is higher than the 3.56/4.08 ms recorded
-against `e2bb31e` ("What the core library's move cost" above) — `ns-next
+against `404ece6` ("What the core library's move cost" above) — `ns-next
 --help`, which never compiles a kernel, medians 2.84 ms here — so the
 figures below are not comparable to that entry's across machines, only to
 each other.
@@ -5940,11 +5940,11 @@ each other.
 |---|---|---|---|---|
 | Head, build a | 5.288 | 5.353 | 5.282 | 5.333 |
 | Head, build b | 5.305 | 5.370 | 5.274 | 5.329 |
-| `7c6bdbf`, build a | 5.288 | 5.327 | 5.285 | 5.334 |
-| `7c6bdbf`, build b | 5.291 | 5.329 | 5.315 | 5.348 |
+| `fd4a5af`, build a | 5.288 | 5.327 | 5.285 | 5.334 |
+| `fd4a5af`, build b | 5.291 | 5.329 | 5.315 | 5.348 |
 
 Pooled across both builds and both sittings (n = 800 runs a side): head mean
-**5.346 ms**, `7c6bdbf` mean **5.335 ms** — +0.011 ms, +0.2%, inside the
+**5.346 ms**, `fd4a5af` mean **5.335 ms** — +0.011 ms, +0.2%, inside the
 p10–p90 spread of every single group (about 0.45–0.5 ms wide). **No
 measurable start-up cost**: the ten extra lines the module split adds are
 far below what this protocol resolves, consistent with the line count
@@ -5958,7 +5958,7 @@ Means of the five rounds:
 
 Sitting 1:
 
-| Source | Head, build a | Head, build b | `7c6bdbf`, build a | `7c6bdbf`, build b |
+| Source | Head, build a | Head, build b | `fd4a5af`, build a | `fd4a5af`, build b |
 |---|---|---|---|---|
 | `bench_loop.ns` | 5.1305 | 5.1530 | 5.1257 | 5.1060 |
 | `bench_send.ns` | 6.8934 | 6.8777 | 6.5611 | 6.5898 |
@@ -5967,7 +5967,7 @@ Sitting 1:
 
 Sitting 2:
 
-| Source | Head, build a | Head, build b | `7c6bdbf`, build a | `7c6bdbf`, build b |
+| Source | Head, build a | Head, build b | `fd4a5af`, build a | `fd4a5af`, build b |
 |---|---|---|---|---|
 | `bench_loop.ns` | 5.1344 | 5.1392 | 5.1487 | 5.1424 |
 | `bench_send.ns` | 6.9355 | 6.9221 | 6.6847 | 6.5828 |
@@ -5975,13 +5975,13 @@ Sitting 2:
 | `bench_megamorphic.ns` | 9.4002 | 9.4250 | 9.4048 | 9.3723 |
 
 Both sittings pooled (n = 20 rounds a side), means in ms, and whether every
-round of the head lies outside every round of `7c6bdbf`'s, sitting by
+round of the head lies outside every round of `fd4a5af`'s, sitting by
 sitting:
 
-| Source | Head | `7c6bdbf` | Change | Sitting 1 | Sitting 2 |
+| Source | Head | `fd4a5af` | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 5.1393 | 5.1307 | +0.17% | overlapping | overlapping |
-| `bench_send.ns` | 6.9072 | 6.6046 | **+4.6%** | entirely above | overlapping (one `7c6bdbf` round at 7.03) |
+| `bench_send.ns` | 6.9072 | 6.6046 | **+4.6%** | entirely above | overlapping (one `fd4a5af` round at 7.03) |
 | `bench_block.ns` | 14.4719 | 14.1007 | **+2.6%** | entirely above | entirely above |
 | `bench_megamorphic.ns` | 9.4560 | 9.3879 | +0.7% | overlapping | overlapping |
 
@@ -6004,7 +6004,7 @@ A release build with debug information of each tree (the timed build's
 `RUSTFLAGS` plus `CARGO_PROFILE_RELEASE_DEBUG=true`, a separate
 `--target-dir`), then `dumpbin -disasm`: one `ns_runtime::vm::run` label in
 each, no `vm::run::closure` — the step did not split the function.
-`7c6bdbf` measures **6,561 instructions**, the head **6,750** — 189 more,
+`fd4a5af` measures **6,561 instructions**, the head **6,750** — 189 more,
 2.9%. `act_with_base` carries no label of its own in either build: like
 every other primitive method's fast path, it is inlined into `vm::run`
 (`docs/design/dispatch.md`, "Primitive methods"), so the one arm
@@ -6021,7 +6021,7 @@ would need one, and is not a case this step's measurement makes on its own.
 #### Recovering it
 
 The fix was tried in three steps, in order, each stopping only if it
-recovered the loss, all measured by the protocol above against `7c6bdbf`:
+recovered the loss, all measured by the protocol above against `fd4a5af`:
 the baseline built in a throwaway worktree outside the repository (`git
 worktree add`, removed afterwards), the candidates from this tree, every
 build with the pinned `RUSTFLAGS` in its own `--target-dir`, every binary
@@ -6029,8 +6029,8 @@ checked to print its fixture's recorded answer and, for the final
 comparison, not to import `VCRUNTIME140.dll`. `ns-next bench <source>
 --iterations 30`, five rounds a sitting, the binaries rotating by one
 position from round to round; each figure is the mean of the rounds'
-medians, in ms. "Head" is the tree before the fix (`2fc5b07`, whose hot path
-is `8212048`'s).
+medians, in ms. "Head" is the tree before the fix (`4a8473f`, whose hot path
+is `99416d4`'s).
 
 1. **(a) The arm's body out of line.** `Mutator::lazy_slot_field`,
    `#[inline(never)]` (not `#[cold]`: every filled read takes it), left a
@@ -6038,7 +6038,7 @@ is `8212048`'s).
    inlined into. Pooled over two sittings (n = 20 base, 10-20 candidate):
    `bench_send.ns` +4.5%, `bench_block.ns` +1.9%, the same as the head's
    +4.5% and +1.9% in the same sittings; `bench_send.ns` entirely above
-   `7c6bdbf` in both.
+   `fd4a5af` in both.
 2. **(b) The slot base off the activation as well.** `push_step` matched on
    `method.fast_path` on every method push to give a lazy getter its
    defining application's `own_slot_base`; the activation's `slot_base`
@@ -6062,12 +6062,12 @@ is `8212048`'s).
    A read of a filled lazy slot now costs an activation; an ordinary send
    costs nothing for the feature.
 
-**(c), measured 2026-09-27 against `7c6bdbf`**, three builds of each tree,
+**(c), measured 2026-09-27 against `fd4a5af`**, three builds of each tree,
 two sittings. Means of the five rounds:
 
 Sitting 1:
 
-| Source | `7c6bdbf` a | `7c6bdbf` b | `7c6bdbf` c | (c) a | (c) b | (c) c |
+| Source | `fd4a5af` a | `fd4a5af` b | `fd4a5af` c | (c) a | (c) b | (c) c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.1604 | 5.0940 | 5.1340 | 5.1208 | 5.0937 | 5.1083 |
 | `bench_send.ns` | 6.5869 | 6.5671 | 6.6040 | 6.5123 | 6.6111 | 6.5309 |
@@ -6076,7 +6076,7 @@ Sitting 1:
 
 Sitting 2:
 
-| Source | `7c6bdbf` a | `7c6bdbf` b | `7c6bdbf` c | (c) a | (c) b | (c) c |
+| Source | `fd4a5af` a | `fd4a5af` b | `fd4a5af` c | (c) a | (c) b | (c) c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.1844 | 5.1355 | 5.0598 | 5.1111 | 5.1841 | 5.0750 |
 | `bench_send.ns` | 6.6278 | 6.5537 | 6.6398 | 6.5408 | 6.5348 | 6.5835 |
@@ -6085,7 +6085,7 @@ Sitting 2:
 
 Both sittings pooled (n = 30 rounds a side):
 
-| Source | (c) | `7c6bdbf` | Change | Sitting 1 | Sitting 2 |
+| Source | (c) | `fd4a5af` | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 5.1155 | 5.1280 | -0.24% | overlapping | overlapping |
 | `bench_send.ns` | 6.5522 | 6.5966 | -0.67% | overlapping | overlapping |
@@ -6093,21 +6093,21 @@ Both sittings pooled (n = 30 rounds a side):
 | `bench_megamorphic.ns` | 9.4200 | 9.4021 | +0.19% | overlapping | overlapping |
 
 A third sitting that ran all four trees side by side (two builds each,
-n = 10) agrees: `7c6bdbf` 6.6100 / 14.1607, the head +4.2% / +2.2%, (b)
+n = 10) agrees: `fd4a5af` 6.6100 / 14.1607, the head +4.2% / +2.2%, (b)
 +3.5% / +1.4%, (c) -0.8% / +0.5% on `bench_send.ns` / `bench_block.ns`.
 **The regression is gone**: every fixture is within its own spread of
-`7c6bdbf`, and no comparison lies entirely on one side in either sitting.
+`fd4a5af`, and no comparison lies entirely on one side in either sitting.
 `bench_block.ns`'s largest single round, 15.14 for one (c) build, is the
 kind of build-to-build outlier the protocol's pooling exists for.
 
 `dumpbin /disasm` of a release build with debug information: one
 `ns_runtime::vm::run` label, no `vm::run::closure`, and no
 `act_with_base` label of its own; **6,691 instructions**, against 6,561 at
-`7c6bdbf` and 6,750 at the head. The 130 over `7c6bdbf` are the
+`fd4a5af` and 6,750 at the head. The 130 over `fd4a5af` are the
 `ReturnSlotIfFilled` arm, which no ordinary send runs, and the ~55 the
 diagnostic build above still showed without the `LazySlot` arm -- an
 instruction count, then, is not what these fixtures measure: (b) was
-larger than the head and no slower, (c) larger than `7c6bdbf` and level. What
+larger than the head and no slower, (c) larger than `fd4a5af` and level. What
 they measure is the send sites' shape, which (c) restored.
 
 ### What the collections module cost
@@ -6132,9 +6132,9 @@ search collecting into an `Array`) and `PlatformFactory.ns` from 83 to 87:
 754 lines of shipped source against 636. Nothing on a send's path changed.
 The last measurement is of the boot that builds the whole shipped world.
 
-**Start-up, measured 2026-09-28, `816367e` against `6d9974b`** (the commit
+**Start-up, measured 2026-09-28, `1a860d9` against `da103f5`** (the commit
 before the plan's first), by the protocol of "What removing the re-entries
-moved" above, with a third tree beside them: `ee4bdc8`, the plan's last
+moved" above, with a third tree beside them: `44b9fce`, the plan's last
 commit before `interpreter/core_library.rs` resolved each shipped module on
 its first request, when a boot resolved the whole table. Both older trees
 were built in throwaway worktrees under the git-ignored `.temp/` (`git
@@ -6148,7 +6148,7 @@ to exit status 0 first.
 `Process` under a `Stopwatch`, not through a shell): `startup_zero.ns`,
 whose `main:args:` answers `0` at once, the source "What the platform module
 cost" measured; and `startup_list.ns`, which sends `platform collections
-List new` once and then answers `0` -- at `6d9974b` that answers the builtin
+List new` once and then answers `0` -- at `da103f5` that answers the builtin
 `OrderedCollection`, so the same source runs on every tree and measures what
 building the collections module on first use costs. Three interleaved
 sittings: one run of each of the eighteen binary-and-source pairs per round,
@@ -6160,7 +6160,7 @@ process start -- so the figures compare with each other only.
 
 Means per build over the three sittings, in ms:
 
-| Source | Head a | Head b | Head c | `ee4bdc8` a | `ee4bdc8` b | `ee4bdc8` c | `6d9974b` a | `6d9974b` b | `6d9974b` c |
+| Source | Head a | Head b | Head c | `44b9fce` a | `44b9fce` b | `44b9fce` c | `da103f5` a | `da103f5` b | `da103f5` c |
 |---|---|---|---|---|---|---|---|---|---|
 | `startup_zero.ns` | 13.277 | 13.273 | 13.313 | 13.404 | 13.375 | 13.340 | 13.279 | 13.253 | 13.252 |
 | `startup_list.ns` | 13.500 | 13.480 | 13.492 | 13.518 | 13.514 | 13.543 | 13.221 | 13.205 | 13.210 |
@@ -6168,20 +6168,20 @@ Means per build over the three sittings, in ms:
 Pooled over the three builds (n = 1,800 runs a tree), in ms, with the
 median and the p10–p90 range of the pooled runs:
 
-| Source | Tree | Mean | Median | p10–p90 | Against `6d9974b` |
+| Source | Tree | Mean | Median | p10–p90 | Against `da103f5` |
 |---|---|---|---|---|---|
 | `startup_zero.ns` | head | 13.288 | 13.191 | 12.763–13.907 | +0.03 ms, +0.2% |
-| | `ee4bdc8` | 13.373 | 13.283 | 12.839–14.003 | +0.11 ms, +0.8% |
-| | `6d9974b` | 13.262 | 13.164 | 12.732–13.891 | |
+| | `44b9fce` | 13.373 | 13.283 | 12.839–14.003 | +0.11 ms, +0.8% |
+| | `da103f5` | 13.262 | 13.164 | 12.732–13.891 | |
 | `startup_list.ns` | head | 13.491 | 13.401 | 12.992–14.123 | +0.28 ms, +2.1% |
-| | `ee4bdc8` | 13.525 | 13.428 | 13.002–14.149 | +0.31 ms, +2.4% |
-| | `6d9974b` | 13.212 | 13.122 | 12.705–13.858 | |
+| | `44b9fce` | 13.525 | 13.428 | 13.002–14.149 | +0.31 ms, +2.4% |
+| | `da103f5` | 13.212 | 13.122 | 12.705–13.858 | |
 
 **Under plan 2, a start that never sent `platform collections` cost what it
 did before the module existed; the first `platform collections` cost about
-0.28 ms.** The head's `startup_zero.ns` is level with `6d9974b`'s: its builds' means lie
-among `6d9974b`'s (13.27–13.31 against 13.25–13.28), a difference of 0.03 ms
-where one build's p10–p90 range is over 1 ms wide. `ee4bdc8`'s lay above
+0.28 ms.** The head's `startup_zero.ns` is level with `da103f5`'s: its builds' means lie
+among `da103f5`'s (13.27–13.31 against 13.25–13.28), a difference of 0.03 ms
+where one build's p10–p90 range is over 1 ms wide. `44b9fce`'s lay above
 both in every sitting, every one of its builds above every head build, by
 0.085 ms pooled: that is what resolving `CollectionsFactory.ns`'s 99 lines
 at every boot cost, and resolving each shipped module on its first request
@@ -6189,16 +6189,16 @@ at every boot cost, and resolving each shipped module on its first request
 table entry) is what removed it then; a boot from source today asks for
 `PlatformFactory`'s entry alone, and for another only on its module's first
 demand.
-The 15 lines `Kernel.ns` grew by do not show. `startup_list.ns` is where the work went: the head and `ee4bdc8` are
+The 15 lines `Kernel.ns` grew by do not show. `startup_list.ns` is where the work went: the head and `44b9fce` are
 level there (-0.03 ms), since both resolve the module by the time the
-program ends, and both lie 0.28–0.31 ms above `6d9974b`, whose `List` was a
+program ends, and both lie 0.28–0.31 ms above `da103f5`, whose `List` was a
 builtin class that was there anyway. That first-use cost was what plan 2
 expected to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
 building its root class, and instantiating it and its facet.
 
-**The four `benchmarks/micro/` fixtures, measured 2026-09-28, `f9d953a`
-against `6d9974b`**, three builds of each by the same protocol; what the
-branch changed after `f9d953a` runs only at boot and on the first request
+**The four `benchmarks/micro/` fixtures, measured 2026-09-28, `f6ac1d4`
+against `da103f5`**, three builds of each by the same protocol; what the
+branch changed after `f6ac1d4` runs only at boot and on the first request
 for a shipped module, never inside a timed loop. `ns-next bench <source>
 --iterations 30`, five rounds a sitting, the six binaries rotating by one
 position from round to round, two sittings, nothing else of this work
@@ -6207,7 +6207,7 @@ rounds' medians:
 
 Sitting 1:
 
-| Source | `6d9974b` a | `6d9974b` b | `6d9974b` c | Head a | Head b | Head c |
+| Source | `da103f5` a | `da103f5` b | `da103f5` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0054 | 4.9705 | 4.9458 | 4.9758 | 5.0059 | 4.9711 |
 | `bench_send.ns` | 6.4439 | 6.4290 | 6.3627 | 6.4214 | 6.4699 | 6.3869 |
@@ -6216,7 +6216,7 @@ Sitting 1:
 
 Sitting 2:
 
-| Source | `6d9974b` a | `6d9974b` b | `6d9974b` c | Head a | Head b | Head c |
+| Source | `da103f5` a | `da103f5` b | `da103f5` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0197 | 5.0049 | 5.0035 | 5.0135 | 5.0097 | 5.0304 |
 | `bench_send.ns` | 6.4133 | 6.4194 | 6.3839 | 6.4107 | 6.4782 | 6.4264 |
@@ -6224,17 +6224,17 @@ Sitting 2:
 | `bench_megamorphic.ns` | 9.1510 | 9.0505 | 9.0947 | 9.1189 | 9.1161 | 9.1089 |
 
 Both sittings pooled (n = 30 rounds a side), means in ms, and whether every
-round of the head lies outside every round of `6d9974b`'s, sitting by
+round of the head lies outside every round of `da103f5`'s, sitting by
 sitting:
 
-| Source | Head | `6d9974b` | Change | Sitting 1 | Sitting 2 |
+| Source | Head | `da103f5` | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0011 | 4.9917 | +0.19% | overlapping | overlapping |
 | `bench_send.ns` | 6.4323 | 6.4087 | +0.37% | overlapping | overlapping |
 | `bench_block.ns` | 13.8980 | 13.9250 | -0.19% | overlapping | overlapping |
 | `bench_megamorphic.ns` | 9.1151 | 9.0719 | +0.48% | overlapping | overlapping |
 
-**All four fixtures are level with `6d9974b`**, as they should be: none
+**All four fixtures are level with `da103f5`**, as they should be: none
 sends a collection message in its timed loop, and nothing on a send's path
 changed. `bench_block.ns`'s largest round, 14.80 for one head build, is the
 build-to-build outlier kind the pooling is for.
@@ -6244,39 +6244,39 @@ workstation (Windows 11): `ns-next run` of a source whose `main:args:`
 shows `hello` on the transcript, release builds without the pinned
 `RUSTFLAGS`, each sample 50 runs timed by PowerShell's `Measure-Command`
 with the output discarded, its median taken; the three binaries were
-sampled in turn, three rounds. Three trees: `e2e1695`, before the boot
-built any shipped module but `PlatformFactory`; `1ff9a33`, whose boot
+sampled in turn, three rounds. Three trees: `77dec01`, before the boot
+built any shipped module but `PlatformFactory`; `c0e6bf5`, whose boot
 compiles and instantiates `PlatformFactory` and `CollectionsFactory` and
-builds only the classes a run asks for; and `2d35951`, whose boot then
+builds only the classes a run asks for; and `0041c92`, whose boot then
 builds every class the three roots declare and records each shipped
 object under its name (`complete_shipped_world`), as every tree did until
 the shipped modules were built on first demand ("What the precompiled
 shipped code moved" below). Medians in ms:
 
-| Round | `e2e1695` | `1ff9a33` | `2d35951` |
+| Round | `77dec01` | `c0e6bf5` | `0041c92` |
 |---|---|---|---|
 | 1 | 12.54 | 16.24 | 16.10 |
 | 2 | 12.28 | 15.92 | 16.07 |
 | 3 | 12.06 | 15.86 | 15.72 |
 
-A first sample of `1ff9a33` alone, before `2d35951` existed, gave 16.11 and
-16.06 ms, and two more of `2d35951` against `1ff9a33` 15.94 against 16.17
+A first sample of `c0e6bf5` alone, before `0041c92` existed, gave 16.11 and
+16.06 ms, and two more of `0041c92` against `c0e6bf5` 15.94 against 16.17
 and 16.06 against 15.87 ms. **Building every shipped class and naming the
-world does not show**: `2d35951` and `1ff9a33` lie within each other's
+world does not show**: `0041c92` and `c0e6bf5` lie within each other's
 round-to-round spread of some 0.3 ms. **Building `CollectionsFactory` at
-every boot costs about 3.7 ms**, `1ff9a33` against `e2e1695`: parsing,
+every boot costs about 3.7 ms**, `c0e6bf5` against `77dec01`: parsing,
 resolving and compiling its 1,710 lines of source, against the 0.28 ms plan
 2 measured for its first use when it had 99: a hello program's median
 start went from about 12.3 ms to about 16.0 ms. The per-process overhead of
 this machine is high (above), so the figures compare with each other only.
 
 **The kernel's fifth sub-project added about 4.6 ms more** (measured
-2026-10-13, at `1906a81d` against `b9149044`, release builds, the same
+2026-10-13, at `3d6c6c4c` against `8749f40e`, release builds, the same
 hello program): `ByteArray`, `StringBuilder`, the typed arrays and
 `DataView` grew `Kernel.ns` from 4,089 lines to 6,586, all of it compiled
 at every boot, and the median start went from about 15.4 ms to about
 20.1 ms ([core-library.md](core-library.md), "`ByteArray`,
-`StringBuilder` and the views"). `cc2aaebe`, after it, added 53 lines
+`StringBuilder` and the views"). `faa9447a`, after it, added 53 lines
 of `StringBuilder` state checks, unmeasured.
 
 The embedded shipped code took the cost back ("What the precompiled
@@ -6295,12 +6295,12 @@ been; the second builds only `Kernel` and `PlatformFactory` at boot and every
 other module on its first demand (`core-library.md`, "The module table and the
 boot").
 
-**The first stage, measured 2026-10-14, `eb2716b8` against `f60f6782`**, the
+**The first stage, measured 2026-10-14, `45ed7874` against `360a36bd`**, the
 first stage's head against the head of `master`, at which the start-up was
 measured the same day before the branch began, on the same machine, the
 measuring workstation (Windows 11). Both are release builds with the pinned
 `RUSTFLAGS` of the protocol above, each in its own target directory,
-`f60f6782` in a throwaway worktree under `.temp/`; the branch's artifact was
+`360a36bd` in a throwaway worktree under `.temp/`; the branch's artifact was
 generated first, and the temporary marks (below) show its decode phases where
 `master`'s show parse, resolve and compile, which confirms the artifact is
 used. One build per side: the effect is a boot of some 13.6 ms against some
@@ -6314,7 +6314,7 @@ cost a few microseconds each. 30 runs, the median per label; the whole process
 is 40 runs of the same binaries with the marks switched off, timed from
 outside.
 
-| Module | Parse | Resolve | Compile | Class and instance | Sum, `f60f6782` | Decode | Class and instance | Sum, `eb2716b8` |
+| Module | Parse | Resolve | Compile | Class and instance | Sum, `360a36bd` | Decode | Class and instance | Sum, `45ed7874` |
 |---|---|---|---|---|---|---|---|---|
 | `Kernel` | 3.44 | 0.67 | 4.51 | 0.17 | 8.9 ms | 0.90 | 0.08 | 0.98 ms |
 | `CollectionsFactory` | 0.93 | 0.20 | 1.57 | 0.02 | 2.7 ms | 0.27 | 0.01 | 0.29 ms |
@@ -6324,13 +6324,13 @@ outside.
 | **The boot** | | | | | **13.6 ms** | | | **1.6 ms** |
 
 The module sums include a few microseconds of set-up between marks (0.1 ms for
-the kernel's). The baseline repeats the measurement of `f60f6782` made earlier
+the kernel's). The baseline repeats the measurement of `360a36bd` made earlier
 the same day, on the same machine, with the same marks: parsing 5.26 ms,
 resolving 0.98 ms, compiling 6.98 ms, building classes, instantiating,
 `complete_shipped_world` and the platform 0.33 ms, the boot 13.7 ms; the whole
 process 20.0 ms, `ns-next --version` 2.5 ms.
 
-| Process | `f60f6782` | `eb2716b8` |
+| Process | `360a36bd` | `45ed7874` |
 |---|---|---|
 | The boot, summed medians of the marks | 13.6 ms | 1.6 ms |
 | `ns-next run` of the hello, median of 40 | 20.8 ms | 5.2 ms |
@@ -6363,10 +6363,10 @@ for all of it in every process, whatever the program uses, where a boot on
 demand pays for the kernel, the platform and what the program reaches. The
 kernel's decode, 0.9 ms, is no candidate: it is always needed.
 
-**The second stage, measured 2026-10-15, `e178ac5c` against `740adb25`**, the
+**The second stage, measured 2026-10-15, `b5a426ee` against `40f22699`**, the
 head that builds on demand against the head before its first commit, on the
 measuring workstation (Windows 11), by the first stage's method: release
-builds with the pinned `RUSTFLAGS`, one per side, `740adb25` in a throwaway
+builds with the pinned `RUSTFLAGS`, one per side, `40f22699` in a throwaway
 worktree under `.temp/`, each after `cargo xtask shipped-code` and its
 `--check` saying the artifact is current. Two programs: the hello, and one
 whose `main:args:` sends `platform collections List new` once before showing
@@ -6383,14 +6383,14 @@ binaries with the marks switched off, interleaved, timed from outside
 (Python's `subprocess.run` under `time.perf_counter`).
 
 The eager boot measures 1.77 ms here and 1.6 ms in the first stage although
-the code it boots is the same -- `eb2716b8` to `740adb25` changed only
+the code it boots is the same -- `45ed7874` to `40f22699` changed only
 comments under `crates/`. The two figures are taken differently: the first
 stage's is a sum of per-step medians, which leaves out the set-up between its
 marks, and this one is the median of one span from `bootstrap_with`'s start to
 the boot's end, from another build on another day. Each compares only within
 its own measurement.
 
-| Span, median, ms | Hello, `740adb25` | Hello, `e178ac5c` | `List new`, `740adb25` | `List new`, `e178ac5c` |
+| Span, median, ms | Hello, `40f22699` | Hello, `b5a426ee` | `List new`, `40f22699` | `List new`, `b5a426ee` |
 |---|---|---|---|---|
 | The kernel phase (its decode) | 1.08 (0.88) | 1.08 (0.88) | 1.05 (0.86) | 1.03 (0.83) |
 | The shipped-module phase | 0.68 | 0.15 | 0.68 | 0.15 |
@@ -6415,7 +6415,7 @@ for 0.04 ms.
 
 **A first demand of `CollectionsFactory` costs 0.31 ms, almost all of it the
 module's decode (0.29 ms)**, and the run after the boot of the `List new`
-program takes 0.35 ms longer than at `740adb25`, where the module was already
+program takes 0.35 ms longer than at `40f22699`, where the module was already
 built: the demand, the transcript's and the `List` class. Its whole process is
 still 0.27 ms shorter than before, since it never builds `TimeFactory` or
 `TypedArraysFactory`. This measurement took one build per side, two programs
@@ -6450,7 +6450,7 @@ refusal is one call too (`initialize_slot_refused`); each reads its
 instruction back rather than passing its operands. Neither is marked
 `#[cold]`: that measured slower (below).
 
-**Measured 2026-09-28, `b0edda5` against `0b1f474`** (the plan commit
+**Measured 2026-09-28, `e53282e` against `df2ab76`** (the plan commit
 before Task 1), by the protocol of "What removing the re-entries moved":
 three release builds of each with the pinned `RUSTFLAGS`, the second and
 third adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
@@ -6462,7 +6462,7 @@ five rounds' medians, in ms:
 
 Sitting 1:
 
-| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+| Source | `df2ab76` a | `df2ab76` b | `df2ab76` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.2492 | 5.0058 | 5.2723 | 5.0955 | 5.0963 | 5.0526 |
 | `bench_send.ns` | 6.4715 | 6.5001 | 6.4662 | 6.4657 | 6.4646 | 6.6394 |
@@ -6471,7 +6471,7 @@ Sitting 1:
 
 Sitting 2:
 
-| Source | `0b1f474` a | `0b1f474` b | `0b1f474` c | Head a | Head b | Head c |
+| Source | `df2ab76` a | `df2ab76` b | `df2ab76` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0241 | 5.0530 | 5.0411 | 5.0489 | 5.0393 | 5.0936 |
 | `bench_send.ns` | 6.4690 | 6.5186 | 6.4848 | 6.5131 | 6.4569 | 6.4525 |
@@ -6479,10 +6479,10 @@ Sitting 2:
 | `bench_megamorphic.ns` | 9.1352 | 9.1699 | 9.1412 | 9.5171 | 9.5157 | 9.5463 |
 
 Both sittings pooled (n = 30 rounds a side), in ms, and whether every
-round of the head lies outside every round of `0b1f474`'s, sitting by
+round of the head lies outside every round of `df2ab76`'s, sitting by
 sitting:
 
-| Source | Head mean | `0b1f474` mean | Change | Head median | `0b1f474` median | Change | Sitting 1 | Sitting 2 |
+| Source | Head mean | `df2ab76` mean | Change | Head median | `df2ab76` median | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0710 | 5.1076 | -0.72% | 5.0818 | 5.0386 | +0.86% | overlapping | overlapping |
 | `bench_send.ns` | 6.4987 | 6.4850 | +0.21% | 6.4640 | 6.4813 | -0.27% | overlapping | overlapping |
@@ -6493,12 +6493,12 @@ sitting:
 `dumpbin /disasm` of a release build with debug information
 (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the same pinned flags): one
 `ns_runtime::vm::run` label, no `vm::run::closure`; **7,083 instructions
-against 6,983** at `0b1f474`. `builtins::execute` is one function again,
+against 6,983** at `df2ab76`. `builtins::execute` is one function again,
 6,240 instructions against 5,964 (the equality leaves' decline test);
 `vm::finish` 1,047 against 679.
 
 **What the remaining 4% is.** Each variant below is three builds by the
-same protocol, measured in one sitting beside `0b1f474`'s three (means
+same protocol, measured in one sitting beside `df2ab76`'s three (means
 against it; the head's own sittings above are the reference):
 
 | Variant | loop | send | block | megamorphic |
@@ -6510,7 +6510,7 @@ against it; the head's own sittings above are the reference):
 | the head, its arm calling and discarding the answer (not a working build) | -0.58% | +1.24% | +1.08% | +3.04% |
 | the head with every jump target aligned to 64 bytes (`-align-all-nofallthru-blocks=6` on both sides) | +1.85% | +0.38% | -0.54% | +4.23% |
 | `InitializeSlot` and the four instructions in one arm, one call | +2.48% | +1.57% | +2.61% | +5.71% |
-| `0b1f474` with an unused function added to `vm.rs` | +0.55% | -0.56% | +0.30% | -0.16% |
+| `df2ab76` with an unused function added to `vm.rs` | +0.55% | -0.56% | +0.30% | -0.16% |
 
 Every other part of the change -- the leaves, the callers' failure paths,
 `InitializeSlot`'s refusal call, `vm::finish` -- is present in the
@@ -6524,7 +6524,7 @@ of `SendLexical`'s and `SendPublic`'s arms move from 0x3e3 and 0x51d to
 0xc66 and 0x12a3), and the register assignment with it. An `xperf` profile
 (0.12 ms sampling, 300 runs of the fixture a binary) puts the difference
 inside `vm::run` (19,022 samples against 18,362 for the "calling nothing"
-build and 18,258 for `0b1f474`) and in `decide_slot_accessor` (775 against
+build and 18,258 for `df2ab76`) and in `decide_slot_accessor` (775 against
 516 and 652). In the slower build the block that tests the `Flow` a send
 answered -- read back from the stack, where every send writes it -- is a
 chain of compares that tests `Next` last, where the faster one tests
@@ -6532,14 +6532,14 @@ chain of compares that tests `Next` last, where the faster one tests
 `Next`. Why one more calling arm moves that block, and how to keep it in
 place -- a `Flow` answered in registers, for one -- was open until the loop
 over locals took the `Flow` away: `bench_megamorphic.ns` is now about 20%
-faster than at `5fbb2cb`, the merge of simultaneous slots ("What the loop
+faster than at `9900212`, the merge of simultaneous slots ("What the loop
 over locals moved" below).
 
 ### What the loop over locals moved
 
-"The loop over locals" was measured whole against `5fbb2cb`, the merge of
+"The loop over locals" was measured whole against `9900212`, the merge of
 simultaneous slots and the last commit before its plan, on 2026-09-28, at
-`3e515b9`, by the protocol of "What removing the re-entries moved": three
+`a162da1`, by the protocol of "What removing the re-entries moved": three
 release builds of each with the pinned `RUSTFLAGS`, the second and third
 adding `-C metadata=buildb` and `-C metadata=buildc`, each in its own
 `--target-dir`; both trees exported with `git archive` under the
@@ -6551,7 +6551,7 @@ in ms:
 
 Sitting 1:
 
-| Source | `5fbb2cb` a | `5fbb2cb` b | `5fbb2cb` c | Head a | Head b | Head c |
+| Source | `9900212` a | `9900212` b | `9900212` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 5.0576 | 5.0800 | 5.0696 | 3.5653 | 4.0068 | 4.0245 |
 | `bench_send.ns` | 6.5027 | 6.4392 | 6.4183 | 4.9869 | 4.9614 | 5.0141 |
@@ -6560,7 +6560,7 @@ Sitting 1:
 
 Sitting 2:
 
-| Source | `5fbb2cb` a | `5fbb2cb` b | `5fbb2cb` c | Head a | Head b | Head c |
+| Source | `9900212` a | `9900212` b | `9900212` c | Head a | Head b | Head c |
 |---|---|---|---|---|---|---|
 | `bench_loop.ns` | 4.9839 | 5.0315 | 4.9765 | 3.5303 | 3.5666 | 3.6663 |
 | `bench_send.ns` | 6.4298 | 6.3690 | 6.4750 | 5.0443 | 4.9505 | 4.9946 |
@@ -6568,10 +6568,10 @@ Sitting 2:
 | `bench_megamorphic.ns` | 9.5640 | 9.4803 | 9.4788 | 7.5022 | 7.5181 | 7.6583 |
 
 Both sittings pooled (n = 30 rounds a side), in ms, and whether every
-round of the head lies outside every round of `5fbb2cb`'s, sitting by
+round of the head lies outside every round of `9900212`'s, sitting by
 sitting:
 
-| Source | Head mean | `5fbb2cb` mean | Change | Head median | `5fbb2cb` median | Change | Sitting 1 | Sitting 2 |
+| Source | Head mean | `9900212` mean | Change | Head median | `9900212` median | Change | Sitting 1 | Sitting 2 |
 |---|---|---|---|---|---|---|---|---|
 | `bench_loop.ns` | 3.7266 | 5.0332 | -25.96% | 3.5401 | 5.0368 | -29.72% | overlapping | separated |
 | `bench_send.ns` | 4.9919 | 6.4390 | -22.47% | 4.9583 | 6.4631 | -23.28% | separated | separated |
@@ -6580,7 +6580,7 @@ sitting:
 
 **All four fixtures are faster, by 13–30%.** `bench_loop.ns`'s one
 overlapping sitting is two rounds, one of head b and one of head c, at 5.94
-and 5.96 ms, above every round of `5fbb2cb`; its other 28 rounds lie between
+and 5.96 ms, above every round of `9900212`; its other 28 rounds lie between
 3.49 and 3.78 ms, and thirty further runs of the three head builds, ten
 each, measured 3.47 to 3.75 ms, none near 5.9 -- an event of the machine,
 not a mode of the build, and the reason the median is the better figure for
@@ -6591,7 +6591,7 @@ slots cost" left open and gains another 16%.
 (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the same pinned flags): one
 `ns_runtime::vm::run` label, no `vm::run::closure` and no `run_stretch` --
 the stretch and every helper it forces inline are in `run`; **7,143
-instructions against 7,083** at `5fbb2cb`. Its stack frame grows from
+instructions against 7,083** at `9900212`. Its stack frame grows from
 0x378 to 0x3e8 bytes. `vm::finish` is 1,686 instructions against 1,552,
 `vm::unwind` 2,157 against 2,127, and `Handoff`'s drop glue, 73
 instructions, is a function of its own.
@@ -6686,7 +6686,7 @@ the compact instruction encoding moved".
 ### What frames as words moved
 
 Road step 7a ("Representation" above) was measured whole against `master`
-(`d135623a`, the tree before it) at `9c11b943` on 2026-10-24, by the
+(`c0527ec9`, the tree before it) at `1e8bffeb` on 2026-10-24, by the
 protocol of "What suspending and resuming moved" below with one
 extension: `master` exported with `git archive` under the git-ignored
 `.temp/`, the branch exported afresh, `cargo xtask shipped-code` in each
@@ -6771,7 +6771,7 @@ program is level or faster as above. Under that protocol the rule would
 fail on those two; it is the extended one that decides, since the other
 samples a single layout of the run loop.
 
-Not every gain is the frames'. `ce7cdd31` and `9c11b943` changed
+Not every gain is the frames'. `474b2993` and `1e8bffeb` changed
 `ns-memory`'s `prefix` and `accessible` -- one comparison to lend the
 committed prefix, its end kept in words -- and every object access in the
 object space goes through them as every stack word does; the measurement
@@ -6790,7 +6790,7 @@ exceptions in its inner loop.
 ### What suspending and resuming moved
 
 Road step 7b ("Suspending and resuming" above) was measured whole against
-`master` (`637db0bb`, the tree before it) at `b454d37c` on 2026-10-24, by
+`master` (`2bc07038`, the tree before it) at `c3835aeb` on 2026-10-24, by
 the protocol of "What `new` as compiled code moved" below: `master` checked
 out under the git-ignored `.temp/`, `cargo xtask shipped-code` in each tree
 before its builds, three release builds a side with the pinned `RUSTFLAGS`,
@@ -6846,7 +6846,7 @@ The first stage of road step 7a′ ("Overlapping register windows"
 below) -- a send's arguments in contiguous slots or read in place from
 consecutive sources, decisions reading them through an argument window, the
 argument buffer gone, the push copying once -- was measured whole against
-`master` (`3a67072f`, the tree before it) at `95d421a8` on 2026-10-25, by
+`master` (`487793c0`, the tree before it) at `d961093a` on 2026-10-25, by
 the protocol of "What frames as words moved" above: `master` checked out
 and the branch exported with `git archive` under the git-ignored `.temp/`,
 `cargo xtask
@@ -6966,7 +6966,7 @@ records without the header's numbers, and the decoder's checks -- was
 measured against the first by the protocol of "What contiguous arguments
 moved" above, on 2026-10-25, in three rounds.
 
-**As first built (`0037350d`), every program but `bench_loop.ns` was
+**As first built (`ff139fb3`), every program but `bench_loop.ns` was
 slower than the first stage with its builds separated**, by up to +19.2%
 (`bench_new.ns` +18.8%, `bench_send.ns` +12.7%, Richards +12.2%). What
 it taught, as reasons the current design stands on:
@@ -6994,7 +6994,7 @@ it taught, as reasons the current design stands on:
   with it, "stage 1 + forget" below.
 
 With those, and the caller word packing the top a frame was pushed at so
-that a pop reads no caller header, the second stage (`d7488e20`) was 14 of
+that a pop reads no caller header, the second stage (`152eee66`) was 14 of
 24 programs slower than stage 1 + forget with the builds separated, by
 +1.1% to +2.3%, and faster on none. A return that wrote its value through
 the register base the switch finds, so that it read the flags once, grew
@@ -7007,7 +7007,7 @@ fill goes, replaced by the leftover analysis, rather than the cost being
 accepted or the stage reverted ("What the leftover analysis moved"
 below).
 
-**With the analysis (`f2faa8f4`), against stage 1 + forget**, three builds
+**With the analysis (`3c151532`), against stage 1 + forget**, three builds
 a side, both sittings pooled, in ms; "builds" compares the three build
 means as above:
 
@@ -7055,7 +7055,7 @@ commit of the branch.
 
 **DeltaBlueTon80's gap, diagnosed** (2026-10-26). Profiled with xperf on
 the debug-information twins, 3,000 iterations, builds a and c, the second
-stage at `6ff8890a` against stage 1 + forget: the pushes together were
+stage at `601a4a26` against stage 1 + forget: the pushes together were
 faster (`push_sent` and `push_step` 13,784 samples against stage 1's
 14,481), and three costs were the stage's own:
 
@@ -7067,7 +7067,7 @@ faster (`push_sent` and `push_step` 13,784 samples against stage 1's
   after the divorce check to find the top it was pushed at, and
   `Heap::pop_activation` rose from 2,862 samples to 4,005. A branch on
   the counted flag now keeps the two subtractions apart, and the top is
-  computed from the words the pop read first (`72de5ac0`): 2,782
+  computed from the words the pop read first (`fe4322c1`): 2,782
   samples, below stage 1's.
 - **A setter of an inlined conditional's value paid a `Move`.**
   `direction:: (...) ifTrue: [...] ifFalse: [...]`, in `chooseMethod:`,
@@ -7075,7 +7075,7 @@ faster (`push_sent` and `push_step` 13,784 samples against stage 1's
   which the second stage copies into the slot by a `Move` of its own
   where the first stage's send copied it. The conditional, and
   `and:`/`or:`, now answer in the slot they are lowered into
-  (`ca5ce8b3`; [compiler.md](compiler.md), "Registers"). Over
+  (`8e4ebe37`; [compiler.md](compiler.md), "Registers"). Over
   DeltaBlueTon80's methods the two stages now compile to the same number
   of instructions.
 - **The register base reads the frame's flags on every switch.** The
@@ -7115,19 +7115,19 @@ faster (`push_sent` and `push_step` 13,784 samples against stage 1's
 After the first two, three builds a side, two sittings pooled (n = 12),
 in ms:
 
-| Source | stage 1 + forget | `6ff8890a` | fixed (`ca5ce8b3`) | fixed vs stage 1 + forget | builds |
+| Source | stage 1 + forget | `601a4a26` | fixed (`8e4ebe37`) | fixed vs stage 1 + forget | builds |
 |---|---|---|---|---|---|
 | DeltaBlueTon80 | 6.643 | 6.733 | 6.700 | +0.9% | slower |
 | Mandelbrot | 2698.1 | 2691.6 | 2690.9 | -0.3% | overlapping |
 
-**Mandelbrot's +0.5% did not reproduce**: `6ff8890a` itself measured
+**Mandelbrot's +0.5% did not reproduce**: `601a4a26` itself measured
 -0.2% against stage 1 + forget, builds overlapping. **DeltaBlueTon80's
 remaining +0.9% is the return path**: the flags read of the third point,
 which the frame layout makes, and `vm::finish` and `vm::resume_caller`,
 about 550 and 340-600 samples above stage 1 in both builds profiled,
 their samples on the loads after the pop -- the top it stored, the
 popped continuation ([OPEN-WORK.md](../OPEN-WORK.md), "Unexplained measurements and
-unmeasured decisions"). Against `6ff8890a`, the twenty-four programs,
+unmeasured decisions"). Against `601a4a26`, the twenty-four programs,
 three builds a side, two sittings pooled, measured a geometric mean of
 -0.17% (-0.12% and -0.21% in the sittings), no program slower with its
 builds separated, Queens and Storage faster in the second sitting.
@@ -7144,7 +7144,7 @@ debug build, and every trace of the stack nils them in each frame before
 it traces the frame's words (`Heap::trace_stack`; [memory.md](memory.md),
 "What the collector traces"). That is what lets neither a push nor a pop
 write a scratch register: a push fills only its named locals, a pop
-writes nothing ("Representation" above). The tree before it, `c6a126b3`,
+writes nothing ("Representation" above). The tree before it, `78a17506`,
 filled them in both: a push every register above its header, a pop of a
 callee laid on its sender's slots every word from the callee's header to
 the sender's window end, the fill that kept those words from being traced
@@ -7154,7 +7154,7 @@ it and the pop's 0.9-1.0. The fill also kept image code from reading what
 a callee left, the VM mirror among it; the decoder's refusal is that
 guard now ([image-format.md](image-format.md), "Verification").
 
-It was measured at `f2faa8f4` against `c6a126b3` on 2026-10-25, by the
+It was measured at `3c151532` against `78a17506` on 2026-10-25, by the
 protocol of "What contiguous arguments moved" above: three release builds
 a side, the eight micro sources five rounds a sitting and the sixteen Are
 We Fast Yet programs three, two sittings, every run printing its recorded
@@ -7164,7 +7164,7 @@ in the functions it calls, the pushes, the pop and the collector's walk.
 Means of each build's medians, pooled over both sittings (n = 10 rounds a
 build for the micro sources, 6 for Are We Fast Yet), in ms:
 
-| Source | `c6a126b3` | the analysis | change | `c6a126b3` a, b, c | the analysis a, b, c | builds |
+| Source | `78a17506` | the analysis | change | `78a17506` a, b, c | the analysis a, b, c | builds |
 |---|---|---|---|---|---|---|
 | `bench_block.ns` | 7.235 | 7.156 | -1.1% | 7.225, 7.229, 7.249 | 7.184, 7.163, 7.122 | faster |
 | `bench_loop.ns` | 2.126 | 2.145 | +0.9% | 2.123, 2.113, 2.143 | 2.139, 2.145, 2.150 | overlapping |
@@ -7195,13 +7195,13 @@ build for the micro sources, 6 for Are We Fast Yet), in ms:
 over the twenty-four is -1.34%** (-1.13% in the first sitting, -1.55% in
 the second), **so the analysis is kept**, the rule it was built under.
 Fourteen programs are faster with the builds separated, Towers by 2.8% and
-`bench_send.ns` by 2.5%; ten overlap. Of the two above `c6a126b3`,
+`bench_send.ns` by 2.5%; ten overlap. Of the two above `78a17506`,
 `bench_loop.ns` sends nothing -- an inlined `whileTrue:` over two slots,
 which pushes and pops no frame and collects nothing -- and its three
-functions are `c6a126b3`'s instruction for instruction, at addresses
+functions are `78a17506`'s instruction for instruction, at addresses
 moved by about `0x2840`, and its debug-information twins run it equally
 fast: layout. Against the first stage of road step 7a′ with only the
-value-answered send's step forgotten (`f0bf0d00`, which removes a cost
+value-answered send's step forgotten (`3f39ad70`, which removes a cost
 the first stage has too), the geometric mean is -0.09%.
 
 **The analysis's one cost is in the collector, and only a deep stack
@@ -7209,7 +7209,7 @@ shows it.** A probe that recurses to 99,000 frames and allocates about
 240 MB at the bottom, so that about 30 scavenges each meet the whole
 stack, measured, with three builds a side:
 
-- **+7.9% against `c6a126b3`, builds separated, with a pre-pass of its
+- **+7.9% against `78a17506`, builds separated, with a pre-pass of its
   own** before a linear trace of the stack: it walked the frames twice,
   once to fill the sets not yet kept and once to nil, 10.1% of the run,
   at about 8-10 ns a frame;
@@ -7219,12 +7219,12 @@ stack, measured, with three builds a side:
   What was left was the walk itself: a variant that only read each
   frame's header words and nilled nothing measured the same;
 - **+0.05%, the builds overlapping, with the nilling folded into the
-  stack's trace** (`51f1050e`), which nils each frame and then traces
+  stack's trace** (`11f47914`), which nils each frame and then traces
   it, so that each frame's header lines are loaded once a trace. At 1,000
   and 10 frames the same probe is -0.5% and -1.0%.
 
 The twenty-four programs measured neutral at both steps: a geometric mean
-of +0.00% for the one walk against `f2faa8f4`, and -0.05% for the fold
+of +0.00% for the one walk against `3c151532`, and -0.05% for the fold
 against the one walk, no program slower with its builds separated once
 re-timed. **`Heap::trace_stack` stays out of line** (`#[inline(never)]`,
 one instance per tracer): inlined, it grew `World::scavenge` from 1,528
@@ -7242,7 +7242,7 @@ Under `NS_NEXT_STRESS_SCAVENGE`, which scavenges at nearly every
 safepoint, the walk costs about what the scavenge's own trace of the
 stack does: an optimized build with debug assertions runs a 99,000-frame
 probe that allocates on the way down and up in 127 ms against
-`c6a126b3`'s 88, 1.45x. Only the debug suite's stress runs pay it; a
+`78a17506`'s 88, 1.45x. Only the debug suite's stress runs pay it; a
 release build has no stress mode.
 
 What the measurement did not cover: one machine and operating system, not
@@ -7256,9 +7256,9 @@ checks.
 "`new` as compiled code" (a synthesized factory body, three initializer
 bodies per mixin with the clause messages lowered inline, a body-less
 declaration the mixin application it writes; [object-model.md](object-model.md),
-"Instantiation") was measured whole against `master` (`f613cb49`, the tree
-before it) on 2026-10-23, twice: at `1dc3a7bb`, the head before the
-performance round, and at `9280bd91`, the head after it. The protocol is
+"Instantiation") was measured whole against `master` (`916eb7ad`, the tree
+before it) on 2026-10-23, twice: at `a0b0af45`, the head before the
+performance round, and at `0756df24`, the head after it. The protocol is
 that of "What the loop over locals moved": both trees exported with `git
 archive` under the git-ignored `.temp/`, `cargo xtask shipped-code` in each
 before its builds, three release builds a side with the pinned `RUSTFLAGS`
@@ -7274,7 +7274,7 @@ bench benchmarks/are-we-fast-yet/newspeak --iterations N -- <Name>`, N = 3 for C
 Havlak, Mandelbrot, NBody and DeltaBlue and 10 for the rest, three rounds
 rotating; every run printed `<Name>: ok`.
 
-**The first measurement found `new` slower.** At `1dc3a7bb` (two sittings)
+**The first measurement found `new` slower.** At `a0b0af45` (two sittings)
 all seven micro sources were slower than `master`: `bench_new.ns` +31.0%,
 `bench_new2.ns` +30.1%, `bench_newarg.ns` +11.0%, and the send path
 `bench_block.ns` +5.6%, `bench_loop.ns` +9.5%, `bench_send.ns` +5.5%,
@@ -7352,7 +7352,7 @@ carrying a pushed initializer through a first argument-free
 entry before computing it and building it through `iter::once_with`, no
 gain or slower.
 
-**The final measurement**, `9280bd91` against `master`, one sitting. Means
+**The final measurement**, `0756df24` against `master`, one sitting. Means
 of the five rounds' medians, in ms:
 
 | Source | master a | master b | master c | Head a | Head b | Head c |
@@ -7379,7 +7379,7 @@ Pooled (n = 15 rounds a side), in ms; "Rounds" compares every round,
 | `bench_newarg.ns` | 3.8368 | 4.8044 | -20.14% | 3.8345 | 4.8011 | -20.13% | separated | separated |
 
 **All seven sources are faster than `master`**, every head build mean below
-every master build mean (at `1dc3a7bb`: +3.9% to +31%). Are We Fast Yet,
+every master build mean (at `a0b0af45`: +3.9% to +31%). Are We Fast Yet,
 per build the median of its three values, in ms:
 
 | Benchmark | master a | master b | master c | Head a | Head b | Head c |
@@ -7424,11 +7424,11 @@ the nine values and the three per-build medians separate:
 | Towers | 3.408 | 3.32-3.53 | 3.252 | 3.141-3.336 | -4.6% | no / yes |
 
 **Fifteen of sixteen are faster** with the per-build medians separated, and
-Sieve is level (at `1dc3a7bb`: Bounce, Havlak and Json +4.5% to +5.8%,
+Sieve is level (at `a0b0af45`: Bounce, Havlak and Json +4.5% to +5.8%,
 DeltaBlue and CD +2% to +4.7%). `dumpbin /disasm` of a release build with
 debug information (`CARGO_PROFILE_RELEASE_DEBUG=limited`, the pinned flags):
 one `ns_runtime::vm::run`, no `vm::run::closure` and no `run_stretch`; `vm::run`
-is **8,090 instructions** (8,331 at `1dc3a7bb`, 7,670 at `master`), its stack
+is **8,090 instructions** (8,331 at `a0b0af45`, 7,670 at `master`), its stack
 frame 0x368 bytes as before.
 
 What is still open: the factory's `FrameKind` is written as a byte and a word
@@ -7449,7 +7449,7 @@ cross-check, their speed is unmeasured.
 
 ### What the handler-search leaf moved
 
-**Measured 2026-10-27, `67a10605` against `master` (`31970511`)**, by
+**Measured 2026-10-27, `9d550f6b` against `master` (`0e64df22`)**, by
 the protocol of the `measuring-performance` skill: three release builds a
 side with the pinned alignment, builds a, b and c varying the block
 layout inside `vm::run`, the same three on both sides; five rounds in a
@@ -7501,7 +7501,7 @@ only on a parse error).
 
 ### What Newspeak loop bodies moved
 
-**Measured 2026-10-27, `ab0bff29` against `master` (`be211fe8`)**, by
+**Measured 2026-10-27, `1b0bec1f` against `master` (`757634f9`)**, by
 the protocol of the `measuring-performance` skill: three release builds a
 side with the pinned alignment, builds a, b and c varying the block
 layout inside `vm::run`, the same three on both sides; five rounds in a
@@ -7566,12 +7566,12 @@ recover, by inlining the loop's sends into it (road step 8,
 
 ### What the baseline JIT's foundation moved
 
-**Measured 2026-10-28, `56c6e8ac` against `master` (`5d970d1a`)**, by
+**Measured 2026-10-28, `f5d30c2b` against `master` (`2ed87ba6`)**, by
 the protocol of the `measuring-performance` skill: three release builds a
 side with the pinned alignment, builds a, b and c varying the block
 layout inside `vm::run` (checked in a `dumpbin /disasm` of each with debug
 information: `vm::run` spans 40,118, 43,190 and 46,198 bytes on the
-branch, built at `90fb6ae3` -- `56c6e8ac` changed nothing `vm::run`
+branch, built at `c5018cec` -- `f5d30c2b` changed nothing `vm::run`
 inlines -- and 44,543, 48,063 and 50,751 on `master`, and neither tree
 has a `run_stretch` or a `vm::run` closure of its own); five rounds in a
 rotating order, two sittings; `bench --iterations 30` for the micro
@@ -7647,7 +7647,7 @@ nearly as much faster with the JIT off, so they are the run loop's new
 layout, not machine code.
 
 **Entering every body cost `bench_block` 31.5%.** The first measurement of this
-branch, before `56c6e8ac` (one round, three builds a side), entered every
+branch, before `f5d30c2b` (one round, three builds a side), entered every
 body whose first instruction had a template. Such a body -- `tick: x`'s
 `^x + 1`, an `IntegerBinary` and a return -- runs one or two templates,
 exits at its return or first send, and the interpreter runs the rest, so
@@ -7656,27 +7656,27 @@ the exit for nothing: `bench_block` +31.5%, `bench_send` +21.7%,
 `bench_megamorphic` +18.9%, Sieve +13.8%, `bench_signal` +10.3%, the
 geometric mean over seventeen sources +7.3%, while the same binaries with
 `NS_NEXT_NO_JIT=1` measured -1.3%. `bench_send`'s 0.7 ms over its
-50,000 entries of `tick:` is about 14 ns an entry and exit. `56c6e8ac`
+50,000 entries of `tick:` is about 14 ns an entry and exit. `f5d30c2b`
 entered a body only when its code could take a backward jump before its
 first exit; a body whose code exits at once is still neither installed
 nor entered, and the entry's own cost is what "What the entry at a send
 moved" took down. An interim measurement
-of `56c6e8ac` in the same form (one round of the seventeen sources that
+of `f5d30c2b` in the same form (one round of the seventeen sources that
 take milliseconds, three builds a side) found no program slower with its
 builds separated -- `bench_block` -0.6%, `bench_send` -1.7%,
 `bench_megamorphic` -2.3%, Sieve +1.3%, `bench_signal` -1.0% -- and the
 geometric mean -1.0%; the final measurement above confirms it.
 
-**The machine words moved.** Measured 2026-10-28, `39a9113b` -- the
+**The machine words moved.** Measured 2026-10-28, `cc96fe57` -- the
 safepoint request in the machine words, the entry block of thirty-two
-words and the leaf call's stack pointer in it -- against `cc534eac`, by
+words and the leaf call's stack pointer in it -- against `84db4374`, by
 the same protocol: three builds a side (`vm::run` spans 40,118, 43,190
-and 46,198 bytes at `cc534eac`, 39,990, 43,062 and 46,262 at
-`39a9113b`, no `run_stretch` or closure of its own in either), five
+and 46,198 bytes at `84db4374`, 39,990, 43,062 and 46,262 at
+`cc96fe57`, no `run_stretch` or closure of its own in either), five
 rounds in a rotating order over two sittings, `bench_loop`, `bench_send`
 and the Are We Fast Yet programs.
 
-| Source | `cc534eac` (ms) | its builds | `39a9113b` (ms) | its builds | Change | Builds separated |
+| Source | `84db4374` (ms) | its builds | `cc96fe57` (ms) | its builds | Change | Builds separated |
 |---|---|---|---|---|---|---|
 | `bench_loop` | 2.108 | 2.104–2.111 | 2.073 | 2.071–2.075 | -1.7% | faster |
 | `bench_send` | 3.235 | 3.226–3.243 | 3.184 | 3.182–3.185 | -1.6% | faster |
@@ -7712,7 +7712,7 @@ loop in the tree, and it is a golden, not a benchmark.
 
 ### What sends in machine code moved
 
-**Measured 2026-10-29, `cbe7908f` against `master` (`f641432b`)**, by the
+**Measured 2026-10-29, `c7d206bd` against `master` (`07434edf`)**, by the
 protocol of the `measuring-performance` skill: three release builds a
 side with the pinned alignment, builds a, b and c varying the block
 layout inside `vm::run` (checked in a `dumpbin /disasm` of each with debug
@@ -7760,15 +7760,15 @@ With the JIT on, the geometric mean over the twenty-two sources is
 Json -21.6%, Sieve -4.5% -- the programs whose hot code runs whole in
 machine code: loops of sends to compiled methods, accessors, mirror
 methods and `SmallInteger` arithmetic. In the tables, measured at
-`cbe7908f`, thirteen are slower with their builds separated, by 0.9% to 3.7%: Havlak, DeltaBlue,
+`c7d206bd`, thirteen are slower with their builds separated, by 0.9% to 3.7%: Havlak, DeltaBlue,
 NBody, DeltaBlueTon80, Bounce, Permute, Richards, RichardsTon80, Storage
 and the micro sources `bench_block`, `bench_megamorphic`, `bench_signal`
 and `bench_while`. Havlak and Richards are no longer among them: with the
-leaf stub's slot path running (`ec531abe`, below), Havlak measures
+leaf stub's slot path running (`7f8ebdee`, below), Havlak measures
 3,070 ms against `master`'s 3,176, 3.3% faster, and Richards 61.54 ms
 against 61.43, level -- three builds a side, five rounds. The others'
 hot code makes blocks, allocates or returns
-non-locally, which stage 4 brought into machine code since; at `cbe7908f`
+non-locally, which stage 4 brought into machine code since; at `c7d206bd`
 their bodies were called only or abandoned and ran interpreted, so they ran
 at the interpreter's speed -- and that is what is slower than `master`'s
 (below): with the JIT on against the same binaries with it off, no
@@ -7835,7 +7835,7 @@ unmeasured decisions").
 | `Towers` | 3.031 | 2.981–3.085 | 3.009 | 2.986–3.053 | -0.7% | no |
 
 **What the first measurement found, and what was fixed.** The batch as
-its plan built it, at `9d64f65b`, measured against `master` with one
+its plan built it, at `1dd767ba`, measured against `master` with one
 pinned build a side: Richards 161.4 ms against 60.8, 2.6 times as long,
 `bench_loop` 5.15 ms against 2.07, `bench_send` 5.21 against 3.22, Json,
 DeltaBlueTon80, Permute, RichardsTon80, Storage, Towers and Queens about
@@ -7844,7 +7844,7 @@ twice as long; with the JIT off the same binaries were level. Profiles
 statistics, counted per run, named four causes, each fixed before the
 measurement above:
 
-- **Entering every body that reaches a return** (`9d64f65b`): 1.45
+- **Entering every body that reaches a return** (`1dd767ba`): 1.45
   million entries a Richards run, each an entry and an exit of about
   fourteen nanoseconds around a few instructions. A body that could not
   loop before its first exit was then compiled for compiled calls only
@@ -7871,7 +7871,7 @@ measurement above:
   leaf clobbered, so it never ran but at site 0 (where no slot accessor
   lay) and could have run another site's entry. With the send entering
   its callee with its own site's cell and the miss stub clearing the role
-  (`ec531abe`), the path runs: measured afterwards, three builds a side,
+  (`7f8ebdee`), the path runs: measured afterwards, three builds a side,
   five rounds, against the tree without it working, Havlak 3,269 ms to
   3,070 (-6.1%, now 3.4% faster than `master`'s 3,176), Richards 62.88 to
   61.54 (-2.1%, level with `master`), `bench_loop` 0.813 to 0.806,
@@ -7889,7 +7889,7 @@ measurement above:
   stub's leaf runs the row's leaf on the handed-over receiver: Sieve from
   1.52 ms to 1.35.
 
-The measurement at `1794f148`, after those four (one round and a half, three
+The measurement at `86cda47a`, after those four (one round and a half, three
 builds a side), still found the interpreter itself slower: DeltaBlue
 4.6% with the JIT off, CD 2.0%, Havlak 1.7%, builds separated. The
 profile named the miss path, a polymorphic or megamorphic hit's: since
@@ -7897,18 +7897,18 @@ the miss leaf shares the cached send's decision, the resolution came back
 through one join, which LLVM copied through memory with byte stores and
 read back as a word, a store-forwarding stall on 929 of the miss path's
 1,296 samples in a DeltaBlue run. The decision now goes on where it is
-found (`inline_cache::decided_miss`'s two continuations, `11a57be4`). A
+found (`inline_cache::decided_miss`'s two continuations, `bfa935c4`). A
 bisection with three builds a side of `bench_loop`, `bench_while`,
-`bench_send` and `bench_block` with the JIT off, at `master`, `4ea5c978`,
-`c395299e`, `e2bbc4f9`, `ad3b9eb7` and `11a57be4`, then found
-`bench_loop` level up to `ad3b9eb7` (2.073, 2.064, 2.090, 2.088 and
-2.082 ms) and 3.5% slower at `11a57be4` (2.146): the leaf stub's slot
+`bench_send` and `bench_block` with the JIT off, at `master`, `e5042170`,
+`69d29f57`, `d5f75a83`, `83386841` and `bfa935c4`, then found
+`bench_loop` level up to `83386841` (2.073, 2.064, 2.090, 2.088 and
+2.082 ms) and 3.5% slower at `bfa935c4` (2.146): the leaf stub's slot
 path had shared the interpreter's accessor read and write through a
 helper, which slowed every interpreted accessor; with the interpreter's
-arm back as it was (`cbe7908f`) `bench_loop` measured 2.104 ms against
-`master`'s 2.067 and `ad3b9eb7`'s 2.099, and `bench_send` 3.168 against
+arm back as it was (`c7d206bd`) `bench_loop` measured 2.104 ms against
+`master`'s 2.067 and `83386841`'s 2.099, and `bench_send` 3.168 against
 3.164. `bench_while`, 50.05 ms at `master`, measured 50.50 at
-`c395299e`, 51.28 at `ad3b9eb7` and 51.82 at `cbe7908f`: tasks 5 to 8
+`69d29f57`, 51.28 at `83386841` and 51.82 at `c7d206bd`: tasks 5 to 8
 each added a little to the run loop and the push, none of it isolated.
 
 **The indirect call through the cell** could not be isolated: a compiled
@@ -7916,7 +7916,7 @@ send's call loads the cell's entry beside the guard's compare it cannot be
 separated from, and no program's time is spent in the call alone, so
 whether a patched direct call pays stays open ("Inline caches" below).
 **Tiny bodies** -- `bench_send`'s `^x + 1`, `bench_block`'s block
-bodies, accessors -- paid no entry and exit per push at `cbe7908f`: a
+bodies, accessors -- paid no entry and exit per push at `c7d206bd`: a
 body that could not loop was called only, and an accessor or a quick
 method is a stub, so `bench_send` was four times as fast and
 `bench_block`, whose blocks machine code did not run, the interpreter's.
@@ -7931,7 +7931,7 @@ these programs.
 
 ### What the entry at a send moved
 
-**Measured 2026-10-29, `df21be83` against `master` (`d2f7e9bc`)**, by the
+**Measured 2026-10-29, `f9f77574` against `master` (`53591b77`)**, by the
 final protocol of the `measuring-performance` skill as it stands ("The
 Are We Fast Yet benchmarks" above): three pinned release builds a side
 with debug information -- a with the pinned `RUSTFLAGS` alone, b adding
@@ -7939,7 +7939,7 @@ with debug information -- a with the pinned `RUSTFLAGS` alone, b adding
 adding `-C metadata=buildc -C llvm-args=-align-all-nofallthru-blocks=5`
 (checked in a `dumpbin /disasm` of each: `vm::run` spans 41,344, 44,416
 and 47,872 bytes at `master` and 51,584, 55,488 and 60,224 at
-`df21be83`, and no build has a `run_stretch` or a `vm::run` closure of
+`f9f77574`, and no build has a `run_stretch` or a `vm::run` closure of
 its own); three rounds in one sitting, the order of the six binaries
 rotated each round; `bench --iterations 3` for CD, Havlak, Mandelbrot,
 NBody and DeltaBlue and `--iterations 8` for every other Are We Fast Yet
@@ -7950,7 +7950,7 @@ separated" says whether every build of one side beat every build of the
 other. The six builds took 98 s at once, the three rounds 820 s (about
 fourteen minutes), about fifteen minutes in all.
 
-| Program | master (ms) | range | `df21be83` (ms) | range | Change | Builds separated |
+| Program | master (ms) | range | `f9f77574` (ms) | range | Change | Builds separated |
 |---|---|---|---|---|---|---|
 | `Bounce` | 1.081 | 1.055–1.105 | 0.666 | 0.664–0.668 | -38.4% | faster |
 | `CD` | 3514.890 | 3488.958–3551.278 | 3285.953 | 3265.833–3298.550 | -6.5% | faster |
@@ -7993,14 +7993,14 @@ stubs already; `bench_while` is 7.7% faster with its builds separated,
 a figure no profile has tied to one change.
 
 **The first run found Sieve slower, and it was fixed.** The first run of
-this measurement, at `335d44b2`, found Sieve +5.3% with its builds
+this measurement, at `cde3fc4b`, found Sieve +5.3% with its builds
 separated. A profile showed the interpreter's push of a method grown,
 with the JIT off as well: `Mutator::enter_sent` tested the decided step
 through a borrow and then moved the whole `Result<Step, Signal>` into
 the call or the push, so LLVM copied it into a place of its own on every
 interpreted push, its tag stored apart and the rest read back by
 overlapping eight-byte loads, and `push_sent` read the copy back -- 2.2%
-of Sieve's samples on one load, none at `master`. `df21be83` lends the
+of Sieve's samples on one load, none at `master`. `f9f77574` lends the
 call the step's parts, so the step moves only into the push, which again
 receives the place the decision wrote it in ("The entry at a send"
 above); Sieve is level since, +1.2% and not separated, and an interim
@@ -8011,7 +8011,7 @@ measurement put Sieve under `NS_NEXT_NO_JIT=1` at +0.5% against
 user on 2026-10-29). A block is now entered at an interpreter's push,
 since no rule leaves a compiled body unentered, and a short block an
 interpreted `value:` pushes pays the bridge for little: the profile behind
-`a8f96b90` put an entry at a push about 8.5 ns above
+`c6686955` put an entry at a push about 8.5 ns above
 interpreting a one-instruction block -- the switch
 (`vm::machine_code_switch`), `run_machine_code`, `jit::entered` and the
 entry stub saving and restoring eight registers -- and
@@ -8029,18 +8029,18 @@ its sender's window pays the bridge").
 
 ### What allocation and the barrier in machine code moved
 
-**Measured 2026-10-30, `76b6fc85` against `master` (`b96b55ab`)**, by
+**Measured 2026-10-30, `8b80ee3a` against `master` (`4cf29cff`)**, by
 the same protocol as "What the entry at a send moved" above: three
 pinned release builds a side with debug information, a, b and c laid
 out as there (`vm::run` spans 51,584, 55,488 and 60,224 bytes at
-`master` and 51,584, 55,488 and 60,288 at `76b6fc85`, and no build has
+`master` and 51,584, 55,488 and 60,288 at `8b80ee3a`, and no build has
 a `run_stretch` or a `vm::run` closure of its own); three rounds in one
 sitting, the order of the six binaries rotated each round; `--iterations
 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue and `--iterations 8`
 for the rest. Each cell is a side's medians per build pooled by
 geometric mean, in milliseconds.
 
-| Program | master (ms) | range | `76b6fc85` (ms) | range | Change | Builds separated |
+| Program | master (ms) | range | `8b80ee3a` (ms) | range | Change | Builds separated |
 |---|---|---|---|---|---|---|
 | `Bounce` | 0.668 | 0.663–0.671 | 0.590 | 0.589–0.590 | -11.7% | faster |
 | `CD` | 3268.816 | 3249.179–3282.343 | 3155.574 | 3144.693–3165.429 | -3.5% | faster |
@@ -8085,25 +8085,25 @@ rounds of b and c high. A second sitting of Storage alone, the same six
 builds in three rotated rounds, measured -0.3% at `--iterations 8`
 (1.345 against 1.341 ms) and -0.7% at `--iterations 30`, neither
 separated, and an `xperf`-profiled run of 1,500 iterations a side
-measured 1.174 ms at `master` and 1.165 at `76b6fc85`. Storage's first
+measured 1.174 ms at `master` and 1.165 at `8b80ee3a`. Storage's first
 iterations after the warm-up are still about 15% slower than its steady
 state on both sides, which is what `--iterations 8` samples.
 
 ### What closures in machine code moved
 
-**Measured 2026-10-31, `f476f86c` against `master` (`b96b55ab`) and
-against `451f72d8`**, the branch before closures ran in machine code
+**Measured 2026-10-31, `ab10563d` against `master` (`4cf29cff`) and
+against `ac680b5e`**, the branch before closures ran in machine code
 (after "What allocation and the barrier in machine code moved"), by the
 same protocol: three pinned release builds a side with debug
 information, a, b and c laid out as there (`vm::run` spans about 52.5,
-56.4 and 61.2 KB at `f476f86c`, and no build has a `run_stretch` or a
+56.4 and 61.2 KB at `ab10563d`, and no build has a `run_stretch` or a
 `vm::run` closure of its own); three rounds in one sitting, the order of
 the nine binaries rotated each round; `--iterations 3` for CD, Havlak,
 Mandelbrot, NBody and DeltaBlue and `--iterations 8` for the rest. Each
 cell is a side's medians per build pooled by geometric mean, in
 milliseconds.
 
-| Program | master (ms) | `451f72d8` (ms) | `f476f86c` (ms) | range | vs master | separated | vs `451f72d8` | separated |
+| Program | master (ms) | `ac680b5e` (ms) | `ab10563d` (ms) | range | vs master | separated | vs `ac680b5e` | separated |
 |---|---|---|---|---|---|---|---|---|
 | `Bounce` | 0.669 | 0.587 | 0.212 | 0.211–0.213 | -68.3% | faster | -63.9% | faster |
 | `CD` | 3281.194 | 3164.176 | 3164.719 | 3154.863–3176.111 | -3.5% | faster | +0.0% | no |
@@ -8130,7 +8130,7 @@ milliseconds.
 | `bench_recursion` | 0.665 | 0.667 | 0.684 | 0.658–0.698 | +3.0% | no | +2.7% | no (see below) |
 
 The geometric mean over the twenty-three sources is -48.0% against
-`master` and -41.2% against `451f72d8`. The gains are where a block ran
+`master` and -41.2% against `ac680b5e`. The gains are where a block ran
 interpreted or crossed the bridge before: `bench_block` and
 `bench_while` (-88% and -86%) are a block sent `value` and a
 `whileTrue:` loop over blocks, every activation now a call into the
@@ -8141,25 +8141,25 @@ block's machine code; Permute, Towers, Sieve and Bounce (-64% to
 
 **What is slower, and why.** A first measurement of the same tree
 before four fixes measured CD +2.0%, Queens +5.8% and `bench_signal`
-+3.5% against `451f72d8`; the fixes removed a store-forwarding stall on
++3.5% against `ac680b5e`; the fixes removed a store-forwarding stall on
 every call from the interpreter into machine code, put the divorce back
 inline into the pop, let an interpreted `value` send ask the block's
 machine entry row before it reads the closure, and kept the handler
 search's steps in registers. What the table still shows slower:
 
 - `bench_loop` (+5.1%) runs machine code instruction for instruction
-  the same as at `451f72d8`; the larger stubs before it move its body
+  the same as at `ac680b5e`; the larger stubs before it move its body
   in the code zone, and padding the zone alone moves the same binary
   by up to 7% ("A program in machine code measures where its bodies
   land in the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)).
 - Queens (+1.2%): builds a and b of both sides lie within 0.3%; the
-  gap is `451f72d8`'s build c, about 1.5% faster than its own a and b
+  gap is `ac680b5e`'s build c, about 1.5% faster than its own a and b
   in every round. What remains is the check before an interpreted
   `value` send calls a compiled block, about 0.3–0.5%.
 - `bench_megamorphic` (+3.1% against `master`, level against
-  `451f72d8`) did not reproduce: three builds a side, two rounds of 30
+  `ac680b5e`) did not reproduce: three builds a side, two rounds of 30
   iterations, measured it level, and a loop twenty times as long
-  91.3–92.7 ms at `master` against 90.7–91.8 at `f476f86c`. Its loop
+  91.3–92.7 ms at `master` against 90.7–91.8 at `ab10563d`. Its loop
   runs interpreted.
 - `bench_recursion` (+2.7%) is a real cost: `fib:`'s `ifTrue: [^1]`
   has a `MakeClosure` on the path a receiver that is no Boolean takes,
@@ -8170,9 +8170,9 @@ search's steps in registers. What the table still shows slower:
 
 ### What non-local return in machine code moved
 
-**Measured 2026-10-31, `4f991268` against `f476f86c`** (the tree of
+**Measured 2026-10-31, `aed12e0c` against `ab10563d`** (the tree of
 "What closures in machine code moved" above) **and `master`
-(`b96b55ab`)**, by the same protocol: three pinned release builds a
+(`4cf29cff`)**, by the same protocol: three pinned release builds a
 side with debug information, a, b and c laid out as there (`vm::run`
 spans the same about 52.5, 56.4 and 61.2 KB on both branch trees, and
 no build has a `run_stretch` or a `vm::run` closure of its own); three
@@ -8183,7 +8183,7 @@ build pooled by geometric mean, in milliseconds. Between the two trees
 lie the cut and the forcing of a future by `FutureImplementation`'s
 `resolve`.
 
-| Program | master (ms) | `f476f86c` (ms) | `4f991268` (ms) | range | vs master | separated | vs `f476f86c` | separated |
+| Program | master (ms) | `ab10563d` (ms) | `aed12e0c` (ms) | range | vs master | separated | vs `ab10563d` | separated |
 |---|---|---|---|---|---|---|---|---|
 | `Bounce` | 0.667 | 0.214 | 0.210 | 0.209–0.212 | -68.5% | faster | -1.7% | faster |
 | `CD` | 3273.588 | 3151.603 | 3155.731 | 3139.449–3170.842 | -3.6% | faster | +0.1% | no |
@@ -8210,11 +8210,11 @@ lie the cut and the forcing of a future by `FutureImplementation`'s
 | `bench_recursion` | 0.665 | 0.678 | 0.692 | 0.681–0.701 | +4.1% | slower (see below) | +2.1% | no |
 
 The geometric mean over the twenty-three sources is -52.2% against
-`master` and -8.0% against `f476f86c`. The gains are where a `^` left
+`master` and -8.0% against `ab10563d`. The gains are where a `^` left
 a block: Queens (-73.7%) returns `^true` out of `placeQueen:`'s
 `to:do:` on every placement that succeeds, and RichardsTon80 (-40.9%)
 returns out of its tasks' blocks (`^scheduler suspendCurrent`). A
-non-local return exited machine code at `f476f86c` and spent the body's
+non-local return exited machine code at `ab10563d` and spent the body's
 exit budget until it was abandoned; now the cut pops the compiled
 frames to the home itself.
 
@@ -8222,10 +8222,10 @@ frames to the home itself.
 (224 bytes) moves every stub after it, and the five mirror rows of
 `resolve` move the getter, setter and closure stubs after the mirror
 method table by 279 bytes more; the bodies start 288 bytes later and
-are otherwise byte for byte `f476f86c`'s. `bench_send`'s four bodies
-and `bench_while`'s eight are identical; `f476f86c` laid out as
-`4f991268` lays out its zone, with pads before the stubs and the
-bodies, runs at `4f991268`'s time, and over seventeen paddings the two
+are otherwise byte for byte `ab10563d`'s. `bench_send`'s four bodies
+and `bench_while`'s eight are identical; `ab10563d` laid out as
+`aed12e0c` lays out its zone, with pads before the stubs and the
+bodies, runs at `aed12e0c`'s time, and over seventeen paddings the two
 trees are level pooled (`bench_while`'s time spreads 17% across them).
 DeltaBlueTon80 runs no cut; 124 of its 125 bodies are identical and the
 125th differs in a non-local return's arm that never runs, and the
@@ -8239,15 +8239,15 @@ against `master` is the fallback closure's cost described above.
 
 ### What reclamation moved
 
-**Measured 2026-11-01, `faea01b3` against `4f991268`** (the tree of "What
+**Measured 2026-11-01, `5c081206` against `aed12e0c`** (the tree of "What
 non-local return in machine code moved" above, "t15" below) **and
-`master` (`b96b55ab`)**, by the same protocol: three pinned release
+`master` (`4cf29cff`)**, by the same protocol: three pinned release
 builds a side with debug information, a, b and c laid out as there (no
 build has a `run_stretch` or a `vm::run` closure of its own); three
 rounds in one sitting, the order of the nine binaries rotated each
 round; `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue
 and `--iterations 8` for the rest. Each cell is a side's medians per
-build pooled by geometric mean, in milliseconds. `faea01b3`'s three
+build pooled by geometric mean, in milliseconds. `5c081206`'s three
 builds also lay their code zones out at three paddings, a none, b 208
 bytes before the stubs and 32 before the bodies, c 96 and 176
 (`NS_NEXT_ZONE_STUB_PADDING`, `NS_NEXT_ZONE_BODY_PADDING`, read at build
@@ -8255,14 +8255,14 @@ time), so that its pool samples the zone's placement as it samples
 `vm::run`'s ("A program in machine code measures where its bodies land
 in the code zone" in [OPEN-WORK.md](../OPEN-WORK.md)); the two older
 trees predate the paddings, and their builds put the stubs and the
-bodies at one place each. Between `4f991268` and `faea01b3` lie part 4d
+bodies at one place each. Between `aed12e0c` and `5c081206` lie part 4d
 -- the zone's compaction and the freeing of dead bodies' code, the
 decaying exit budget and the revival of abandoned bodies, the
 program-made symbols, the tables' growth limits, the site ranges' slide,
 committed memory given back -- and a frame reified only in its body's
 twin, with the two fixes below.
 
-| Program | master (ms) | t15 (ms) | `faea01b3` (ms) | range | vs master | separated | vs t15 | separated |
+| Program | master (ms) | t15 (ms) | `5c081206` (ms) | range | vs master | separated | vs t15 | separated |
 |---|---|---|---|---|---|---|---|---|
 | `Bounce` | 0.670 | 0.211 | 0.207 | 0.202–0.212 | -69.0% | faster | -1.5% | no |
 | `CD` | 3264.551 | 3155.258 | 3037.556 | 3016.793–3050.231 | -7.0% | faster | -3.7% | faster |
@@ -8299,10 +8299,10 @@ The geometric mean over the twenty-three sources is -54.6% against
   all. Havlak runs 46.6% faster, NBody 28.0% -- the decay's gains, as
   far as the counts show, since the commits between were not bisected
   for them -- and at t15 the longer a run, the slower: DeltaBlue at
-  fifteen iterations took 489 ms there against 247 at `25f2f20b`, one
+  fifteen iterations took 489 ms there against 247 at `5ba66627`, one
   build a side, where three iterations took 283 and 248.
 - **A lookup by a code address remembers the body it found**
-  (`25f2f20b`; "The code zone", the lookup by an address inside the
+  (`5ba66627`; "The code zone", the lookup by an address inside the
   code). The step, initializer and own-slot leaves find their calling
   body by the code's own address, which the return-address table does
   not hold, so each searched the installed bodies; DeltaBlue made about
@@ -8316,17 +8316,17 @@ The geometric mean over the twenty-three sources is -54.6% against
 Towers' -6.6% was not examined.
 
 **Two regressions were found and fixed before this measurement.** A
-first final measurement of `85aa1351` put `bench_signal` 29.5% and
+first final measurement of `5136aa26` put `bench_signal` 29.5% and
 DeltaBlue 1.9% slower than t15 with their builds separated. The first
 was an abandoned body armed so that its interpreted entries counted
 towards its revival: every push of one called `jit::entered` out of
 line, about 20 ns, and `bench_signal` pushes its abandoned `descend:`
 about 255,000 times a send; the count is the slot's state since, one
-increment and one store inline (`c775d4e9`; the abandonment in "The
-baseline JIT's foundation"). The second was the twins: `0edf3f79` took
+increment and one store inline (`c8cc5abe`; the abandonment in "The
+baseline JIT's foundation"). The second was the twins: `d758350e` took
 the search over the installed bodies out of line and lengthened it with
 the twins, a cost per lookup, which the remembered answers more than
-recovered (`25f2f20b`). Json's +2.7% in that measurement is -4.2% now,
+recovered (`5ba66627`). Json's +2.7% in that measurement is -4.2% now,
 by the same table.
 
 **What is slower, and why:**
@@ -8349,12 +8349,12 @@ by the same table.
   item "`bench_megamorphic.ns` since road step 5b1" in
   [OPEN-WORK.md](../OPEN-WORK.md) keeps it.
 
-**What the JIT and the collector did.** A binary of `85aa1351` built as
+**What the JIT and the collector did.** A binary of `5136aa26` built as
 build a, with a temporary print of `Interpreter::jit_statistics` and
 `collector_statistics` after `bench`'s runs (the CLI prints neither the
 JIT's statistics nor `decommits`), counted over one `bench` invocation
 per program -- a warm-up and three or eight timed sends, four or nine in
-all. These were taken before `c775d4e9` and `25f2f20b`; neither changes
+all. These were taken before `c8cc5abe` and `5ba66627`; neither changes
 which body is abandoned, revived or freed -- the first moves the count
 of an abandoned body's entries into its state, its review checked the
 revival at the same entry, and the second only finds a body faster --
@@ -8407,7 +8407,7 @@ revival would end a rarely exiting body's run interpreted again.
 
 **The long run, simulated.** The long-run tests of the reclamation, run
 together in one invocation with a temporary print of
-`Interpreter::table_sizes` at each one's start and end (`85aa1351`;
+`Interpreter::table_sizes` at each one's start and end (`5136aa26`;
 `cargo nextest run --workspace --cargo-profile release-checks
 --no-capture -E 'test(/churn|thousands|million|sawtooth|rare_exit/) |
 test(/_peak_|decay|damped|backed_off|gives_its_stack/)'`, and the same
@@ -8463,13 +8463,13 @@ bounded by its floor or its limit, not by the iteration count:
 
 ### What on-stack replacement moved
 
-**Measured 2026-11-02, `9b95559d` against `master` (`006b6d50`)**, by the
+**Measured 2026-11-02, `8fefc2bc` against `master` (`b626155d`)**, by the
 same protocol: three pinned release builds a side with debug information
 (`CARGO_PROFILE_RELEASE_DEBUG=limited`), a, b and c laid out as there,
 the code zones at the three paddings on both sides (a none, b 208 bytes
 before the stubs and 32 before the bodies, c 96 and 176); `vm::run`
 spans about 51.6, 55.6 and 60.2 KB at `master` and 45.2, 48.6 and 52.3
-KB at `9b95559d`, and no build has a `run_stretch` or a `vm::run`
+KB at `8fefc2bc`, and no build has a `run_stretch` or a `vm::run`
 closure of its own. The branch's `vm::run` is smaller in the binary
 while the codegen gate counts more instructions in it (9252 against
 9142) because the two measure different code: the gate the rlib's
@@ -8481,7 +8481,7 @@ fat LTO inlines into `vm::run` what the rlib calls --
 `store_vector`, `sends::enclosing_object`,
 `Mutator::new_array_from_registers`, `check_applied_clause` and
 `Heap::allocate_object` -- and the branch's does not: build a's
-`vm::run` makes 515 calls at `master` and 451 at `9b95559d`, about
+`vm::run` makes 515 calls at `master` and 451 at `8fefc2bc`, about
 10,450 and 9,190 instructions. All eight are interpreted code's, off
 the paths machine code runs. None of them is cheap enough to inline at
 LLVM's default threshold (their costs are 345 to 440 against 250); at
@@ -8516,7 +8516,7 @@ return into machine code after a poll's safepoint, the one compare at a
 push (a safepoint request lowers the depth limit) and the compile-time
 statistic.
 
-| Program | master (ms) | master's builds | `9b95559d` (ms) | range | vs master | separated |
+| Program | master (ms) | master's builds | `8fefc2bc` (ms) | range | vs master | separated |
 |---|---|---|---|---|---|---|
 | `Bounce` | 0.204 | 0.202–0.207 | 0.204 | 0.202–0.205 | -0.1% | no |
 | `CD` | 3195.036 | 3154.041–3218.121 | 3207.049 | 3179.953–3249.218 | +0.4% | no |
@@ -8574,10 +8574,10 @@ switches only in its warm-up (five switches, no resumption, in nine
 sends), so its timed runs execute the same bodies on both trees, with
 the push's one compare instead of two. Thirty iterations a run on the
 same six builds, three rounds, measured it +1.0% and no longer
-separated (`9b95559d`'s build b below `master`'s build a), and four more
+separated (`8fefc2bc`'s build b below `master`'s build a), and four more
 build pairs at other zone paddings (stubs and bodies 16 and 48, 144 and
 80, 48 and 240, 320 and 112; build a's flags), thirty iterations, three
-rounds, put `9b95559d` at 314.7 µs pooled against `master`'s 319.1,
+rounds, put `8fefc2bc` at 314.7 µs pooled against `master`'s 319.1,
 1.4% faster, and faster at three of the four paddings. `bench_loop`'s
 +4.4% is build a alone (0.587 ms against 0.517 and 0.532 for b and c),
 and `bench_do`'s +3.5% one round of build c (1.024 ms, against 0.703 and
@@ -8588,7 +8588,7 @@ and `bench_do`'s +3.5% one round of build c (1.024 ms, against 0.703 and
 **What the baseline compiler takes.** `--jit-statistics` prints the
 time spent compiling bodies and twins, measured around each compile
 (`JitStatistics::compile_nanoseconds`). One pinned release build
-(`9b95559d`'s build a): `run` three times a program, its process timed
+(`8fefc2bc`'s build a): `run` three times a program, its process timed
 from outside (the median; a program that prints `hi` takes 7.0 ms), and
 `bench` with the iterations above, its compile time set against the
 sends' time, the median times the sends, the warm-up included. The
@@ -8642,7 +8642,7 @@ the run's length:
   send takes 100 ms or more spends 0.6% or less, CD's 2.2% apart.
 
 **The depth count in a machine register, measured and not kept.**
-`5987fe81` kept the count in `rbp`, which both x64 conventions preserve
+`437f740d` kept the count in `rbp`, which both x64 conventions preserve
 and the entry stub saves, while machine code ran: the entry, call and
 closure call stubs loaded it from `DepthCount`, a prologue compared and
 incremented the register -- no load and no store of the word -- and a
@@ -8654,8 +8654,8 @@ was written back around it. A debug build wrote a word no count can be
 into `DepthCount` while the register held it, which every Rust reader
 refused: the suite, the goldens and `tests/jit.rs` under all nine
 stress modes passed, and the guard caught a write-back removed on
-purpose. Measured on 2026-11-03 against `e392cc91` (machine code
-identical to `9b95559d`, whose three builds above were reused) by the
+purpose. Measured on 2026-11-03 against `96069f0d` (machine code
+identical to `8fefc2bc`, whose three builds above were reused) by the
 same protocol, the variant's three builds made alike; `vm::run` spans
 the same 45.2, 48.6 and 52.3 KB on both sides, since only the JIT's code
 changed.
@@ -8700,12 +8700,12 @@ does little but push and return, `bench_block` -4.8%, CD, Havlak,
 RichardsTon80 and `bench_new` 1.1% to 1.6% -- and `bench_megamorphic`
 is 3.7% slower with its builds separated. The plan kept the variant
 only if the mean was faster beyond noise and no program slower beyond
-noise; neither held, so `de9d9cea` reverted it ("Safepoints and the
+noise; neither held, so `d73361b7` reverted it ("Safepoints and the
 depth limit" has the decision).
 
 ### What a register cache would move
 
-**Measured 2026-11-03 on `master` (`8de90fb8`), before building it**,
+**Measured 2026-11-03 on `master` (`08fd5728`), before building it**,
 to decide whether the baseline's sixth stage should be a register
 cache. The cache would keep a frame register's value in a machine
 register after a template loaded or wrote it, so that a later template
@@ -8832,7 +8832,7 @@ on 2026-11-03.
 
 ### What the optimizing tier's foundation moved
 
-**Measured 2026-11-05, `917e5928` against `master` (`76f6001c`)**, by
+**Measured 2026-11-05, `55b4124c` against `master` (`03f86d75`)**, by
 the protocol of "What on-stack replacement moved": three pinned release
 builds a side with debug information, a, b and c laid out as there, the
 code zones at the same three paddings on both sides; `vm::run` spans
@@ -8847,7 +8847,7 @@ linear scan, the emitters, the metadata, the budget baseline code
 spends, the synchronous compile installed at a safepoint, and the
 optimize and deopt stress modes.
 
-| Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+| Program | master (ms) | master's builds | `55b4124c` (ms) | builds | vs master | separated |
 |---|---|---|---|---|---|---|
 | `Bounce` | 0.205 | 0.201–0.208 | 0.207 | 0.204–0.209 | +0.9% | no |
 | `CD` | 3124.002 | 3117.185–3129.384 | 3108.904 | 3099.471–3121.533 | -0.5% | no |
@@ -8878,15 +8878,15 @@ optimize and deopt stress modes.
 | `bench_do` | 0.732 | 0.725–0.738 | 0.711 | 0.700–0.724 | -2.8% | faster |
 
 The geometric mean over the twenty-seven sources is -1.45%, and each of
-`917e5928`'s three builds lies below each of `master`'s: 4.171, 4.141
+`55b4124c`'s three builds lies below each of `master`'s: 4.171, 4.141
 and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
 
 - **Instantiation, and the leaves that find a compiled frame's body.**
   `bench_new`, `bench_new2` and `bench_newarg` are 10% to 13% faster and
   DeltaBlue 6.6%, and baseline code shares the gain: in an interim
   measurement of build a alone, two rounds of three iterations, a build
-  of `917e5928` that optimizes nothing (a budget of 2^50) runs DeltaBlue
-  at 226 ms like `917e5928`'s build a, against `master`'s 240, and
+  of `55b4124c` that optimizes nothing (a budget of 2^50) runs DeltaBlue
+  at 226 ms like `55b4124c`'s build a, against `master`'s 240, and
   Havlak at 1,152 ms against 1,134 and 1,176 -- about half of Havlak's
   gain. Every leaf called from a frame machine code pushed asks
   `materialize::leaf_frame` for the frame, which asks
@@ -8923,7 +8923,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   code.** It is +0.9% with its builds 0.001 ms apart, and the
   processor's counters, per run from the difference of 2,500 runs and
   500, say it is cost, not placement: at the code of the fixes
-  (`2a20ca39`) the three builds retire 23.95 million instructions a run
+  (`c51b836c`) the three builds retire 23.95 million instructions a run
   against `master`'s 23.70 -- about one more per `fib:` call, of 242,785
   -- and take 3.65 to 3.86 million cycles against 3.69 to 3.73; over
   four more zone paddings each side (16/48, 48/240, 144/80 and 320/112
@@ -8956,7 +8956,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   difference at the median of eight. At 200 iterations, where the runs
   timed come after the compiles, the same builds measure:
 
-  | Program | master (ms) | master's builds | `917e5928` (ms) | builds | vs master | separated |
+  | Program | master (ms) | master's builds | `55b4124c` (ms) | builds | vs master | separated |
   |---|---|---|---|---|---|---|
   | `Bounce` | 0.219 | 0.216–0.221 | 0.220 | 0.217–0.223 | +0.5% | no |
   | `DeltaBlueTon80` | 1.738 | 1.725–1.755 | 1.713 | 1.706–1.717 | -1.4% | faster |
@@ -8971,7 +8971,7 @@ and 4.159 against 4.215, 4.202 and 4.237. What each difference is:
   | `bench_recursion` | 0.661 | 0.660–0.662 | 0.663 | 0.646–0.672 | +0.4% | no |
 
   RichardsTon80 and Queens are moreover the code's placement: at
-  `4f051c76`, over four more zone paddings at 30 iterations,
+  `e7cc386c`, over four more zone paddings at 30 iterations,
   RichardsTon80 measured +0.1% and Queens +1.8%, each faster at two
   paddings of the four. So is List: per run, from the difference of
   6,000 runs and 1,000, it retires 5.487 million instructions against
@@ -9038,13 +9038,13 @@ time is small against every long program -- CD's 13.8 ms is the largest,
 `BUDGET_AFTER_CACHE_CHANGE` a sixth of it, 40,000.
 
 - **The budget.** A sweep over 30,000, 60,000, 120,000 and 240,000 at
-  `cc55e60a` -- one pinned build a side at layout a, three rounds,
+  `8cc6f266` -- one pinned build a side at layout a, three rounds,
   `--iterations 15`, the long programs at 3 -- separated no budget from
   another: the geometric means against `master` were +0.58%, +0.31%,
   +1.05% and -0.36%, and 240,000 left DeltaBlueTon80 closest to
   `master` (+0.7% against +2.5% to +8.9%), since a larger budget
   compiles fewer of a short program's bodies inside its first runs. A
-  reduced sweep at `917e5928` -- 60,000, 120,000 and 240,000, one build
+  reduced sweep at `55b4124c` -- 60,000, 120,000 and 240,000, one build
   each, the twenty-two short sources, the same rounds and iterations --
   keeps it: the geometric means are -1.91%, -2.42% and -1.91%, no budget
   separates, and DeltaBlueTon80 is again closest at 240,000 (+2.8%
@@ -9053,7 +9053,7 @@ time is small against every long program -- CD's 13.8 ms is the largest,
   compiled, and so which fallback sites have filled when the compile
   reads them (`Snapshot::fallback_taken`): the code's layout, never its
   semantics. A sweep over 0 (no wait), 10,000, 40,000, 120,000 and
-  240,000 at `2a20ca39` -- one build each at layout a, three rounds,
+  240,000 at `c51b836c` -- one build each at layout a, three rounds,
   Mandelbrot and NBody at 3 iterations, Json, DeltaBlueTon80,
   RichardsTon80, Richards, Sieve and Towers at 15 -- separates none:
   against `master`, Mandelbrot measures -0.3% to -1.0%, NBody -0.9% to
@@ -9073,8 +9073,8 @@ gates, which the batch's end runs.
 
 ### What speculation moved
 
-**Measured 2026-11-06, `55ec5c1c` with the fixes below against
-`master` (`0ada2ebb`)**, by the protocol of "What the optimizing tier's
+**Measured 2026-11-06, `f3e5ede3` with the fixes below against
+`master` (`5741eb70`)**, by the protocol of "What the optimizing tier's
 foundation moved": three pinned release builds a side with debug
 information, a, b and c laid out as there, the code zones at the same
 three paddings on both sides; `vm::run` spans 44.1, 47.5 and 51.1 KB on
@@ -9136,7 +9136,7 @@ and 4.004 against 4.124, 4.133 and 4.138. No program is slower with its
 builds apart. What each difference is:
 
 - **Interpreted sends into a customized body: two slowdowns, fixed.**
-  The first sitting on the performance cores, of `55ec5c1c` as it was,
+  The first sitting on the performance cores, of `f3e5ede3` as it was,
   measured CD +1.5% and `bench_newarg` +3.1%, each with its builds
   apart. A sampled profile of CD (xperf, three processes a side) put it
   in `jit::called`, an interpreter's send into machine code: it computed
@@ -9273,7 +9273,7 @@ end-of-batch gates, which the batch's end runs.
 
 ### What inlining moved
 
-**Measured 2026-11-08, `3b30e41e` against `master` (`56d65674`)**, by
+**Measured 2026-11-08, `d1f733e7` against `master` (`7aba609b`)**, by
 the protocol of "What speculation moved": three pinned release builds a
 side with debug information, a, b and c laid out as there, the code
 zones at the same three paddings on both sides; `vm::run` spans 44.0,
@@ -9316,18 +9316,18 @@ dependencies, the recompilee walk and the re-entry at a poll.
 | `bench_while` | 5.924 | 5.794–6.008 | 3.284 | 3.160–3.452 | -44.6% | faster |
 | `bench_recursion` | 0.488 | 0.468–0.518 | 0.500 | 0.495–0.511 | +2.5% | no |
 | `bench_new` | 1.740 | 1.736–1.746 | 1.742 | 1.741–1.744 | +0.1% | no |
-| `bench_new2`, at `83ea182a` | 2.892 | 2.881–2.904 | 2.862 | 2.851–2.874 | -1.1% | faster |
-| `bench_newarg`, at `83ea182a` | 3.012 | 2.997–3.034 | 2.991 | 2.965–3.009 | -0.7% | no |
+| `bench_new2`, at `5df4c63f` | 2.892 | 2.881–2.904 | 2.862 | 2.851–2.874 | -1.1% | faster |
+| `bench_newarg`, at `5df4c63f` | 3.012 | 2.997–3.034 | 2.991 | 2.965–3.009 | -0.7% | no |
 | `bench_do` | 0.671 | 0.662–0.683 | 0.497 | 0.489–0.501 | -26.0% | faster |
 
-Every row but the two marked is of `3b30e41e`'s sitting; those two are of
-`83ea182a`, a later sitting against `master` by the same protocol
+Every row but the two marked is of `d1f733e7`'s sitting; those two are of
+`5df4c63f`, a later sitting against `master` by the same protocol
 (below, "Instantiation: the leaf's frame"), `master`'s columns of that
 sitting too. The geometric mean over the twenty-seven sources in
-`3b30e41e`'s sitting is -34.0%, and each of
+`d1f733e7`'s sitting is -34.0%, and each of
 the branch's three builds lies far below each of `master`'s: 2.581,
 2.616 and 2.613 against 3.950, 3.945 and 3.944. An earlier sitting of
-`d4ae78da`, before the fixes below, measured -34.3%. What each
+`b87f12e8`, before the fixes below, measured -34.3%. What each
 difference is:
 
 - **Sends inlined.** `bench_send` and `bench_loop` run 84% faster,
@@ -9341,7 +9341,7 @@ difference is:
 - **Queens: blocks up to twice Strongtalk's weight.** Its blocks weigh
   between 70 and 140, and `BLOCK_LIMIT` is 140 (below): 76% faster.
 - **Regressions the sittings found, fixed.**
-  - *Inlined scopes that create a block.* A first sitting of `1621baf0`
+  - *Inlined scopes that create a block.* A first sitting of `ed706272`
     measured Towers +48%, RichardsTon80 +40% and Queens +14%, their
     copies leaving at 129 to 320 exits a run and five copies abandoned:
     an inlined scope that creates a block -- one that escapes, such as
@@ -9362,7 +9362,7 @@ difference is:
     the inlining corpus eliminates 6 where it eliminated 18, a callee
     that receives an eliminated block and creates another being sent.
   - *The leaves' lookups.* `bench_new2` and `bench_newarg` measured about
-    10% slower, bisected to `0f840a06` and sampled: every leaf called
+    10% slower, bisected to `737b796d` and sampled: every leaf called
     from optimized code asked whether its site lay inside an inlined
     scope, finding the body again and hashing its offset with SipHash.
     Only a body whose copy keeps metadata asks now, in that body's table,
@@ -9380,9 +9380,9 @@ difference is:
     and writes it for every inlined scope it materializes
     (`graph::ClassRecipe`, `materialize::scope_class`): List and
     `bench_send` about 7% faster and Queens about 5%, in an interim
-    measurement against `d4ae78da`.
+    measurement against `b87f12e8`.
 - **Instantiation: the leaf's frame.** `bench_new2` and `bench_newarg`
-  measured 2.7% and 3.0% slower than `master` here at `3b30e41e`, at
+  measured 2.7% and 3.0% slower than `master` here at `d1f733e7`, at
   every layout and padding, each run of both trees compiling, exiting
   and trapping alike. The processor's retired instructions, sampled
   (xperf, `InstructionRetired` every 65,536, the same count to 0.1% from
@@ -9400,10 +9400,10 @@ difference is:
   own address finds its body without probing the call returns, which
   never hold such an address (`JitState::body_at_code_address`): 2.4%,
   2.1% and 2.5% fewer instructions than `master`'s. The two rows above
-  are of that commit, `83ea182a`, against `master` by the same
+  are of that commit, `5df4c63f`, against `master` by the same
   protocol, three builds a side and three rounds in a second sitting,
   where `bench_new` measured -2.0%; a first sitting put the three at
-  -0.4%, -1.0% and -2.5%. Against `6a0ebc61`, the commit before it,
+  -0.4%, -1.0% and -2.5%. Against `eecf6470`, the commit before it,
   measured beside both, they ran 1.7% to 3.4% faster, separated in both
   sittings, and the twenty-seven sources' geometric mean moved -0.03% and
   -0.65%.
@@ -9418,7 +9418,7 @@ difference is:
   and `bench_new` stay level.
 
 **The shared stubs' mispredictions behind optimized callers**, measured
-at `d4ae78da`. Sampled by the processor's mispredicted branches (xperf,
+at `b87f12e8`. Sampled by the processor's mispredicted branches (xperf,
 `BranchMispredictions` every 4,096), DeltaBlueTon80 run 4,000 times,
 each sample placed by the code zone's layout the run printed: `master`
 took 356 samples in the polymorphic stub and 389 in the megamorphic and
@@ -9541,7 +9541,7 @@ compiler thread of stage 8.
   DeltaBlueTon80's 8.0 against 5.4.
 
 **What eliminating an Array's `do:` block moved**, measured 2026-11-08,
-`453c1754` against `18944be5`, the commit before the change, by the
+`a31c8d73` against `71f65b83`, the commit before the change, by the
 protocol above: three pinned builds a side, the same three layouts and
 paddings, `vm::run` 44.0, 47.4 and 51.0 KB on both sides with no
 `run_stretch` or closure of its own, three rounds a sitting with the
@@ -9571,7 +9571,7 @@ the second sitting, the first sitting's difference beside it; the
 programs whose plans the two changes moved, as `--jit-statistics`
 counts them:
 
-| Program | `18944be5` (ms) | builds | `453c1754` (ms) | builds | second sitting | first sitting |
+| Program | `71f65b83` (ms) | builds | `a31c8d73` (ms) | builds | second sitting | first sitting |
 |---|---|---|---|---|---|---|
 | `DeltaBlue` | 174.633 | 174.010–175.233 | 166.283 | 165.514–167.142 | -4.8%, faster | -5.8%, faster |
 | `Havlak` | 812.623 | 810.457–816.885 | 791.426 | 787.617–796.245 | -2.6%, faster | -2.8%, faster |
@@ -9590,7 +9590,7 @@ of them only `bench_recursion`, +8.7%, and `bench_newarg`, -0.8%, are
 separated, each in one sitting, the first having measured +2.4% and
 +0.4%. NBody's +7.4% is one round's 1,719 ms on build b, beside 938
 and 939: such a run comes about once in thirty-five since the block
-is eliminated, and never in more than seventy of `18944be5`'s; 68 runs
+is eliminated, and never in more than seventy of `71f65b83`'s; 68 runs
 with `--jit-statistics`, none of them slow, gave identical statistics
 (`OPEN-WORK.md`).
 
@@ -9610,7 +9610,7 @@ with `--jit-statistics`, none of them slow, gave identical statistics
   made 174 -- each exit inside such a loop now materializes the block;
   DeltaBlue lays out 295 scopes in 92 copies where it laid out 329 in
   97: about 3% and 5% faster.
-- *Bounce*, with the escape rule alone (`56efe31f`), measured 27% and
+- *Bounce*, with the escape rule alone (`9bc9b2ec`), measured 27% and
   34% slower at eight iterations, separated in both sittings: the
   block `bench`'s second loop hands `balls do:` was eliminated, so the
   walk went from it up to `bench` and requested `bench`, which runs
@@ -9634,7 +9634,7 @@ only from its second entry; and the compiler thread, stage 8's.
 
 ### What floats in machine code moved
 
-**Measured 2026-11-09, `893213ba` against `master` (`07e31091`)**, by
+**Measured 2026-11-09, `92c172d2` against `master` (`d069d7f9`)**, by
 the protocol of "What inlining moved": three pinned release builds a
 side with debug information, a, b and c laid out as there, the code
 zones at the same three paddings on both sides; `vm::run` spans 44.0,
@@ -11379,7 +11379,7 @@ Four rules keep the path in registers, and a gate holds them.
   `vm::unwind`, `Step`'s drop glue and `builtins::execute` -- to a budget
   of instructions and one of sixteen- or 32-byte stack loads over earlier
   narrower stores, each the count at the time with a headroom of about
-  10%. At `0037350d`, the commit with the header's stall, it fails:
+  10%. At `ff139fb3`, the commit with the header's stall, it fails:
   `push_sent` has 6,588 instructions and 79 such loads against budgets
   of 5,390 and 14, `push_step` and `push_initializer_placed` likewise.
   The count is static, over the listing's order rather than the control
@@ -14375,7 +14375,7 @@ block lasts from one entry to the next. With both, every compiled body
 is entered wherever it runs ("Which bodies are installed and which are
 entered" above); "What the entry at a send moved" has the measurement.
 
-**What an entry cost before.** Measured on 2026-10-29 at `d2f7e9bc`, one
+**What an entry cost before.** Measured on 2026-10-29 at `53591b77`, one
 pinned release build with debug information, with every compiled body
 entered at every push: an interpreted `do:` pushing the block
 `[:each | each]` a million times a run took 75.3 ms against 64.4 ms

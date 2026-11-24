@@ -34,7 +34,7 @@ the compiler then finds every place a handle would leave an entry.
 a collector" — above all "Planned: the brand, checked by the compiler rather
 than by convention" and "Host roots" — and
 [docs/PROGRESS.md](../../PROGRESS.md), "Where the next session starts", for
-the measurement rule against `be3eb40`. Read both before Task 1, and read
+the measurement rule against `d804eaf`. Read both before Task 1, and read
 `CLAUDE.md`'s invariants: every one of them applies.
 
 ## Decisions this plan carries
@@ -194,7 +194,7 @@ Deliberately **not** in this plan:
   `ran 6, failed 0, skipped 205`, and so does
   `NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules`.
 - Work on the checked-out branch `feature/lifetime-brand-2c`, created from
-  `master` at `a5d1e05`; no worktree except the throwaway ones the
+  `master` at `4999d05`; no worktree except the throwaway ones the
   measurement protocol builds.
 - Conventional commits. Every commit, a subagent's included, ends with the
   two trailer lines below, and the `Co-Authored-By` line names the model
@@ -227,7 +227,7 @@ It does nothing in a release build.
 Used by every task that says "measure". All three binaries are compared **in
 one sitting**; a figure from another session is never compared with one from
 this. Per PROGRESS.md, every measurement up to step 3 compares against
-`be3eb40` as well as against the commit the task started from.
+`d804eaf` as well as against the commit the task started from.
 
 Besides the three fixtures, four throwaway sources exercise the paths the
 fixtures do not: `do:`, and instantiation with and without a superclass and
@@ -330,8 +330,8 @@ Check each prints what it should before timing it
 (`cargo run -p ns-cli -- run target\bench-2b\bench_do.ns`).
 
 ```powershell
-# be3eb40 and the commit the task started from, each in a throwaway worktree
-git worktree add ..\ns-next-base be3eb40
+# d804eaf and the commit the task started from, each in a throwaway worktree
+git worktree add ..\ns-next-base d804eaf
 git worktree add ..\ns-next-parent <parent-commit>
 cargo build --release -p ns-cli --manifest-path ..\ns-next-base\Cargo.toml
 cargo build --release -p ns-cli --manifest-path ..\ns-next-parent\Cargo.toml
@@ -362,8 +362,8 @@ cargo test --release -p ns-runtime --lib a_decision_stays_the_size_the_hot_path_
 Record the five medians per source and binary and each group's mean. The
 comparison with the parent is the gate: a change is "no slower" when, for
 every source, the after-group does not lie entirely above the parent-group,
-and "faster" when it lies entirely below. The comparison with `be3eb40` is
-reported, not gated — but if a source's shift against `be3eb40` grows past
+and "faster" when it lies entirely below. The comparison with `d804eaf` is
+reported, not gated — but if a source's shift against `d804eaf` grows past
 what 2b left (`bench_loop.ns` +1.1%, `bench_send.ns` +0.9% to +1.4%,
 `bench_block.ns` −2.5%, `bench_do.ns` −1.4%, `bench_new.ns` −0.4% to −1.4%,
 `bench_new2.ns` −0.6% to −0.8%, `bench_newarg.ns` −3.2% to −3.4%;
@@ -1202,7 +1202,7 @@ Expected: all green, the reports exactly as stated.
 
 - [ ] **Step 12: Measure**
 
-Measure with the protocol, the parent being `a5d1e05`. The per-instruction
+Measure with the protocol, the parent being `4999d05`. The per-instruction
 `enter` is `#[inline(always)]` down to a field borrow, so every source is
 expected level. If one is slower beyond noise, check first that
 `World::enter` and the closure in `run` were inlined (`cargo rustc --release
@@ -1864,10 +1864,10 @@ Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"
 
 - [ ] **Step 1: Measure the whole step**
 
-Measure with the protocol, the parent being `a5d1e05` (the commit the step
+Measure with the protocol, the parent being `4999d05` (the commit the step
 started from). Do it in two sittings, as 2b did, so that a borderline group
 can be told from a sitting's noise. Expected: every source level with
-`a5d1e05` (a lifetime costs nothing at run time, and Task 1 measured the
+`4999d05` (a lifetime costs nothing at run time, and Task 1 measured the
 per-instruction `enter` level); report any group entirely above.
 
 - [ ] **Step 2: `docs/design/memory.md`**
@@ -1921,7 +1921,7 @@ per-instruction `enter` level); report any group entirely above.
   outside every one, and a run's answer rooted in its last entry.
 - A new section "What 2c moved" after "What 2b moved", in its format: the
   seven sources, both sittings' medians and means, the change against
-  `a5d1e05` and against `be3eb40`, and a sentence on each group that is not
+  `4999d05` and against `d804eaf`, and a sentence on each group that is not
   level. Include Task 1's own measurement of the per-instruction `enter`,
   as a sitting of its own.
 
@@ -1970,7 +1970,7 @@ per-instruction `enter` level); report any group entirely above.
   says why). Name what step 3's plan must be written against.
 - "Open findings": remove "Two stale handles from the same old epoch compare
   in `same()` without a panic" (decision 12 closes it); update the
-  `be3eb40` comparison with Task 5's figures; keep the rest.
+  `d804eaf` comparison with Task 5's figures; keep the rest.
 - Item 2 of the numbered order: "Done", and its 2c bullet "Done", with one
   sentence on what was built and what the measurement showed.
 - A new section "M4 — The lifetime brand" in the format of the 2b section:

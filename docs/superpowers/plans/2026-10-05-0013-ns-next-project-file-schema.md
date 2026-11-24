@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 1.98.0 (`serde`, `serde_json`, both already dependencies of `ns-cli`); Kotlin, IntelliJ Platform 2026.2.3, Gradle plugin `org.jetbrains.intellij.platform` 2.19.0; JSON Schema draft 2020-12.
 
-**Spec:** this plan's decisions below, made with the user on 2026-10-05; the current project file is described in `docs/design/image-format.md`, "Packaging", which Task 7 rewrites. It builds on `54c021d6` ("a project is the directory its newspeak.json describes") on the same branch.
+**Spec:** this plan's decisions below, made with the user on 2026-10-05; the current project file is described in `docs/design/image-format.md`, "Packaging", which Task 7 rewrites. It builds on `b44d6a2d` ("a project is the directory its newspeak.json describes") on the same branch.
 
 **Decided with the user (2026-10-05):**
 
@@ -1240,6 +1240,6 @@ git commit -m "docs: the project file, its schema, its scripts, and the plugin's
 
 ### Task 8: The end-of-batch gates and the review
 
-- [ ] **Step 1:** Run the `finishing-a-batch` skill. `ns-cli` and the plugin both changed, so every gate applies: the five stress modes, `run-corpus` plain and under each mode, the benchmarks profile, and `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`. These also cover `54c021d6`, whose end-of-batch gates were interrupted.
+- [ ] **Step 1:** Run the `finishing-a-batch` skill. `ns-cli` and the plugin both changed, so every gate applies: the five stress modes, `run-corpus` plain and under each mode, the benchmarks profile, and `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`. These also cover `b44d6a2d`, whose end-of-batch gates were interrupted.
 - [ ] **Step 2:** Fix what they find, each fix its own commit through the per-commit gate.
-- [ ] **Step 3:** Request the final whole-branch review on Fable, over `master..HEAD`, which also covers `54c021d6`, before merging.
+- [ ] **Step 3:** Request the final whole-branch review on Fable, over `master..HEAD`, which also covers `b44d6a2d`, before merging.

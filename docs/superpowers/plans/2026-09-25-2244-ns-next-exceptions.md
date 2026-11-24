@@ -21,7 +21,7 @@ an uncaught one ends the run with the same `HostError` as today.
 image format, the golden harness (`crates/ns-cli/tests/run_goldens.rs`).
 
 **Spec:** `docs/design/core-library.md`, "Planned: exceptions" (designed
-with the user on 2026-09-25; commits `938ef42`, `7528477`, `6887805`), and
+with the user on 2026-09-25; commits `3ee83c4`, `28dd82f`, `1f5674b`), and
 `docs/design/execution.md`, "Planned: tail calls, skipped but kept" (the
 `on:do:` constraint). Semantics authority: `docs/references/newspeak-spec.md`
 §8.6, §5.5, §7 (`cannotReturn`), §3.6.

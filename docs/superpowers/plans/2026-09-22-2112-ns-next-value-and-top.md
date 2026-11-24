@@ -715,7 +715,7 @@ sources. Say so before measuring.
 The protocol of `docs/design/execution.md`, "What removing the re-entries
 moved": the eight sources, the RUSTFLAGS alignment pin, release builds, two
 sittings, interleaved, pooled. Baseline: this branch's head before Task 1
-(name the commit). `e2bb31e` need not be rebuilt — the section written for the
+(name the commit). `404ece6` need not be rebuilt — the section written for the
 core library's move already carries it.
 
 - [ ] **Step 3: Write it up**

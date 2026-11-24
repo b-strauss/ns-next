@@ -223,7 +223,7 @@ and the initializers are compiled code the JIT tiers will compile like any
 other.
 
 **What 5b1 cost.** Measured in release, three pinned builds a side, against
-master (`733c15bd`) and task by task: every program within noise, but
+master (`4c6fe489`) and task by task: every program within noise, but
 `bench_megamorphic.ns`, +1.3-2.1% after the private and super accessor
 check, at the edge of build noise and not diagnosed ("Planned: performance
 and representation" below). Everything up to road step 6 on the road
@@ -303,7 +303,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   The baseline over all sixteen -- the fourteen Are We Fast Yet benchmarks
   and Primordial Soup's Richards and DeltaBlue -- is recorded in
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks":
-  three pinned release builds of `1792df5`, pooled, as that document's
+  three pinned release builds of `7afe9a6`, pooled, as that document's
   measurement protocol asks (decided with the user on 2026-09-30).
 - **Step 2, second plan, the eight-byte value -- built**, on the arena:
   one tagged 64-bit word -- a `SmallInteger` of 61 bits, a `SmallFloat64`,
@@ -955,7 +955,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
       home called once be entered at its loop's head.
     - *NBody's rare slow run*: since NBody's `do:` block is eliminated,
       about one run in thirty-five takes 1.01 s or more against 0.93 to
-      0.96 s; `18944be5` had none in seventy. No slow run has been seen
+      0.96 s; `71f65b83` had none in seventy. No slow run has been seen
       with its statistics: 68 runs with `--jit-statistics`, none of them
       slow, gave identical statistics, and the flag changes the code.
       Not found
@@ -1022,8 +1022,8 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
       stage's runs of the pairs found it: a refused call to a callee a
       compaction freed abandoned its caller, the deopt countdown's
       rotation locked in step with a long activation, and the
-      allocation's verification ran cubic in a body's size (`e5fb65f5`,
-      `d0e8f458`, `7096a52e`). A gate of the pairs that touch the
+      allocation's verification ran cubic in a body's size (`729b4eac`,
+      `fbc56be0`, `168f4403`). A gate of the pairs that touch the
       optimizer would keep such failures found.
   - **What the third stage's callees always inlined leave** (2026-11-07),
     none a wrong answer; [execution.md](design/execution.md),
@@ -2824,8 +2824,8 @@ constructs not built yet, each a rule whose identifier holds the segment
   fixed (the miss path's store-forwarding stall, a shared accessor
   helper); a bisection of `bench_while.ns` with three builds a side puts
   the rest across tasks 5 to 8 of the stage's plan -- 50.05 ms at
-  `master`, 50.50 at `c395299e`, 51.28 at `ad3b9eb7`, 51.82 at
-  `cbe7908f` -- where the run loop's switch gained the resumption flag and
+  `master`, 50.50 at `69d29f57`, 51.28 at `83386841`, 51.82 at
+  `c7d206bd` -- where the run loop's switch gained the resumption flag and
   the real-safepoint test, the push and the pop count the depth in the
   machine words, the return reads the caller's compiled bit, and `vm::run`
   grew from 8,065 to 8,073 instructions; none of it was isolated. A
@@ -2990,12 +2990,12 @@ constructs not built yet, each a rule whose identifier holds the segment
   [memory.md](design/memory.md), "Generations".
 - **Mandelbrot 2.5%, `bench_loop.ns` 1.9% and NBody 1.5% slower after the
   object space**, each with separated ranges against the tree road step 3b
-  started from, `d3e9f6f`, while seventeen of the twenty-four sources got
+  started from, `9507d02`, while seventeen of the twenty-four sources got
   faster. None of the three was profiled after the inlining fix that
   left List, DeltaBlueTon80 and Richards no longer separated from the base;
   the 64-bit handle alone
   measured 0.9% to 9.9% slower on every source. Whether road steps 3a and 3b
-  together are level with `d0e8b08`, road step 3a's base, was not measured:
+  together are level with `5fc230b`, road step 3a's base, was not measured:
   each was measured against its own base in its own sitting. The first
   candidates to profile: `Heap::set_pointer_word`, still outlined (as on
   master), and the extra zero test `Value::as_object` and `Value::kind`
@@ -3051,7 +3051,7 @@ constructs not built yet, each a rule whose identifier holds the segment
   performance step.
 - **The collections' remaining cost.** With `List`,
   `Map` and `Set` written here and their modification count, measured at
-  `7a661484` against `master` `eeaa1d90` (release builds, three builds by
+  `119b1fc1` against `master` `eed93663` (release builds, three builds by
   three rounds): Havlak 3,491 ms to 3,711 ms, +6.3%, and DeltaBlue
   670.5 ms to 702.3 ms, +4.7%, both separated; the other fourteen within
   noise, -1.7% to +2.3%. Before `Map`'s probes sent `hash` and `=` inline,
@@ -3073,7 +3073,7 @@ constructs not built yet, each a rule whose identifier holds the segment
 - **`StringBuilder`'s state check on every member is unmeasured.** Every
   member that reads a builder's slots sends the private `checkState:`
   first, `size` and `isEmpty` included, so that a builder an image crafted
-  is refused with an `ArgumentError` (`cc2aaebe`); what that costs a
+  is refused with an `ArgumentError` (`faa9447a`); what that costs a
   program that appends in a loop is not measured. Noted 2026-10-13.
   [core-library.md](design/core-library.md), "`StringBuilder`".
 - **3.5 ms of the precompiled shipped code's gain lie outside the boot.**

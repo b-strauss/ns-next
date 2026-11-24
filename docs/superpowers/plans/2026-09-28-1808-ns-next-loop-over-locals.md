@@ -513,9 +513,9 @@ git commit -m "perf: read and write the running frame's registers through its re
 **Files:**
 - Modify: `docs/design/execution.md`, `docs/design/memory.md`, `docs/design/README.md`, `CLAUDE.md`, `docs/PROGRESS.md`
 
-- [ ] **Step 1: Measure against `5fbb2cb`**
+- [ ] **Step 1: Measure against `9900212`**
 
-By the protocol of `execution.md`, "What removing the re-entries moved" (as "What simultaneous slots cost" applied it): three release builds of `5fbb2cb` (exported with `git archive` under `.temp/`) and three of `HEAD`, each with the pinned `RUSTFLAGS` (PowerShell: `$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`, the second and third adding `-C metadata=buildb` / `buildc`, each its own `--target-dir`; `Remove-Item Env:RUSTFLAGS` after), `ns-next bench <fixture> --iterations 30` over the four `goldens/bench/` fixtures, five rounds a sitting rotating the six binaries, two sittings. Expected: all four at least level (overlapping), `bench_megamorphic.ns` recovering the 4%. If a fixture is slower, bisect between Task 2 and Task 3 and report with numbers.
+By the protocol of `execution.md`, "What removing the re-entries moved" (as "What simultaneous slots cost" applied it): three release builds of `9900212` (exported with `git archive` under `.temp/`) and three of `HEAD`, each with the pinned `RUSTFLAGS` (PowerShell: `$env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`, the second and third adding `-C metadata=buildb` / `buildc`, each its own `--target-dir`; `Remove-Item Env:RUSTFLAGS` after), `ns-next bench <fixture> --iterations 30` over the four `goldens/bench/` fixtures, five rounds a sitting rotating the six binaries, two sittings. Expected: all four at least level (overlapping), `bench_megamorphic.ns` recovering the 4%. If a fixture is slower, bisect between Task 2 and Task 3 and report with numbers.
 
 - [ ] **Step 2: The robustness build**
 
@@ -523,7 +523,7 @@ In a scratch copy of `HEAD` (not committed): add one instruction variant to `byt
 
 - [ ] **Step 3: `dumpbin`**
 
-On a release build with `CARGO_PROFILE_RELEASE_DEBUG=limited` and the pinned flags, `dumpbin /disasm` (search the Visual Studio Build Tools install, e.g. `C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe`, before concluding it is absent): one `ns_runtime::vm::run` label, no `vm::run::closure` and no separate `run_stretch`; record `vm::run`'s instruction count against `5fbb2cb`'s 7,083.
+On a release build with `CARGO_PROFILE_RELEASE_DEBUG=limited` and the pinned flags, `dumpbin /disasm` (search the Visual Studio Build Tools install, e.g. `C:\Program Files*\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe`, before concluding it is absent): one `ns_runtime::vm::run` label, no `vm::run::closure` and no separate `run_stretch`; record `vm::run`'s instruction count against `9900212`'s 7,083.
 
 - [ ] **Step 4: The design in present tense**
 

@@ -40,7 +40,7 @@
   `Co-Authored-By: <the model that actually wrote the code> <noreply@anthropic.com>` and
   `Claude-Session: https://claude.ai/code/session_01DhtAcwQi6qo4racmc1iK4i`.
   A subagent's commit names the subagent's own model.
-- Work happens on the branch `feature/generations` in the main working directory (no worktree), created from `master` (`664f5f07`) before Task 1.
+- Work happens on the branch `feature/generations` in the main working directory (no worktree), created from `master` (`f7d8efdb`) before Task 1.
 - Per-commit gate (`CLAUDE.md`, "Working in this repository"), every task, however small:
   - `cargo fmt --all`
   - `cargo clippy --workspace --all-targets` (warning-free)
@@ -2189,7 +2189,7 @@ git commit -m "test: a scavenge stress mode that verifies the remembered set, an
 
 **Files:** none in the repository until Task 8 records the numbers.
 
-- [ ] **Step 1:** Follow the `measuring-performance` skill and `execution.md`'s protocol ("What removing the re-entries moved", "The Are We Fast Yet benchmarks"): pinned release builds of `master` at the branch point (`664f5f07`) and of the branch head, the same explicit `RUSTFLAGS`, the sixteen benchmarks and the eight microbenchmarks (the four not in the tree written out from `execution.md`, "What spec-conformant lookup moved", never reconstructed), pooled over two sittings.
+- [ ] **Step 1:** Follow the `measuring-performance` skill and `execution.md`'s protocol ("What removing the re-entries moved", "The Are We Fast Yet benchmarks"): pinned release builds of `master` at the branch point (`f7d8efdb`) and of the branch head, the same explicit `RUSTFLAGS`, the sixteen benchmarks and the eight microbenchmarks (the four not in the tree written out from `execution.md`, "What spec-conformant lookup moved", never reconstructed), pooled over two sittings.
 - [ ] **Step 2:** `--collector-statistics` on every benchmark, both trees: scavenges, full collections, their pauses. A benchmark whose full collections did not fall is one whose survivors are tenured too early or whose old space's limit is too low; report it before Task 8.
 - [ ] **Step 3:** The barrier's cost on its own: profile the most store-heavy benchmarks (`DeltaBlue`, `Richards`, `Havlak` among them) and name the share of samples in `write_barrier` and `remember`. If the barrier's inline compare is not folded into the store accessor's path, report it.
 - [ ] **Step 4:** Peak working set, as `memory.md`'s "The interim cost" measures it, on `bench_loop.ns`, `bench_send.ns` and `bench_block.ns`, both trees: the nursery commits 10 MiB at once, so a small program's peak grows by up to that; record it.

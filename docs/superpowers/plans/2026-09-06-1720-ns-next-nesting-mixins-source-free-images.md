@@ -4,7 +4,7 @@
 
 > **Status: Complete.** All 19 tasks (94 steps) implemented, each reviewed
 > for spec compliance and quality, on `feature/m3-nesting-mixins`
-> (`7aa0ae9..45446c7`), merged to `master` at `0b41646`. Verified on the
+> (`bbe5460..a925d68`), merged to `master` at `4f5ea64`. Verified on the
 > merged result: 531 tests pass, `cargo clippy --workspace --all-targets`
 > is warning-free, `cargo fmt --all` is clean, `parse-corpus` reports
 > `parsed 210, failed 0, expected-fail 1, stale 0` and `run-corpus`

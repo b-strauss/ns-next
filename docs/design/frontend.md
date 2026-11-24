@@ -461,12 +461,12 @@ over all modules before the next) over the 211 modules of `corpus/modules`,
 the total `parse` median is 94.8 ms (spread over the nine runs 94.0-95.4
 ms) and `parse_for_editor` 95.1 ms (93.9-95.4 ms), against 104.8 ms
 (104.2-105.3 ms) and 104.5 ms (104.1-105.2 ms) with the attachment of
-c6448e16: 9.5 % and 9.0 % less.
+713a4aa6: 9.5 % and 9.0 % less.
 Per pass over the corpus (temporary instrumentation, one release build
 without the pin) the prepass takes 9.7 ms, keeping the tokens 2.4 ms, the
 loop over the records 6.0 ms and the descent 8.4 ms, 3.4 ms of it building
 the 8,109 `AttachedComment`s; the prepass and the loop together take 15.7
-ms against 22.3 ms for the prepass and the measuring of c6448e16. The attachment is
+ms against 22.3 ms for the prepass and the measuring of 713a4aa6. The attachment is
 still the second largest cost after the parser's own. The measurement
 covers one machine, Windows' heap allocator and the corpus only.
 

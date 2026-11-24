@@ -25,7 +25,7 @@ enclosing frames by reference.
 dependency.
 
 **Spec:** `docs/design/execution.md`, "Planned: closure conversion" (committed
-in `891de70` and amended in `ec546dd`), with its subsections "The closure keeps
+in `d31d40b` and amended in `4c323c7`), with its subsections "The closure keeps
 its defining activation", "Where the analysis lives", "Fallback blocks",
 "Representation", "The image format", "Fewer protective copies", "Verification
 and the reference lowering" and "Cost", and the five decisions this step added
@@ -35,12 +35,12 @@ document's "What removing the re-entries moved" and "What 3c moved".
 ## Global Constraints
 
 - Work on the branch `feature/closure-conversion`, already created from
-  `master` at `efac7d2` and holding the design commits `891de70` and
-  `ec546dd`, on the checked-out tree — no `git worktree` for the work itself
+  `master` at `7aaaf04` and holding the design commits `d31d40b` and
+  `4c323c7`, on the checked-out tree — no `git worktree` for the work itself
   (throwaway worktrees for the measurement's other binaries are fine and are
   removed afterwards). This plan is committed on the branch before Task 1.
-- The baseline for the measurement is **`efac7d2`**, today's `master`.
-  `be3eb40` is carried beside it, as in every measurement since step 2.
+- The baseline for the measurement is **`7aaaf04`**, today's `master`.
+  `d804eaf` is carried beside it, as in every measurement since step 2.
 - **Outcomes are pinned, not re-derived.** Task 1 records the new goldens on
   the unconverted tree. From Task 2 on, any golden, `tests/fixtures` outcome
   or `run-corpus` row that changes is a finding: stop and report it with the
@@ -2308,7 +2308,7 @@ Claude-Session: https://claude.ai/code/session_01F6LkMsqsEmuNAPegC4eL3K"
 - Create: nothing in the tree. Raw output goes to the session's scratchpad.
 
 **Interfaces:**
-- Consumes: the commits of Task 5 and Task 6, `efac7d2`, `be3eb40`.
+- Consumes: the commits of Task 5 and Task 6, `7aaaf04`, `d804eaf`.
 - Produces: the numbers Task 8 records.
 
 - [ ] **Step 1: Write out the four sources that are not in the tree**
@@ -2324,7 +2324,7 @@ in the scratchpad.
 
 - [ ] **Step 2: Build four binaries**
 
-In throwaway worktrees for `efac7d2` and `be3eb40`, and at the Task 5 commit
+In throwaway worktrees for `7aaaf04` and `d804eaf`, and at the Task 5 commit
 and the Task 6 commit of the branch, each built the same way, in PowerShell:
 
 ```powershell
@@ -2340,7 +2340,7 @@ the expected answer for every source before timing anything.
 - [ ] **Step 3: Check that the step is still inline**
 
 `MakeClosure` and a block's activation are on a send's path. On a release
-build with debug information of `efac7d2` and of the Task 6 commit, run
+build with debug information of `7aaaf04` and of the Task 6 commit, run
 `dumpbin /disasm` (Visual Studio Build Tools, not on `PATH`) and confirm that
 no `vm::run::closure` is a function of its own; record `vm::run`'s
 instruction count in each. If the step split, report that before timing — the
@@ -2357,11 +2357,11 @@ for `bench_block.ns` as well, the way
 - [ ] **Step 5: Present the numbers**
 
 Report to the user, in tables: each source's means per sitting for the four
-binaries; the conversion (Task 5) against `efac7d2`; the copies (Task 6)
-against the conversion; the head against `efac7d2` and against `be3eb40`,
+binaries; the conversion (Task 5) against `7aaaf04`; the copies (Task 6)
+against the conversion; the head against `7aaaf04` and against `d804eaf`,
 each with the protocol's gate (overlapping, entirely above, entirely below);
 `bench_block.ns`'s peak working set; and `vm::run`'s instruction counts. A
-source entirely above `efac7d2` in both sittings is a regression to explain
+source entirely above `7aaaf04` in both sittings is a regression to explain
 before Task 8, not a number to record and move past.
 
 ---

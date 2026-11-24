@@ -38,8 +38,8 @@ primitives as method-table entries moved") and `docs/design/memory.md`
   worktrees for the measurement's before-binaries are fine and are removed
   afterwards). This plan is the branch's first commit.
 - Before Task 1, record `git rev-parse HEAD` of `master` as **START**
-  (`49a2a38` when the plan was written; its code is 3a's head). Every
-  measurement compares against START and against `be3eb40`.
+  (`98b4041` when the plan was written; its code is 3a's head). Every
+  measurement compares against START and against `d804eaf`.
 - Names are written out (`CLAUDE.md`, "Conventions"): no identifier of one or
   two characters, no truncated word, in code, tests and commit messages alike.
   Clippy's `min_ident_chars` refuses the short ones.
@@ -317,7 +317,7 @@ Every binary — the current tree included — is built with the protocol's
 flags, in PowerShell:
 
 ```powershell
-git worktree add ..\ns-next-base be3eb40
+git worktree add ..\ns-next-base d804eaf
 git worktree add ..\ns-next-start <START>
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
 cargo build --release -p ns-cli --manifest-path ..\ns-next-base\Cargo.toml
@@ -357,7 +357,7 @@ worktree and binary.
 Record the five medians per source and binary, and each group's mean. The
 gate: a change is **no slower** when, for every source, the after-group does
 not lie entirely above the group it is compared with, and **faster** when it
-lies entirely below. The comparison with `be3eb40` is reported, not gated.
+lies entirely below. The comparison with `d804eaf` is reported, not gated.
 Two sittings are two complete passes of the loop, one after the other, with
 nothing else running on the machine. The release-only size pins run with
 `cargo test --release -p ns-runtime --lib stays_the_size`.
@@ -1879,7 +1879,7 @@ Expected: PASS, every fixture and golden unchanged.
 - [ ] **Step 5: Measure `feedback_base` on its own.** By the protocol, with a
   fourth binary: this task's parent commit (Task 4's head) as `parent`, the
   gate against it. Report both sittings' tables against `parent`, START and
-  `be3eb40`. If a source's after-group lies entirely above `parent`'s, try,
+  `d804eaf`. If a source's after-group lies entirely above `parent`'s, try,
   one at a time and each measured: (a) `push_step` answering the base with the
   activation instead of `send` loading it; (b) `feedback_base` placed next to
   `slot_base` versus after `counted` in `StackEntry`; (c) `Flow::Switch`
@@ -3433,7 +3433,7 @@ Anything the audit finds that the table does not list is either added to
 `act` as a re-check or reported.
 
 - [ ] **Step 9: Measure.** Two sittings, by the protocol, against START,
-  `be3eb40` and this task's parent (Task 6's head). The caches must make
+  `d804eaf` and this task's parent (Task 6's head). The caches must make
   `bench_send.ns` and `bench_loop.ns` faster than the parent; report
   anything that is not, with the profile-guided reason if one is needed
   (re-profile one source as in Task 1).
@@ -3822,7 +3822,7 @@ git commit -m "feat: invalidate the inline caches, and stress them at every safe
 writes into `execution.md`.
 
 - [ ] **Step 1: Measure the step.** Two sittings, by the protocol, against
-  START and `be3eb40`. Also run, with the branch's release binary, every
+  START and `d804eaf`. Also run, with the branch's release binary, every
   source with `bench --cache-statistics --iterations 30` and every
   whitelisted corpus module (`corpus/runnable.toml`) with
   `run --cache-statistics --send <its entry>`, and record the lines.

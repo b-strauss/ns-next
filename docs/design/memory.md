@@ -1222,8 +1222,8 @@ creator's frame record without registers.
   release build, before the arena, after it, after the activation stack, and
   after the collector; the middle two columns were measured against each
   other in one sitting on 2026-09-10, the arena figures reproducing exactly
-  the ones taken when the arena landed, and the last column is `014f0ff`
-  against the `dc0ffe5` baseline of "How the collector is measured" below,
+  the ones taken when the arena landed, and the last column is `16be8e8`
+  against the `baf524d` baseline of "How the collector is measured" below,
   both under `bench --iterations 10`:
 
   | Command | Entry sends | Before the arena | After the arena | After the activation stack | After the collector |
@@ -1233,7 +1233,7 @@ creator's frame record without registers.
   | `bench --iterations 10`, `bench_send.ns` | 22 | — | 324.9 MB | 4.6 MB | 4.8 MB |
   | `bench --iterations 10`, `bench_block.ns` | 22 | — | 966.9 MB | 446.0 MB | 5.6 MB |
 
-  `dc0ffe5`, "After the collector"'s own baseline, measures 228.8 MB on
+  `baf524d`, "After the collector"'s own baseline, measures 228.8 MB on
   `bench_block.ns` under the same `--iterations 10` — about half the 446.0 MB
   "After the activation stack" figure above, taken on 2026-09-10. The
   likely contributors: closure conversion writing a body's frame back with
@@ -1263,7 +1263,7 @@ creator's frame record without registers.
   `bench_block.ns` shows it most clearly: every iteration creates a block, so
   every iteration reifies one frame and allocates one closure, and before
   step 5 nothing gave either back. Under `bench --iterations 10` its peak
-  fell from 228.8 MB at `dc0ffe5` — the commit directly before the collector
+  fell from 228.8 MB at `baf524d` — the commit directly before the collector
   — to 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`
   ("How the collector is measured" below has the full measurement, against
   the recorded expectation). The heap is now proportional to what is live
@@ -2429,8 +2429,8 @@ trigger and the growth policy"), on one line to stderr after the run
 
 ### How the collector is measured
 
-The baseline is `dc0ffe5`, the merge of closure conversion into `master`, with
-`be3eb40` carried beside it as in every measurement since step 2. All eight
+The baseline is `baf524d`, the merge of closure conversion into `master`, with
+`d804eaf` carried beside it as in every measurement since step 2. All eight
 sources, two sittings, every compared binary built with the protocol's explicit
 flags. `dumpbin /disasm` before any timing: `vm::run`'s step must still be one
 function. That matters more here than usual, because the trigger adds a
@@ -2454,28 +2454,28 @@ consistent with the arena `Vec`s doubling — are the figure the pause has to
 justify itself against. A falling median with a rising maximum is a result, not
 a puzzle.
 
-**Measured 2026-09-20, against both `dc0ffe5` and `be3eb40`, by the protocol
+**Measured 2026-09-20, against both `baf524d` and `d804eaf`, by the protocol
 above.** The peak held exactly as expected: `bench_block.ns` under
-`bench --iterations 10` falls from 228.8 MB at `dc0ffe5` to 5.6 MB at the
+`bench --iterations 10` falls from 228.8 MB at `baf524d` to 5.6 MB at the
 head, level with `bench_loop.ns` and `bench_send.ns`, which stay at 4.6-4.8 MB
 throughout. `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report
 zero collections apiece — they stay under the 4096-slot floor — and those are
 exactly the three sources whose throughput does not move: −0.3%, −0.0% and
-−0.4% against `dc0ffe5`, all three groups overlapping in both sittings. The
+−0.4% against `baf524d`, all three groups overlapping in both sittings. The
 send benchmarks do not feel the trigger's comparison in `push_object`. Three
 more sources — `bench_do.ns`, `bench_new.ns` and `bench_new2.ns` — do
-collect, 26 to 54 times over ten iterations, and stay level with `dc0ffe5`,
+collect, 26 to 54 times over ten iterations, and stay level with `baf524d`,
 their groups overlapping the baseline's in both sittings, means spanning
 −2.1% to +0.6%. `bench_newarg.ns` collects 107 times, the second-most of the
 eight, and is the narrowest of the level sources at +2.9% pooled: entirely
-above `dc0ffe5` in the second sitting and overlapping it by only 0.01 ms in
+above `baf524d` in the second sitting and overlapping it by only 0.01 ms in
 the first. All four of these collecting, still-level sources stay 5.3-18.0%
-below `be3eb40`.
+below `d804eaf`.
 
 **`bench_block.ns` is the one source that contradicts the expectation, and it
-does so plainly: +12.2% against `dc0ffe5`, the one source whose pooled
+does so plainly: +12.2% against `baf524d`, the one source whose pooled
 groups do not overlap in either sitting and the only one beyond a couple of
-percent** (still 5.3% below `be3eb40`). It is the only one of the eight
+percent** (still 5.3% below `d804eaf`). It is the only one of the eight
 that allocates a closure per iteration, so the only one that collects
 enough to show: `bench --collector-statistics` over `bench --iterations 10`
 records 269 collections, 15.479 ms total pause, 0.202 ms longest. Pause

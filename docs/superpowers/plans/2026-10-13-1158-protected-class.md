@@ -105,7 +105,7 @@ Expected: every test passes; `cmp -l` shows only fingerprint bytes.
 | `goldens/library/number/large-integer/large_integer_literals` | 20–41 R |
 | `goldens/library/number/tower/arithmetic_is_exact_without_a_float` | 24, 28, 41 K (`isKindOfInteger`, `isKindOfFraction`) |
 
-The line numbers are those of commit `aba0d9e9`; find each by its text if a line has moved.
+The line numbers are those of commit `062f0ee0`; find each by its text if a line has moved.
 
 **Interfaces:**
 - Consumes: `Interpreter::bootstrap`, `Interpreter::enter`, `Mutator::class_of`, `Mutator::builtin_class`, `Heap::describe`, the `load`/`expect_ok` helpers as `crates/ns-runtime/tests/metaclasses.rs` writes them.

@@ -44,8 +44,8 @@ Primitives are method-table entries" (the authority for this plan), with
   worktrees for the *measurement's* before-binaries are fine and are removed
   afterwards).
 - Before Task 1, record `git rev-parse HEAD` as **START**: the commit the step
-  starts from, whose code is identical to `master`'s `7da8b92`. Task 5 measures
-  against it and against `be3eb40`.
+  starts from, whose code is identical to `master`'s `37cfbb8`. Task 5 measures
+  against it and against `d804eaf`.
 - Names are written out (`CLAUDE.md`, "Conventions"); clippy's
   `min_ident_chars` refuses one- and two-character names, which is why the
   collection primitives are `Enumerate` and `ElementAt`, not `Do` and `At`.
@@ -1078,7 +1078,7 @@ class BenchDo usingPlatform: platform = Object new (
   flags.** In PowerShell:
 
 ```powershell
-git worktree add ..\ns-next-base be3eb40
+git worktree add ..\ns-next-base d804eaf
 git worktree add ..\ns-next-start <START>
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
 cargo build --release -p ns-cli --manifest-path ..\ns-next-base\Cargo.toml
@@ -1122,7 +1122,7 @@ foreach ($round in 1..5) {
   each group's mean, per sitting. The comparison with START is the gate: the
   step is "no slower" when, for every source, the after-group does not lie
   entirely above the start-group, "faster" where it lies entirely below. The
-  comparison with `be3eb40` is reported. If any source is slower than START
+  comparison with `d804eaf` is reported. If any source is slower than START
   beyond noise, stop and report with both tables before anything else —
   PROGRESS.md's open finding says the send path is codegen-sensitive, so a
   slowdown is investigated (a variant measured, not assumed), not accepted.
@@ -1157,7 +1157,7 @@ foreach ($round in 1..5) {
   entries moved" after "What spec-conformant lookup moved": the protocol
   (every binary with the pinned `RUSTFLAGS`, seven sources, five rounds,
   rotating order, two sittings), both sittings' tables against START and
-  `be3eb40`, and what they show.
+  `d804eaf`, and what they show.
 - [ ] **Step 4: `README.md`.** The dispatch row's "Planned next" becomes the
   inline caches, 3b then 3c; the core library's becomes the core library as
   Newspeak source.

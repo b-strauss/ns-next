@@ -823,7 +823,7 @@ tag-named objects had a hash recorded when it was built.
 (`crates/ns-cli/tests/snapshot_load.rs`) pins the fix end to end: a module
 asks a builtin class, its own class and the platform for their hash while
 being instantiated, snapshots, reloads, and asks the same three questions
-again. Checked against the pre-fix parent commit (`1e57a47`, Task 1's own
+again. Checked against the pre-fix parent commit (`e032e95`, Task 1's own
 parent) in a throwaway worktree: the task brief's literal program passed
 there too, unchanged — its three hash requests happen to be the very first
 the process ever makes, both while snapshotting and again after the load, so
@@ -875,7 +875,7 @@ and recorded in the design documents before the plan.
 
 **What changed**, in the plan's order. The plan's first task, the profile of
 `bench_block.ns`, was taken last, with the user, on a binary built from
-`04e5fc0` ([execution.md](design/execution.md), "What the profiles
+`96e6d43` ([execution.md](design/execution.md), "What the profiles
 show").
 
 1. **`SendInlinable`**, wire tag 20, pinned in `opcode_tags.rs`. The reference
@@ -955,7 +955,7 @@ with its whole register file), `builtins::block::run_while`, and
 `decide_send`, `decide_lexical_send`, `decide_super_send` and
 `decide_does_not_understand`.
 
-Measured whole against `04e5fc0` in one sitting on a release build, three
+Measured whole against `96e6d43` in one sitting on a release build, three
 rounds of `ns-next bench` over the three fixtures, alternating the binaries
 within each round, the "before" built in a throwaway worktree. Bytecode medians
 in ms, rounds 1–3:
@@ -973,7 +973,7 @@ those tables, and what each attributes, are in
 [execution.md](design/execution.md), "What the trampoline moved".
 
 **Byte identity.** Every `build` and `snapshot` artifact of the optimized
-lowering is identical between `04e5fc0` and this step: `compared 46 artifacts,
+lowering is identical between `96e6d43` and this step: `compared 46 artifacts,
 0 differing`. A reference-lowering artifact differs by construction, since it
 carries `SendInlinable`.
 
@@ -995,8 +995,8 @@ became trampoline steps, so no Rust frame is live below a safepoint — the grou
 2b and 2c stand on ([execution.md](design/execution.md), "No re-entry from
 Rust"; [memory.md](design/memory.md), "No Rust frame is live below a
 safepoint"). The design was settled and recorded in the design documents
-(`be3eb40`) before the plan (`6f940ba`); the step's commits follow the plan on
-`feature/root-discipline-2a`, from `aa8323a`.
+(`d804eaf`) before the plan (`d5d08df`); the step's commits follow the plan on
+`feature/root-discipline-2a`, from `fd344f5`.
 
 **Four decisions**, settled with the user on 2026-09-13:
 
@@ -1048,7 +1048,7 @@ safepoint"). The design was settled and recorded in the design documents
    - **Every instantiation body inline.** The plan boxed a description of
      every body that is neither a method nor a block (`Step::Body`), and the
      walk's state per body with work after it; a chain of two levels with code
-     came out 15–18% slower than `be3eb40`. Each body is now a variant of its
+     came out 15–18% slower than `d804eaf`. Each body is now a variant of its
      own — `Step::Initializer`, `Step::InitializerThen`, `Step::ClauseMessage`,
      `Step::SuperclassClause` — each smaller than `Step::Method`, because an
      `Initializer` as large as `Method` measured 4–6% slower on every source
@@ -1108,7 +1108,7 @@ argument) from the final review on
   than through the interner cost 1.7–2.1% on three sources that send to no
   collection in their loops.
 
-Measured whole against `be3eb40` in two sittings on a release build, five
+Measured whole against `d804eaf` in two sittings on a release build, five
 rounds of `ns-next bench <source> --iterations 30`, alternating the binaries
 within each round, the "before" built in a throwaway worktree. Means of the
 five medians in ms, and the change in each sitting:
@@ -1150,8 +1150,8 @@ keeps is somewhere a tracer can find and rewrite it, and a debug-build stress
 mode proves it by moving every object and every reified frame at the run
 loop's safepoints under the whole suite, where a handle the tracer missed
 panics at its first read ([memory.md](design/memory.md), "Checked roots and a
-collector"). The step's commits follow the plan (`0cfe9dd`) on
-`feature/root-discipline-2b`, from `4882a2c`.
+collector"). The step's commits follow the plan (`03a3847`) on
+`feature/root-discipline-2b`, from `4df2561`.
 
 **Decisions**, settled with the user on 2026-09-13 or following from the design:
 
@@ -1182,16 +1182,16 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
 
 **What changed**, in the plan's order:
 
-1. **The closure split** (`f842f6f`). `FrameKind::Closure`,
+1. **The closure split** (`64fb313`). `FrameKind::Closure`,
    `WhileLoop.condition`, `DoLoop.block` and `Step::Block` named the closure
    object; the image format's closure frame names it by object id.
-2. **The root table and the rooted host API** (`cfa87b0`, `03100f7`,
-   `a49139a`). `Root`, `Interpreter::stash`/`fetch`, and `send`,
+2. **The root table and the rooted host API** (`7147160`, `7c5660c`,
+   `2351612`). `Root`, `Interpreter::stash`/`fetch`, and `send`,
    `instantiate`, `load_module` and `platform` on roots, answering a
    `HostResult`; a Newspeak error reaches the host as a `HostError` with its
    receiver rooted, and `instantiate` refuses a root that holds no class. The
    CLI converted first, the tests under transitional names.
-3. **The epoch, the tracing and the move** (`277e606`). `trace.rs`, with
+3. **The epoch, the tracing and the move** (`19c563b`). `trace.rs`, with
    every impl naming every field and matching every variant; a move epoch on
    every `ObjectReference` and `FrameReference` in a debug build; `Heap::move_everything`,
    rotating both arenas with no fixed point and forwarding through a
@@ -1200,14 +1200,14 @@ collector"). The step's commits follow the plan (`0cfe9dd`) on
    it is empty at every safepoint. A debug `Object` grew to 96 bytes and a
    frame-arena entry to 160, which puts a crafted image's debug amplification
    at about 24.9x; the release sizes, 56 and 136, did not change.
-4. **The safepoint and the stress mode** (`747136a`, `36fadb6`). The poll in
+4. **The safepoint and the stress mode** (`1911f17`, `4404949`). The poll in
    `vm::run` at every switch and backward jump, `Interpreter::safepoint` in
    `interpreter/safepoint.rs`, and `NS_NEXT_STRESS_MOVES`.
-5. **The runtime's tests on roots** (`f2d20fd`, `192cd66`), every assertion
+5. **The runtime's tests on roots** (`d6c628b`, `fdfd41d`), every assertion
    unchanged, each file passing with and without the variable.
-6. **`image::load` on roots** (`a5da85f`): `LoadedImage` carries the root class
+6. **`image::load` on roots** (`1ba7fcd`): `LoadedImage` carries the root class
    and the image's roots as `Root`s.
-7. **Only roots leave the crate** (`b3d40d6`): the transitional entries went,
+7. **Only roots leave the crate** (`964e0e6`): the transitional entries went,
    `Signal`, `EvaluationResult`, `platform_value` and `vm::run` became
    crate-private, and `CLAUDE.md` gained the two stress runs as gates and the
    rule that a host keeps a value across a run only as a `Root`.
@@ -1233,7 +1233,7 @@ No golden, no `.expected` file and no `run-corpus` row changed.
   across each `move_now` alone.
 
 **Measurement findings on the way.** Each change on the hot path was measured
-against its parent and against `be3eb40` with the protocol and the seven
+against its parent and against `d804eaf` with the protocol and the seven
 sources of "What removing the re-entries moved"
 ([execution.md](design/execution.md), "What 2b moved"):
 
@@ -1243,17 +1243,17 @@ sources of "What removing the re-entries moved"
 - **The poll, once it was in the binary, made no source slower**: −3.0% to
   +0.9%, every group overlapping its parent's. Cog's fallback, folding the
   request into the depth check, was not needed.
-- **`bench_send.ns` read +1.0% to +1.7% against `be3eb40`** in those sittings,
+- **`bench_send.ns` read +1.0% to +1.7% against `d804eaf`** in those sittings,
   where 2a had measured it level; each task's own parent sat about as high,
   +0.9% to +2.3%, so the whole-step measurement was asked to look again.
 
-Measured whole against `4882a2c` and `be3eb40` in two sittings on a release
+Measured whole against `4df2561` and `d804eaf` in two sittings on a release
 build, five rounds of `ns-next bench <source> --iterations 30`, alternating
 the three binaries within each round, the two before-binaries built in
 throwaway worktrees. Means of the five medians in ms from the first sitting,
 and the change in each sitting:
 
-| Source | `be3eb40` | `4882a2c` | After | Against `4882a2c`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+| Source | `d804eaf` | `4df2561` | After | Against `4df2561`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.21 | 11.38 | 11.33 | −0.4% / −0.9% | +1.1% / +1.1% |
 | `bench_send.ns` | 14.03 | 14.12 | 14.16 | +0.3% / −0.5% | +0.9% / +1.4% |
@@ -1267,11 +1267,11 @@ and the change in each sitting:
 `bench_block.ns` is about 4% faster.** `bench_new2.ns`'s after-group lay
 entirely above its parent's in the second sitting, 8.37–8.44 against
 8.30–8.36 ms; a third sitting, run to settle it, put it level (−0.2%,
-overlapping). Against `be3eb40` nothing is slower beyond the groups' spread:
+overlapping). Against `d804eaf` nothing is slower beyond the groups' spread:
 `bench_loop.ns` is +1.1%, where 2a left it +1.4–1.9% with the groups apart,
 and `bench_block.ns` is 2.5% faster. `bench_send.ns`, +0.9% / +1.4%
-overlapping, is level with `4882a2c`, which itself sat +0.6% / +1.9% above
-`be3eb40` in the same sittings — 2a's figure read in other sittings.
+overlapping, is level with `4df2561`, which itself sat +0.6% / +1.9% above
+`d804eaf` in the same sittings — 2a's figure read in other sittings.
 
 The suite (`cargo test --workspace`, debug build, test binaries already
 built) takes 12.7 s, against 12.5 s before the step. Under
@@ -1299,8 +1299,8 @@ obtainable only inside `Interpreter::enter`, so holding a handle across a
 safepoint, keeping one outside an entry, and a native re-entering the run
 loop are compile errors rather than mistakes the stress mode finds at run
 time ([memory.md](design/memory.md), "The brand, checked by the compiler
-rather than by convention"). The step's commits follow the plan (`7903050`)
-on `feature/lifetime-brand-2c`, from `a5d1e05`.
+rather than by convention"). The step's commits follow the plan (`2010c56`)
+on `feature/lifetime-brand-2c`, from `4999d05`.
 
 **Decisions**, settled with the user on 2026-09-13 or following from the
 design, and one revised on the way:
@@ -1345,16 +1345,16 @@ design, and one revised on the way:
 **What changed**, in the plan's order:
 
 1. **The step state becomes a `Mutator` the run loop enters per
-   instruction** (`d27e40b`): `World`, `Interpreter::enter`, and every step
+   instruction** (`118b672`): `World`, `Interpreter::enter`, and every step
    method moved from `Interpreter` onto `Mutator`; `vm::run` makes one entry
    per instruction and roots its answer in the last.
-2. **Hosts and tests read through `enter`** (`7425f22`, `1c61f1e`), the CLI
+2. **Hosts and tests read through `enter`** (`16af05a`, `6893a78`), the CLI
    first, and nothing that holds a handle leaves an entry.
-3. **Only `enter` reaches the step state** (`e59dc52`, `9066e58`): the
+3. **Only `enter` reaches the step state** (`2d46d15`, `c6ca120`): the
    transitional `Deref` from `Interpreter` to `Mutator` and the old heap
    accessors and `Interpreter::fetch` went, and the image tests' graph
    fixture keeps roots and inspects a decoded graph inside its entry.
-4. **The brand** (`1549fb0`, `2caf3e0`): `'gc` on every movable handle and
+4. **The brand** (`f11be51`, `7cbe79b`): `'gc` on every movable handle and
    every type that holds one, `Heap::new` and `Heap::move_everything`
    private, the three doctests, and then the cast replaced by the plain call
    and the crate's `#![forbid(unsafe_code)]`. Two runtime tests that kept a
@@ -1366,8 +1366,8 @@ design, and one revised on the way:
 **Names are written out.** Between Tasks 2 and 3, the user decided on
 2026-09-14 that no identifier in the workspace is one or two characters long
 or a truncated word — `interpreter`, not `interp`; `program_counter`, not
-`pc`; `ObjectReference`, not `ObjRef` — `ns-syntax` included (`a5c3a0f`,
-`41b8107`, `6b186cf`, `7b41649`). Clippy's `min_ident_chars`, configured in
+`pc`; `ObjectReference`, not `ObjRef` — `ns-syntax` included (`1ca6631`,
+`551845b`, `fdcee51`, `acea6f8`). Clippy's `min_ident_chars`, configured in
 `clippy.toml`, refuses the short names, so the warning-free clippy gate
 enforces it; the rule and its exceptions are in `CLAUDE.md`, "Conventions".
 The one snapshot that changed, `ns-syntax`'s parse snapshot, is a dump of
@@ -1383,14 +1383,14 @@ review before Task 4 made it a compile error; closure parameters the rename
 had named `mutator` though they bound something else; and the unnecessary
 cast.
 
-Measured whole against `a5d1e05` and `be3eb40` in two sittings on a release
+Measured whole against `4999d05` and `d804eaf` in two sittings on a release
 build, five rounds of `ns-next bench <source> --iterations 30`, alternating
 the binaries within each round, the before-binaries built in throwaway
 worktrees, every binary built with `+crt-static` and every function start
 pinned to a 64-byte boundary (below). Means of the five medians in ms from
 the first sitting, and the change in each sitting:
 
-| Source | `be3eb40` | `a5d1e05` | After | Against `a5d1e05`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+| Source | `d804eaf` | `4999d05` | After | Against `4999d05`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.07 | 11.20 | 11.26 | +0.5% / −0.3% | +1.7% / +1.7%, after entirely above in the second |
 | `bench_send.ns` | 13.77 | 14.12 | 14.20 | +0.6% / −0.4% | +3.1% / +2.2%, after entirely above in both |
@@ -1400,15 +1400,15 @@ the first sitting, and the change in each sitting:
 | `bench_new2.ns` | 8.39 | 8.36 | 8.32 | −0.5% / +0.2% | −0.8% / −0.4% |
 | `bench_newarg.ns` | 10.51 | 10.26 | 10.20 | −0.5% / −0.8% | −2.9% / −2.1%, after entirely below in the second |
 
-**Every source is level with `a5d1e05`**, every group overlapping its
-parent's in both sittings, and against `be3eb40` the after-binary sits where
-its parent sits: `a5d1e05` itself is +2.5% to +2.7% above `be3eb40` on the
+**Every source is level with `4999d05`**, every group overlapping its
+parent's in both sittings, and against `d804eaf` the after-binary sits where
+its parent sits: `4999d05` itself is +2.5% to +2.7% above `d804eaf` on the
 send and +1.1% to +2.0% on the loop in these sittings.
 
 **The pin.** A first measurement of the step, with the binaries as their
 configurations built them, read 1–2.5% slower on the block and
 instantiation benchmarks, `bench_new2.ns` entirely above its parent's group
-in both sittings, and a bisection placed it on the brand commit, `1549fb0`.
+in both sittings, and a bisection placed it on the brand commit, `f11be51`.
 Diffing the post-LTO assembly function by function showed its hot code
 instruction for instruction identical to its parent's — the whole run loop,
 `dispatch_native`, `finish`, the pushes and pops — and only cold host code
@@ -1416,7 +1416,7 @@ smaller, ahead of the hot functions, which moved every hot function by 224
 or 240 bytes into a different 64-byte phase; rebuilt with function starts
 pinned to 64 bytes (`-C llvm-args=-align-all-functions=6`), the two commits
 measured level. The tables above are the step re-measured with every
-binary pinned, with a fourth binary — the unpinned `a5d1e05` — in the same
+binary pinned, with a fourth binary — the unpinned `4999d05` — in the same
 rounds: it reads −0.1% to −1.8% against the pinned one, overlapping on all
 but one group, so the pin buys repeatability, not speed, at about 110 KB of
 padding (2,091,520 against 1,979,904 bytes, 5.6%). On 2026-09-14 the user
@@ -1443,11 +1443,11 @@ Plan: [ns-next-spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next
 
 A step inserted ahead of the inline caches, because a cache records what a
 lookup answers and the lookups did not answer what `newspeak-spec.pdf`
-specifies. Twelve deviations were found by probe programs against `59061ec`,
+specifies. Twelve deviations were found by probe programs against `b41897d`,
 each pinned by a fixture or a program outcome whose expectation comes from the
 specification text, which it cites, written before the fix. The step's
-commits follow the plan (`1cfee47`) on `feature/spec-conformant-lookup`, from
-`59061ec`.
+commits follow the plan (`52e08c9`) on `feature/spec-conformant-lookup`, from
+`b41897d`.
 
 **Decisions**, settled with the user on 2026-09-15:
 
@@ -1475,27 +1475,27 @@ commits follow the plan (`1cfee47`) on `feature/spec-conformant-lookup`, from
 
 **What changed**, in the plan's order:
 
-1. **The design documents** (`f3a3847`): [dispatch.md](design/dispatch.md)'s
+1. **The design documents** (`acbc3ad`): [dispatch.md](design/dispatch.md)'s
    resolution rule, the three lookups with a verdict per access modifier,
    the lexical private rule, super sends and slot accessors;
    [object-model.md](design/object-model.md) and
    [image-format.md](design/image-format.md) for the method table and the
    slot record.
 2. **Public lookup passes a private declaration over, and super sends follow
-   §5.10** (`c920a7e`): `dispatch::walk` decides per level whether to accept,
+   §5.10** (`5156687`): `dispatch::walk` decides per level whether to accept,
    skip or stop; a super send finds only public and protected methods, and
    when it finds none, the `doesNotUnderstand:` defined for the superclass
    answers, where the send used to recurse without bound.
-3. **A lexical send's private rule asks only N** (`bbe210d`), the lexically
+3. **A lexical send's private rule asks only N** (`2e4f3df`), the lexically
    enclosing class at the resolver's depth, as Primordial Soup's
    `LexicalSend` does.
 4. **The resolver sees only declared members under their full selectors**
-   (`e730d13`): `foo:bar:` no longer captures `foo:`, an immutable slot
+   (`49fd36d`): `foo:bar:` no longer captures `foo:`, an immutable slot
    declares no setter, and a superclass clause's bare receiver is a lexical
    send in its enclosing class (§6.1).
 5. **Parenthesized self sends and private nested classes pinned**
-   (`3cf7e3e`), both already right.
-6. **Slot accessors are method-table entries** (`431da35`): the lexical-send
+   (`b1b5609`), both already right.
+6. **Slot accessors are method-table entries** (`10cf73b`): the lexical-send
    slot pre-check and the per-application slot map are gone; an accessor
    names its slot by its position among its mixin's own slots, resolved
    through `own_slot_base` as `InitializeSlot` is. The resolver refuses a
@@ -1503,7 +1503,7 @@ commits follow the plan (`1cfee47`) on `feature/spec-conformant-lookup`, from
    so the decoder derives the same accessors and refuses a row whose members
    collide, and the golden image is regenerated for the two new bytes per
    slot and one renamed slot of its source.
-7. **The identity hasher** (`7b1901c`): `hash::IdentityMap` for the method
+7. **The identity hasher** (`7a7ca3e`): `hash::IdentityMap` for the method
    tables, the nested-class slot maps and the application caches.
 8. **The documents**, and the whole-step measurement below.
 
@@ -1513,12 +1513,12 @@ existing test sources declared a slot and a getter method of one name, which
 is now a resolve error; their slots are renamed and nothing they assert
 changed. No other golden, `.expected` file or `run-corpus` row changed.
 
-Measured whole against `59061ec` and `be3eb40` in two sittings on a release
+Measured whole against `b41897d` and `d804eaf` in two sittings on a release
 build, by the protocol with every function start pinned, three of the four
 throwaway sources with their slots renamed for the same reason. Means of the
 five medians in ms from the first sitting, and the change in each sitting:
 
-| Source | `be3eb40` | `59061ec` | After | Against `59061ec`, sitting 1 / 2 | Against `be3eb40`, sitting 1 / 2 |
+| Source | `d804eaf` | `b41897d` | After | Against `b41897d`, sitting 1 / 2 | Against `d804eaf`, sitting 1 / 2 |
 |---|---|---|---|---|---|
 | `bench_loop.ns` | 11.21 | 11.41 | 11.24 | −1.5% / −0.5% | +0.3% / +0.8% |
 | `bench_send.ns` | 13.92 | 14.24 | 12.47 | −12.5% / −12.4%, after entirely below in both | −10.4% / −10.1%, after entirely below in both |
@@ -1576,19 +1576,19 @@ have no access at all and answered any explicit-receiver send, so an explicit
 `doesNotUnderstand:`. No recorded outcome needed updating for it.
 
 **Measurement.** Measured whole against the commit the step started from,
-`883431b`, and against `be3eb40`, in two sittings, by the protocol of
+`87da203`, and against `d804eaf`, in two sittings, by the protocol of
 "What removing the re-entries moved" ([execution.md](design/execution.md)):
 the gate passes in both sittings, and the step is level with its start on all
 seven sources (within ±2.2%, every group overlapping except `bench_newarg.ns`,
 which is entirely below start in the second sitting — faster, not merely
-level). Against `be3eb40`, six of seven sources are 7–10% faster and
+level). Against `d804eaf`, six of seven sources are 7–10% faster and
 `bench_loop.ns` is level (+1.15%/+1.56%, overlapping). See
 [execution.md](design/execution.md), "What primitives as method-table entries
 moved", which also records what the step's first shape cost — a 64-byte
 settled enum on every send's return path measured 5.5–22.4% slower than start
 in the first, blocked measurement — and the five `perf:` commits that
 recovered it, the largest by having each of the five callers that can reach a
-`Lookup::Primitive` match it directly instead (`8a05621`).
+`Lookup::Primitive` match it directly instead (`53c0e9d`).
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets`
 warning-free; `cargo test --workspace`, 722 tests passing with one ignored;
@@ -1609,24 +1609,24 @@ lookup decided and never decides.
 
 **What changed**, in the order it landed:
 
-1. **The profile** (`e6453b4`): 3a's head profiled over the seven sources,
+1. **The profile** (`1435ea4`): 3a's head profiled over the seven sources,
    so the lookup a cache can remove was measured before anything was built —
    13.5–22.4% of the timed samples ([execution.md](design/execution.md),
    "3a's head, before the caches").
-2. **The outcomes a cache could change, pinned first** (`85275a2`): six
+2. **The outcomes a cache could change, pinned first** (`049dac4`): six
    fixtures (`tests-fixtures/cache_*.ns`) and two golden outcomes — nested
    classes sharing behaviour, polymorphic sites, a slot under two
    applications, a private lexical site, class objects and instances at one
    site, a `super` send reaching the factory check, three kinds of
    `doesNotUnderstand:` handler, and a primitive that fails — all checked
    against the uncached code under both lowerings.
-3. **Dispatch ids** (`8792dea`, `431b2dd`): a dense per-heap pair per mixin
+3. **Dispatch ids** (`2225332`, `bd9d21d`): a dense per-heap pair per mixin
    application, minted by `apply_mixin`, for its instances and for its class
    objects, and `Heap::dispatch_id`, the one reader. A class object stores
    only the instances id and derives the class side's as the next, so a
    release `Object` stays 56 bytes and `CLAUDE.md`'s 16.9x figure stands; a
    release-build test now pins the 56.
-4. **Call sites per code family** (`401817a`): a send's `CallSite` is its
+4. **Call sites per code family** (`477b9ad`): a send's `CallSite` is its
    `u32` number among the sends of its root body and every block in it, each
    body records its `family_size`, and the reference lowering emits
    `CallSite::UNCACHED`. The four send tags 7–10 are retired and the sends are
@@ -1635,26 +1635,26 @@ lookup decided and never decides.
    (`CallSiteListNotEmpty`, `CallSitesNotDense`). The golden image stayed
    1235 bytes: each send's site grew by 2 bytes, and each send's entry in
    the list, 2 bytes, went.
-5. **`feedback_base` on every activation** (`f8fdcfa`): a stack entry, a
+5. **`feedback_base` on every activation** (`e944afc`): a stack entry, a
    closure, `Step::Method` and `vm::run` carry where the running family's
    range starts in the heap's cache table, which a family is given the first
    time its root runs. Measured on its own, level with its parent.
-6. **Resolve, then act** (`7d1f21d`, `1f4d6c6`): every send's decision split
+6. **Resolve, then act** (`3463173`, `4d14cba`): every send's decision split
    into its lookup (`interpreter/resolve.rs`, answering a `Resolved` and the
    `Chain` it was found on) and `act`, the one place that runs it, with every
    error text moved word for word. The split pushed `vm::run`'s step out of
    line and cost every source 6.6–13.6%; keeping `decide_super_send` out of
    the step brought it back in line and left `bench_loop.ns` 3.8–4.3% above
    its parent, a miss accepted and carried into the caches.
-7. **The caches** (`ead0d85`, `a702875`): per-site entries (24 bytes) going
+7. **The caches** (`1a15792`, `6c38016`): per-site entries (24 bytes) going
    monomorphic, polymorphic in blocks of 4 (96 bytes) and megamorphic; the
    global cache (1024 entries of 32 bytes) keyed by id, selector and rule;
    `inline_cache::send_public`, `send_lexical` and `send_super`, which
    `vm.rs` calls with the base, the family size and the site. The caches
    pushed the step out of line again, and `#[inline(always)]` on it is what
    kept their gain; every source then came out 7.5–13.8% below its parent,
-   entirely below it, 3a's head and `be3eb40` in both sittings.
-8. **Invalidation and the stress mode** (`1457efd`, `f12dd27`, `c9c3c0f`):
+   entirely below it, 3a's head and `d804eaf` in both sittings.
+8. **Invalidation and the stress mode** (`100a293`, `6ad5d4f`, `706981a`):
    `Interpreter::invalidate_caches`; `NS_NEXT_STRESS_CACHES=1`, a new gate,
    invalidating at every safepoint, under which the tests that observe cache
    states turn the mode off for their own interpreter and still run;
@@ -1678,9 +1678,9 @@ method, §6.3, which also corrects a non-conforming fixture), the decoder's
 density check (call-site numbers are no longer serialized), and the global
 cache's one-probe insert (a two-slot least-recently-used group instead).
 
-**Measurement.** Whole, against 3a's head (`49a2a38`) and `be3eb40`, in two
+**Measurement.** Whole, against 3a's head (`98b4041`) and `d804eaf`, in two
 sittings by the protocol: every source is 4.3–11.3% faster than 3a's head
-and 9.4–19.7% faster than `be3eb40`, every group entirely below both. An
+and 9.4–19.7% faster than `d804eaf`, every group entirely below both. An
 attribution binary — 3a's head with only the forced step inlining — is level
 with 3a's head on every source (within ±2.1%), so the caches account for the
 whole gain and the forcing only keeps it. After the benchmarks the table
@@ -1752,7 +1752,7 @@ inherited factory reachable.
 
 **What changed**, in the order it landed:
 
-1. **Metaclasses are flat** (`1fe05e3`, `cf97de9`). A metaclass's application
+1. **Metaclasses are flat** (`f398a49`, `95ac0fc`). A metaclass's application
    has no superclass application, so a class-side chain finds a member on the
    receiver's own metaclass or not at all; the class object's superclass link
    pointed at `Object`'s behaviour, standing in for the `Class` §3.2 makes a
@@ -1764,7 +1764,7 @@ inherited factory reachable.
    which rested on an inherited class-side `doesNotUnderstand:` and is
    replaced by `tests-fixtures/class_side_super_reaches_object.ns`.
 2. **The primary factory is an entry of the metaclass mixin's method table**
-   (`599cc09`, `c04e22c`), `MethodEntry::Factory(FactoryMethod { selector,
+   (`9d77d74`, `fc0a1bc`), `MethodEntry::Factory(FactoryMethod { selector,
    argument_count, access })`, found by the ordinary lookups. 3b's three
    special cases went with nothing in their place: the factory check ahead of
    lookup, the `Factory` target's re-check, and the re-check ahead of a
@@ -1773,18 +1773,18 @@ inherited factory reachable.
    `OrderedCollection` need an `ObjectData::Array` payload, so that read stays
    on the list of reads a cache key does not cover.
 3. **A class side may not declare the primary factory's selector**
-   (`562d06a`, `369e72a`, `a466c5d`): the resolver refuses it in the check
+   (`1d31fee`, `03319ac`, `bb15df0`): the resolver refuses it in the check
    that already reports a name declared twice on one side, as Primordial
    Soup's `checkNameConflictsForFactory:` does.
-4. **The global cache's lexical key carries N's application** (`341ab02`,
-   `0631dfd`, `da8beed`), as a fourth component beside the guard, the
+4. **The global cache's lexical key carries N's application** (`47b35a6`,
+   `88dbdf0`, `43e32c4`), as a fourth component beside the guard, the
    selector and the rule, so a still-vacant lexical site may read the global
    cache — which 3b's rule forbade — by probing N's `LexicalPrivate` row and
    then the `Lexical` row keyed by `(o, N)`. The component became
    `CacheRule::Lexical(DispatchId)` at step 6 below, which gave `GlobalEntry`
    its separate field back.
-5. **Call-site numbers are off the wire** (`518686a`, `c72482e`, `76d9284`,
-   `c9097d1`): the decoder assigns every family's numbers in the compiler's
+5. **Call-site numbers are off the wire** (`788cc0a`, `8d24e67`, `dd2035e`,
+   `5b71c5c`): the decoder assigns every family's numbers in the compiler's
    emission order once the whole code table is read, so a number is a
    property of the code and never read from an artifact. The send tags 21–24
    retired for 25–28, `RETIRED_OPCODES` is `[7, 8, 9, 10, 21, 22, 23, 24]`,
@@ -1793,7 +1793,7 @@ inherited factory reachable.
    lowering compiled uncached. The golden image shrank from 1235 to 1154
    bytes.
 6. **The global cache is 512 two-slot least-recently-used groups**
-   (`569fdda`, `393311f`), Strongtalk's `lookupCache` rule: one hash picks a
+   (`3c02e6f`, `7928289`), Strongtalk's `lookupCache` rule: one hash picks a
    group, a hit at the second slot swaps the two, and a miss moves the first
    slot's entry to the second. `tests-fixtures/bench_megamorphic.ns` was
    added for the comparison.
@@ -1804,14 +1804,14 @@ inherited factory reachable.
    binary was a throwaway, on no commit of this branch.
 
 **Measurement.** Whole and one change at a time, against the commit the step
-started from (`f99a29f`) and against `be3eb40`, in two sittings by the
+started from (`dffb875`) and against `d804eaf`, in two sittings by the
 protocol, with `tests-fixtures/bench_megamorphic.ns` as an eighth source. The
 three instantiation sources are 2.1–4.1% faster — `X new` is an ordinary
 cached send now — entirely below in both sittings for `bench_new.ns` and
 `bench_newarg.ns` and in the second for `bench_new2.ns`; and the other five
 are 0.2–3.6% slower, `bench_loop.ns` and `bench_send.ns` entirely above in
 both.
-Every source is 6.7–18.2% below `be3eb40`, entirely below in both sittings.
+Every source is 6.7–18.2% below `d804eaf`, entirely below in both sittings.
 Attributed: the conformance changes bought instantiation 3.3–4.6% and cost
 `bench_do.ns` 2.8–3.3%; the lexical key cost `bench_loop.ns` and
 `bench_send.ns` 2.1–3.3%, which a control binary put on the widened key
@@ -1865,25 +1865,25 @@ from 96, in a debug one ([dispatch.md](design/dispatch.md), "3c — The
 dispatch id in the object header").
 
 **What changed:** two tests pinning the ids of a reapplied class and of a
-decoded graph (`27797ed`); the id in the header, stamped at allocation,
+decoded graph (`9050ea9`); the id in the header, stamped at allocation,
 restamped for every live instance when `Heap::class_set_application` changes
 a class's application, and stamped once for every decoded object after
 `rebuild_applications`, with a debug-build check in `Heap::dispatch_id` that
-the header agrees with the class (`681126d`); `ClassData` boxed (`5d3aeff`).
+the header agrees with the class (`7d2298f`); `ClassData` boxed (`b94d515`).
 
-**Measurement.** Both header variants against `393311f` and `be3eb40`, two
-sittings by the protocol, eight sources. Neither is faster than `393311f` by
+**Measurement.** Both header variants against `7928289` and `d804eaf`, two
+sittings by the protocol, eight sources. Neither is faster than `7928289` by
 the protocol's gate: the kept variant's means moved −0.4% to −2.8% in 14 of
 16 cells, never entirely below in both sittings. The header alone grows an
 `Object` to 64 bytes, the release amplification to 18.2x and
 `bench_block.ns`'s peak working set by 2.6%; the boxed variant keeps 56 bytes
 and 16.9x, and takes the debug amplification from 24.9x to 22.2x. Every
-source is 8.3–19.4% below `be3eb40`. `vm::run` is still one function, 4,878
-instructions against 4,926 at `393311f` ([execution.md](design/execution.md),
+source is 8.3–19.4% below `d804eaf`. `vm::run` is still one function, 4,878
+instructions against 4,926 at `7928289` ([execution.md](design/execution.md),
 "What 3c moved").
 
 **The decision departs from the proposed rule**, which would have kept the id
-on the class object since neither variant beat `393311f`. The user kept the
+on the class object since neither variant beat `7928289`. The user kept the
 header with the box, on architectural grounds: a JIT tier's guard is one
 compare at a fixed offset instead of two dependent loads, a class check and a
 class-side branch, as in V8, HotSpot, Cog and Primordial Soup; step 6's
@@ -1906,9 +1906,9 @@ modes. No recorded outcome moved.
 ## M4 — The specification gaps (2026-09-19)
 
 Plan: [ns-next-specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md),
-committed on the branch ahead of Task 1 (`4ea0571`), over the design decided
-with the user on 2026-09-19 (`56e2c1f`). Branch `feature/specification-gaps`,
-started from `6873f09`, on the checked-out tree throughout — no worktree for
+committed on the branch ahead of Task 1 (`cd35daa`), over the design decided
+with the user on 2026-09-19 (`52a23ee`). Branch `feature/specification-gaps`,
+started from `5fa8241`, on the checked-out tree throughout — no worktree for
 the work itself.
 
 **Decisions**, each taken with the user on 2026-09-19:
@@ -1938,34 +1938,34 @@ the work itself.
 
 **What changed**, commit by commit:
 
-- `df0f347` — a §5.7 member set is keyed by a real class identity
+- `6bfe3d5` — a §5.7 member set is keyed by a real class identity
   (`EnclosingClass`) instead of a class's simple name, closing the worst
   deviation the specification audits found: two same-named classes in one
   module no longer share one member set.
-- `80b3ff9` — self-review correction to the member-set change's design text.
-- `717300a` — a code body's local-slot declaration is kept and its
+- `3aa3cd4` — self-review correction to the member-set change's design text.
+- `b02f84d` — a code body's local-slot declaration is kept and its
   initializer runs in declaration order, instead of the parser discarding
   everything but the name.
-- `73921e1` — a setter send is passed by a parameter or an immutable local
+- `299d63e` — a setter send is passed by a parameter or an immutable local
   (§3.6): only a local that declares a setter answers `id:`.
-- `ff1657d` — a parameter's or an immutable local's register is never
+- `d340fd6` — a parameter's or an immutable local's register is never
   copied, since nothing lowered after its initialization can write it.
-- `652e6c5` — pins that a block parameter, not only a method parameter,
+- `af49169` — pins that a block parameter, not only a method parameter,
   needs no copy; corrects `CLAUDE.md` and `compiler.md`'s description of
   `lower_assign`'s `debug_assert!` scope.
-- `7135854` — equal symbol literals are one object per heap (§5.1.6), through
+- `4f71201` — equal symbol literals are one object per heap (§5.1.6), through
   the canonical symbol table.
-- `bc52d0b` — fixes a garbled test doc comment from the symbol-identity task.
-- `67ba5c0` — `Heap::record_canonical_symbol` checks the stored object's
+- `a46f0fb` — fixes a garbled test doc comment from the symbol-identity task.
+- `8541fa6` — `Heap::record_canonical_symbol` checks the stored object's
   handle origin, matching every other write accessor.
-- `abd9bb4` — a decoded image enters its symbols into the heap's table and
+- `006afb4` — a decoded image enters its symbols into the heap's table and
   refuses a repeat record, instead of decoding one object per occurrence.
-- `687c7b4` — records the step as built and measured: "What the
+- `33b28a2` — records the step as built and measured: "What the
   specification gaps moved" in [execution.md](design/execution.md), this
   section, "Where the next session starts" rewritten to say the gaps are
   done, and the `:=` deviation documented in
   [README.md](design/README.md) and [frontend.md](design/frontend.md).
-- `e48c8a4` — rewords [README.md](design/README.md)'s status-cell setter-send
+- `13ef9b5` — rewords [README.md](design/README.md)'s status-cell setter-send
   clause, found reading as a cut-off sentence on review, although
   grammatical.
 
@@ -1973,18 +1973,18 @@ the work itself.
 Important and agreed with both rulings below; four more commits close what
 its minors and recommendations found:
 
-- `36c4d34` — [dispatch.md](design/dispatch.md)'s member-set paragraph
+- `674affd` — [dispatch.md](design/dispatch.md)'s member-set paragraph
   reworded to drop `resolver::build_member_sets`, a function that no longer
   exists in the codebase — docs describe the current state, and the history
   belongs in git.
-- `71e1eb2` — `resolve_class`'s chain built via `EnclosingClass`'s `Copy`
+- `dc0c5ee` — `resolve_class`'s chain built via `EnclosingClass`'s `Copy`
   impl (`.copied()`) instead of rebuilding each field by hand.
-- `bfe9cea` — `lower_assign`'s `StoreOuterLocal` branch (a write from a
+- `9171e19` — `lower_assign`'s `StoreOuterLocal` branch (a write from a
   nested block into an enclosing frame's local) now `debug_assert!`s the
   value-register invariant too, so every write into a named local is
   asserted, not only the two `StoreLocal` branches; `CLAUDE.md` and
   [compiler.md](design/compiler.md) updated to say so.
-- `7bf39e6` — the decoder refuses a decoded symbol record whose class is not
+- `662ab64` — the decoder refuses a decoded symbol record whose class is not
   the builtin `Symbol` class (`DecodeError::SymbolOfWrongClass`), since the
   canonical table would otherwise hand that object to every later literal of
   its text.
@@ -2004,11 +2004,11 @@ its minors and recommendations found:
    `nil isNil` was a skipped gap then; both were fixed by "`UndefinedObject`
    and the nil protocol".
 
-**Measurement.** The head (`abd9bb4`) against `22a56f7`, the merge of 3c,
-with `be3eb40` carried as the reference, two sittings by the protocol, eight
-sources. **Level with `22a56f7` on every source** — no source entirely above
-in both sittings — and 7.6–18.2% below `be3eb40`. `vm::run` stayed one
-function, 4,878 instructions in both `22a56f7` and the head, no
+**Measurement.** The head (`006afb4`) against `e9f97f9`, the merge of 3c,
+with `d804eaf` carried as the reference, two sittings by the protocol, eight
+sources. **Level with `e9f97f9` on every source** — no source entirely above
+in both sittings — and 7.6–18.2% below `d804eaf`. `vm::run` stayed one
+function, 4,878 instructions in both `e9f97f9` and the head, no
 `vm::run::closure` split out. The copy elision measured no gain on these
 eight sources: none of them declares a local slot with an initializer or
 writes a parameter, so it never fires on any of them. See
@@ -2025,18 +2025,18 @@ ruling above): the `Init` case of
 ## M4 — Removing `:=` (2026-09-19)
 
 Plan: [ns-next-remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md),
-committed on the branch ahead of Task 1 (`8ac121b`). Branch
-`feature/remove-assign`, started from `24e414d`, on the checked-out tree.
+committed on the branch ahead of Task 1 (`d43b7ee`). Branch
+`feature/remove-assign`, started from `6b9081c`, on the checked-out tree.
 Decided with the user on 2026-09-19, while closing the specification gaps,
 as its own small step ahead of closure conversion.
 
-- `84abbdf` — every golden and runtime test that spelled `:=` is written as a
+- `798eb8d` — every golden and runtime test that spelled `:=` is written as a
   setter send, while `:=` was still accepted, so the whole suite under both
   lowerings proved the two spellings answered the same: no `.toml` moved.
   The image wire-format fixture was regenerated in the same commit: its
   source spelled `:=` three times, so the source spans it records shifted by
   one to three bytes, and nothing else in the image differs.
-- `dcf83ae` — the lexer refuses `:=` with a diagnostic naming the setter
+- `5de9d2a` — the lexer refuses `:=` with a diagnostic naming the setter
   send, `TokenKind::Assign` is gone, and so are the parser's `:=` arm and the
   two guards that kept a unary loop off an assignment's target.
 - The record, in the commit after it: frontend.md's deviation retired, the
@@ -2053,9 +2053,9 @@ both stress modes.
 ## M4 — Closure conversion (2026-09-20)
 
 Plan: [ns-next-closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md),
-committed on the branch ahead of Task 1 (`faf527c`), over the design decided
-with the user on 2026-09-19 (`891de70`, refined by `ec546dd`). Branch
-`feature/closure-conversion`, started from `efac7d2`, on the checked-out tree
+committed on the branch ahead of Task 1 (`2354182`), over the design decided
+with the user on 2026-09-19 (`d31d40b`, refined by `4c323c7`). Branch
+`feature/closure-conversion`, started from `7aaaf04`, on the checked-out tree
 throughout — no worktree for the work itself, only throwaway ones for the
 comparison binaries. Step 4 of M4; the design is
 [execution.md](design/execution.md), "Closure conversion".
@@ -2085,30 +2085,30 @@ build ([execution.md](design/execution.md), "Decisions"):
 
 **What changed**, commit by commit:
 
-- `e7ffe32` — the capture goldens, now in `goldens/language/block/`, recorded on the unconverted tree,
+- `17e92f8` — the capture goldens, now in `goldens/language/block/`, recorded on the unconverted tree,
   before any code changed, so that every outcome the conversion must preserve
   was pinned by a hand-derived answer first.
-- `2de9780` — `compiler/capture.rs`: the analysis that classifies every local
+- `32b197f` — `compiler/capture.rs`: the analysis that classifies every local
   as a register, a copied value or a vector slot, and lists each real block's
   copied values. Nothing consumed it yet.
-- `ea1bc90` — `ClosureData` carries `copied` and loses `parameters` and
+- `cef7851` — `ClosureData` carries `copied` and loses `parameters` and
   `home`; `CompiledCode` gains `copied_count` and `outer_reach`; a returning
   activation copies its registers into its reified frame only when its entry
   was marked; the wire format follows (`MakeClosure` retires tag 11 for 29,
   the closure record retires body tag 4 for 6, `copied_count` on a code
   record, and the decode checks for all of it).
-- `001c0e1` — `fill_copied_values` writes straight from the object arena into
+- `cebbe84` — `fill_copied_values` writes straight from the object arena into
   the register window, so a block activation allocates nothing for it.
-- `84b9bf5` — `MakeVector`, `LoadVector` and `StoreVector` end to end, wire
+- `3e543e3` — `MakeVector`, `LoadVector` and `StoreVector` end to end, wire
   tags 30–32; nothing emitted them yet.
-- `a3f36a2` — the optimized lowering converts: `Layout` places a body's
+- `62d0c16` — the optimized lowering converts: `Layout` places a body's
   parameters, copied values, temporaries and vector register; `resolve_variable`
   is the one place a `Binding` becomes an access; `lower_fallback_send` keeps
   a fallback closure and everything nested in it by reference.
-- `5441d05` — the protective register copies are asked per register
+- `b10f38d` — the protective register copies are asked per register
   (`a_send_can_write`, `writes_register`) instead of per expression class,
   with a golden for the transitive write-only shape.
-- `fbd7d9f` — regression coverage for the `inlined_depth` arithmetic two
+- `9c0fdc2` — regression coverage for the `inlined_depth` arithmetic two
   levels deep, as a golden and as two lowering tests, both checked against
   two mutations of the shipped code.
 
@@ -2123,12 +2123,12 @@ calls it too; `goldens/language/block/a_nested_block_that_only_writes.ns` pins a
 three shapes. No recorded outcome moved, because the affected programs did
 not compile before the fix.
 
-**Measurement.** Four binaries — `efac7d2`, `be3eb40`, `a3f36a2` (the
-conversion alone) and `fbd7d9f` (the head) — two sittings by the protocol,
-eight sources, 320 timed data lines. **The head is level with `efac7d2` on
+**Measurement.** Four binaries — `7aaaf04`, `d804eaf`, `62d0c16` (the
+conversion alone) and `9c0fdc2` (the head) — two sittings by the protocol,
+eight sources, 320 timed data lines. **The head is level with `7aaaf04` on
 every source**, no source entirely above in both sittings, and 6–19% below
-`be3eb40`, entirely below in both. The conversion on its own is level with
-`efac7d2`, and the copy-narrowing is level with the conversion,
+`d804eaf`, entirely below in both. The conversion on its own is level with
+`7aaaf04`, and the copy-narrowing is level with the conversion,
 `bench_block.ns` included. `vm::run` stayed one inlined function and grew
 from 4,878 to 5,700 instructions; no `vm::run::closure` split out on either
 side, and no source paid for the growth in time. **`bench_block.ns`'s peak
@@ -2156,73 +2156,73 @@ instead of a `LoadOuterLocal`.
 Plan: [ns-next-moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md),
 nine tasks over the design decided with the user on 2026-09-20
 ([memory.md](design/memory.md), "The shape: mark, compact, forward" onward).
-Branch `feature/moving-collector`, started from `dc0ffe5`, the merge of
+Branch `feature/moving-collector`, started from `baf524d`, the merge of
 closure conversion into `master`, on the checked-out tree throughout. Step 5,
 the last numbered step of M4.
 
 **What changed, task by task:**
 
-- Task 1 (`26669c6`) — `Forwarder`'s mapping becomes a parameter (a
+- Task 1 (`89af88d`) — `Forwarder`'s mapping becomes a parameter (a
   `Rotation` for the move stress mode, a forwarding table for the
   collector), and `trace.rs` stops being debug-only, since the collector
   needs the same edge enumeration in every build.
-- Task 2 (`4a66f48`, `422b5d0`) — mark bits (`heap/mark.rs`, one `Vec<u64>`
+- Task 2 (`f2d7ff7`, `4ea5375`) — mark bits (`heap/mark.rs`, one `Vec<u64>`
   per arena, one bit per slot) and a marker: a second `Tracer` beside
   `Forwarder` that sets the bit and pushes onto an explicit work list where
   it was clear, iterative because the graph's depth is the program's to
   choose.
-- Task 3 (`a7954cb`, `94b4a53`) — compaction and forwarding: one pass over
+- Task 3 (`b55249a`, `42720a0`) — compaction and forwarding: one pass over
   the mark bits builds the forwarding table as a running destination index,
   one slides the live slots forward and truncates, one rewrites every handle
   through it; both arenas and one forwarding pass per collection, since a
   closure holds a frame and a frame holds objects. `World::collect` is the
   one entry point, called by `Interpreter::collect_now`, the trigger's
   request path and the collect stress mode.
-- Task 4 (`d383a96`) — the canonical symbol table becomes weak: after
+- Task 4 (`83168c0`) — the canonical symbol table becomes weak: after
   marking and before compaction, an entry whose object is unmarked becomes
   `None`, and the rest are forwarded like everything else.
-- Task 5 (`843cc5a`) — the retention gate: `heap_statistics` answers live
+- Task 5 (`1b6b39f`) — the retention gate: `heap_statistics` answers live
   and occupied slots per arena, so a program that discards `n` closures is
   pinned back at its starting size and one that keeps `n` closures is pinned
   keeping `n` frames — false retention, which no other gate can see.
-- Task 6 (`ba82a60`, `4b09c7f`) — the trigger: `push_object` and `reify`
+- Task 6 (`9b82810`, `60485d5`) — the trigger: `push_object` and `reify`
   already hold the arena's length, so each compares it against a limit and
   sets the safepoint request when it is reached, rather than counting
   allocations. After a collection each arena's limit becomes
   `max(4096, live * 2)`, so a small program — under the 4,096-slot floor —
   never collects at all.
-- Task 7 (`aea8459`, `0a0413c`) — `NS_NEXT_STRESS_COLLECT`, the third stress
+- Task 7 (`e4b7744`, `0bc28c8`) — `NS_NEXT_STRESS_COLLECT`, the third stress
   mode and third gate: collects at every safepoint, paced by heap size like
   the move stress mode, so a missed root is killed at the earliest possible
   moment and the recorded outcomes catch the difference. `run-corpus`
   already ran every listed module from source and as a built binary, under
   both lowerings (`CLAUDE.md`, "Working in this repository"); that existing
   built-binary path now also runs under this gate.
-- Task 8 (`014f0ff`) — `bench --collector-statistics`, printed the way
+- Task 8 (`16be8e8`) — `bench --collector-statistics`, printed the way
   `--cache-statistics` already is: collections, total pause and longest
   pause, then live objects and live frames.
-- Task 9 (this entry) — the measurement, against `dc0ffe5` and `be3eb40`,
+- Task 9 (this entry) — the measurement, against `baf524d` and `d804eaf`,
   and the documents.
 
 **Measurement.** Two sittings by the protocol, eight sources, every binary
 built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
 `vm::run` stayed one function, 5,732 instructions against 5,700 at closure
 conversion. **Peak working set is the point of the step**: `bench
---iterations 10` on `bench_block.ns` falls from 228.8 MB at `dc0ffe5` to
+--iterations 10` on `bench_block.ns` falls from 228.8 MB at `baf524d` to
 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`, which do
-not move. **Seven of the eight sources are level with `dc0ffe5`** (means spanning
-−2.1% to +2.9%) **and 5.3–18.0% below `be3eb40`.** Six of the seven overlap
+not move. **Seven of the eight sources are level with `baf524d`** (means spanning
+−2.1% to +2.9%) **and 5.3–18.0% below `d804eaf`.** Six of the seven overlap
 the baseline's group in both sittings; `bench_newarg.ns`, the narrowest at
-+2.9% pooled, is entirely above `dc0ffe5` in the second sitting and
++2.9% pooled, is entirely above `baf524d` in the second sitting and
 overlaps it by only 0.01 ms in the first, and collects second most often of
 the eight, 107 times.
 `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns` report zero
 collections and are exactly the three whose throughput does not move — the
 recorded expectation named the first two in advance, and `bench_megamorphic.ns`
 fits the same pattern. **`bench_block.ns` is not
-level: +12.2% against `dc0ffe5`, the one source whose pooled groups do not
+level: +12.2% against `baf524d`, the one source whose pooled groups do not
 overlap in either sitting and the only one beyond a couple of percent**,
-still 5.3% below `be3eb40`. It is the only source that allocates
+still 5.3% below `d804eaf`. It is the only source that allocates
 a closure per iteration, so the only one that collects enough to show: 269
 collections, 15.479 ms total pause, 0.202 ms longest, over
 `bench --iterations 10`. Pause accounts for roughly 1.4 ms of the 2.46 ms
@@ -2241,7 +2241,7 @@ No recorded outcome moved.
 
 Plan:
 [ns-next-leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md),
-six tasks. Branch `feature/leaf-inlining`, started from `6f5a5b1` on
+six tasks. Branch `feature/leaf-inlining`, started from `a44f155` on
 `master`, on the checked-out tree throughout. The first part of step 6, the
 core library in Newspeak over a VM mirror, and sequenced ahead of the rest of it
 ([core-library.md](design/core-library.md)): once the library is Newspeak
@@ -2250,18 +2250,18 @@ path has to exist before the rewrite rather than after.
 
 **What changed, commit by commit:**
 
-- `07b8d92` — `recognize_integer_binary` (`compiler/control_flow.rs`), the
+- `a9f96ce` — `recognize_integer_binary` (`compiler/control_flow.rs`), the
   arithmetic counterpart to `recognize`, answering an `IntegerOperation` for
   the nine binary integer selectors behind the same `is_ordinary_send` gate.
   `/` was left out because an integer had no `/` primitive then; it stays
   out, since an integer's `/` can answer a `Fraction`.
-- `dd15105`, `a0fa984` — `Instruction::IntegerBinary`, wire tag 33, and a
+- `af806d7`, `aab58eb` — `Instruction::IntegerBinary`, wire tag 33, and a
   round trip over every `IntegerOperation` through the image format.
-- `b0b9d6e`, `c87645e`, `2b52b7c` — the VM arm and the lowering. The arm
+- `0a39616`, `12d98a2`, `8e4c1e6` — the VM arm and the lowering. The arm
   computes or declines and raises nothing; the lowering emits the
   instruction, an unconditional `Jump` past the fallback, and the ordinary
   `SendPublic` as the fallback, which carries a call site of its own.
-- `e586db9`, `88d86d9` — the goldens: `goldens/library/number/integer/` for the fast
+- `1e236a4`, `f1485ab` — the goldens: `goldens/library/number/integer/` for the fast
   path beside the two ways the guard declines on ordinary values and floor
   division on the fast path, and `goldens/library/number/integer/` pinning that a zero
   divisor still carries the primitive's own message.
@@ -2269,7 +2269,7 @@ path has to exist before the rewrite rather than after.
 
 **Measurement.** Two sittings by the protocol, eight sources, both binaries
 built through `RUSTFLAGS` with `+crt-static` and the function-alignment pin,
-the baseline `6f5a5b1` in a throwaway worktree. `vm::run` stayed one
+the baseline `a44f155` in a throwaway worktree. `vm::run` stayed one
 function: 5,732 instructions at the baseline — the same figure recorded at
 the moving collector — and 5,866 at the head, the `IntegerBinary` arm's 134.
 **Every one of the eight sources is faster, by 11.5% to 31.0%, and every
@@ -2296,7 +2296,7 @@ do. It does not show above the noise — `bench_loop.ns` removed 33% of its
 per-iteration sends and gained 31.0%, which is the tightest the suite gets;
 dropping the `Jump` is in [OPEN-WORK.md](OPEN-WORK.md).
 
-Gates: run task by task as each code commit landed, and green at `88d86d9`,
+Gates: run task by task as each code commit landed, and green at `f1485ab`,
 the branch's last code commit — `cargo test --workspace`, `cargo clippy
 --workspace --all-targets` clean, `parse-corpus` at **210/0/1/0** and
 `run-corpus` at **6/0/205**, the stress modes included. This entry changes
@@ -2332,7 +2332,7 @@ more to a later reader than the silence that usually replaces it.
   row.
 - **"The only earlier step to clear it across its whole suite was 3b"** is true
   for a step measured against its own baseline; several cumulative comparisons
-  against `be3eb40` also show every source entirely below in both sittings.
+  against `d804eaf` also show every source entirely below in both sittings.
 
 ## The core library over a VM mirror (2026-09-22)
 
@@ -2341,43 +2341,43 @@ Plan:
 sixteen tasks over nine decisions taken with the user on 2026-09-21 and
 2026-09-22 ([core-library.md](design/core-library.md), "The core library as
 Newspeak source over a VM mirror"). Branch `feature/kernel-over-vm-mirror`,
-started from `ef4a9da` on `master`, on the checked-out tree throughout. The
+started from `3b20a63` on `master`, on the checked-out tree throughout. The
 first of step 6's three remaining plans.
 
 **What changed, commit by commit:**
 
-- `fc94e84` — `VmMirror`, a builtin class with builtin class tag 14, whose
+- `ad4fb25` — `VmMirror`, a builtin class with builtin class tag 14, whose
   method table carries every leaf as one row of `builtins/primitive.rs`'s
   `MIRROR`, and its one instance, created at bootstrap.
-- `f5a5efc` — `crates/ns-runtime/core-library/Kernel.ns`, resolved by
+- `0e5f7bd` — `crates/ns-runtime/core-library/Kernel.ns`, resolved by
   `resolver::resolve_kernel`, the only resolver that records
   `Binding::MirrorSend`; the bootstrap fills the builtin class objects it
   built as placeholders from the kernel's nested classes and instantiates
   `Kernel vmMirror:` with the mirror.
-- `da695fd`, `f58b84c` — `Instruction::SendMirror`: a mirror send's literal
+- `0d793b0`, `16404d2` — `Instruction::SendMirror`: a mirror send's literal
   `ifFail:` block lowered inline, with no fallback send and no wire tag
   ([compiler.md](design/compiler.md), "Mirror sends").
-- `604a023` — primitive methods: a kernel method whose body only forwards
+- `61ffd15` — primitive methods: a kernel method whose body only forwards
   runs its row's leaf in `act` without an activation, under both lowerings,
   and `NS_NEXT_NO_PRIMITIVE_METHODS=1` to measure without them
   ([dispatch.md](design/dispatch.md), "Primitive methods").
-- `ed6a93f` to `ff7f543` — one family per commit: `Object`; `Boolean`, with
+- `8624e4d` to `da8cbe6` — one family per commit: `Object`; `Boolean`, with
   `True` and `False` now under it; `Integer`; `Float`; the text classes; the
   collections; `Block`; `Platform`.
-- `90632b1` — the per-class primitive lists and the pass-over a failing
+- `8f82a30` — the per-class primitive lists and the pass-over a failing
   primitive took are gone, and the one observable difference is pinned.
-- `52c242b` — `build` refuses an entry only the core library answers, since
+- `5e13ebd` — `build` refuses an entry only the core library answers, since
   its entry check now stops at the first builtin level.
-- `094db4a`, `5c76345` — the measurement and the documents; `3e0ac9f` — the
+- `97bf398`, `6be9b8b` — the measurement and the documents; `7c50de3` — the
   whole-branch review's fixes, among them a test that every kernel method is
   a recognized primitive method named after its row.
 
 **Measurement.** Two sittings by the protocol, eight sources, against
-`e2bb31e`, the merge of leaf inlining, and `be3eb40`, every binary built
+`404ece6`, the merge of leaf inlining, and `d804eaf`, every binary built
 through `RUSTFLAGS` with `+crt-static` and the function-alignment pin.
 **With primitive methods the move cost nothing measurable: −4.5% to +2.1%
-against `e2bb31e`, no group entirely above in either sitting**, and 24.7% to
-40.2% faster than `be3eb40`. Without them, on the same binary, the three
+against `404ece6`, no group entirely above in either sitting**, and 24.7% to
+40.2% faster than `d804eaf`. Without them, on the same binary, the three
 sources named in advance were clearly slower — `bench_megamorphic.ns`
 +23.6%, `bench_block.ns` +21.3%, `bench_do.ns` +5.5% — which is what the
 primitive methods recover. Start-up is 0.5 ms slower, the kernel's parse,
@@ -2394,7 +2394,7 @@ continuing the receiver's lookup. No golden had pinned the old behaviour;
 pins the new one ([core-library.md](design/core-library.md), "The one
 observable difference"). No other recorded outcome moved.
 
-Gates, at `3e0ac9f`: `cargo test --workspace` green (868 tests passing, one
+Gates, at `7c50de3`: `cargo test --workspace` green (868 tests passing, one
 ignored), also under each of the three stress modes; `cargo clippy
 --workspace --all-targets` clean; `parse-corpus` at **210/0/1/0** and
 `run-corpus` at **6/0/205**, under each stress mode too.
@@ -2415,35 +2415,35 @@ gives it the specification's *object model*
 
 **What changed, commit by commit:**
 
-- `1dc548a` — `crates/ns-runtime/kernel/` is `crates/ns-runtime/core-library/`,
+- `0443ab9` — `crates/ns-runtime/kernel/` is `crates/ns-runtime/core-library/`,
   since `kernel` named only the bootstrap phase that installs it, and every
   nested class of `Kernel.ns` says `public`: §6.3.1 defaults a member to
   protected, which would leave a kernel class unreachable from any other
   module.
-- `7d7026d` — `Top`, `Value` and `Number`, and with them §3.2's and §3.1.1's
+- `df2573e` — `Top`, `Value` and `Number`, and with them §3.2's and §3.1.1's
   hierarchy. `BuiltinClass::ALL` is a wire-tag order and no longer a
   superclass order, so the bootstrap fills the placeholders in `fill_order`,
   sorted by depth below `Top`.
-- `1932c0e` — `Top` is refused wherever an artifact names a class, as the
+- `7e28e3f` — `Top` is refused wherever an artifact names a class, as the
   mirror's tag is: §3.2 lets only `Object` name it, so no source module can
   and no image may either ([image-format.md](design/image-format.md)).
-- `39fb961` — the builtin value classes hash by their value rather than by
+- `1292937` — the builtin value classes hash by their value rather than by
   identity, which §3.1.1 requires of anything a copy must hash like.
-- `d011a57`, `8b53296`, `7cfdee3` — the derivation: `builtins/value.rs`
+- `51db735`, `9360623`, `f08254b` — the derivation: `builtins/value.rs`
   answers a value's equality and hash from its state without ever sending,
   four new `MIRROR` rows carry it, and `Value` declares `=`, `hash` and
   `==` over them with a Newspeak fallback for what the leaf declines.
-- `55d3f60`, `ab692b7` — §3.1.1's two conditions, refused where an instance
+- `b7ea3f7`, `7609458` — §3.1.1's two conditions, refused where an instance
   comes into being: a mutable slot below `Value` means no instance, and a
   slot of a value may hold only a value
   ([object-model.md](design/object-model.md), "A value object's two
   conditions").
-- `a6edb79` — the measurement below.
+- `cd486b0` — the measurement below.
 - The fix below: a value's state is the slots its classes declare, so a
   nested class's hidden cache slot is no longer compared or hashed.
 
-**Measurement.** Two sittings by the protocol, eight sources, `ab692b7`
-against `b0a771d` -- the last commit of the work against this branch's head
+**Measurement.** Two sittings by the protocol, eight sources, `7609458`
+against `7da04cb` -- the last commit of the work against this branch's head
 before it started, which is documentation only, so its tree is the code as it
 stood before. The value-state fix below came after the figures were taken and
 touches no path any of the eight sources runs, so they stand for the head.
@@ -2495,8 +2495,8 @@ included ([core-library.md](design/core-library.md), "A value's state is the
 slots its classes *declare*").
 
 **The final whole-branch review found five things, all fixed on
-2026-09-23** (`0ccff43`, `95f2a07`, `cf1c5a0`, `0a5bb4e`, `3da730d`,
-`ed70803`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
+2026-09-23** (`7acba07`, `7cf2e60`, `35fa443`, `c8999e4`, `aca24f7`,
+`9955fc1`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
 answer `false` and the leaf's class-first rule and `Float`'s own `=` are
 one rule again — the ruling that made the numeric tower needed, built
 by the kernel's numbers sub-project ("The kernel's numbers sub-project"
@@ -2511,19 +2511,19 @@ goldens moved, both recorded by this branch:
 `false false`, and `value_hashes_follow_value_equality.ns` gained a
 `Float/Integer` and an `Integer/Float` `cross:` line, each `false false`.
 
-**Gates, at this branch's head** — not at `ab692b7`, since the value-state
+**Gates, at this branch's head** — not at `7609458`, since the value-state
 fix above is code and tests: `cargo test --workspace` green, **892 tests
 passing and one ignored**, also under each of the three stress modes;
 `cargo clippy --workspace --all-targets` clean; `parse-corpus` at
 **210/0/1/0**; `run-corpus` at **6/0/205** in all four lanes. Every commit
-from `ab692b7` on has seen the per-commit group, and the end-of-batch group
+from `7609458` on has seen the per-commit group, and the end-of-batch group
 was re-run at the head.
 
 ## Mixin application (2026-09-23)
 
 Plan:
 [ns-next-mixin-application](superpowers/plans/2026-09-23-0936-ns-next-mixin-application.md),
-eight tasks. Branch `feature/mixin-application`, off `master` at `6833234`,
+eight tasks. Branch `feature/mixin-application`, off `master` at `b8586d5`,
 on the checked-out tree throughout. The user asked for §3.1.1's conditions
 to be enforced strictly, and one of them is that a value's enclosing objects
 are values; a module can be a value only if it can be declared one, which
@@ -2536,11 +2536,11 @@ first, as a language feature in its own right, and **what it unlocks is
 
 **What changed, commit by commit:**
 
-- `ec3282c` — the parser: `<:` is one lexer token, and
+- `79ff94d` — the parser: `<:` is one lexer token, and
   `class C = S ms <: M1 m1 <: … ( … )`, or the same ending in `.`, parses into
   `ClassDeclaration::mixin_applications`, each clause by the superclass
   clause's own parser ([frontend.md](design/frontend.md), "Grammar").
-- `1adcc25`, `a547956` — the resolver resolves each clause's message in the
+- `3072338`, `2bac054` — the resolver resolves each clause's message in the
   declaration's factory scope, the compiler compiles one message body per
   clause, and `nested::build_applied_levels` builds one class level per
   clause, for a root class and a nested one alike: the named class's mixin
@@ -2548,7 +2548,7 @@ first, as a language feature in its own right, and **what it unlocks is
   declaring class (§6.2). A nested declaration's `<:` receivers are evaluated
   in its superclass clause's activation, which answers
   `{superclass. mixin…}`, so no step, frame kind or opcode was added for them.
-- `fac4e2c`, `3e92ae5` — initialization: every clause message is evaluated
+- `b653ab1`, `76e6dc8` — initialization: every clause message is evaluated
   with the applying class's factory arguments, its selector checked against
   the named class's primary factory, and each `mk` just before `Mk`'s
   initializer runs, following §6.2's text and matching SOMns: `ms`, `S`'s
@@ -2556,7 +2556,7 @@ first, as a language feature in its own right, and **what it unlocks is
   every message on the way up; the review caught the order against §6.2's
   "Then, *m* is evaluated", and the fix defers each message to the descent
   (`Instantiation::deferred`).
-- `6b281aa` — the image format: a mixin row carries its clauses, a class
+- `b7fbdcd` — the image format: a mixin row carries its clauses, a class
   record names its mixin by a tagged reference (`MIXIN_ROW`,
   `MIXIN_BUILTIN`), so the class-record tag 5 is retired for 7, a root
   class's levels are rebuilt from the root-class section and named by
@@ -2565,11 +2565,11 @@ first, as a language feature in its own right, and **what it unlocks is
   carries no enclosing object or declaring class, which keeps `Kernel` and
   the VM mirror out of every image ([image-format.md](design/image-format.md),
   "Sections", "Verification").
-- `f1e4d0f`, `de05916`, `77d6e4d` — `goldens/language/class/mixin/`, a new category of ten
+- `fc08231`, `816f635`, `d89e503` — `goldens/language/class/mixin/`, a new category of ten
   goldens, each derived from §6.2 before it was run, and
   `goldens/language/class/mixin/spec_6_2_a_mixin_application_derives_a_class` is no longer
   `skipped`.
-- `1a06417`, `4e83254` and the documentation after them — the whole-branch
+- `0178c2a`, `3089766` and the documentation after them — the whole-branch
   review's fix pass: three more goldens for configurations the review probed
   and found right (a class nested in an applied mixin reaching two `outer`
   hops out, one mixin applied twice in one chain, and a mixin whose own
@@ -2580,7 +2580,7 @@ first, as a language feature in its own right, and **what it unlocks is
   rule the user made explicit afterwards: a module declares itself a value
   with `= Object <: Value`, and a second instance of its class is `=` and
   `==` to it and hashes alike.
-- `5ac5034`, `06fd024`, `6b0f36a`, `4f4ea13` — the measurement, the
+- `6e6483d`, `5cc96e8`, `33849e1`, `11c25c3` — the measurement, the
   regression it found and its fix, below.
 
 **Measurement.** The first measurement found a program with no `<:` paying
@@ -2590,16 +2590,16 @@ pushed `check_factory_arity`, `clause_message_body` and `argument_list` out of
 line and the unboxed applied clause had moved `ClassData.application`. The
 controller ruled it fixed before the documentation, since performance comes
 first and the plan had promised that a declaration without `<:` takes the
-path it took before. `06fd024` restored the ordinary paths plus one test per
+path it took before. `5cc96e8` restored the ordinary paths plus one test per
 level, moved the `<:` machinery into cold helpers and boxed the clause.
-Measured again against `6833234`, three builds a tree and three sittings,
+Measured again against `b8586d5`, three builds a tree and three sittings,
 all ten sources are within the protocol's noise, −2.2% to +1.4%; four
 instantiating sources sat 0.5–1.4% above the base in every build and
 sitting, a difference whose cause is not isolated ([OPEN-WORK.md](OPEN-WORK.md)). `vm::run` is 6,508 instructions in both trees and one function. See
 [execution.md](design/execution.md), "What mixin application cost".
 
 **Gates.** Every commit that changed code or tests saw the per-commit group.
-At the branch's final state the whole end-of-batch group ran at `56ecf79`, the last commit that changed code or tests:
+At the branch's final state the whole end-of-batch group ran at `cf09d95`, the last commit that changed code or tests:
 `cargo test --workspace` had all 39 test results ok plain and under each of
 `NS_NEXT_STRESS_MOVES=1`, `NS_NEXT_STRESS_CACHES=1` and
 `NS_NEXT_STRESS_COLLECT=1`; `run-corpus` reported "ran 6, failed 0, skipped
@@ -2610,7 +2610,7 @@ At the branch's final state the whole end-of-batch group ran at `56ecf79`, the l
 
 Plan:
 [ns-next-value-conditions](superpowers/plans/2026-09-23-2252-ns-next-value-conditions.md),
-eight tasks. Branch `feature/value-conditions`, off `master` at `cdc0257`,
+eight tasks. Branch `feature/value-conditions`, off `master` at `4fa3036`,
 on the checked-out tree throughout. It enforces all four conditions of
 §3.1.1's second bullet strictly — a value's slots are immutable, they hold
 values, its enclosing objects are values, and its class inherits `Value` and
@@ -2649,25 +2649,25 @@ conditions" and "Mixin application", "The root rule".
 
 **What changed, commit by commit:**
 
-- `7cc5467` — the root rule: the resolver binds no root clause receiver,
+- `ccbade3` — the root rule: the resolver binds no root clause receiver,
   `build_root_mixin` records a `RootClauseDefect`, `apply_mixin` folds it and
   the mutable-slot refusal into one `instantiation_refusal`, and
   `decide_instantiation` refuses it; the encoder and the root-section reader
   refuse it too. Ten goldens under `goldens/language/module/root_*`.
-- `727a613` — `Kernel` is `= Object <: Value`, its `Value` level built with
+- `f764090` — `Kernel` is `= Object <: Value`, its `Value` level built with
   `build_applied_levels` like a user root's, and its root mixin with
   `build_root_mixin`; the mirror's class moves below `Value`.
-- `c8c2ab2` — every golden and inline test module declaring a value class
+- `4d27244` — every golden and inline test module declaring a value class
   declares itself a value, the transcript read where it is used or the
   module's methods moved into a nested `Script` class that is no value; no
   recorded outcome moved.
-- `f3c2bd4`, `74e9e8e` — the mutable-slot check covers the whole chain,
+- `16f9658`, `52f5f1b` — the mutable-slot check covers the whole chain,
   since a `<:` clause can put `Value`'s level below a class with slots
   (`first_mutable_slot`).
-- `7c460fa` — a value class that defines `==` below `Value` is refused
+- `82aebc7` — a value class that defines `==` below `Value` is refused
   (`MixinApplication::identity_method`), a level a `<:` clause adds
   included.
-- `d1032c9`, `4912499` — the enclosing-object condition, over every level of
+- `24027e3`, `b4bcf61` — the enclosing-object condition, over every level of
   the class chain with an early stop at a class already checked, decided in
   `interpreter/value_class.rs` from `after_clause`, recorded on the class
   object (`ClassData::value_class_refusal`) and refused, with the identity
@@ -2675,7 +2675,7 @@ conditions" and "Mixin application", "The root rule".
   instantiated a `String` subclass enclosed by a mutable object, starts its
   overriding slot at `OrderedCollection` instead; its recorded outcome did
   not change.
-- `866fddb`, `ef61c03` — the review's fix: the early stop reads the
+- `b998e3a`, `2d9c089` — the review's fix: the early stop reads the
   stopped-at class's own recorded refusal and inherits it, since a refused
   class still exists; and a decoded class object's verdict is recomputed on
   load, in a pass of its own after every application is installed, so a
@@ -2689,19 +2689,19 @@ conditions" and "Mixin application", "The root rule".
   milestone entry used to record as a known gap. A golden and an image
   round-trip test pin a value module whose root defines `==`; every other
   recorded outcome held.
-- **The final review's fixes.** `d704928`: a refusal inherited through the
+- **The final review's fixes.** `df2e5f8`: a refusal inherited through the
   early stop keeps the level its own verdict names, rather than renaming it
   after the class the walk stopped at, so a fault passed on over two levels
   still names the faulty level
   (`goldens/library/value/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`,
-  new; no recorded outcome moved). `07bd995`: the root-section reader
+  new; no recorded outcome moved). `946d45f`: the root-section reader
   refuses a section naming no superclass (`DecodeError::RootWithoutSuperclass`),
-  and the encoder refuses to write one. `521e6ec`: comment corrections.
-  `7b2af64`: `decide_instantiation` tests for a class's refusal instead of
+  and the encoder refuses to write one. `7a7d537`: comment corrections.
+  `fbf7a2f`: `decide_instantiation` tests for a class's refusal instead of
   cloning it, and both refusal errors are out of line and cold. The commit
   after it records the re-measurement.
 
-**Measurement.** Against `cdc0257`, over three sittings and three layouts per
+**Measurement.** Against `4fa3036`, over three sittings and three layouts per
 tree (varied with `-C metadata`, because three plain builds of one tree were
 the same binary), six of nine sources are level (−0.6% to +0.6%),
 `bench_newvalue.ns` is 3.3% faster, start-up did not move, and `vm::run` is
@@ -2710,7 +2710,7 @@ the same binary), six of nine sources are level (−0.6% to +0.6%),
 every sitting. See
 [execution.md](design/execution.md), "What the value conditions cost".
 
-**Re-measured after the review's fix** (`7b2af64`, six sittings, the base,
+**Re-measured after the review's fix** (`fbf7a2f`, six sittings, the base,
 the head before the fix and the head after it in three layouts each):
 `decide_instantiation` is 371 instructions, below the base's 441 (503 before
 the fix). `bench_new.ns` is level, +0.2% pooled, and the head before the fix
@@ -2727,7 +2727,7 @@ left of the 4.4% is in [OPEN-WORK.md](OPEN-WORK.md).
 Plan:
 [ns-next-object-class-accessors](superpowers/plans/2026-09-24-2058-ns-next-object-class-accessors.md),
 five tasks. Branch `feature/object-class-accessors`, off `master` at
-`909bf40`, on the checked-out tree throughout. §3.2 has `Object` provide
+`2825ec9`, on the checked-out tree throughout. §3.2 has `Object` provide
 "accessors for predefined classes and objects, such as the classes of the
 built-in literals (5.1) e.g., `String`", so a bare `String` no enclosing
 declaration declares is §5.7's `self String`; ns-next loaded it as a
@@ -2755,35 +2755,35 @@ variants" and "Primitive methods".
 
 **What changed, commit by commit:**
 
-- `2a2721d`, `cba6881` — the design, and the correction that the accessor
+- `c7af140`, `405aa58` — the design, and the correction that the accessor
   reaches the kernel through `outer Kernel`.
-- `e1d3069` — the plan.
-- `4f34a87` — `Kernel.ns`'s `Object` gets its fifteen accessors;
+- `f585fd3` — the plan.
+- `0190230` — `Kernel.ns`'s `Object` gets its fifteen accessors;
   `MixinMethod.fast_path` and `MethodFastPath` replace `primitive`;
   `ResolvedModule.kernel` confines recognition to the kernel; the recognizer
   refuses `Top` and the mirror's class; `act` answers `BuiltinClass` without
   an activation. `interpreter/kernel.rs`'s
   `objects_class_accessors_are_exactly_the_nameable_builtins` pins the set,
   and `crates/ns-runtime/tests/object_class_accessors.rs` the recognizer.
-- `ed9d7f9` — a `super`-prefixed inheritance-clause receiver lowers to a
+- `2255b4b` — a `super`-prefixed inheritance-clause receiver lowers to a
   real super send in both lowerings (§6.1), which the next commit needed:
   `super Object` had reached the builtin through the fallback it removes.
   Accepted by the controller; it closes the known gap `dispatch.md`
   recorded. One new golden.
-- `46b9cf0` — the resolver binds a name no enclosing declaration declares
+- `8a2ca74` — the resolver binds a name no enclosing declaration declares
   `LexicalSend { depth: 0 }`, in method bodies and nested clauses alike;
   both lowerings emit `UnresolvedIdentifier` for an unbound name; the
   recognizer refuses `Platform` too. Six new goldens; no existing recorded
   outcome moved, and `run-corpus` stayed at ran 6 / failed 0 / skipped 205.
   `tests/fixtures/golden-image.bin` is regenerated: its nested class's
   `Object new` clause now sends `Object`, which adds that symbol.
-- `dd1c70c` — `Instruction::LoadBuiltinClass` and
+- `697b94f` — `Instruction::LoadBuiltinClass` and
   `instantiate::builtin_kind_from_name` are deleted, and opcode 2 joins
   `RETIRED_OPCODES`.
 - this entry's commit — the documents.
 
 **Measurement.** No fixture under `benchmarks/micro/` names a builtin in its
-loop, and all of them are level against `909bf40` within layout noise
+loop, and all of them are level against `2825ec9` within layout noise
 (`bench_block.ns` and `bench_do.ns` read 2–4% faster only because the base's
 two `-C metadata` layouts are slow); start-up is level. A throwaway loop that
 names `Array` and `OrderedCollection` each iteration is 1.5% slower, about
@@ -2835,7 +2835,7 @@ recognized as quick; `language/control-flow/a_short_circuited_conditional_ignore
 `True` now runs its branches, where the leaves used to decline for want of
 a payload.
 
-**Measured** against `ddd9e4f` ([execution.md](design/execution.md), "What
+**Measured** against `cf632a3` ([execution.md](design/execution.md), "What
 `True` and `False` as quick methods cost"): a throwaway source sending
 Boolean methods in its loop is 21.5% faster; the four fixtures are level.
 `vm::run` grew from 6,626 to 6,818 instructions and is still one function.
@@ -3011,27 +3011,27 @@ default. New: `language/class/class-side/the_class_of_a_class_is_its_metaclass`,
 `library/value/a_value_modules_nested_class_is_a_value` and
 `library/value/a_values_slot_refuses_a_class_that_is_no_value`.
 
-**Measured** against `3defb78`, the `master` it started from
+**Measured** against `faa39b0`, the `master` it started from
 ([execution.md](design/execution.md), "What `Behavior`, `Class` and
 `Metaclass` cost"), three layouts of each tree, four sittings pooled, at
-`1c1f624`: **the fixtures are level.** `bench_send.ns` is within 0.5% (8.59
+`8003a9d`: **the fixtures are level.** `bench_send.ns` is within 0.5% (8.59
 → 8.64 ms), `bench_loop.ns` 1.4% faster (7.35 → 7.24) and
 `bench_megamorphic.ns` 2.1% faster (11.70 → 11.45), each in every sitting;
 `bench_block.ns` is the known bimodal source, and fast layout against fast
 layout it is within 0.4% (16.00 → 16.07). The throwaway `bench_metaclass.ns`,
 100,000 × `Outer new Inner make`, is **14.5% slower** (38.68 → 44.29 ms),
 about 56 ns an iteration for the eager metaclass of each nested class object.
-Before `1c1f624` the fixtures were not level: `bench_send.ns` 6.0% slower,
+Before `8003a9d` the fixtures were not level: `bench_send.ns` 6.0% slower,
 `bench_loop.ns` and `bench_megamorphic.ns` 3.4% of the pooled medians before
 rounding, and `bench_metaclass.ns` 17.3% slower (against the 14.5% above),
-the step of the two send sources all on `baf6f65`. **Its cause** was code
+the step of the two send sources all on `d66f852`. **Its cause** was code
 generation: with `chain_start`'s class-side arm gone, LLVM's SROA split the
 `SendKey`'s copy of the receiver into five pieces and stored them back one
 by one wherever a whole `Value` was needed, so the next 16-byte load of
 it -- building `Step::Method` on a hit, the key a megamorphic send hands
 `miss` -- failed
 store-to-load forwarding (a sampling profile put 3,000 of 75,000 samples of
-`bench_send.ns` on that one load). `1c1f624` holds the key's receiver by
+`bench_send.ns` on that one load). `8003a9d` holds the key's receiver by
 reference to the send's own local, which keeps it one object in memory.
 `vm::run` is still one function, with no `vm::run::closure`, and shrank from
 7,055 instructions at the base to 6,741. The same profile shows the same
@@ -3115,36 +3115,36 @@ overruns of the reserve by the search and by a `pass`), and
 tests for the unwind target, the reserve, the activation record and the
 markers.
 
-**Measured** against `3cbfd31`, the `master` it started from
+**Measured** against `0d05a27`, the `master` it started from
 ([execution.md](design/execution.md), "What exceptions cost"), three
-layouts of each tree, four sittings pooled. At `3d5f69c` the branch was
+layouts of each tree, four sittings pooled. At `1ce5aee` the branch was
 slower on paths that use no exception -- `bench_block.ns` 5.0% slow layout
 against slow layout, a throwaway `bench_value.ns` (three block `value`s an
 iteration) 4.6%, `bench_deep.ns` (twenty sends deep and back) 6.4% -- and
 bisecting located two causes, each fixed: `Signal` had grown from 48 to 56
 bytes, and every `Result<Step, Signal>` a send decides from 56 to 64, once
-`Terminate` held a second `NewspeakError` in place (boxed, `f518988`); and
+`Terminate` held a second `NewspeakError` in place (boxed, `5be5293`); and
 compaction shrank an arena to twice its live set while the next collection
 waits for `max(floor, 2 x live)`, so under the floor every collection cut
 the object arena to 144 slots and the next cycle grew it back through five
 reallocations -- older than the branch, exposed when the exception classes
-moved the live set from 57 objects to 72 (`c5b1f2b`, which now shrinks
+moved the live set from 57 objects to 72 (`0a87d21`, which now shrinks
 against the limit). Profiling what was left found a third,
 `decide_slot_accessor` formatting its error in place and so spilling every
-slot read through a stack frame (`1d7587f`, the error out of line). **At
-`1d7587f` every source is faster than the base in every sitting**:
+slot read through a stack frame (`a0c127b`, the error out of line). **At
+`a0c127b` every source is faster than the base in every sitting**:
 `bench_loop.ns` 24.3% (7.27 → 5.50 ms), `bench_send.ns` 18.6% (8.70 → 7.08),
 `bench_block.ns` 18.7% against the three base layouts' mean (18.21 → 14.80;
 no head layout draws the slow mode), `bench_megamorphic.ns` 12.0%
 (11.61 → 10.22), `bench_value.ns` 13.1% (43.82 → 38.09), `bench_deep.ns`
-2.5% (16.27 → 15.86). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With nothing signalled, measured at `3d5f69c`,
+2.5% (16.27 → 15.86). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With nothing signalled, measured at `1ce5aee`,
 `bench_ensure.ns` (one `ensure:` and one `on:do:` an iteration) costs
 about 145 ns an iteration over the same blocks sent `value`
 (60.47 against 46.01 ms); `bench_signal.ns`, an `Error` signalled twenty
 activations down and caught, about 6.4 µs a signal (81.38 against 17.29
 ms for the same recursion answering). `vm::run` is still one function,
 with no `vm::run::closure`: 6,741 instructions on the base, 6,486 at
-`d7a6680`; `push` is inlined into `push_step` and `push_initializer` as
+`f0fd6ba`; `push` is inlined into `push_step` and `push_initializer` as
 before, with `push_past_the_limit` out of line.
 
 ## Editor support: the language server and the JetBrains plugin (2026-09-26)
@@ -3281,7 +3281,7 @@ lazy getter's first mechanism, a `MethodFastPath::LazySlot` arm in
 and then taking the slot base off the activation, did not recover it, and
 dropping the fast path did: a getter answers a filled slot from its own
 activation, and the activation derives its slot base from its
-`current_class`. All four `benchmarks/micro/` fixtures are level with `7c6bdbf`
+`current_class`. All four `benchmarks/micro/` fixtures are level with `fd4a5af`
 (pooled over three builds a side and two sittings, -0.7% to +0.4%, every
 comparison overlapping); `vm::run` is 6,691 instructions against 6,561, the
 difference an arm no ordinary send runs.
@@ -3428,7 +3428,7 @@ factory. The one golden whose output changed is
 lines to six: there is no builtin `OrderedCollection` left to subclass.
 
 **Measured** ([execution.md](design/execution.md), "What the collections
-module cost"), three builds a side against `6d9974b`: all four
+module cost"), three builds a side against `da103f5`: all four
 `benchmarks/micro/` fixtures are level (-0.2% to +0.5%, every comparison
 overlapping); a start that never sends `platform collections` is level too
 (+0.03 ms, +0.2%), since each shipped module is resolved on its first
@@ -3468,7 +3468,7 @@ and an unresolved one as a record. Fourteen new goldens under
 unskipped.
 
 **Measured** ([execution.md](design/execution.md), "What simultaneous slots
-cost"), three builds a side against `0b1f474`, two sittings: `bench_loop.ns`,
+cost"), three builds a side against `df2ab76`, two sittings: `bench_loop.ns`,
 `bench_send.ns` and `bench_block.ns` level (+0.86%, -0.27%, +0.23%,
 medians); `bench_megamorphic.ns` 4.2% slower, separated in both sittings. A
 first version, which wrapped every leaf and inlined the four arms, cost all
@@ -3499,7 +3499,7 @@ safepoint is requested. The safepoints are where they were, and no golden
 changed.
 
 **Measured** ([execution.md](design/execution.md), "What the loop over
-locals moved"), three builds a side against `5fbb2cb`, two sittings: every
+locals moved"), three builds a side against `9900212`, two sittings: every
 fixture faster -- `bench_loop.ns` -29.7%, `bench_send.ns` -23.3%,
 `bench_block.ns` -13.6%, `bench_megamorphic.ns` -19.9% (medians), separated
 in every sitting but one of `bench_loop.ns`'s, which two outlying rounds
@@ -3555,28 +3555,28 @@ gone, and with it the golden that recorded an overflow error; ten new
 goldens pin the new behaviour. Literal tag 8 (`MalformedInteger`) is
 retired; value tag 9, literal tag 10 and builtin class tag 31 are new.
 
-- `b02323d` — `//` rounds toward negative infinity, as Primordial Soup's
+- `ef485d0` — `//` rounds toward negative infinity, as Primordial Soup's
   `Integer>>//` does, where it had rounded as Euclidean division; `7 // -2`
   answers `-4`.
-- `5c25deb` — `ArbitraryInteger`: addition, subtraction, long,
+- `7b95b77` — `ArbitraryInteger`: addition, subtraction, long,
   half-Karatsuba, Karatsuba and Toom-3 multiplication, algorithm D, floor
   division and the radix and `f64` conversions, with
   `THIRD-PARTY-NOTICES.md` and the three submodules.
-- `9e7eb94` — multiplication by the number-theoretic transform above 512
+- `45bdf47` — multiplication by the number-theoretic transform above 512
   digits and Burnikel-Ziegler division above 64, decided with the user the
   same day.
-- `0837ea1` — the `LargeInteger` class and the promotion of an `Integer`
+- `c8c8c9a` — the `LargeInteger` class and the promotion of an `Integer`
   result that does not fit `i64`, which retired the overflow error.
-- `d56c9de` — `LargeInteger`'s own arithmetic and ordering, and every
+- `d99bf90` — `LargeInteger`'s own arithmetic and ordering, and every
   integer and float leaf accepting an argument of either integer class.
-- `8f7fd91` — every integer literal is representable, as
+- `f1206a2` — every integer literal is representable, as
   `Literal::LargeInteger`, and an image carries a `LargeInteger` inline as a
   value, only in its canonical encoding.
-- `fa5f0d3` — the decoder's comment states that decoded `LargeInteger`
+- `d818b78` — the decoder's comment states that decoded `LargeInteger`
   values add to a failed load's peak ([memory.md](design/memory.md), "The
   interim cost, and the one question still open").
 
-**Measured** against `master` (`db380dc`) in one sitting on a release build
+**Measured** against `master` (`852e671`) in one sitting on a release build
 with the pinned `RUSTFLAGS`: three builds of each tree from clean target
 directories, five alternating rounds of `bench --iterations 30`, so fifteen
 medians per tree and benchmark, pooled. No change beyond the builds' own
@@ -3598,7 +3598,7 @@ branch build. `dumpbin /disasm` of a release build with debug information shows
 
 Plan: [ns-next-packaged-artifact](superpowers/plans/2026-09-29-2341-ns-next-packaged-artifact.md);
 [image-format.md](design/image-format.md), "The artifact" and "Packaging".
-Commits: `78bb531..cec79bf`, `78bb531` being the plan's, and the commit of this entry.
+Commits: `b6842c6..4651a80`, `b6842c6` being the plan's, and the commit of this entry.
 
 A program is one `.ns` file, whose root is instantiated with `new`, or a
 JSON project file of several modules, whose root is instantiated with
@@ -3619,35 +3619,35 @@ tags 1 and 3, hash tag 1, header flag 2 (`FLAG_STATELESS`). Every golden
 reaches the platform only through `main:args:` with its `status`, `stdout`
 and `stderr` unchanged, and `goldens/tool/manifest/` pins the manifest.
 
-- `b933032`, `3ce757d` — every golden's root is `new`-instantiated and
+- `9d9536e`, `d4ccd18` — every golden's root is `new`-instantiated and
   reaches the platform only through `main:args:`, with its recorded outcome
   unchanged; a loaded world's initializer re-run shows in a printed
   identity hash.
-- `9cf7abd` — an image names an embedded module's origin (`ORIGIN_EMBEDDED`).
-- `63096bf`, `facec11` — the code and mixin tables describe a forest of
+- `c500989` — an image names an embedded module's origin (`ORIGIN_EMBEDDED`).
+- `96f494c`, `d7b2b00` — the code and mixin tables describe a forest of
   modules, and `CodeIds::id_of` answers an error instead of panicking.
-- `ab5a68f` — the module section, and a module's root class and levels
+- `8d33ad1` — the module section, and a module's root class and levels
   named by index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
   `HASHED_MODULE_CLASS`, `HASHED_MODULE_LEVEL`), which gave a module's
   `<:` levels the identity-hash entry a root level lacked.
-- `7b95b5b`, `27f07fc` — `image::package` writes an application to be
+- `e919615`, `4be9530` — `image::package` writes an application to be
   started, under `FLAG_START`, and a started image must carry exactly one
   root.
-- `9d02911`, `5c9b8ad` — `ns-cli` reads a JSON project file, with either
+- `e650e8c`, `4b767c2` — `ns-cli` reads a JSON project file, with either
   separator in every path and UNC and verbatim prefixes kept.
-- `23bd056`, `898d045` — `run` assembles an application with `new` or a
+- `8251c17`, `22b05a4` — `run` assembles an application with `new` or a
   project's manifest, and `--send` is gone from `run`.
-- `59407ec` — project goldens pin the manifest (`goldens/tool/manifest/`).
-- `bf776f2` — `build` packages the application just before `main:args:`,
+- `db18b3f` — project goldens pin the manifest (`goldens/tool/manifest/`).
+- `ceb2d68` — `build` packages the application just before `main:args:`,
   `load` starts it, and the `snapshot` command is gone.
-- `7c9e082` — `bench` times `main:args:` of an application assembled like
+- `981912e` — `bench` times `main:args:` of an application assembled like
   `run`'s.
-- `97561cc` — `run-corpus` starts each corpus module through a generated
+- `6a9e593` — `run-corpus` starts each corpus module through a generated
   application, in all four lanes.
-- `763fbe2` — the stateless binary, its header flag and its entry field
+- `52e216c` — the stateless binary, its header flag and its entry field
   retire.
-- `088cd6c` — the documentation describes the built state.
-- `cec79bf` — comments that cited retired headings of `image-format.md`, the
+- `7c98d95` — the documentation describes the built state.
+- `4651a80` — comments that cited retired headings of `image-format.md`, the
   host-send callers of `check_method_arity` and the commands sharing the source
   pipeline match the tree; `run-corpus` names its lanes "image" and
   "reference image".
@@ -3658,7 +3658,7 @@ clean. The end-of-batch gates passed: the three stress modes, 2625 of 2625
 each; the language server's tests, 40 of 40; `run-corpus` "ran 6, failed 0, skipped 205" plain and
 under each stress mode; the release suite, 2364 passed. The review of the whole
 branch found no code defect; its text findings were fixed in the two commits
-after `088cd6c`. What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md).
+after `7c98d95`. What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md).
 
 ## The root rule is a resolve error (2026-09-30)
 
@@ -3685,7 +3685,7 @@ Plan: [ns-next-are-we-fast-yet-stage-1](superpowers/plans/2026-09-30-1353-ns-nex
 [execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
 [core-library.md](design/core-library.md), "What exists", "The platform"
 and "Large integers".
-Commits: `072a102` (the plan's) to the commit of this entry.
+Commits: `e63f2b3` (the plan's) to the commit of this entry.
 
 Seven of the Are We Fast Yet benchmarks -- Sieve, Permute, Queens, Towers,
 Bounce, Storage and List -- are runnable programs in
@@ -3706,25 +3706,25 @@ rather than a value. No wire tag changed, and no existing golden's outcome.
 `THIRD-PARTY-NOTICES.md` carries SOMns's MIT notice and Primordial Soup's
 Apache 2.0 licence.
 
-- `0516126` — `Number` iterates with `to:do:` and `to:by:do:`, and `Float`
+- `d0f747b` — `Number` iterates with `to:do:` and `to:by:do:`, and `Float`
   orders with `<=` and `>=`.
-- `bb9c59b` — `Integer` and `LargeInteger` answer `\\`, the remainder of
+- `4ac53b2` — `Integer` and `LargeInteger` answer `\\`, the remainder of
   floor division.
-- `fbfd946` — `Integer` and `LargeInteger` answer `bitAnd:` over two's
+- `1fa98d5` — `Integer` and `LargeInteger` answer `bitAnd:` over two's
   complement.
-- `8c74685` — integers answer `asFloat`, and `Float` answers
+- `1cb21b0` — integers answer `asFloat`, and `Float` answers
   `asStringFixed:` rounding as Primordial Soup does.
-- `41c7a6c` — `platform time` answers Primordial Soup's `Stopwatch` over a
+- `617e365` — `platform time` answers Primordial Soup's `Stopwatch` over a
   monotonic clock.
-- `7232111` — a loaded stopwatch's test pins its start, and the clock's
+- `692cf4f` — a loaded stopwatch's test pins its start, and the clock's
   comments say what holds: the origin is per process.
-- `61ee9e0` — the harness and Sieve, verified by goldens, with
+- `f908034` — the harness and Sieve, verified by goldens, with
   `THIRD-PARTY-NOTICES.md`'s SOMns and Primordial Soup entries.
-- `eb77d7e` — the notices introduce all four upstreams, and the harness's
+- `e27f026` — the notices introduce all four upstreams, and the harness's
   usage line names the command.
-- `38c692c` — Permute, Queens and Towers in Primordial Soup's protocol.
-- `5c66ddc` — Bounce, Storage and List complete stage 1.
-- `dc25ee4` — a timed run's scores, and `bench` over the project, are
+- `d5eeccb` — Permute, Queens and Towers in Primordial Soup's protocol.
+- `9d051b3` — Bounce, Storage and List complete stage 1.
+- `d462664` — a timed run's scores, and `bench` over the project, are
   checked by shape.
 - This commit — the documentation describes the built state.
 
@@ -3738,7 +3738,7 @@ Plan: [ns-next-are-we-fast-yet-stage-2](superpowers/plans/2026-09-30-2156-ns-nex
 [execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
 [core-library.md](design/core-library.md), "What exists", "Large integers"
 and "The numeric tower".
-Commits: `5699ab0` (the plan's) to the commit of this entry.
+Commits: `79327d3` (the plan's) to the commit of this entry.
 
 Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
 `benchmarks/are-we-fast-yet/newspeak/`, ported from SOMns into Primordial Soup's
@@ -3775,26 +3775,26 @@ integers only. Cross-class `=` (with the numeric tower) and `//` with a
 sub-project built both (below); `\\`
 with a `Float` is a refusal Primordial Soup makes too.
 
-- `4f90ca5` — an integer's arithmetic and ordering meet a `Float` argument.
-- `5a451f7` — comments name the modulo selector and describe an integer
+- `7e43b4e` — an integer's arithmetic and ordering meet a `Float` argument.
+- `3d8db1e` — comments name the modulo selector and describe an integer
   meeting a `Float`.
-- `472d4d5` — a test's doc comment names the mismatches it really drives.
-- `eccbfdc` — `Integer` and `LargeInteger` answer `bitOr:`, `bitXor:` and
+- `8d8cdc2` — a test's doc comment names the mismatches it really drives.
+- `9bf7aa6` — `Integer` and `LargeInteger` answer `bitOr:`, `bitXor:` and
   `bitInvert` over two's complement.
-- `4ba1e1f` — `Integer` and `LargeInteger` shift left with `<<`, refusing a
+- `d1c5b7f` — `Integer` and `LargeInteger` shift left with `<<`, refusing a
   result that cannot be allocated.
-- `58e8765` — `Float` answers `sqrt`.
-- `2f4af6e` — Mandelbrot and NBody in Primordial Soup's protocol, at the
+- `5fe6284` — `Float` answers `sqrt`.
+- `5977eaf` — Mandelbrot and NBody in Primordial Soup's protocol, at the
   sizes of decision 3.
-- `4634a60` — the Are We Fast Yet Richards and Primordial Soup's Ton80
+- `9376304` — the Are We Fast Yet Richards and Primordial Soup's Ton80
   Richards.
-- `5f53da2`, `8c4c4b1` — the documentation describes the built state, and
+- `0cce74c`, `8b61b0a` — the documentation describes the built state, and
   the task review's corrections to it.
-- `f7b54b9`, `7195bdd`, `1714ad8` — what the final review found: the open
+- `3409071`, `965f2a4`, `d112046` — what the final review found: the open
   items reconciled, the suite's cost recorded, a shift by a huge count,
   `bitOr:` with `nil` and a `LargeInteger` against NaN pinned, the
   `floatSquareRoot:ifFail:` row appended at the end of `MIRROR`.
-- `8bcfdf0` — the Are We Fast Yet benchmarks leave the suite and run only on
+- `da2cf64` — the Are We Fast Yet benchmarks leave the suite and run only on
   demand, in nextest's `benchmarks` profile, once at the end of a branch and
   never under a stress mode (decided with the user on 2026-10-01); the three
   stress runs drop from 2227 s to 277 s.
@@ -3809,7 +3809,7 @@ Plan: [ns-next-are-we-fast-yet-stage-3](superpowers/plans/2026-10-01-1855-ns-nex
 [execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
 [core-library.md](design/core-library.md), "Strings are code points in two
 widths", "The collections module (plan 2)" and "A NaN equals a NaN".
-Commits: `192c6d0` (the plan's) to the commit of this entry.
+Commits: `62cc2c6` (the plan's) to the commit of this entry.
 
 DeltaBlue, Havlak, CD and Json, the last four Are We Fast Yet benchmarks,
 join the eleven programs of stages 1 and 2 in
@@ -3879,33 +3879,33 @@ The decisions, each the user's (2026-10-01):
     has a comment saying what it answers, takes and signals, and
     `CLAUDE.md` holds the rule.
 
-- `192c6d0` — the plan, and whether an image carries a lazy slot's value
+- `62cc2c6` — the plan, and whether an image carries a lazy slot's value
   recorded in [OPEN-WORK.md](OPEN-WORK.md).
-- `ce858e6` — a `String` is its code points, one byte or four each.
-- `cc2418f` — a `String` answers `at:` and `copyFrom:to:`, and `String
+- `b88a8df` — a `String` is its code points, one byte or four each.
+- `aded6a5` — a `String` answers `at:` and `copyFrom:to:`, and `String
   with:` a one-character string.
-- `745a2ac` — restores the space the previous task dropped from `Symbol`'s
+- `08058e2` — restores the space the previous task dropped from `Symbol`'s
   class header.
-- `7488e1d` — `Float` answers `sin`, `cos` and `asInteger`; `Integer`
+- `1b4a172` — `Float` answers `sin`, `cos` and `asInteger`; `Integer`
   `timesRepeat:` and `Number` `max:`.
-- `2e1b437` — `List` keeps a first index so that `removeFirst` moves
+- `d2d58d0` — `List` keeps a first index so that `removeFirst` moves
   nothing.
-- `98b19e3` — its golden pins a queue moving its elements to the front, and
+- `44e8507` — its golden pins a queue moving its elements to the front, and
   a sort from an offset.
-- `cf924c3` — `Map` and `Set`, insertion-ordered hash tables.
-- `fb090fd` — a NaN equals a NaN, so a `Float`'s equality is an
+- `62c987c` — `Map` and `Set`, insertion-ordered hash tables.
+- `cd84f5f` — a NaN equals a NaN, so a `Float`'s equality is an
   equivalence.
-- `d1bca4f` — a unit test pins NaNs of different bit patterns equal and
+- `0b1b051` — a unit test pins NaNs of different bit patterns equal and
   hashing alike.
-- `5e49e60` — DeltaBlue and `DeltaBlueTon80` join the harness.
-- `10836cb` — Havlak joins the harness.
-- `fe0a935` — CD, with its red-black tree folded in, joins the harness.
-- `aadcf78` — Json joins the harness.
-- `abdc1ea` — the project file separates Json and List as it does every
+- `0636fed` — DeltaBlue and `DeltaBlueTon80` join the harness.
+- `d2c642f` — Havlak joins the harness.
+- `e2bb0f5` — CD, with its red-black tree folded in, joins the harness.
+- `03e6d0a` — Json joins the harness.
+- `1c59050` — the project file separates Json and List as it does every
   other module.
-- `5f6a73f` — every public member of the shipped modules says what it does,
+- `eb089c1` — every public member of the shipped modules says what it does,
   and `CLAUDE.md` holds the rule.
-- `c88bf0f` — the descriptions come before their reasons, and say what
+- `dcb3e51` — the descriptions come before their reasons, and say what
   each refuses.
 - This commit — the documentation describes the built state.
 
@@ -3919,7 +3919,7 @@ receiver at most `stop`.
 ## The baseline over all sixteen programs (2026-10-02)
 
 The fourteen Are We Fast Yet benchmarks and Primordial Soup's Richards and
-DeltaBlue, measured at `1792df5` as [execution.md](design/execution.md)'s
+DeltaBlue, measured at `7afe9a6` as [execution.md](design/execution.md)'s
 protocol asks, before road step 2's second plan (decided with the user on
 2026-09-30): three pinned release builds told apart by `-C metadata`, three
 rounds with the builds' order rotated, `bench --iterations 10` per
@@ -3960,40 +3960,40 @@ now about 23.1x the graph section's bytes in a release build, an `i64`
 beyond 61 bits decoding to a `LargeInteger` ([memory.md](design/memory.md),
 "The interim cost, and the one question still open").
 
-- `1ad761d` — the design: the value is built in seven stages, each green.
-- `56cc40d` — the implementation plan, and why floor division untags both
+- `c9f4818` — the design: the value is built in seven stages, each green.
+- `e530708` — the implementation plan, and why floor division untags both
   operands.
-- `d611748` — `Value` answers through constructors, accessors and the
+- `8a7b8b3` — `Value` answers through constructors, accessors and the
   `ValueKind` view.
-- `daa2957` — the runtime's and the CLI's sources read and make values
+- `0145094` — the runtime's and the CLI's sources read and make values
   through the API.
-- `80ec8fa` — the tests read and make values through the API.
-- `c5030ad` — `Value` is opaque and lives under `heap`, beside the handles
+- `f21b0a0` — the tests read and make values through the API.
+- `0e230fe` — `Value` is opaque and lives under `heap`, beside the handles
   it takes apart.
-- `d15c6a3` — an index, size or count beyond every `SmallInteger` is refused
+- `87e33ea` — an index, size or count beyond every `SmallInteger` is refused
   as out of range, not as a type mismatch
   (`goldens/library/collection/an_index_or_size_past_every_small_integer_is_out_of_range.ns`).
-- `affb53b` — a `SmallInteger` has 61 bits, and every integer beyond them is
+- `e5887f7` — a `SmallInteger` has 61 bits, and every integer beyond them is
   a `LargeInteger`, in the leaves, the compiler's literals and the decoder;
   five goldens' outcomes moved where an integer crosses 2^60.
-- `d5290ce` — a float outside the `SmallFloat64` range is a boxed `Float`
+- `90c9681` — a float outside the `SmallFloat64` range is a boxed `Float`
   (`goldens/library/number/float/a_float_beyond_the_immediate_range_behaves_as_any_float.ns`).
-- `fe2dad2` — a value is one tagged word, Spur's tags, in a release build.
-- `6ca65af` — a heap object stores bare words, and a store checks the value
+- `0d8c4b4` — a value is one tagged word, Spur's tags, in a release build.
+- `34c37c8` — a heap object stores bare words, and a store checks the value
   it stores.
-- `269c707` — `SmallInteger` arithmetic works on the tagged words, one test
+- `9e300b4` — `SmallInteger` arithmetic works on the tagged words, one test
   for both operands.
-- `16c6022` — a value passes by value, now that it is one word.
-- `cc314f7`, `ef26fd7` — the documentation describes the built state; a
+- `7f52e8b` — a value passes by value, now that it is one word.
+- `b4d76e2`, `2c67bac` — the documentation describes the built state; a
   handle's index is private to the `heap` module, `heap.rs` and its
   submodules.
-- `ba18822` — what the eight-byte value moved, measured on all sixteen
+- `f9df7fc` — what the eight-byte value moved, measured on all sixteen
   programs and the microbenchmarks.
 
 **The final whole-branch review** (on Fable) found nothing Critical and two
 Important findings, closed in one commit with its minors:
 
-- `5ee1b9c` — `Heap::load` and `Heap::store` are `pub(crate)`, since a stored
+- `b3d5d1b` — `Heap::load` and `Heap::store` are `pub(crate)`, since a stored
   `Word` carries no brand and a public pair would carry a value from one
   brand to another; `Value::small_integer` refuses an integer outside 61 bits
   with an `assert!` in every build rather than wrapping it in a release
@@ -4045,18 +4045,18 @@ instruction's effect is one function its narrow arm and the out-of-line
 every instruction in its wide form, and goldens and tests pin the forms no
 measured program reaches.
 
-- `8f80f2e` — an `Immediate` is a value that holds no handle, for code to
+- `de1a227` — an `Immediate` is a value that holds no handle, for code to
   carry its constants.
-- `b7428f6` — the compact encoding, eight bytes an instruction, and its
+- `a11726b` — the compact encoding, eight bytes an instruction, and its
   exact round trip.
-- `2b3581e` — a compiled body is stored and run as eight-byte
+- `d433061` — a compiled body is stored and run as eight-byte
   instructions, read back through a decoded view.
-- `9996d38` — each send kind joins its own path, so the loop builds no
+- `9db6097` — each send kind joins its own path, so the loop builds no
   shared pending send.
-- `65ad13a` — every wide form runs, under `NS_NEXT_STRESS_WIDE` and in
+- `ac35d48` — every wide form runs, under `NS_NEXT_STRESS_WIDE` and in
   goldens past every narrow limit (`goldens/runtime/encoding/`,
   `crates/ns-runtime/tests/compact_encoding.rs`).
-- `6a03e90` — what the compact instruction encoding moved, on all sixteen
+- `784fda7` — what the compact instruction encoding moved, on all sixteen
   programs and the microbenchmarks.
 - This commit — the documentation describes the built state.
 - "a body past the register ceiling compiles, and raises when it runs" —
@@ -4069,8 +4069,8 @@ measured program reaches.
   program decides passes its 16- or 32-bit field, rather than aborting, and
   a factory of more than 65,535 parameters raises the too-large error from
   its `<:` clause message rather than an arity mismatch.
-- The follow-ups closed (`fca1d70`, `add5e3d`, `2703d26`, `7b61056`,
-  `ef96c14`, and this commit) — every patched target, the visit's first
+- The follow-ups closed (`b4fcb2a`, `ff63ad5`, `2f84e1f`, `a4910ce`,
+  `2ec4c22`, and this commit) — every patched target, the visit's first
   error and the wide form past each table are pinned; an encoded body's
   tables and sites are private to `bytecode::compact`, read through inlined
   accessors, with `vm::run` unchanged by them (the figures are in
@@ -4092,15 +4092,15 @@ loss, so the 32-bit stream the plan held in reserve was never measured.
 match where the four send kinds met: LLVM built their pending send as a
 stack aggregate with narrow stores, read it back as a byte and dispatched a
 second jump table on the kind. One send path per kind, each arm breaking
-out of its own kind's labelled block, removed it (`9996d38`).
+out of its own kind's labelled block, removed it (`9db6097`).
 
 **Measured** in one sitting against the tree the branch started from,
-`49e1fcc`, three pinned release builds a side: twenty-one of the
+`227e5c1`, three pinned release builds a side: twenty-one of the
 twenty-four sources are faster, by 1.2% to 5.4%, seven of them with
 separated ranges (CD -4.8%, `bench_megamorphic.ns` -5.4%, `bench_loop.ns`
 -1.9%); List, Permute and `bench_send.ns` move by +0.1% to +0.3%, inside
 their ranges. `vm::run` was 8,525 instructions with a stack frame of 0x3A8
-bytes at `9996d38`, against 7,000 and 0x358; its size now is in
+bytes at `9db6097`, against 7,000 and 0x358; its size now is in
 [execution.md](design/execution.md), "What the compact instruction
 encoding moved".
 
@@ -4125,55 +4125,55 @@ then the class word, then the fields. The handle stayed the arena index
 until road step 3b put the objects in the space ("The object space"
 below).
 
-- `c66bb94` -- the reserved guard values are the three lowest ids (`NONE`
+- `5e4d12c` -- the reserved guard values are the three lowest ids (`NONE`
   0, `VACANT` 1, `FORWARDED` 2), and minting stops below 2^22.
-- `a7e6254` -- mixins, applications and compiled code have per-heap ids
+- `015c359` -- mixins, applications and compiled code have per-heap ids
   (`MixinId`, `ApplicationIndex`, `CodeId`, `heap/tables.rs`), and the
   application cache is keyed by them.
-- `c9e4e7e` -- the applied clause packs into one `SmallInteger` (mixin id,
+- `f8eec8d` -- the applied clause packs into one `SmallInteger` (mixin id,
   clause index, builtin tag: 32, 23 and 6 bits), and more than 2^23 clauses
   is a resolve and a decode error.
-- `cd2339b` -- nothing outside the heap module names an object's or a
+- `e860e36` -- nothing outside the heap module names an object's or a
   frame's Rust payload; callers build through typed allocations and the
   value types of `heap/records.rs`.
-- `311e8a9` -- `Symbol` is a subclass of `String`; `Symbol new` is refused
+- `f68925a` -- `Symbol` is a subclass of `String`; `Symbol new` is refused
   and `String new` answers an empty string, each pinned by a golden.
-- `20972be` -- every object has a header word, and the identity hash is 22
+- `92789ed` -- every object has a header word, and the identity hash is 22
   bits wide, wrapping and skipping 0; the decoder refuses a wider one
   (`IdentityHashTooWide`).
-- `85ec6f6`, `937753e` -- instances, arrays, large integers, boxed floats,
+- `8d9b2d0`, `c210b40` -- instances, arrays, large integers, boxed floats,
   strings and symbols are words read by format; a `LargeInteger`'s digits
   are lent in place to `=`, `hash`, the comparisons and the sign tests.
-- `35f2ad6`, `5fed498` -- reified frames are objects of the frame format,
+- `9381ef9`, `465c184` -- reified frames are objects of the frame format,
   ten fixed fields and the whole register file, and the frame arena goes;
   the kernel's `Activation` object is the frame object itself. A married
   frame is pinned across a move and a collection.
-- `17436d4` -- closures are words: code id, captured frame, feedback base,
+- `88a046e` -- closures are words: code id, captured frame, feedback base,
   copied values.
-- `07a87e4` -- class objects are eight words, `Format::Class` a format of
+- `92b13f1` -- class objects are eight words, `Format::Class` a format of
   its own, and a value-class refusal is heap data rendered when `new`
   refuses.
-- `b245c9e` -- each arena slot is one block of words, traced by format
+- `f4067d1` -- each arena slot is one block of words, traced by format
   (`trace_block`).
-- `dc3130e`, `203b568`, `3cdbd5e` -- frames are object records on the wire
+- `c5bd218`, `f7b8382`, `5d8af37` -- frames are object records on the wire
   (`OBJECT_FRAME`, 10; the activation record's 9 retired), and the decoder
   sizes every record in a first pass before it allocates, then fills each
   placeholder in place; a rejected load's transient peak is about 12.0x of
   the graph section's bytes in a release build and 16x in a debug one, plus
   at most 4x of the symbol section's ([memory.md](design/memory.md), "The
   amplification bound of a rejected load"), where it was 23.1x and 28.9x.
-- `e664c77` -- a symbol object's `Symbol` is one probe of a per-heap inverse
+- `efc1854` -- a symbol object's `Symbol` is one probe of a per-heap inverse
   map kept in step with the canonical symbol table, where it rebuilt the
   text and looked it up in the interner on every call; a closure is built
   without a temporary list of its copied values.
-- `7c7d7f3`, `04bc394` -- the documentation describes the built state and
+- `c1b07d7`, `235f7e4` -- the documentation describes the built state and
   records the measurement.
-- `52dff65` -- the final review's fixes: `Heap::fill_frame`, the one public
+- `a6df1aa` -- the final review's fixes: `Heap::fill_frame`, the one public
   way to rebuild a frame object at another size, gives way to a one-field
   `frame_set_uncontinuable`; `symbol_value` and `fill_placeholder_class`
   debug-assert what they rely on.
 
-Measured against `d0e8b08`, nineteen of the twenty-four sources are slower
+Measured against `5fc230b`, nineteen of the twenty-four sources are slower
 with separated ranges, by 3.6% to 30.5% ([execution.md](design/execution.md),
 "What the object representation moved").
 
@@ -4203,30 +4203,30 @@ per 64 words as the forwarding table; no debug no-access protection of
 vacated pages until generated code dereferences addresses; and running out
 of memory aborts, as a failed `Vec` push does.
 
-- `c22b93c3` -- the memory layer lends its committed read-write prefix in
+- `bd88e422` -- the memory layer lends its committed read-write prefix in
   O(1) (`Reservation::prefix`), the end of the prefix kept as a field.
-- `bc006499` -- marking sets the header's mark bit, and marking and
+- `6d267ed6` -- marking sets the header's mark bit, and marking and
   forwarding read an object's pointer words through one enumeration,
   `pointer_ranges`; the mark-bit side table goes.
-- `e1873990` -- a handle is a 64-bit byte offset, a `NonZeroU64`, still
+- `bf97b794` -- a handle is a 64-bit byte offset, a `NonZeroU64`, still
   backed by arena slots; `Resolved` grows from 16 to 24 bytes in a release
   build.
-- `d65b2a0a` -- the object space (`heap/space.rs`): a 64 GiB reservation,
+- `f92a1e1a` -- the object space (`heap/space.rs`): a 64 GiB reservation,
   a 256 KiB first commit that at least doubles as it grows, a bump of the
   top, the overflow word and the walk, built and tested on its own.
-- `e4fd5286` -- objects live in the space; a collection slides the
+- `3f720bac` -- objects live in the space; a collection slides the
   survivors down through a live-word bitmap (`heap/compaction.rs`) and
   gives back committed memory past twice its next limit; the trigger
   counts bytes, with a 512 KiB floor; the move stress mode shifts every
   object by a distance that varies with the epoch.
-- `a51ed31c` -- every allocation writes its object in place in the space,
+- `14b6aaab` -- every allocation writes its object in place in the space,
   and the per-object Rust allocations go; the decoder refuses a class
   record whose placeholder has another size, where it rebuilt the object.
-- `5d1b903f` -- the object access path inlines again: `pointer_words`,
+- `0260344e` -- the object access path inlines again: `pointer_words`,
   `pointer_words_mut` and `pointer_word` are `#[inline(always)]`, after a
   profile found `pointer_words` outlined and holding 5.3% to 8.2% of three
   programs' samples.
-- `cd82cd3c` and the documentation commit after it -- the decoder's
+- `644c9609` and the documentation commit after it -- the decoder's
   amplification bound recomputed for the space: a rejected load's transient
   peak is about 10.7x of the graph section's bytes in a release build and
   16x in a debug one, plus at most 4x of the symbol section's
@@ -4234,7 +4234,7 @@ of memory aborts, as a failed `Vec` push does.
   load"), where it was 12.0x and 16x; the documentation describes the built
   state and records the measurement.
 
-Measured against `d3e9f6f`, the tree the branch started from, seventeen of
+Measured against `9507d02`, the tree the branch started from, seventeen of
 the twenty-four sources are faster, ten with separated ranges, by 3.8% to
 22.1% (`bench_block.ns`); Mandelbrot, `bench_loop.ns` and NBody are 1.5% to
 2.5% slower, separated; Havlak's peak working set falls from 41.9 MB to
@@ -4262,32 +4262,32 @@ entries: `parse` still refuses any error, so nothing compiled sees a
 recovered module, and `parse_for_editor` answers the recovered module, the
 tokens, the comments' spans and every diagnostic.
 
-- `e5d965a3` -- the AST records the brackets an editor folds between,
+- `b9eb15fe` -- the AST records the brackets an editor folds between,
   `Delimiters` on five fields.
-- `908ca63a` -- `ns-syntax` answers comment spans and a module for every
+- `eb81de21` -- `ns-syntax` answers comment spans and a module for every
   source, `parse_for_editor`.
-- `97453a0b` -- setter chains and nested pattern literals are depth-guarded.
-- `ac6e3dec`, `d46acee2` -- a method body, a statement or a class side with
+- `0055b5d1` -- setter chains and nested pattern literals are depth-guarded.
+- `a6e7ec77`, `87b54e89` -- a method body, a statement or a class side with
   an error no longer takes the class with it: an erroneous statement is
   parsed again, bounded at the member start that holds its first error.
-- `f3af1209` -- an unclosed bracket, slot section or type annotation stops
+- `3c9d93b4` -- an unclosed bracket, slot section or type annotation stops
   before its owner's close.
-- `d3fac02c`, `ea5a3eac` -- recovery leaves a declaration without a name
+- `f53ed264`, `830d56a6` -- recovery leaves a declaration without a name
   out instead of naming it empty; a member inside a block, or inside a
   parenthesis in one, is the block's content.
-- `ed7c887f` -- the language server analyses a file with syntax errors as
+- `299ed394` -- the language server analyses a file with syntax errors as
   recovered: colours and resolver errors survive, and the findings are the
   lexer's, the parser's and the resolver's together.
-- `5ece94c2` -- the server announces `foldingRangeProvider` and answers
-  `textDocument/foldingRange`; `46c6a789` and `b0a16262` -- its design and
+- `d03bea53` -- the server announces `foldingRangeProvider` and answers
+  `textDocument/foldingRange`; `54482605` and `931bbcfd` -- its design and
   the recovery cases left as they are, pinned.
-- `8ebaa802`, `0129ef4d` -- the recovery's work has one budget per token of
+- `318e2f84`, `6fe7299f` -- the recovery's work has one budget per token of
   the source, since the speculative member parses nested exponentially
   without one; the folds' remaining cases pinned.
-- `493d4c9e`, `41392e52` -- the member-start lookahead is paid for from the
+- `7b723070`, `b8d096e1` -- the member-start lookahead is paid for from the
   budget and walking the class to an owner's closer no longer is, so the
   parse stays linear and ordinary edits keep their members.
-- `e9c1187d`, `acc9833e` -- a chain of messages is dropped and walked link
+- `d289c340`, `986774ac` -- a chain of messages is dropped and walked link
   by link (`Send`'s `Drop`, `Send::receiver_chain`, the resolver's
   `resolve_send`), so no source length overflows the stack of the parser,
   the resolver or the server.
@@ -4298,27 +4298,27 @@ serves every language, which `runIde` confirmed by hand.
 The structure view, breadcrumbs and sticky lines
 ([editor-support.md](design/editor-support.md), "Structure"):
 
-- `9f6aab45` -- the server answers `textDocument/documentSymbol` from the
+- `1aaad782` -- the server answers `textDocument/documentSymbol` from the
   recovered AST: each class with its factory and its members in source
   order, the temporaries under their methods, each member with its
   effective access.
-- `047ee35b`, `8140b558` -- the platform's structure view for a language
+- `cbd75587`, `528cb33f` -- the platform's structure view for a language
   server shows one icon per symbol kind and so cannot show access, so the
   plugin has a structure view of its own that draws the access icon beside
   the kind's, as Java's does, and switches the platform's off for its
   client; breadcrumbs and IntelliJ's sticky lines stay the platform's, from
   the same symbols. The view asks again while the server has not opened the
   file, and keeps asking for a server that starts late.
-- `0bb1adeb` -- the design and the plugin's description. Checked by hand
+- `d64b1c02` -- the design and the plugin's description. Checked by hand
   under `runIde`.
-- `58ab97c1`, `c995e5c1` -- the tree is flat: under each class its factory,
+- `89a52830`, `191ea7d2` -- the tree is flat: under each class its factory,
   then its instance-side members, then its class-side methods, each in
   source order, with no node for a side, so breadcrumbs and sticky lines go
   from a class straight to its member. A class-side method carries `class`
   in its `detail` (`public class`), and the plugin lays IntelliJ's static
   mark over its kind's icon, as Java marks a static member; the icon the
   plugin gave a side's symbol kind is gone with the sides.
-- `6bd452e3` -- each element of the plugin's structure view has a base
+- `d10d8ae8` -- each element of the plugin's structure view has a base
   icon and a hover text: the root class `Root class`, a
   nested class the class icon (`Public class`), a factory the function icon
   (`Factory method`), a slot with a getter only or a temporary declared
@@ -4326,7 +4326,7 @@ The structure view, breadcrumbs and sticky lines
   the variable icon, a method `Protected method` or, on the class side,
   `Public class method`. The server sends an immutable temporary as
   `Constant`, a mutable one as `Variable`.
-- `e87f9bc2` -- the root class has an icon of its own, a blue `N`, and a
+- `78690ce4` -- the root class has an icon of its own, a blue `N`, and a
   nested value class an orange `V`, drawn as the platform's new-UI node
   icons, with hovers `Root class`, `Root value class` and `Public value
   class`; the server adds `value` to a value class's `detail`. For the root
@@ -4334,13 +4334,13 @@ The structure view, breadcrumbs and sticky lines
   which `load_root_class` now builds from too); for a nested class it
   follows the resolver's binding of each clause's receiver, an
   approximation.
-- `61a5d2eb`, `da553a54`, `ba3d312a` -- hovering a row's icon says what
+- `9d8f9a76`, `5c87d414`, `db10f9a5` -- hovering a row's icon says what
   hovering its text says, the row icon carrying the hover as its own
   tooltip; only the module's class is the root; a nested class's
   value-ness is decided in linear time and in any order; `load_root_class`
   reads the root's shape once; fold placeholders are three ASCII dots, in
   the editor's own font.
-- `652c101c` -- a file selected in the Project view and not open in an
+- `a148c499` -- a file selected in the Project view and not open in an
   editor shows its structure: the server answers `documentSymbol` for a
   `file` URI it never opened by reading the file from disk (an open
   document still wins), and the structure view starts the client when none
@@ -4380,8 +4380,8 @@ them, run with the workspace's, where the language server's had been a group
 of their own. The JetBrains plugin starts `ns-next-analyzer lsp`, and its
 third-party notices cover `clap`, its dependencies and `windows-sys`.
 
-Commits: `71f282e8` the rename, `578dc9cd` `ns-tooling`, `3aac3339` and
-`d3c6ecff` the moved commands and one suite, `542f316b`, `37cb029f` the
+Commits: `b3b50791` the rename, `67d13ea9` `ns-tooling`, `5a5746a3` and
+`2b462bd7` the moved commands and one suite, `4b3f34af`, `b6faa3dc` the
 documents.
 
 ## Generations (2026-10-04)
@@ -4412,26 +4412,26 @@ sizes after HotSpot's ratio, with Primordial Soup's large-object and
 remembered-set limits; and one tenure per load, between the platform paths
 and the graph pass.
 
-- `a090bfb4` -- the object space is two survivor spaces, eden and the old
+- `b0c75d4e` -- the object space is two survivor spaces, eden and the old
   space; every allocation still goes old.
-- `e0166bc4` -- the header's age and remembered bits are written; a write
+- `031c8063` -- the header's age and remembered bits are written; a write
   barrier and a remembered set behind the store accessors; large objects
   and born-remembered allocations.
-- `99b1e581` -- the copying scavenger with age-based tenuring, built and
-  tested on bare heaps; `e66dae72` -- the move stress mode relocates the
-  remembered set; `b6ce9aa3` -- the scavenge checks a canonical symbol's
+- `3ecf595d` -- the copying scavenger with age-based tenuring, built and
+  tested on bare heaps; `ba12a6b3` -- the move stress mode relocates the
+  remembered set; `0e204a7c` -- the scavenge checks a canonical symbol's
   heap and epoch before it rebrands it.
-- `f9d11090` -- the full collection compacts both generations into the old
+- `2fb40892` -- the full collection compacts both generations into the old
   space.
-- `d4b0592f` -- the run loop's safepoint scavenges, an image load tenures,
-  and every heap allocates young; `133e4763` -- a release build expects the
+- `4120cd53` -- the run loop's safepoint scavenges, an image load tenures,
+  and every heap allocates young; `547831f0` -- a release build expects the
   past survivor space to go unnamed.
-- `24a4e0e0` -- the scavenge stress mode, which verifies the remembered set,
+- `2b238e00` -- the scavenge stress mode, which verifies the remembered set,
   and the poison over vacated nursery memory.
 - The documentation commit after them -- the design documents describe the
   built state and record the measurement.
 
-Measured against `664f5f07`, the tree the branch started from: six of the
+Measured against `f7d8efdb`, the tree the branch started from: six of the
 twenty-four sources are faster with separated ranges, by 5.1% to 9.9%
 (`bench_block.ns`), CD by 8.3% and Havlak by 7.7% among them; every
 source's full collections fell, Havlak's from 780 to 85 and CD's from
@@ -4469,28 +4469,28 @@ for every `newspeak.json`, takes an "ns-next path" in its settings, and
 runs or benchmarks a project from a "Newspeak" run configuration, created
 by a play button beside `main` and each script.
 
-- `54c021d6` -- a project is the directory its `newspeak.json` describes;
-  `df35eef8` -- its key is `main`, other keys are ignored.
-- `578c746c`, `f0613878` -- the schema, and a reader held to it.
-- `911d0ba6`, `1fdca499` -- `scripts` and `--script` for `run` and `bench`.
-- `e5deace7` -- the plugin gives every `newspeak.json` the schema.
-- `881639bf`, `685a4fe2`, `15669b3e`, `b22497d4` -- the ns-next path setting
+- `b44d6a2d` -- a project is the directory its `newspeak.json` describes;
+  `1edfaac5` -- its key is `main`, other keys are ignored.
+- `df4d0583`, `1b33f4db` -- the schema, and a reader held to it.
+- `cbfea8da`, `047efd99` -- `scripts` and `--script` for `run` and `bench`.
+- `edfa86ec` -- the plugin gives every `newspeak.json` the schema.
+- `896103ae`, `1b823f8e`, `2fd6ddc1`, `fe598325` -- the ns-next path setting
   and the "Newspeak" run configuration.
-- `6dd09d8f`, `ae7cdb6c`, `d54d32f4`, `c7c641b1` -- the play buttons.
-- `977e1d42` -- a script name written twice is refused.
-- `b0f0e321`, `a6423fec`, `93745dc7` -- the documentation, and the
+- `276e8e1f`, `34e8e22e`, `fb5d8ee5`, `d7d0b74d` -- the play buttons.
+- `8ff9e7ef` -- a script name written twice is refused.
+- `7f6c8bf3`, `14fd772b`, `5ee14b2e` -- the documentation, and the
   plugin's description and change notes.
-- `0f86bb29` -- the repository's own `.ns` files are indented with spaces,
+- `d5aa2f68` -- the repository's own `.ns` files are indented with spaces,
   not tabs; `crates/ns-cli/tests/source_formatting.rs` checks every tracked
   one outside `corpus/`, and CLAUDE.md states the convention.
-- `2b2a7de7`, `b824d4a3`, `316c358d` and the documentation after them --
+- `c942d4b9`, `7723df40`, `8d0aaab4` and the documentation after them --
   the final review's fixes: a script name that is empty or begins or ends
   with whitespace is refused by the reader and the schema; the plugin
   passes a script as one token, `--script=<name>`, so a name may start
   with `-`; a relative project file is the IDE project's, to run it and to
   recognise its configuration; configurations from the play button get
   unique names; the tests delete their temporary directories.
-- `3b326eef` -- a script is one string, split into arguments as a POSIX
+- `f6c36362` -- a script is one string, split into arguments as a POSIX
   shell splits a command line, the same on every platform and with nothing
   expanded (`crates/ns-cli/src/command_line.rs`); the array form is
   refused, and so, when the file is read, is a script with an unterminated
@@ -4517,16 +4517,16 @@ once the answer is kept. The "Newspeak" run configuration's program is a
 project's `newspeak.json` or a `.ns` module; a module takes no script, as
 the CLI refuses `--script` with a source file.
 
-- `27f3188e` -- an analyzer test pins the document symbols the button is
+- `ba51fceb` -- an analyzer test pins the document symbols the button is
   read from: `new` written or omitted, a public instance-side `main:args:`
   named by its pattern.
-- `fe589615` -- the document symbols are kept in a project cache the run
+- `db57cb1d` -- the document symbols are kept in a project cache the run
   markers can share.
-- `6701ac6a` -- a Newspeak run configuration runs a `.ns` module as well as
+- `9c95ce5b` -- a Newspeak run configuration runs a `.ns` module as well as
   a project.
-- `5c285bf9` -- the play button beside `main:args:`.
-- `108e6249` -- "Run" in the context menu of a runnable module.
-- `7b72b827`, `6e843674` -- the design document, the plugin's description
+- `719b7465` -- the play button beside `main:args:`.
+- `25e82962` -- "Run" in the context menu of a runnable module.
+- `2231aebc`, `f17815c2` -- the design document, the plugin's description
   and change notes, and the check under `runIde`.
 
 What the branch leaves open is in [editor-support.md](design/editor-support.md),
@@ -4549,12 +4549,12 @@ trampoline step `Step::MethodThen` and `Closure>>valueOf:` and
 `valueOf:with:`, so the send ran under both lowerings with the same depth
 count; the loops' Newspeak bodies (2026-10-27) keep the behaviour.
 
-- `c2caeb42` -- the closure class is `Closure`.
-- `cbc007d0` -- `Message>>sentTo:` becomes `sendTo:`.
-- `483d754c` -- `Array>>at:put:` answers the value it stored.
-- `62723650` -- `Array>>do:` reads each element as it goes and sends
+- `ace87e27` -- the closure class is `Closure`.
+- `1341bfd9` -- `Message>>sentTo:` becomes `sendTo:`.
+- `35322bb7` -- `Array>>at:put:` answers the value it stored.
+- `b830857b` -- `Array>>do:` reads each element as it goes and sends
   `value:` to a non-block.
-- `9b326f76` -- `whileTrue:` and `whileFalse:` send `value` to a body that is
+- `019e1514` -- `whileTrue:` and `whileFalse:` send `value` to a body that is
   no block.
 
 What the branch left open, the foundations sub-project, is built
@@ -4587,15 +4587,15 @@ kernel` answers `ArgumentError`,
 `CannotReturn`, `CannotInstantiate`, `Closure`, `Future` and `Proxy`, and
 `platform collections` `NotFound`; the new builtins take tags 32 to 37.
 
-- `c99dbaf1`, `84646626` -- the error classes, and the class a VM error is
+- `dd341bb5`, `afa694c8` -- the error classes, and the class a VM error is
   signalled as.
-- `36b96bf9` -- the leaves and the VM signal `ArgumentError`,
+- `1171d0c6` -- the leaves and the VM signal `ArgumentError`,
   `CannotReturn` and `CannotInstantiate`.
-- `680c7684` -- a loop's non-Boolean condition signals
+- `7de9709e` -- a loop's non-Boolean condition signals
   `NonBooleanReceiver`.
-- `b9a19626` -- the collections signal `NotFound` and `ArgumentError`.
-- `bec7f070` -- `yourself`, `identityHash` and the `isKindOf…` rule.
-- `602baca5` -- `Proxy`, and a public `Future` whose `computing:` makes the
+- `426f907c` -- the collections signal `NotFound` and `ArgumentError`.
+- `05ed6b12` -- `yourself`, `identityHash` and the `isKindOf…` rule.
+- `13584ccb` -- `Proxy`, and a public `Future` whose `computing:` makes the
   runtime's future.
 
 Recorded outcomes changed in three ways, each established as right
@@ -4667,7 +4667,7 @@ golden gained `Collection`.
 
 **Measured** ([core-library.md](design/core-library.md), "What is
 measured"), the Are We Fast Yet benchmarks, release builds, three builds
-by three rounds a side against `eeaa1d90`: Havlak 6.3% slower (3,491 ms
+by three rounds a side against `eed93663`: Havlak 6.3% slower (3,491 ms
 to 3,711 ms) and DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen
 within noise, -1.7% to +2.3%. Havlak was 23.4% slower until `Map`'s probes
 sent `hash` and `=` inline, the tables were filled by `whileTrue:` and the
@@ -4676,24 +4676,24 @@ getter send per element, and the modification check after every block
 that does not end the iteration, all of DeltaBlue's loss -- was accepted
 with the user.
 
-- `6368827f`, `2163ded7`, `e2aff2ff` -- the design and the plan.
-- `025ac278`, `f779071e` -- every member of the kernel and the platform
+- `78669c81`, `b9c210b5`, `1a92ff7d` -- the design and the plan.
+- `cadab303`, `1c5110c1` -- every member of the kernel and the platform
   documented.
-- `b9147c7f` -- an abstract `Collection` in the kernel, with `Array` under
+- `495e6c61` -- an abstract `Collection` in the kernel, with `Array` under
   it, and `subclassResponsibility`.
-- `8ba5b836` -- `Array`'s whole protocol, with its two range leaves.
-- `2c5b3147` -- `String`'s protocol in code points, with `stringAt:` and
+- `1bcacff0` -- `Array`'s whole protocol, with its two range leaves.
+- `3d901b6c` -- `String`'s protocol in code points, with `stringAt:` and
   the search leaves.
-- `6776d895`, `d0b04a78` -- `List` under `Collection` with its whole
+- `71caad82`, `469d8fa3` -- `List` under `Collection` with its whole
   protocol, and `ConcurrentModification`.
-- `c4094d2a` -- `Map` under `Collection` with removal, and `IdentityMap`.
-- `f9e7a065`, `1639a30b` -- `Set` under `Collection` with removal; the
+- `7505fdad` -- `Map` under `Collection` with removal, and `IdentityMap`.
+- `56c24bb4`, `8ca9644a` -- `Set` under `Collection` with removal; the
   collections module is written here.
-- `91d25b79`, `7a661484` -- `Map`'s probes inline, the tables filled by
+- `0922de2b`, `119b1fc1` -- `Map`'s probes inline, the tables filled by
   `whileTrue:`, the data array as the removed mark.
-- `611ae57e`, `457382c6`, `31468913` -- the documentation describes the
+- `189884e4`, `15b30ee0`, `5e5eca32` -- the documentation describes the
   built state.
-- `32c7c16b` -- `List>>sort:` signals `ConcurrentModification` when its
+- `4cb6a0ee` -- `List>>sort:` signals `ConcurrentModification` when its
   block adds or removes an element, and writes nothing back; the final
   review's comment and test findings; a cascade on `self` pinned as an
   ordinary send (§5.4.4).
@@ -4758,7 +4758,7 @@ answers `true` in the `isKindOf…` golden. New goldens pin the rest under
 
 **Measured** ([core-library.md](design/core-library.md), "The numeric
 tower"), the Are We Fast Yet benchmarks, release builds, three builds by
-three rounds a side against `2c68df59`: the first build of the tower was
+three rounds a side against `afb8eb9b`: the first build of the tower was
 7.5% slower on Richards, 6.3% on Mandelbrot and 2.8% on CD. Profiling found
 `nil == anObject` asking the heap of both sides whether each was a
 number, and `Float`'s comparison and arithmetic calling their operation
@@ -4767,24 +4767,24 @@ through a function pointer; with both fixed, and a `Float` taking a
 Json's 1.005 within the noise, and Mandelbrot and NBody run about 4%
 faster.
 
-- `0c533c90`, `169b4f1b` -- the design and the plan.
-- `784b2d2c` -- `builtins/numbers` split into one file per
+- `94034085`, `8e98c7e0` -- the design and the plan.
+- `55f2226c` -- `builtins/numbers` split into one file per
   representation.
-- `494fe266`, `2a4cea90` -- a `Float`'s shortest text, its exponential and
+- `cf25bd95`, `6f0f1c89` -- a `Float`'s shortest text, its exponential and
   precision texts, and `Float parse:`; the image inspector writes a
   `Float` as `printString` does.
-- `e9a38c03` -- `Float`'s mathematics, rounding and questions, and
+- `8688339e` -- `Float`'s mathematics, rounding and questions, and
   `Number`'s share of them.
-- `66173e2a`, `0f936fe2` -- `Integer`'s `gcd:`, shifts, digits, radix
+- `30de0df9`, `3fa3332a` -- `Integer`'s `gcd:`, shifts, digits, radix
   texts, parsing and modular arithmetic; `AnyIntegerPrimitive`.
-- `8153f26a` -- exact rationals and the numeric hash.
-- `152d128a` -- `Fraction`, made in normal form and carried inline in an
+- `0cac4250` -- exact rationals and the numeric hash.
+- `fdd7a263` -- `Fraction`, made in normal form and carried inline in an
   image.
-- `a0d5c9bc`, `76a6d836` -- exact comparison and the numeric hash across
+- `25dbe9d7`, `0802f9fd` -- exact comparison and the numeric hash across
   the four classes, and in a value's derived equality.
-- `31615ec7` -- exact arithmetic across the tower, `Integer>>/`, and
+- `2470f860` -- exact arithmetic across the tower, `Integer>>/`, and
   `Fraction`'s protocol.
-- `0eab9826`, `35d2a724` -- the tower's cost recovered, and measured.
+- `bf486ce0`, `2d08c474` -- the tower's cost recovered, and measured.
 - This commit -- the documentation describes the built state.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the fifth
@@ -4818,12 +4818,12 @@ core-library member, and `source_formatting.rs` refuses `(* ... *)` in any
 `.ns` outside `corpus/` but `goldens/language/syntax/line_comment.ns`, the
 golden that pins both forms.
 
-- `43ca7c11` -- the plan.
-- `c54b2085` -- the lexer's `///`, one comment per block, `Comment::text`,
+- `fa6c41ed` -- the plan.
+- `3962618b` -- the lexer's `///`, one comment per block, `Comment::text`,
   the plugin's lexer and commenter.
-- `24522f1f`, `652a79fa` -- the core library documents every member with
+- `3f35e12d`, `cc9c63ad` -- the core library documents every member with
   `///`, separate comments staying separate paragraphs.
-- `9c75123e` -- the goldens and benchmarks comment with `///`.
+- `22a7c2f1` -- the goldens and benchmarks comment with `///`.
 - This commit -- the conventions and the documents.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a hover
@@ -4858,26 +4858,26 @@ each to be the formatter's fixed point; `format_properties.rs` holds the
 printer idempotent and preserving over more than 590 sources, the corpus
 included.
 
-- `de3f4f50` -- the plan.
-- `8333b785`, `aa2e8baf`, `c6a803ed`, `617fa412` -- the expression
+- `6c5fa5d7` -- the plan.
+- `ee32a86b`, `5c2afefc`, `fe1780bf`, `f7cadbf4` -- the expression
   envelope, statements' spans and members in source order, literal
   spellings, the prologue and eventual sends, type annotations.
-- `1872f9af`, `8fb5eeb2` -- every comment attached to its node, and the
+- `e492b419`, `859e9e9b` -- every comment attached to its node, and the
   comparison without positions.
-- `540e5c9b`, `71d65e88` -- the document and its layout, measured again
+- `a4a4c2fa`, `03cbdf38` -- the document and its layout, measured again
   after a line break in flat content.
-- `de0635b4`, `2d050010` -- declarations: class headers broken outside in,
+- `582bd1cc`, `2f05da78` -- declarations: class headers broken outside in,
   the lazy modifier order kept.
-- `66100c8a`, `eb9b5bbe` -- expressions: chains, keyword messages hugging
+- `ba07cfcb`, `7143c259` -- expressions: chains, keyword messages hugging
   their blocks, cascades, blocks, tuples.
-- `69cda1ac`, `0509312d` -- comments, and the printer held to every source.
-- `206d71a8`, `199cb4ce` -- `ns-next-analyzer fmt`.
-- `5b29cc75` -- `textDocument/formatting`.
-- `a5bda0fd`, `ee154bb2` -- the repository formatted, and the gate.
-- `0a743f36`, `0457b50c`, `efd39351`, `22f81132` -- where a message
+- `d1d6aa01`, `dc9e8774` -- comments, and the printer held to every source.
+- `453f1d21`, `57468e34` -- `ns-next-analyzer fmt`.
+- `b75e57b3` -- `textDocument/formatting`.
+- `9eeea5de`, `38a1d478` -- the repository formatted, and the gate.
+- `1100dbec`, `10282da3`, `1b4d2617`, `f8265bfe` -- where a message
   continues after a broken receiver, and the repository reformatted with it.
-- `fc94d042`, `39243e82` -- the documents.
-- `0b5d2701` -- the formatting request guarded against a printer panic,
+- `ceeeec91`, `9dfba786` -- the documents.
+- `84d289e2` -- the formatting request guarded against a printer panic,
   as the analysis is.
 - This commit -- the rules' reasons and the exact continuation rule.
 
@@ -4908,11 +4908,11 @@ opener's indentation, and Enter in a `///` comment continuing it. Every
 text the plugin shows is in `messages/NewspeakBundle.properties`, with no
 translation.
 
-- `9c05da99` -- Reformat Code sent to the language server.
-- `15d0f14e` -- one-line methods.
-- `a6feb305` -- the message bundle.
-- `6ac8c402` -- the formatter's indentation, width and Enter.
-- `4d1cf869` -- Enter continuing a `///` comment.
+- `467ef7ec` -- Reformat Code sent to the language server.
+- `b2a0a94a` -- one-line methods.
+- `0a53dcf4` -- the message bundle.
+- `2a2dd968` -- the formatter's indentation, width and Enter.
+- `a59179ee` -- Enter continuing a `///` comment.
 
 ## Shipped names in the image (2026-10-13)
 
@@ -4950,17 +4950,17 @@ costs about 3.7 ms a process start (a hello program's median 12.3 ms to
 16.0 ms, release, Windows 11); building the classes and naming the world
 add nothing measurable.
 
-- `e2e16951` -- the plan.
-- `1ff9a33f` -- every shipped module built once at boot, and
+- `77dec01c` -- the plan.
+- `c0e6bf54` -- every shipped module built once at boot, and
   `moduleInstanceNamed:`.
-- `2d359511` -- the whole shipped world built at boot, and what an image
+- `0041c92e` -- the whole shipped world built at boot, and what an image
   may name where.
-- `acdc8295` -- the shipped world's fingerprint in the header.
-- `7589c43a` -- the shipped-name section, its tags, and the retirement of
+- `7d21f43f` -- the shipped world's fingerprint in the header.
+- `33135153` -- the shipped-name section, its tags, and the retirement of
   the builtin class tags and the platform paths.
-- `198ee410` -- `Top` kept out of records, and shipped classes held to
+- `99f378d0` -- `Top` kept out of records, and shipped classes held to
   instance records.
-- `0ba07502` -- the program's module roots written as class records.
+- `dfc7a089` -- the program's module roots written as class records.
 - This commit -- the documents.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the cost
@@ -5015,16 +5015,16 @@ and `library/object/a_proxy_forwards_an_outside_class_send_to_its_target`.
 The golden image fixture was regenerated with each change to the shipped
 modules; only its fingerprint bytes changed.
 
-- `aba0d9e9`, `6511b4a9` -- the design and the plan.
-- `3ab5fc7c` -- the core library sends `class` to no other object.
-- `9ec2f8a0`, `09d3581a` -- the language and number goldens, and
+- `062f0ee0`, `bcc6fbcb` -- the design and the plan.
+- `d9b6e4db` -- the core library sends `class` to no other object.
+- `d72db8ee`, `2ae5c815` -- the language and number goldens, and
   `representation.rs`.
-- `21225052` -- the library goldens.
-- `8c405858`, `2b87cdeb`, `588d7985` -- the Rust tests read classes on the
+- `439cd09e` -- the library goldens.
+- `1e07c91f`, `1c86ce99`, `905b3e05` -- the Rust tests read classes on the
   host side, the depth limit's error class among them.
-- `33af3ef5` -- `class` and the class accessors protected, the value
+- `2c43ae69` -- `class` and the class accessors protected, the value
   clause for `NonBooleanReceiver` gone, and the new goldens.
-- `6f736b08` -- `Proxy`'s overrides of the protected members dropped.
+- `0990824c` -- `Proxy`'s overrides of the protected members dropped.
 - This commit -- the documents.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
@@ -5126,29 +5126,29 @@ No existing golden's outcome changed. New goldens under
 `tests/image.rs`. The golden image fixture was regenerated with each change
 to the shipped modules; only its fingerprint bytes changed. **Measured**:
 a hello program's median start went from about 15.4 ms to about 20.1 ms at
-`1906a81d` (release, Windows 11), +4.6 ms for compiling the larger
+`3d6c6c4c` (release, Windows 11), +4.6 ms for compiling the larger
 `Kernel.ns`, 4,089 lines to 6,586.
 
-- `b7423759` -- the plan.
-- `883774a5` -- the `AlignedBytes` format, realigned by every mover.
-- `1535510c` -- the image record `OBJECT_BYTE_ARRAY`.
-- `a758f810`, `b7ed974a` -- `Array`'s sequence protocol through the
+- `64c8af6c` -- the plan.
+- `423481d2` -- the `AlignedBytes` format, realigned by every mover.
+- `2d689db2` -- the image record `OBJECT_BYTE_ARRAY`.
+- `bc5fb2d2`, `961d0537` -- `Array`'s sequence protocol through the
   kernel mixin `IndexedCollection`, and the mixin's range checks.
-- `337111f2`, `0ddc5bf4` -- `ByteArray`, a builtin of aligned bytes, and
+- `cda0159a`, `e38e7044` -- `ByteArray`, a builtin of aligned bytes, and
   its refusal of a size the heap cannot commit.
-- `ac03403a`, `82f3a730` -- `ByteArray`'s protocol, and the refusal of
+- `57b3f1ae`, `6c436bd7` -- `ByteArray`'s protocol, and the refusal of
   what `startsWith:` cannot compare.
-- `9a91fe4f`, `8641f6a5` -- the UTF-8 conversions, and `at:putCodePoint:`
+- `e6720b80`, `39151d60` -- the UTF-8 conversions, and `at:putCodePoint:`
   reported under its own selector.
-- `e35f1b93` -- `StringBuilder`.
-- `491f16c9` -- the typed arrays.
-- `5ce3eaf7`, `a2e5e412` -- `DataView`, and every one of its rows pinned
+- `08dc2055` -- `StringBuilder`.
+- `2d391e21` -- the typed arrays.
+- `c4eeda29`, `f21aba31` -- `DataView`, and every one of its rows pinned
   by a round trip.
-- `1906a81d`, `cc2aaebe` -- views and builders through an image, crafted
+- `3d6c6c4c`, `faa9447a` -- views and builders through an image, crafted
   ones refused.
-- `69db2f7a`, `fb5bff7d` -- `IndexedCollection` public, and the typed
+- `b81cc4ea`, `d7a4d07a` -- `IndexedCollection` public, and the typed
   arrays moved into the shipped module `TypedArraysFactory`.
-- `4aac38d7`, `67f36add`, `1896acd2` -- a view's and a typed array's size
+- `ac78e869`, `23ea6a5c`, `2bbcccb6` -- a view's and a typed array's size
   refusals with their own texts, and the leaf `byteArrayClass:fits:ifFail:`.
 - This commit -- the documents.
 
@@ -5199,29 +5199,29 @@ compiler defect, recorded in OPEN-WORK: a read-only local a closure
 captures before its initializer runs reads nil under the optimized
 lowering.
 
-- `fce827b9`, `3590a104` -- the design and the plan.
-- `ef739072`, `c41866af`, `53f53067`, `85d6b455`, `6111d0d0` -- the
+- `ee2e1e56`, `bb46a59a` -- the design and the plan.
+- `879bde3b`, `eae89ebd`, `24401d0d`, `c43cfcca`, `a4f9b90d` -- the
   first rules: the locals that can be read-only, a slot's `::=` found with
   the lexer, the header-slot rules, and hint A's bare slots.
-- `e22bc46b`, `b2384ad1`, `e226be2f` -- hint A's fixes kept behaviour- and
+- `dff42656`, `330fa855`, `4e5b5475` -- hint A's fixes kept behaviour- and
   comment-preserving, moving settled values after a guard into their
   declarations, and keeping a statement after others out of headers.
-- `662135fa`, `ce8b91b4`, `d1edd155` -- `apply_all` and the core-library
+- `fc82a14b`, `23408a2a`, `525c0d14` -- `apply_all` and the core-library
   gate; every golden held with every hint applied, idempotence, and the
   sources a project golden names outside its directory.
-- `e5cf48f7`, `7d4e5c5d` -- the hints and their quick fixes in the
+- `e12a57d3`, `ff16688b` -- the hints and their quick fixes in the
   language server, and a guarded, cached whole-file edit.
-- `2ffe490e`, `d1f91f56`, `4559da0b`, `c9874cec`, `3a2424e2` -- hints for
+- `09cb6deb`, `e359a41f`, `a7b85ec0`, `125f75a0`, `c043a90f` -- hints for
   the locals of methods and closures only, moved into `ns-analyzer`, the
   oracle in a profile of its own and kept out of the benchmarks profile,
   the comments naming locals.
-- `6885e8b6`, `bc318b01`, `e98885ff`, `4bed4151` -- the reviews' fixes: no
+- `8e2825ba`, `c0d28358`, `31a278a7`, `43454278` -- the reviews' fixes: no
   read-only hint for a local a closure can read before its initializer, a
   multi-line literal kept as written, no unparsable "apply all" and its
   panic reported, a reordered declaration's column.
-- `26adc037`, `d84d2e03` -- the goldens the oracle depends on, and the
+- `2b80bada`, `fbe32153` -- the goldens the oracle depends on, and the
   lowerings' disagreement recorded in OPEN-WORK.
-- `f07e3f53`, `ee3e39fb` -- the documents, and the check in the IDE.
+- `b73f85a6`, `6ffafd6c` -- the documents, and the check in the IDE.
 - This commit -- the batch's end-of-batch documents.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): hints for a
@@ -5274,16 +5274,16 @@ and which gate ran when stood in five places that had drifted apart.
 takes about 55 s, the suite 31 s of it; `hints` about 20 s, `images` 11 s,
 `caches` 3 s.
 
-- `6928207c` -- the longest loops split into parallel trials.
-- `12a8db84` -- the round trips, the two-entry cache and the oracle's
+- `47e89bdb` -- the longest loops split into parallel trials.
+- `b9a0ec21` -- the round trips, the two-entry cache and the oracle's
   benchmarks in profiles of their own.
-- `2343be55` -- the benchmarks out of the goldens, `run_benchmarks`.
-- `8c817c5a`, `949c9812` -- the plugin's tests rerun only for a source the
+- `57c1aba7` -- the benchmarks out of the goldens, `run_benchmarks`.
+- `826cf43f`, `a68a70b6` -- the plugin's tests rerun only for a source the
   lexer comparison reads, and the comparison over the whole core library
   and the benchmarks.
-- `63758ec8` -- each benchmark verified on its own, the profile
+- `024ca64a` -- each benchmark verified on its own, the profile
   `benchmarks-verify`.
-- `4bf6d135` -- the table of the gates and `cargo xtask gates`.
+- `d05e314d` -- the table of the gates and `cargo xtask gates`.
 - This commit -- the documents.
 
 What it leaves open: choosing the gates from what a change touched, which
@@ -5378,18 +5378,18 @@ host tests in `tests/image.rs`, `tests/image_truncations.rs`,
 `tests/platform.rs` and `tests/opcode_tags.rs`. The golden image fixture
 was regenerated for the changed shipped modules, its size unchanged.
 
-- `6023dfbc` -- the design and the plan.
-- `b335f6ee` -- weak arrays and ephemerons in the full collection.
-- `47b66b23`, `7412408f` -- in the scavenge, and the tests that reach its
+- `984e1fe7` -- the design and the plan.
+- `46951cfd` -- weak arrays and ephemerons in the full collection.
+- `d89ba60a`, `ed28ab72` -- in the scavenge, and the tests that reach its
   ephemeron fixpoint and an object promoted by age.
-- `39c2476f`, `05c10018` -- `WeakArray` and `garbageCollect` in the
+- `97360e7d`, `922d5ed6` -- `WeakArray` and `garbageCollect` in the
   kernel, the timing of `garbageCollect` pinned and the refusals widened.
-- `a72db28a`, `ba98f631` -- `Ephemeron` in the kernel, and a future
+- `6c3248b9`, `14dcbd6d` -- `Ephemeron` in the kernel, and a future
   standing for a value refused as its key.
-- `25fbb681` -- `WeakMap`.
-- `24d9ab6f` -- weak arrays and ephemerons in the image.
-- `d03c7b18` -- the documents.
-- `1a7680a9`, `b5f955df`, `8a1bae8f`, `51717949` and this commit -- the
+- `20ef31b3` -- `WeakMap`.
+- `84559287` -- weak arrays and ephemerons in the image.
+- `e8824504` -- the documents.
+- `97efe13a`, `36bc8a67`, `fd2e57e7`, `bfa1d93a` and this commit -- the
   format decoded once, the fixpoint's index, recorded only while a key is
   pending, and entered only after two scans.
 
@@ -5490,23 +5490,23 @@ tests in `tests/platform.rs`, `tests/image.rs`,
 `tests/image_truncations.rs` and `tests/opcode_tags.rs`. The golden image
 fixture was regenerated for the changed shipped world, its size unchanged.
 
-- `3d7a7afa`, `9396d659` -- the design and the plan.
-- `58ed4bb9` -- the mirror table indexed with sixteen bits.
-- `eb2bd835`, `5b5f9b7d` -- every mixin's enclosing mixin and its module's
+- `d72dde18`, `68724fa5` -- the design and the plan.
+- `38d02acf` -- the mirror table indexed with sixteen bits.
+- `62a8d532`, `8a9f6f46` -- every mixin's enclosing mixin and its module's
   text, held once on a load.
-- `432f2829`, `068e1dac` -- the reified mixin, and its image record.
-- `64c343cb` -- the reflection leaves.
-- `40b29018`, `413b277e` -- `platform mirrors`, `ObjectMirror` and
+- `1d3b6ec6`, `82a69ac1` -- the reified mixin, and its image record.
+- `d79c2b56` -- the reflection leaves.
+- `90eaa397`, `5671c56e` -- `platform mirrors`, `ObjectMirror` and
   `ClassMirror`, and the slot a name names.
-- `c16809c6`, `2a0fbdec` -- the mixin, declaration, method and slot
+- `ab751b2d`, `c7f36791` -- the mixin, declaration, method and slot
   mirrors, and program source held in a host test.
-- `f12569a1`, `bb18233b` -- the shipped boundary, walked from the platform.
-- `c14c1223`, `67f3f14a`, `71ade2c3`, `3d3d2bd2` -- a navigated class mirror
+- `f4a92c72`, `e1f925f2` -- the shipped boundary, walked from the platform.
+- `85a4f5d4`, `92cf5e88`, `22e47ce7`, `96fbb0c8` -- a navigated class mirror
   holding the way to its class, a shipped mixin named by its declaration
   before its class is built, and a program holding mirrors through a
   snapshot.
-- `d561f5fe`, `39ad8e2e` -- the documents.
-- `d172f7c7`, `868fec59`, `53d71ce3`, `19e5f700` and this commit -- the
+- `9204d749`, `e1c3a02f` -- the documents.
+- `7878722a`, `55958c9b`, `9aaf742f`, `8319559f` and this commit -- the
   final review's fixes: no mirror forces a future, a synthesized class
   side keyed by an interned mixin, every kind of mirror through a
   snapshot, `ObjectMirror` and `ClassMirror` private classes of the root,
@@ -5566,21 +5566,21 @@ No existing golden's outcome changed. New tests in `heap.rs`,
 fixture was regenerated for the changed shipped world, only its
 fingerprint changed.
 
-- `c9b6a8e2` -- the plan.
-- `03a0358e` -- every version of a mixin answers the one id it was
+- `2d28912f` -- the plan.
+- `e4e5ca62` -- every version of a mixin answers the one id it was
   registered under.
-- `a39c1548` -- a body says whether it addresses its own slots.
-- `15b456de` -- the bulk forward in the heap.
-- `d1dc09a5` -- the forward behind one mirror leaf.
-- `9e67b44d`, `93a680b5` -- the own-slot instructions check a recorded
+- `8e406b4d` -- a body says whether it addresses its own slots.
+- `e70aaed4` -- the bulk forward in the heap.
+- `b69f7937` -- the forward behind one mirror leaf.
+- `f0c89054`, `85919b4d` -- the own-slot instructions check a recorded
   guard, and take their slot base from the entered level.
-- `221d50c1`, `637d3147` -- private and super slot accessors check a
+- `14441e6b`, `66ec6450` -- private and super slot accessors check a
   recorded guard, with one verified pair per heap; a super send's slot
   handler checked too.
-- `f4b1280e`, `1a2ed218` -- comments that gave lazy forwarding or the
+- `07248e23`, `8633ade8` -- comments that gave lazy forwarding or the
   current class as their reason.
-- `f423936e`, `9aa2ef49` -- the documents.
-- `9008d8b3`, `b56f19aa`, `c32679a1`, `73b4907b`, `af267bf4` -- the final
+- `3fd56182`, `5d9e97a6` -- the documents.
+- `20f8e5f0`, `f5e467a2`, `1d925235`, `f650eaee`, `1c3ac13a` -- the final
   review's fixes: a push records the receiver's guard only for a receiver
   that has the entered level, the nested-class cache slot is looked up
   again after the clause and read before the class is stored there, and
@@ -5642,18 +5642,18 @@ like every golden since road step 5b2b; new tests in
 fixture was regenerated for the changed shipped world, only its
 fingerprint changed.
 
-- `8b20e6fe`, `dbbb3d4c`, `fe0d4a50` -- the design and the plan.
-- `21687b3b`, `58028315` -- preparing an edit from its module's current
+- `d1fbee4c`, `164148a9`, `c17954af` -- the design and the plan.
+- `b5024034`, `43923447` -- preparing an edit from its module's current
   text, every synthesized class side of the edited subtree paired.
-- `c72276a5` -- a level's successor passes the slot check, and
+- `b1bfdd6e` -- a level's successor passes the slot check, and
   applications of one id match.
-- `033dbbb8` -- the atomic install, migrating the instances whose layout
+- `d5197aa3` -- the atomic install, migrating the instances whose layout
   changed.
-- `a406dc01` -- the encoder refusing an edited program.
-- `4c9fdea0` -- the VM-mirror leaves that check and install an edit.
-- `0389b697`, `1f5dd0bd` -- the MirrorBuilder for a class's header,
+- `f3774ed8` -- the encoder refusing an edited program.
+- `55bf04d7` -- the VM-mirror leaves that check and install an edit.
+- `de62dd30`, `909a139d` -- the MirrorBuilder for a class's header,
   methods and lazy slots, its header text answered from the parse.
-- `9c4c6d2c`, `fd43a154`, `f9a0c609` -- the goldens, and a slot migrated
+- `3c494c27`, `a46fd59d`, `0d081e05` -- the goldens, and a slot migrated
   by its declaring level and its occurrence in the chain, not by its name
   alone.
 - This commit -- the documents.
@@ -5706,19 +5706,19 @@ No golden's outcome changed. New tests in `mixin.rs`,
 The golden image fixture was regenerated for the changed shipped world,
 only its fingerprint changed.
 
-- `318ce032`, `aa43bd64` -- the plan.
-- `980c3ec9` -- every declaration holds its own text, its nested
+- `14cffa4e`, `5c6cfdce` -- the plan.
+- `0154acbe` -- every declaration holds its own text, its nested
   declarations cut out.
-- `c01a6da2`, `f77b7496` -- the image's text table, each text owned by
+- `91cc8a88`, `206c8fdc` -- the image's text table, each text owned by
   exactly one declaration.
-- `dc5ab575` -- an edited program written to an image, every mixin named
+- `b98e2560` -- an edited program written to an image, every mixin named
   by its id.
-- `2aafbd98`, `9b9cbaa9` -- the code an older version runs in the code
+- `70d86752`, `d8b330d9` -- the code an older version runs in the code
   table, a frame naming its body by code id, a shipped frame's by its
   declaration.
-- `c4c6b124` -- a program loaded from an image edited from the text the
+- `87ea6e1e` -- a program loaded from an image edited from the text the
   image carries.
-- `8c10518a` -- the source in every image unless `--strip-source`, and
+- `a2b5b635` -- the source in every image unless `--strip-source`, and
   every golden through images.
 - This commit -- the documents.
 
@@ -5765,15 +5765,15 @@ No golden's outcome changed. New tests in `heap/ids.rs`,
 `interpreter/inline_cache.rs`, `interpreter/reclaim.rs`,
 `interpreter/install.rs` and `builtins/reflection.rs`, and the golden `goldens/library/mirror/a_reachable_reified_mixin_keeps_its_identity.ns`.
 
-- `639c07f6`, `36d1be3d` -- the design and the plan.
-- `1c8d9fd5` -- the smallest free id minted first, and a full collection
+- `24f80cc9`, `47dac690` -- the design and the plan.
+- `57257d5f` -- the smallest free id minted first, and a full collection
   requested when the guard ids run out.
-- `8ab8af59` -- a serial per nested-class creation.
-- `e0fefd77` -- a registered mixin's nested declarations named by id.
-- `12cb1602`, `4a1fee85` -- dead applications and their guard ids
+- `6a4b5df0` -- a serial per nested-class creation.
+- `fee520aa` -- a registered mixin's nested declarations named by id.
+- `e871069f`, `2f70d825` -- dead applications and their guard ids
   reclaimed, the caches scrubbed selectively, the reified mixins weak.
-- `cc00f63a` -- dead mixin trees, superseded versions and code ids.
-- `bcae0207` -- the feedback ranges of families nothing runs.
+- `eacb8e3d` -- dead mixin trees, superseded versions and code ids.
+- `c38034f8` -- the feedback ranges of families nothing runs.
 - This commit -- the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): what the
@@ -5823,15 +5823,15 @@ words, for every kind; the bump's edges; the code-id cache),
 `tests/array_leaves.rs`; the tests that collect by hand run in debug
 builds only, so the release suite compiles.
 
-- `29a1476c`, `9bcecd04`, `722556a8` -- the design and the plan.
-- `a13d92dc` -- the bump cursor in the reservation.
-- `af894802` -- the fast bump before the cold `allocate_block`.
-- `cfadf647` -- the code-id cache.
-- `3def96e7`, `8555b814` -- closures, frames and boxed floats with a
+- `173e46a6`, `4aa6d6c5`, `49f85f86` -- the design and the plan.
+- `52953e5f` -- the bump cursor in the reservation.
+- `db933a60` -- the fast bump before the cold `allocate_block`.
+- `f43afaa2` -- the code-id cache.
+- `207d13ab`, `97622c91` -- closures, frames and boxed floats with a
   precomputed header, and the tests that prove the fast bump ran.
-- `df7d55c9` -- arrays without a `Vec`.
-- `fee106bb` -- `new` of a class with no initializer code.
-- `120a2054` -- the hand-collecting tests gated to debug builds.
+- `efda979c` -- arrays without a `Vec`.
+- `91c1d424` -- `new` of a class with no initializer code.
+- `59e3c997` -- the hand-collecting tests gated to debug builds.
 - This commit -- the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): `new` as
@@ -5871,15 +5871,15 @@ benchmark to its line of `benchmarks/are-we-fast-yet/newspeak.toml`
 usage error (`flags::{ns-next,java}::*`); the default profile needs no JDK.
 No golden's outcome changed.
 
-- `2dddcfe5`, `d9fd7569` -- the design and the plan.
-- `a46bc62e`, `068b9744` -- the submodule, the notices, the harness, the
+- `17f5b946`, `153c6639` -- the design and the plan.
+- `3c56183b`, `220c728b` -- the submodule, the notices, the harness, the
   `som` collections and seven benchmarks, verified in the gate, and its
   review.
-- `9b1fcad3` -- Mandelbrot, NBody, Richards and Json.
-- `e04d0de2` -- DeltaBlue, Havlak and CD.
-- `5c00b5cc` -- the Ton80 translations.
-- `a136f4f3` -- `--warm-up` and `--measure` in both harnesses.
-- `85769f07`, `a0dc90b3` -- the documents.
+- `046e2500` -- Mandelbrot, NBody, Richards and Json.
+- `33fa4aba` -- DeltaBlue, Havlak and CD.
+- `1f7cf02e` -- the Ton80 translations.
+- `fe965209` -- `--warm-up` and `--measure` in both harnesses.
+- `53345eb9`, `32555711` -- the documents.
 - This commit -- the final review's fixes: the trials run `java` and
   `javac` without the JVM option variables, an empty `JAVA_HOME` counts as
   unset, older compilations are removed, the three score trials are one
@@ -5943,17 +5943,17 @@ tests in `tests/compiler.rs`, `tests/reference_lowering.rs`,
 `tests/inline_caches.rs`, `tests/factory_send.rs`, `tests/opcode_tags.rs`
 and `builtins/value.rs`.
 
-- `0d54a60b`, `fc14d8b5`, `d241ee2d`, `ced6494c` -- the design and the plan.
-- `0cdb16d8` -- the five instructions and their encodings.
-- `9a22435e`, `4f942e0c` -- the three initializer bodies and the factory
+- `963b7019`, `da2eca3a`, `2c75eddc`, `2e28a99b` -- the design and the plan.
+- `2523c775` -- the five instructions and their encodings.
+- `0b388776`, `7cf04df0` -- the three initializer bodies and the factory
   body, and a factory body of constant size.
-- `15fc0bca`, `235f642c` -- `new` runs the compiled factory and
+- `99c27b58`, `88a9baf5` -- `new` runs the compiled factory and
   initializers, and the walk goes; the factory's body rides the cache, and
   levels whose clauses run nothing are passed.
-- `b3b52876`, `9fc2d90e`, `0c62db5b` -- the clause-message bodies and their
+- `273eac3b`, `c0db1bde`, `2a2b2b15` -- the clause-message bodies and their
   frame kinds go, and code kind 4 is retired.
-- `bda041e6` -- a nested-class accessor hit reads the cached field.
-- `cb0de87c`, `199af6b1`, `ad98e283`, `fbd27f0a`, `1dc3a7bb` -- a
+- `85c8d232` -- a nested-class accessor hit reads the cached field.
+- `b76598b9`, `55fc92b5`, `d562c422`, `a371f1bb`, `a0b0af45` -- a
   declaration without a body is the mixin application it writes, and its
   own code resolves, sends `super` and is reflected in its own scope.
 - This commit -- the documents.
@@ -6008,18 +6008,18 @@ stress modes and `run-corpus` under each. New tests in `heap.rs`,
 `interpreter/unwind.rs`, `tests/stress.rs`, `tests/exceptions.rs` and
 `tests/image.rs`.
 
-- `cc8dfd6f`, `c7b14070`, `49f329ce` -- the decisions and the plan.
-- `33eb0d96`, `684a9951` -- suspended frames and the side table in the
+- `3fac36da`, `6df4e89d`, `994493a0` -- the decisions and the plan.
+- `024b4bac`, `d55ca113` -- suspended frames and the side table in the
   heap, and one running depth count.
-- `793d8105` -- the stress mode and the return into a suspended sender.
-- `8b826b19`, `b8207b9e` -- unwinding and the sender walks through
+- `82c3cec3` -- the stress mode and the return into a suspended sender.
+- `8322a749`, `586b6555` -- unwinding and the sender walks through
   suspended frames, and every reader and writer of an entry's continuation
   looking through its sender's link.
-- `1085ce62`, `76631f97` -- the decoder refuses a frame that could be
+- `091e94c3`, `1deace7d` -- the decoder refuses a frame that could be
   resumed.
-- `14fc7138`, `fc77b591` -- the sixth stress mode in the gate, and the
+- `eb8d6138`, `663dc98b` -- the sixth stress mode in the gate, and the
   documents.
-- `b454d37c` -- the release guard of `image::package` refuses a suspended
+- `c3835aeb` -- the release guard of `image::package` refuses a suspended
   run.
 - This commit -- the measurement and this entry.
 
@@ -6080,21 +6080,21 @@ No golden's outcome changed. The end-of-batch gates passed, the suite under
 all six stress modes and `run-corpus` under each. New tests in `heap.rs`,
 `heap/frames.rs`, `interpreter/mod.rs` and `ns-memory`.
 
-- `cfe3c13b`, `9b7d3227` -- the design and the plan.
-- `adf0ada8` -- a stack entry names its code by id.
-- `28898b47` -- an activation's kind is a copyable view.
-- `55821ee6`, `a58389d3` -- a continuation other than `Deliver` lives in a
+- `102df20f`, `f749baed` -- the design and the plan.
+- `ce7147cd` -- a stack entry names its code by id.
+- `e7a17137` -- an activation's kind is a copyable view.
+- `4e1412e4`, `f226c234` -- a continuation other than `Deliver` lives in a
   side table, and native loops keep their row.
-- `14db896d`, `e2169455` -- the frame stack over a reservation, and every
+- `062a0864`, `51ea1f25` -- the frame stack over a reservation, and every
   activation a frame of tagged words in it.
-- `ce7cdd31`, `8efe3d6f` -- `ns-memory` lends its committed prefix with one
+- `474b2993`, `da80a4ff` -- `ns-memory` lends its committed prefix with one
   comparison, and one bounds check per stack word.
-- `dc9c419f`, `8bbf538f` -- the reservation refuses a push as the depth
+- `4fdfe309`, `910488c2` -- the reservation refuses a push as the depth
   limit does, its overflow told from the limit's in a test.
-- `c9b9822a` -- the documents.
-- `9c11b943` -- the stack lends its words and frame headers without a
+- `73ed6d01` -- the documents.
+- `1e8bffeb` -- the stack lends its words and frame headers without a
   shift.
-- `7cfbbead` -- the reservation's overflow test runs without the suspend
+- `8257e7d9` -- the reservation's overflow test runs without the suspend
   stress mode, which empties the stack.
 - This commit -- the measurement, the protocol that varies the block
   layout, and this entry.
@@ -6182,48 +6182,48 @@ stress modes and `run-corpus` under each. New tests in
 `tests/image.rs`, `tests/compact_encoding.rs`, `tests/compiler.rs`,
 `tests/vm.rs` and `tests/opcode_tags.rs`.
 
-- `6b9a4640`, `96e8898a`, `c18f4b9a` -- the design and the plan.
-- `4c2bdf6f`, `e9019110`, `c3af64f7`, `afc23e8f`, `560b84c8` -- a send
+- `09a351f6`, `85a6e5a0`, `da1a1527` -- the design and the plan.
+- `a28144d8`, `e26b9234`, `39dac5d9`, `4e1a4e40`, `73fc2d33` -- a send
   names its contiguous slots, its arguments and an inlined integer
   operation's result are lowered into them, and decisions read them where
   they are.
-- `b885230b`, `991b78a2`, `0fb019b8`, `81ba9b92`, `d0435bf5`, `95d421a8`
+- `53111f9c`, `87a65f87`, `f4506e60`, `4817af80`, `4e1e0f13`, `d961093a`
   -- the first stage's regression recovered: the window in registers, a
   setter's value in its slot, placement only where a send cannot read in
   place, a push writing through the frame stack's slices.
-- `e2322b16` -- the first stage measured.
-- `4d0abd72`, `cedc4618` -- the header 13 words in every build.
-- `77d1d8fb`, `f0a1ed27` -- a callee's frame on its caller's slots.
-- `75b35560`, `ec13951d` -- frame objects without the header's numbers.
-- `e3f3f522`, `0037350d` -- the decoder's refusals, and the code kinds'
+- `9e3b85fc` -- the first stage measured.
+- `a5c8c137`, `892e592b` -- the header 13 words in every build.
+- `a27cc465`, `8124725c` -- a callee's frame on its caller's slots.
+- `ea9f5153`, `8f85b9c7` -- frame objects without the header's numbers.
+- `440e1caf`, `ff139fb3` -- the decoder's refusals, and the code kinds'
   tags pinned.
-- `3b391c41`, `c79353b5`, `ee26d3dd`, `e652421e`, `f0bf0d00`, `6d7da106`,
-  `bcaf22fb`, `8b43a230` -- the second stage's regression narrowed: the
+- `a7ec0b01`, `9ca7d018`, `d8a3dbbc`, `c6216401`, `3f39ad70`, `786f2bd6`,
+  `43685fc7`, `9abb02a1` -- the second stage's regression narrowed: the
   header lent, a vector read through the register base, helpers inline, a
   value-answered send's step forgotten, the caller word recording the top.
-  `fc5791f7`, a return writing through the switch's register base, was
-  measured slower and reverted in `d7488e20`.
-- `0a1a8fd2`, `0a643653`, `4f632168`, `2d83cefa`, `58fdb9ed`, `2b15787f`,
-  `d468c641`, `92db93bb`, `3943443a` -- the codegen gate and the hot
+  `549adf13`, a return writing through the switch's register base, was
+  measured slower and reverted in `152eee66`.
+- `2e3a4206`, `0a6d1cef`, `813e1789`, `5c619956`, `fb641472`, `7000b2da`,
+  `1e533895`, `9db37f96`, `d48d46e4` -- the codegen gate and the hot
   path's size tests.
-- `c6a126b3`, `5d5ebfdb` -- the leftover analysis planned, and the README
+- `78a17506`, `fd30d0d4` -- the leftover analysis planned, and the README
   running every xtask goal.
-- `154bd964`, `d5ac0409`, `dbfbf042` -- the register effects of an
+- `2091ed43`, `1f1e3033`, `8b1b6f2a` -- the register effects of an
   instruction in `bytecode.rs`, and a first analysis over undo logs,
   replaced by the bitsets.
-- `22244e44` -- the plan over bitsets, with construct limits.
-- `f0ec9439`, `16c33879`, `54a04a48` -- the construct limits.
-- `312eb63f`, `13eab1eb`, `28e8ad77` -- the analysis over bitsets, and both
+- `f84186bb` -- the plan over bitsets, with construct limits.
+- `dab835b1`, `a6882c9e`, `b9e4adfb` -- the construct limits.
+- `65b7f01d`, `d8e9d90d`, `6f3631fc` -- the analysis over bitsets, and both
   lowerings checking it.
-- `9c5eee28` -- the decoder refuses code that reads what it did not write.
-- `ffb4c49e`, `28a798eb`, `f2faa8f4` -- the collector nils the tainted
+- `a4f6a6a9` -- the decoder refuses code that reads what it did not write.
+- `a37984e1`, `c9e6fdfc`, `3c151532` -- the collector nils the tainted
   registers, and neither a push nor a pop fills them.
-- `dc01d39d`, `a6eb4ab1`, `3e0460b4`, `51f1050e`, `a2c44bf2` -- a deep
+- `b098927f`, `7d7f415d`, `64ca6176`, `11f47914`, `1b0d53de` -- a deep
   stack walked once, the nilling folded into the stack's trace, the trace
   out of line.
-- `51d78a8e` -- a tail-call interpreter as the first measurement of fixed
+- `9171957f` -- a tail-call interpreter as the first measurement of fixed
   registers.
-- `5836de89` -- what the leftover analysis measured.
+- `e18b5488` -- what the leftover analysis measured.
 - This commit -- the second stage measured, and this entry.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step 7c,
@@ -6258,20 +6258,20 @@ benchmark outcome changed.
 
 The audit found two defects, each fixed with a test that failed before
 it: an LSP position past `u32` was wrapped and is clamped
-(`e5950348`); an index past `usize` was wrapped on a 32-bit target and is
-refused (`cf789bf3`). `whole_file_edit_guarded` (part of `1f5824f3`) is
+(`d992b0bb`); an index past `usize` was wrapped on a 32-bit target and is
+refused (`a99df2fe`). `whole_file_edit_guarded` (part of `9aa018aa`) is
 a guard, not a fix: `changed_span` now runs only when the hints changed
 the text, which they never do to a text `parse` refused, so
 `Span::from_offsets` cannot panic there. Nothing else was found unbounded: `compact.rs`'s side
 tables, the typed-array stores, the symbol interner (which aborts with a
 stated message) and the numerics were all bounded.
 
-- `b4df6964` -- the plan.
-- `f40137e4` -- every lint exception states its reason, and every unsafe
+- `4e32fd73` -- the plan.
+- `66f135d7` -- every lint exception states its reason, and every unsafe
   block its safety.
-- `78ac87a9`, `e5950348`, `1f5824f3` -- the frontend and the analyzer
+- `e13dff36`, `d992b0bb`, `9aa018aa` -- the frontend and the analyzer
   narrow through the bounds the source keeps.
-- `a47aaee9`, `cf789bf3`, `aef0d73a`, `fc723a36` -- the heap, the run
+- `e06e582b`, `a99df2fe`, `32801e13`, `183d6109` -- the heap, the run
   loop, the encoding, the compiler, the builtins and the numerics.
 - The commit that enables the cast lints and exempts test code.
 
@@ -6328,9 +6328,9 @@ time and every other source is level ([execution.md](design/execution.md),
 benchmark outcome changed; the golden image fixture was regenerated, its
 fingerprint alone moving with the changed core library.
 
-- `46d4265b` -- the plan.
-- `d11c77d8` -- `bench_signal.ns`.
-- `67a10605` -- the leaf and the search over it.
+- `357aa1e0` -- the plan.
+- `3342fd39` -- `bench_signal.ns`.
+- `9d550f6b` -- the leaf and the search over it.
 - The commit that records the measurement and closes the documents.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): real
@@ -6374,14 +6374,14 @@ and the two leaf-based alternatives measured slower still. The
 measurement is [execution.md](design/execution.md),
 "What Newspeak loop bodies moved".
 
-- `e5ac62ac` -- the plan.
-- `6da36a2a` -- `whileTrue:` and `whileFalse:` in Newspeak, and the
+- `4993673a` -- the plan.
+- `d171328f` -- `whileTrue:` and `whileFalse:` in Newspeak, and the
   reference lowering's loop.
-- `ab0bff29` -- `Array>>do:` in Newspeak.
-- `4d705b6e` -- the documents.
-- `38aea95f` -- `benchmarks/micro/bench_while.ns`.
-- `4f736bc7` -- the measurement.
-- `bc3f2843` -- the final review's findings.
+- `1b0bec1f` -- `Array>>do:` in Newspeak.
+- `f193f905` -- the documents.
+- `08a68945` -- `benchmarks/micro/bench_while.ns`.
+- `87cf2280` -- the measurement.
+- `ce515ed5` -- the final review's findings.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the depth
 flag a continuation's push still takes, dead now, to be removed and
@@ -6420,23 +6420,23 @@ foundation moved"). No golden, `run-corpus` output or benchmark outcome
 changed; two goldens were added under `goldens/runtime/jit/`, a counting
 loop and an overflow in machine code.
 
-- `ed59a9be` -- the design.
-- `7e2d8043` -- the plan.
-- `019746e5`, `8d74cecb` -- the code zone.
-- `78036725` -- the entry into machine code and the leaf shim.
-- `68c44934`, `d0645af3` -- `ns-assembler` and its flag contract.
-- `d81285cf`, `580ccd7c` -- the macro assembler and the stubs.
-- `9758e77a`, `068a7c24`, `84600a82` -- the compile trigger and the
+- `741f053b` -- the design.
+- `144b0823` -- the plan.
+- `522699e4`, `efa0f081` -- the code zone.
+- `c00fb084` -- the entry into machine code and the leaf shim.
+- `3cb95b08`, `378e4c41` -- `ns-assembler` and its flag contract.
+- `8556c5b7`, `00a28f85` -- the macro assembler and the stubs.
+- `09901e5b`, `11dfb8f6`, `9ef5d31f` -- the compile trigger and the
   exhaustive `match`.
-- `632ac13a`, `6926271e` -- named, sourced encodings, held by a test.
-- `c4a689c0`, `f28c283c` -- the two stress modes.
-- `90fb6ae3` -- the templates and the generic leaf.
-- `56c6e8ac` -- a body leaving before a loop is never entered.
-- `20efde36`, `38adca8b`, `cc534eac` -- the measurement, the test that
+- `316d2192`, `af3b5ae4` -- named, sourced encodings, held by a test.
+- `f75dcab0`, `82cac2c5` -- the two stress modes.
+- `c5018cec` -- the templates and the generic leaf.
+- `f5d30c2b` -- a body leaving before a loop is never entered.
+- `749bcb1f`, `b4320910`, `84db4374` -- the measurement, the test that
   the default trigger enters a loop, and the documents.
-- `a1da6b93`, `2aa0955a`, `e78d4a19`, `b9f3ba2e`, `3100f03c`, `39a9113b`,
-  `93fcaab9` and the documents' commit after them, which records their
-  measurement (no program slower than `cc534eac`, the geometric mean
+- `51e7c90a`, `4a8429df`, `ab0a4165`, `5ce8a0fa`, `583baf66`, `cc96fe57`,
+  `a517a39d` and the documents' commit after them, which records their
+  measurement (no program slower than `84db4374`, the geometric mean
   -0.60%) -- the whole-branch review's
   fixes: one `cfg(ns_jit)` for where the JIT is built, an entry block of
   thirty-two words with the leaf call's stack pointer in it and `r13`
@@ -6486,28 +6486,28 @@ left open. The batch as first built ran Richards 2.6 times as long as
 measurement. No golden, `run-corpus` output or benchmark
 outcome changed; eight goldens were added under `goldens/runtime/jit/`.
 
-- `1a5d5619` -- the design and the plan.
-- `067f32ad` -- an uncached send, the reference lowering's, exits.
-- `acbb954e`, `13967eed` -- the depth count, its limit and the stack's
+- `320cc4e3` -- the design and the plan.
+- `a7e09fad` -- an uncached send, the reference lowering's, exits.
+- `167010df`, `67ec2409` -- the depth count, its limit and the stack's
   end as machine words, the limit exact when a VM error's reserve ends.
-- `4ea5c978` -- a machine-readable cell beside every cache entry.
-- `d349d3df`, `c75c7a83` -- the native stack's room, installing while
+- `e5042170` -- a machine-readable cell beside every cache entry.
+- `d9c2d431`, `163c56f4` -- the native stack's room, installing while
   machine code runs, and the zone's map of bodies and returns.
-- `c395299e`, `c2f2d7d7`, `5d9c5c2f` -- compiled sends and returns, the
+- `69d29f57`, `9e61be47`, `2f923a90` -- compiled sends and returns, the
   exit that materializes, the callee writing its own header places.
-- `bbe83d49`, `d1fb991e`, `e2bbc4f9` -- lexical and `super` sends, the
+- `0e52689a`, `02fe335e`, `d5f75a83` -- lexical and `super` sends, the
   register roles and the architecture scan, one decision for a send
   and its miss.
-- `e9ece77e` -- the polymorphic and megamorphic stubs and the
+- `29c7e35d` -- the polymorphic and megamorphic stubs and the
   application id table.
-- `ad3b9eb7` -- the accessor, constant and leaf stubs and `SendMirror`.
-- `9d64f65b` -- which bodies are entered.
-- `a05fb94f`, `a74fcfcc`, `1794f148`, `11a57be4`, `cbe7908f` -- the
+- `83386841` -- the accessor, constant and leaf stubs and `SendMirror`.
+- `1dd767ba` -- which bodies are entered.
+- `67e1e9ac`, `7d707f7e`, `86cda47a`, `bfa935c4`, `c7d206bd` -- the
   measurement's fixes: bodies called only, the setter stub, the leaf
   stub's lookup, `Value`'s leaf-safe rows, the mirror method stub, the
   abandoned body, the miss path's stall and the interpreter's accessors.
-- `fb4a18f5` -- the tests under `release-checks` and every stress mode.
-- `ec531abe` -- the leaf stub's slot path reads its own send's site,
+- `c27ded5e` -- the tests under `release-checks` and every stress mode.
+- `7f8ebdee` -- the leaf stub's slot path reads its own send's site,
   which it had not: Havlak -6.1% and Richards -2.1% afterwards.
 - The documents' commit after them.
 
@@ -6549,15 +6549,15 @@ sitting. No golden, `run-corpus` output or benchmark outcome changed;
 two goldens were added under `goldens/runtime/jit/` and the
 microbenchmark `bench_recursion`.
 
-- `7d0021c5` -- the design and the plan.
-- `d3f665bf` -- the entry block prepared once, not at every entry.
-- `82e14890` -- an interpreter's send calls a compiled callee's machine
+- `e2a2bcc6` -- the design and the plan.
+- `391c8a34` -- the entry block prepared once, not at every entry.
+- `5fc8d04b` -- an interpreter's send calls a compiled callee's machine
   code.
-- `a8f96b90` -- every compiled body entered, `CALLED_ONLY` gone,
+- `c6686955` -- every compiled body entered, `CALLED_ONLY` gone,
   `bench_recursion`.
-- `522dc546`, `3618f4a6`, `335d44b2` -- the JIT tests' debug output
+- `fc06b350`, `370a5c74`, `cde3fc4b` -- the JIT tests' debug output
   removed, the shorter measurement protocol.
-- `df21be83` -- the interpreter's push of a method costs what it did.
+- `f9f77574` -- the interpreter's push of a method costs what it did.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): road step
@@ -6628,46 +6628,46 @@ output or benchmark outcome changed; thirteen goldens were added under
 golden's `.toml` says why it keeps live rows past a table's floor
 (`reaches_a_table_limit`).
 
-- `a3f2912b`, `3ed10068`, `1cfc1788`, `d2959037` -- the design and the
+- `33ce7dea`, `0f10daf2`, `41879416`, `c62970aa` -- the design and the
   plan, and part 4d's design.
-- `01c86953`, `8037b123`, `42aa8f20`, `9cb25863` -- eden's cursor, the
+- `d30343d1`, `3932684f`, `2608953a`, `1539c848` -- eden's cursor, the
   barrier, the vectors and arrays, setters, indexing stores and the
   private and `super` accessors inline.
-- `d402165b`, `5121fd7e`, `6df947f3`, `76b6fc85` -- own slots,
+- `41152962`, `c13fac3e`, `6f43504a`, `8b80ee3a` -- own slots,
   instantiation and the initializers, the nested-class accessor's stub.
-- `451f72d8` -- what allocation and the barrier moved.
-- `58402287`, `6aaf5d72`, `1b556ace`, `607fba4c` -- compiled frames of
+- `ac680b5e` -- what allocation and the barrier moved.
+- `9917786d`, `de8c2a2e`, `a811dcf9`, `02d663e1` -- compiled frames of
   every kind materialized, `MakeClosure`, a closure's activation as a
   compiled call, every block a quick method activates.
-- `10f35802`, `48c9ef53`, `61c535ae`, `32e2a1a1` -- closure sites beside
+- `166e0a3b`, `cc8de226`, `f3b35527`, `1467f27d` -- closure sites beside
   their body's code, a closure stub's block past the send's slots and
   its room check.
-- `0365bbf4`, `9c3ed3c1` -- outer locals.
-- `f34e4bfe`, `d9919114`, `640900c0`, `3c72b64b`, `a3258371` -- futures
+- `00e02d81`, `8e183af0` -- outer locals.
+- `4ea52bda`, `eae35897`, `1e03d850`, `b509f203`, `5457677e` -- futures
   in machine code, forced by `resolve`, a chain taken over.
-- `3b6913ee`, `80fb5968`, `cf2b8bae`, `c1fba252`, `5ece7a0d`, `e3127cdb`,
-  `b5c60cf4`, `84edfafe`, `f476f86c`, `5a66fa72`, `a0ecfbed` -- the
+- `d2c4ad2f`, `82ecd54c`, `6675bf44`, `3b81969d`, `43592c5b`, `64041dd1`,
+  `966b0184`, `01efb76a`, `ab10563d`, `a9cfda98`, `824d6b2a` -- the
   closures' measurement, its fixes and what closures in machine code
   moved.
-- `7e730205`, `2b70773d`, `2a0c1a67`, `4f991268`, `bd22147f`, `11047d98`
+- `174210ba`, `233d4db6`, `1c7d1d49`, `aed12e0c`, `2e7b3fa3`, `ba56c34d`
   -- the cut, and what non-local return moved.
-- `90021617`, `1c13863e` -- the tables' growth limits.
-- `b662bcb3`, `7e622ff5`, `6694c67e`, `2ff9b552`, `f9a512ea`, `fec3aff5`
+- `99233b4f`, `96ed307d` -- the tables' growth limits.
+- `4f619d3c`, `f88f2a0c`, `2e53f3ea`, `7a963e15`, `011b1a2d`, `5cb38168`
   -- the zone's compaction, the freeing of dead bodies' code, the
   exhaustion and its backoff.
-- `ed2b74fb`, `003c2c7c`, `61982cc0`, `a7104267` -- the decaying exit
+- `457c9f90`, `678c9624`, `f1a4277b`, `e3875ccb` -- the decaying exit
   budget and the revival.
-- `837b7d34`, `67054b82`, `6c7e1b5a` -- program-made symbols.
-- `653f9104`, `cfad93bd`, `b64cbf01` -- the site ranges' slide.
-- `c08f649b`, `c4075534`, `3e96405f`, `ba498bf2`, `cb1c6aa9`, `8b6595e4`
+- `c1443d83`, `3feb971b`, `29a6b40c` -- program-made symbols.
+- `6e95a700`, `53ded6c1`, `db075992` -- the site ranges' slide.
+- `cd6fd3bd`, `eb5da758`, `88ed5353`, `b0870f21`, `926e7696`, `f8103d8e`
   -- committed memory given back, the Windows zone's sections, the
   growth leaf, a JIT that is off says so.
-- `b9a0b4a3`, `0edf3f79`, `f3412c6a`, `b3633472` -- a frame reified only
+- `4f5abeb6`, `d758350e`, `e2ac4329`, `86c8004b` -- a frame reified only
   in its body's twin.
-- `a83dfaaf`, `45a28cc8`, `99798e5c` -- each measured build's zone
+- `88ee95ba`, `6cdde04f`, `591e0698` -- each measured build's zone
   padding.
-- `18dfb0c7`, `85aa1351` -- the tests under `release-checks`.
-- `c775d4e9`, `25f2f20b`, `faea01b3` -- the final measurement's fixes:
+- `e93a70cf`, `5136aa26` -- the tests under `release-checks`.
+- `c8cc5abe`, `5ba66627`, `5c081206` -- the final measurement's fixes:
   the inline count, the remembered lookup, the JIT switched off refusing
   an abandoned body.
 - The documents' commit after them.
@@ -6690,8 +6690,8 @@ server's fold of a method body now starts at the same spaces, collapsed to
 "One-line methods" and the table of fold ranges). With the setting off
 there are no one-line folds, as in Java.
 
-- `478f16e2` -- the folds laid out as Java's.
-- `0f682c52` -- the server's method fold containing them.
+- `6ad256c9` -- the folds laid out as Java's.
+- `9a3fbfef` -- the server's method fold containing them.
 
 ## Doc comments, the hover and doc tags (2026-11-01)
 
@@ -6718,17 +6718,17 @@ with the tags, which `core_library_documentation.rs` enforces
 A review found a likely defect in `Exception>>pass`, recorded in
 [OPEN-WORK.md](OPEN-WORK.md) with what else the batch left open.
 
-- `91aa59f9`, `303765be` -- the doc-comment colour and the rendered view.
-- `1bf734a4` -- the hover.
-- `d8ecceed` -- the plan.
-- `4f7537c2`, `57fd28bf`, `186cd638`, `275cc35b`, `b22b7f53` -- the tag
+- `e66416cc`, `729ad712` -- the doc-comment colour and the rendered view.
+- `6121e44a` -- the hover.
+- `1a4909e8` -- the plan.
+- `d4489634`, `ba57dea3`, `19a5a62d`, `f27ea072`, `fa779f06` -- the tag
   grammar, the hover's sections and the factory's hover, the warnings, the
   plugin's sections and summary.
-- `f4eec774`, `729ee4da`, `e3e6d531` -- the documentation test.
-- `9e92ea82` to `5947c10c` -- the core library documented module by module.
-- `839292ff` to `b8477bc1`, `9a4683e9` -- the modules made consistent.
-- `da657d6f`, `6e6c991f` -- the highlighting lexer.
-- `f87fc0ae`, `2f043c6e` -- the documents.
+- `780cd2e8`, `4105d32a`, `ca7384cb` -- the documentation test.
+- `53b10a7e` to `6fa13b2d` -- the core library documented module by module.
+- `2123d4d8` to `d64480be`, `3577c782` -- the modules made consistent.
+- `4f25fa1a`, `5c7bf9e2` -- the highlighting lexer.
+- `b01bccd3`, `e1738e96` -- the documents.
 
 ## Identity and equality documented (2026-11-01)
 
@@ -6743,8 +6743,8 @@ collections say how each keeps the contract, every claim probed. A
 forwarding `Proxy` breaks it from outside, recorded in
 [OPEN-WORK.md](OPEN-WORK.md).
 
-- `3b4a5b81`, `8567ade1`, `02a9c310`, `4d8633d8` -- the comments.
-- `ddcfb966`, `e95ce6df` -- the forwarding `Proxy` in the open work.
+- `60110493`, `8a32c017`, `23666d47`, `f98de7ab` -- the comments.
+- `af1fc592`, `f0e6055c` -- the forwarding `Proxy` in the open work.
 
 ## Float's constants and the NaN decision written out (2026-11-01)
 
@@ -6755,8 +6755,8 @@ subclass for the NaN. The decision that a NaN equals a NaN, confirmed with
 the user, now records the options weighed against §3.1.1 and the prior art
 ([core-library.md](design/core-library.md), "A NaN equals a NaN").
 
-- `786d36a1` -- the decision written out.
-- `b3b9ff6a` -- the constants and their golden.
+- `6d13b6e1` -- the decision written out.
+- `30c7b7fd` -- the constants and their golden.
 
 ## On-stack replacement, road step 8's fifth stage (2026-11-03)
 
@@ -6790,21 +6790,21 @@ builds separated, the code's placement by a sweep of four more zone
 paddings. The baseline compiler takes 0.01% to 4.2% of a whole run. No
 golden, `run-corpus` output or benchmark outcome changed.
 
-- `2d7e6750`, `97a9c66c` -- the design and the plan, the depth register
+- `0b3256a8`, `8cf5011d` -- the design and the plan, the depth register
   `rbp`.
-- `4cafbc64` -- Linux x86-64 run under WSL, on demand.
-- `eb19e900`, `28a6eaf7`, `b90b041c` -- on-stack replacement, the
+- `99139abd` -- Linux x86-64 run under WSL, on demand.
+- `1c5fe05c`, `bc892aea`, `79b2c7e3` -- on-stack replacement, the
   stretch ended only for a switch, the exhausted zone's test in a build
   without debug assertions.
-- `a7036ae4` -- the return into machine code after a poll's safepoint.
-- `9a2f8ddd` -- one compare at a compiled push.
-- `0e2dde27`, `9b95559d` -- the compile time and `--jit-statistics`.
-- `a719b4c6` -- what on-stack replacement moved.
-- `e392cc91`, `5987fe81`, `de9d9cea`, `42b5fec5` -- the depth count in
+- `9c7de155` -- the return into machine code after a poll's safepoint.
+- `8ff58e22` -- one compare at a compiled push.
+- `568acbe8`, `8fefc2bc` -- the compile time and `--jit-statistics`.
+- `314d9a44` -- what on-stack replacement moved.
+- `96069f0d`, `437f740d`, `d73361b7`, `00b27cff` -- the depth count in
   `rbp`, measured and reverted.
-- `67deaa2c` -- every way back into machine code after a loop head's
+- `6350f671` -- every way back into machine code after a loop head's
   safepoint pinned.
-- `869d7043` -- Cog's backward jump count cited from one tree.
+- `bbb9bc51` -- Cog's backward jump count cited from one tree.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a caller
@@ -6872,20 +6872,20 @@ and the goldens identical before and after, so x64 was not measured
 again; AArch64 is unmeasured, since QEMU times nothing. No golden,
 `run-corpus` output or benchmark outcome changed.
 
-- `0e3f52d5` -- the plan.
-- `695f17c8` -- the call convention's operations and the encoder's
+- `0be1f8ec` -- the plan.
+- `1f6d6fd6` -- the call convention's operations and the encoder's
   stack slot and instruction alignment.
-- `f288a217`, `c391ed0e` -- the AArch64 encoder.
-- `9e092397` -- the stack model and the encoder from the ABI.
-- `025b0b14` -- a call into a body's middle saves its own return
+- `f735e4f0`, `d5bd58b0` -- the AArch64 encoder.
+- `b6b6484d` -- the stack model and the encoder from the ABI.
+- `96cfd024` -- a call into a body's middle saves its own return
   address.
-- `4b9c278d` -- the AAPCS64 roles, the JIT switched on for AArch64 Linux
+- `46f9a907` -- the AAPCS64 roles, the JIT switched on for AArch64 Linux
   and Apple.
-- `e5cc8582` -- the machine-code tests on every architecture with an
+- `67bdd971` -- the machine-code tests on every architecture with an
   encoder.
-- `7544c5f8`, `f5ea9565` -- the tests that assumed x64's stub sizes and
+- `ec3d330d`, `b865a7ce` -- the tests that assumed x64's stub sizes and
   its empty call prologue.
-- `ad3918d4` -- the gate groups `linux` and `aarch64`.
+- `58a7707e` -- the gate groups `linux` and `aarch64`.
 - The documents' commit after them.
 
 What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): AArch64's
@@ -6957,7 +6957,7 @@ zone frees, slides and judges it with its baseline body. Two stress
 modes, `NS_NEXT_STRESS_OPTIMIZE` and `NS_NEXT_STRESS_DEOPT`, join the
 `stress` group, and ten goldens under `goldens/runtime/optimizer/` run
 plain and under the optimize mode. Measured against `master` at
-`917e5928`: -1.45% on the geometric mean of the twenty-seven sources,
+`55b4124c`: -1.45% on the geometric mean of the twenty-seven sources,
 `bench_new`, `bench_new2` and `bench_newarg` 10% to 13% faster,
 DeltaBlue 6.6%, Havlak 4.3%, Mandelbrot and NBody about 3%, the integer
 loops within about 1.7%, as the register cache's forecast said; Json
@@ -6978,10 +6978,10 @@ away -- the narrow encoding under the wide mode, the caches' feedback
 under the cache mode, long optimized activations under the modes that
 hold the safepoint request, optimized code run under the zone mode,
 whose compaction frees a callee's optimized code before the next call
-enters it -- which `16cb8660` fixes in the tests. `e7192d62` makes every
+enters it -- which `81a89f73` fixes in the tests. `88b08743` makes every
 other zone stress compaction keep and slide every body that has
 optimized code, so that a callee's optimized code is moved and then run
-under the mode (6,667 forced exits where there were none). `c5bd9f36`
+under the mode (6,667 forced exits where there were none). `a242539c`
 counts a push refused for a pending safepoint request against no caller,
 since it says nothing of the caller's code: a caller of callees
 optimized one after another paid one exit per request and could be
@@ -6989,29 +6989,29 @@ abandoned, which also kept a long caller's optimized code from running
 under the zone mode; the optimizer's counters over the twenty-seven
 sources, abandonments included, are unchanged by it.
 
-- `2853c0ba` -- the plan.
-- `7c712ad2`, `dea20a31` -- the snapshot and `BodyFacts`.
-- `b1d564e4`, `f4ffb5cb` -- the budget per body and its word per copy.
-- `d780576f`, `19d09227` -- the SSA graph and its builder.
-- `c374f159`, `78645395` -- liveness, linear scan and the metadata.
-- `64ca6d20` -- emitting optimized code through the baseline's
+- `da57af42` -- the plan.
+- `78ac2fb0`, `0f116c43` -- the snapshot and `BodyFacts`.
+- `490773dd`, `8b830181` -- the budget per body and its word per copy.
+- `22d8727c`, `17f652d8` -- the SSA graph and its builder.
+- `5770b82c`, `f8948658` -- liveness, linear scan and the metadata.
+- `9c4f751c` -- emitting optimized code through the baseline's
   templates.
-- `b5394092`, `2bf54552` -- the install at a safepoint and the entries.
-- `426b4bae`, `7334e564` -- exits, abandonment and the code zone.
-- `adcf7d22`, `cdc9a847`, `9a0f5ff1` -- the optimize and deopt stress
+- `14237505`, `a23b12bc` -- the install at a safepoint and the entries.
+- `75b40e58`, `916fe284` -- exits, abandonment and the code zone.
+- `7359f755`, `19f249da`, `338d4015` -- the optimize and deopt stress
   modes.
-- `3ad8c8cd` -- the optimizer's goldens.
-- `7cc019c9`, `61c4695c`, `cc55e60a`, `4f051c76`, `a92aa996`,
-  `917e5928`, `34c6408b`, `325aa59b`, `a002d6cf`, `2a20ca39`,
-  `a44c1cfb`, `d5e0dbb9`, `c64bccda` -- the measurement, the float-fed
+- `77f53489` -- the optimizer's goldens.
+- `12e2b753`, `22bef704`, `8cc6f266`, `e7cc386c`, `0e58dd4f`,
+  `55b4124c`, `2ab6feea`, `5b2769a5`, `d00e233a`, `c51b836c`,
+  `ae11c70d`, `2744cae8`, `7bdaaa90` -- the measurement, the float-fed
   sends, the loop head's rule, the budgets chosen, the leaf's frame
   lookup, and the fixes its reviews found.
-- `16cb8660` -- the optimizer's tests under the other stress modes.
-- `ce2502dc`, `e7192d62` -- the zone stress mode's sparing of optimized
+- `81a89f73` -- the optimizer's tests under the other stress modes.
+- `d033161e`, `88b08743` -- the zone stress mode's sparing of optimized
   code, first tried as a list of the code installed at a safepoint
-  (`ce2502dc`, replaced), then alternated: every other compaction slides
-  optimized code instead of freeing it (`e7192d62`).
-- `c5bd9f36` -- a push refused for a pending safepoint request counts
+  (`d033161e`, replaced), then alternated: every other compaction slides
+  optimized code instead of freeing it (`88b08743`).
+- `a242539c` -- a push refused for a pending safepoint request counts
   against no caller.
 - The documents' commit after them.
 
@@ -7058,7 +7058,7 @@ at once, since each runs after an exit or at a safepoint.
 `NS_NEXT_STRESS_INVALIDATE` frees every body's copies every tenth
 interrupt point, backing off per body, and joins the `stress` group,
 twelve modes now; eight goldens under `goldens/runtime/optimizer/` pin
-a speculation's failure. Measured against `master` at `0ada2ebb`, every
+a speculation's failure. Measured against `master` at `5741eb70`, every
 process held to the performance cores: -3.17% on the geometric mean of
 the twenty-seven sources, each of the branch's builds below each of
 `master`'s, `bench_recursion`'s `fib:` 24.4% faster, Bounce, Queens,
@@ -7073,35 +7073,35 @@ JIT, 4,849 tests each, and `run-corpus` "ran 6, failed 0, skipped 205"
 plain and under each mode -- `linux` (4,848 tests, the 139 benchmark
 programs) and `aarch64` (4,848 tests under QEMU). The first runs found
 three tests of this batch wrong in a gate's configuration, none in the
-runtime, which `4deabcec` fixes: one turned on the zone stress mode,
+runtime, which `96d8722e` fixes: one turned on the zone stress mode,
 which only a debug build has, in the release-checks build; one's
 `cfg(ns_jit)` inside `for_each_lowering!` left an import unused on a
 target without a JIT; and one held a run to no refused body, where under
 `NS_NEXT_NO_JIT=1` the bootstrap refuses the bodies it enters.
 
-- `dec43097`, `d2e39f51` -- the stage's three questions, decided with
+- `aa0c0f21`, `db1c5091` -- the stage's three questions, decided with
   the user, and the plan, with the key and the dispatching entry.
-- `476c4551` -- the executed and trapped bits.
-- `80e2b66b` -- copies per receiver and entered application.
-- `601f750d`, `3114955d` -- the dispatching entry and its rows' pages.
-- `488a7b40`, `80773fb5` -- own slots at fixed offsets, and the
+- `9954d2ca` -- the executed and trapped bits.
+- `21897850` -- copies per receiver and entered application.
+- `1828c1e0`, `f2efa72c` -- the dispatching entry and its rows' pages.
+- `254a045e`, `265155b7` -- own slots at fixed offsets, and the
   decoder's check they rest on.
-- `44503d50` -- guards and traps.
-- `07b219c6`, `383bcb3f` -- versions, the refusal for good and the
+- `41a5c4fa` -- guards and traps.
+- `adee1774`, `ea54cc96` -- versions, the refusal for good and the
   budget it leaves armed for the other pairs.
-- `c83ea39b`, `52960bef` -- the invalidation and its stress mode.
-- `7096a52e`, `e5fb65f5`, `d0e8f458`, `40b420a4` -- what the stress
+- `5036514a`, `22304b4b` -- the invalidation and its stress mode.
+- `168f4403`, `729b4eac`, `fbc56be0`, `32b15383` -- what the stress
   modes' pairs found: the allocation's verification cubic in a body's
   size, a refused call to a callee not compiled yet counted against its
   caller, the deopt countdown's rotation locked in step with a long
   activation, and the exemption narrowed to a callee the zone has room
   for.
-- `55ec5c1c` -- the speculation's goldens.
-- `b993155f`, `4d17d968` -- the measurement, and the interpreted send
+- `f3e5ede3` -- the speculation's goldens.
+- `72fc2b73`, `700c0bc1` -- the measurement, and the interpreted send
   through the dispatching entry it led to, past the rows by the lookup.
-- `4deabcec` -- the speculation's tests in every gate's configuration.
+- `96d8722e` -- the speculation's tests in every gate's configuration.
 - The documents' commits after them.
-- `2eb46405`, `40e5168a` -- what the whole branch's review found: a
+- `02cf3745`, `e7a29fe8` -- what the whole branch's review found: a
   dropped pending request re-arms its body's budget, and a block of
   dispatching rows is vacated when its lean body is freed and when a
   collection frees its body's code id, which the stricter verification
@@ -7168,26 +7168,26 @@ twelve modes and without the JIT, 5,056 tests each, and `run-corpus`
 (5,055 tests, the 139 benchmark programs) and `aarch64` (5,055
 tests under QEMU).
 
-- `3be1f45b` -- the plan, with the four decisions of 2026-11-07.
-- `c739c455`, `7d5fb637`, `f8635b01` -- the snapshot tree, the table
+- `df18d61c` -- the plan, with the four decisions of 2026-11-07.
+- `3339dced`, `9cc1d241`, `2aaae38c` -- the snapshot tree, the table
   from dispatch id to application, and the plan.
-- `c71a33fd`, `9c9fc2e5` -- inlined method scopes, their returns and
+- `5cb90490`, `9eb5c307` -- inlined method scopes, their returns and
   type-cases in the graph.
-- `0f840a06`, `ff2bcb0a`, `436bea41`, `9560ad6f` -- the scopes in
+- `737b796d`, `79f0b7f3`, `83d6ab40`, `72d57f9a` -- the scopes in
   optimized code, and the exit that writes them.
-- `e4d88292`, `9d34e072`, `b8ccdb00` -- the copies' dependencies.
-- `0ed9a38f`, `17e03644` -- the callees always inlined.
-- `2a6c3724`, `f4e0fa4a`, `15d0d91b` -- blocks with their home and
+- `1e75d90a`, `e319c8ee`, `189942ce` -- the copies' dependencies.
+- `c9a56157`, `6e907933` -- the callees always inlined.
+- `bf04ac33`, `213c31e8`, `688ff8f4` -- blocks with their home and
   their elimination.
-- `3cd82441`, `fa520c2e`, `4d9a22f9`, `0a18714f` -- the recompilee
+- `8cc634a2`, `4d9d7904`, `159b3861`, `49965ead` -- the recompilee
   walk.
-- `ed4400e0`, `3fbb119a`, `1621baf0`, `99ed2545` -- the way back in at
+- `e88b080f`, `57787806`, `ed706272`, `670cc1cc` -- the way back in at
   a poll, and a freed copy that keeps nothing it inlined.
-- `71b08aa5` to `18944be5` -- the goldens, the statistics, the
+- `9b166bd3` to `71f65b83` -- the goldens, the statistics, the
   measurement and what it found: a scope that would create a block
   sent, the leaves' lookups, the current class computed only before a
   frame node, a leaf's frame written as before inlining.
-- `56efe31f` to `cf779126` -- a block handed to an Array's `do:`
+- `9bc9b2ec` to `1f897d1e` -- a block handed to an Array's `do:`
   eliminated, its failure way a trap, and the walk's rule for homes.
 - The documents' commits after them.
 
@@ -7247,20 +7247,20 @@ tests each, and `run-corpus` "ran 6, failed 0, skipped 205" plain and
 under each mode -- `linux` (5,117 tests, the 139 benchmark programs) and
 `aarch64` (5,114 tests under QEMU).
 
-- `f429dcd4` -- the plan, with the six decisions of 2026-11-09.
-- `3615700f`, `6273a546` -- the x86-64-v2 build flags and the start
+- `a8288df1` -- the plan, with the six decisions of 2026-11-09.
+- `06d6a1bc`, `c5285195` -- the x86-64-v2 build flags and the start
   check through CPUID.
-- `c3afa720`, `93d6439c` -- the floating-point operations in
+- `1a9f0037`, `2b8e961d` -- the floating-point operations in
   `ns-assembler`, the rounding directions named as IEEE 754 names them.
-- `41963186` -- the macro assembler's float idioms and `jit/floats.rs`.
-- `c1ebf6cc`, `c9ade104`, `2378243f` -- `Float`'s binary operations
+- `500b7364` -- the macro assembler's float idioms and `jit/floats.rs`.
+- `0472d4e6`, `b8d93953`, `ca43fb54` -- `Float`'s binary operations
   through row stubs, the float text's tie to even, and a zone test sized
   past the stubs.
-- `bd3d7179`, `6d2fc2c9` -- the unary and rounding operations, and the
+- `bddc89d2`, `5759740b` -- the unary and rounding operations, and the
   mixed `SmallInteger` and `Float` rows.
-- `893213ba` -- `Float` operations as nodes in optimized code.
+- `92c172d2` -- `Float` operations as nodes in optimized code.
 - The documents' commits after them.
-- `b30cc539`, `c627f41f` -- the float classification compiled without
+- `7ed47642`, `5f3ff578` -- the float classification compiled without
   a JIT, a debug-only test gated, and the CPUID decoder only on x86_64.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Templates for
@@ -7317,23 +7317,23 @@ CPython"). No golden's outcome changed.
 
 The end-of-batch groups passed on the final tree: `commit` (5,120
 tests, the corpus "parsed 211, failed 0"), `images` (1,090), `caches`
-(545), `benchmarks` and `linux` (on `28bcb3f4`, the last commit that
+(545), `benchmarks` and `linux` (on `c1661ffc`, the last commit that
 changed more than Markdown), `release-checks` (4,916, and both lints),
 `codegen`, `stress` -- the suite under each of the twelve modes and
 without the JIT, 5,120 tests each, and `run-corpus` "ran 6, failed 0,
 skipped 205" plain and under each mode -- and `aarch64` (5,116 tests
 under QEMU).
 
-- `bf35292b`, `08377462` -- upstream's Python versions copied unchanged,
+- `ffcea507`, `dbd6b465` -- upstream's Python versions copied unchanged,
   and the bytecode caches ignored.
-- `206f741a` -- the Python Richards, RichardsTon80 and DeltaBlueTon80.
-- `ea2348ed`, `06eaa8a6`, `26599846` -- the harness protocol, names
+- `5d37bdd1` -- the Python Richards, RichardsTon80 and DeltaBlueTon80.
+- `00296a2d`, `c0ddf6f1`, `d1bf3609` -- the harness protocol, names
   written out and CDx's notice, and the Python `Set`'s answers.
-- `e9fb2386` -- the Newspeak benchmarks moved into `newspeak/`.
-- `006627cc`, `234835df`, `7691dad0` -- the alignment: the Python Json
+- `181cab65` -- the Newspeak benchmarks moved into `newspeak/`.
+- `d8c195f3`, `0b3ed9e9`, `7b20b00a` -- the alignment: the Python Json
   and DeltaBlue, the Java Json, the fills in a loop, the SOM class
   library in the Newspeak ports, and its review's findings.
-- `28bcb3f4` -- the Python programs in the `benchmarks` gate and the
+- `c1661ffc` -- the Python programs in the `benchmarks` gate and the
   gate image.
 - This commit -- the measurement and the documents.
 
@@ -7416,26 +7416,26 @@ the hot path's files changed), and every end-of-batch group passed:
 -- the suite under each of the thirteen modes and without the JIT --
 `linux` and `aarch64`.
 
-- `b643ef3c` -- the debugger's design, decided.
-- `6aac21fe` -- the plan
+- `19bde711` -- the debugger's design, decided.
+- `09e3c11a` -- the plan
   (`docs/superpowers/plans/2026-11-10-2318-debugger-stage-1.md`).
-- `38435766` -- the machine words as atomics shared through an `Arc`.
-- `4feb72ec` -- the safepoint request as a set of bits, the debugger's
+- `d0a088a7` -- the machine words as atomics shared through an `Arc`.
+- `9aa66b0b` -- the safepoint request as a set of bits, the debugger's
   among them, and the fenced synchronization of the depth limit.
-- `27276716`, `2c014414` -- pause, continue and terminate at the
+- `94485175`, `8ab9526f` -- pause, continue and terminate at the
   safepoint, and one arming lock per interpreter.
-- `f48844c9` -- the stack and values of a stopped run.
-- `b578a325`, `6312276c` -- a pause stops machine code, an optimized
+- `8dc1eefc` -- the stack and values of a stopped run.
+- `16becaac`, `d7b60fab` -- a pause stops machine code, an optimized
   poll included, and the tests assert the machine code they name.
-- `96a3559b`, `638c0483` -- the pause stress mode, named wherever the
+- `8e8904c8`, `2c287ab0` -- the pause stress mode, named wherever the
   stress modes are listed.
-- `48549efa` -- the documents.
-- `7d45c17e`, `43ceb8da`, `8306c772` -- the final review's fixes: the
+- `94ab9112` -- the documents.
+- `c9c5e4be`, `73b1a46b`, `2d84293f` -- the final review's fixes: the
   stack trace reaches the senders a suspension left in their frame
   objects, a re-attach clears the replaced debugger's bits, and the
   commands still queued before a run starts and once it ended are
   dropped, their bit cleared before the queue is drained.
-- `7f44351d` -- what stage 1 moved.
+- `e7468229` -- what stage 1 moved.
 - This commit -- the batch's open work and the documents checked for a
   fresh session.
 
@@ -7516,21 +7516,21 @@ on the final tree: `images`, `caches`, `benchmarks`, `release-checks`,
 `codegen`, `stress` -- the suite under each of the thirteen modes and
 without the JIT -- `linux` and `aarch64`.
 
-- `159dbebd` -- the plan
+- `83efa17d` -- the plan
   (`docs/superpowers/plans/2026-11-12-0030-debugger-stage-2.md`) and
   the selector spans in the design.
-- `cd4f8b13` -- a message keeps its selector tokens' spans.
-- `3f99ffd5`, `c8a8c57a` -- the optimized lowering collects a body's
+- `a501ff4b` -- a message keeps its selector tokens' spans.
+- `8617a832`, `56535ff4` -- the optimized lowering collects a body's
   metadata, and a block's variable is read from the nearest frame handed
   it.
-- `28a1d522` -- the reference lowering collects it.
-- `d23947ae` -- a declaration's level compiled again, paired and cached.
-- `7a841e20`, `e4d3fb1e` -- a stopped frame's name, place and named
+- `12442c48` -- the reference lowering collects it.
+- `f7432e43` -- a declaration's level compiled again, paired and cached.
+- `68d2504c`, `f441f38f` -- a stopped frame's name, place and named
   variables, and a vector variable read before its vector is made.
-- `ac9050a4` -- the oracle over every golden, from source and from an
+- `02fb094d` -- the oracle over every golden, from source and from an
   image, and over the shipped modules.
-- `6135c2e5`, `2a0c2ba2` -- the documents.
-- `74abeaa0`, `1b0e49b9`, `23c099ed`, `e3e789c1` -- the whole-branch
+- `06ba42a4`, `42b09431` -- the documents.
+- `e500e731`, `5fdaa3af`, `2cd19983`, `3d641734` -- the whole-branch
   review's fixes: a superseded body paired against the version it runs,
   a body past a limit drops its blocks' tables, a block two deep, a
   decoded creator and a floor under the oracle.
@@ -7608,44 +7608,44 @@ read of its handler ("What stage 3 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen`
 and `images` where their files changed), and every end-of-batch group
-passed on the final tree, `b3da5ce3` (after it only Markdown changed):
+passed on the final tree, `960d13cc` (after it only Markdown changed):
 `images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
 -- the suite under each of the fifteen modes and without the JIT,
 1,642 s, and `run-corpus` under each -- `linux` and `aarch64`, whose
 suite took 688 s.
 
-- `91b13682` -- the plan
+- `61710386` -- the plan
   (`docs/superpowers/plans/2026-11-12-2359-debugger-stage-3.md`).
-- `377ceb29` -- a body's slots can be patched, the original kept beside
+- `39dc9ae9` -- a body's slots can be patched, the original kept beside
   them.
-- `9afa17ae` -- line breakpoints stop the interpreter at statement
+- `862920c0` -- line breakpoints stop the interpreter at statement
   starts.
-- `1c5664f1` -- a breakpoint frees machine code and switches off a fast
+- `612478df` -- a breakpoint frees machine code and switches off a fast
   path.
-- `e8d5416a`, `76ae6c8c` -- step over, into and out by one-shot
+- `bdf04f48`, `dd8ff490` -- step over, into and out by one-shot
   breakpoints.
-- `868f8480` -- a step whose frame leaves otherwise stops at the next
+- `8a1e97ce` -- a step whose frame leaves otherwise stops at the next
   place the program reaches.
-- `4986e761` -- steps skip the shipped modules and filtered classes.
-- `a8ada841`, `4b44fe80`, `b4a3e450` -- run to cursor and method
+- `253dca96` -- steps skip the shipped modules and filtered classes.
+- `da7b3246`, `1409ac77`, `bd952d2e` -- run to cursor and method
   breakpoints.
-- `337a278b`, `7fa370eb`, `d7de289f` -- exception breakpoints, `halt`
+- `4a943d84`, `f7e32e69`, `0dcad7f6` -- exception breakpoints, `halt`
   and the caught handler, the leaves run in machine code.
-- `5b82e52f`, `a8dd48ac`, `85888d49` -- the breakpoint stress mode.
-- `ea555e38`, `5ff4b113`, `c5bb2d09`, `69cf9aad` -- the step stress
+- `a48d918f`, `5bfa6ea7`, `0b5ffe09` -- the breakpoint stress mode.
+- `78f2198d`, `e66bbb12`, `e6938279`, `384b8837` -- the step stress
   mode.
-- `851284b1` -- a pause that lands between a loop's turns under a stress
+- `e26c3b85` -- a pause that lands between a loop's turns under a stress
   mode paused again in its test.
-- `6bb4ecf0` -- the unwinder tests once per unwind whether the debugger
+- `9a122267` -- the unwinder tests once per unwind whether the debugger
   follows it, and a catch is reported through the read of its handler.
-- `e5393238`, `60a882e6`, `7ec3cd3f`, `9fa1fd62`, `0dacde30`,
-  `7828b387` -- the final review's fixes: a test waits for the run's
+- `7de8799a`, `4b8feed3`, `139aaf1a`, `60df9e7f`, `fef883fd`,
+  `9cd3515e` -- the final review's fixes: a test waits for the run's
   end, a step from an exception's stop starts in the frame the stop
   shows first, a breakpoint's stop is decided again after the commands
   served before it, a method breakpoint is set in every built module of
   its name, the dead `activationHandlerBlock:ifFail:` row removed, and a
   body's originals kept sorted.
-- `b3da5ce3` -- a caught exception's stop shows and steps in the
+- `960d13cc` -- a caught exception's stop shows and steps in the
   handler block it stands in.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
@@ -7736,11 +7736,11 @@ within -0.44% and +0.65%, nothing separated from noise; the clone of
 the exception breakpoints' settings at every reported exception does
 not show over 200,000 caught signals, and the connection and handshake
 cost 17 to 32 ms a process ("What stage 4 moved"); the tree measured
-was `f45b4f0b`, before the agent's writes moved to the writer thread.
+was `8df8c161`, before the agent's writes moved to the writer thread.
 
 The commit gates passed on every commit (`commit`, and `memory`,
 `analyzer` and `codegen` where their files changed). The end-of-batch
-gates passed on the final tree, `d3786f5f`: `images`, `caches`,
+gates passed on the final tree, `80ac0b4f`: `images`, `caches`,
 `benchmarks`, `release-checks`, `codegen`, `stress` -- the suite under
 the fifteen stress modes and with `NS_NEXT_NO_JIT=1`, 3,235 tests each
 (WIDE 5,009), and `run-corpus` "ran 6, failed 0, skipped 205" plain and
@@ -7749,50 +7749,50 @@ under each mode -- `linux`, `aarch64`, whose suite took 385.7 s, and
 nothing Critical; its findings were fixed in the last wave of fixes
 below and reviewed again, but for two it deferred to the open work.
 
-- `687c7d65`, `c1367429` -- stage 4's questions decided and the plan
+- `e0bf63cb`, `2250a144` -- stage 4's questions decided and the plan
   (`docs/superpowers/plans/2026-11-14-1235-debugger-stage-4.md`).
-- `69a26c7e`, `a178d646`, `4029399a` -- every command dropped between
+- `f9ccab59`, `d4246f31`, `99d09c70` -- every command dropped between
   runs is answered.
-- `6b7b755a` -- the offset and line conversion moves into `ns-tooling`.
-- `acaaf678`, `5ab6cd76`, `f9f0bbdf` -- hit conditions counted by the VM,
+- `feab9679` -- the offset and line conversion moves into `ns-tooling`.
+- `f26b4dac`, `f47c889b`, `8071cb77` -- hit conditions counted by the VM,
   no reach counted twice.
-- `d6c1322d`, `8186f82f`, `7e9d3213` -- the plugin's tests rerun only
+- `fa2ca40d`, `417003c7`, `280b239e` -- the plugin's tests rerun only
   when their outcome can change, and the shipped code is written only
   when stale.
-- `b3b80d93`, `667c57dd` -- a module's current text by revision.
-- `f685579f` -- the remote's two halves.
-- `ce36cda1` -- a module's breakable statements without running it.
-- `c21c29f2` -- the operating system's random source.
-- `bdcecf1f`, `ff6b315e`, `884963cb`, `ec3e101b` -- `--debug` and
+- `7a432fc9`, `8788762f` -- a module's current text by revision.
+- `f18f051b` -- the remote's two halves.
+- `86b0e967` -- a module's breakable statements without running it.
+- `828545e9` -- the operating system's random source.
+- `9d60ad85`, `6b3ce71e`, `5381624d`, `c3d7c6a5` -- `--debug` and
   `--debug-connect`, the session, a pause between runs stopping
   `main:args:` at its first statement, and the attach deadline.
-- `5349b534`, `7e1fc993` -- a stop's stack, variables and sources.
-- `f6f68011`, `b062a3bf` -- breakpoints and steps.
-- `01e323b4`, `e7e7f6b2` -- `newspeak/breakableLines` and the chain
+- `083f1547`, `a6aee906` -- a stop's stack, variables and sources.
+- `66738ab2`, `137f049d` -- breakpoints and steps.
+- `4e0a19ce`, `6198508f` -- `newspeak/breakableLines` and the chain
   guard.
-- `ef0e5f13`, `ac899c9f`, `af0da206` -- the plugin's DAP client and its
+- `32e4d5b5`, `54800d13`, `3308c813` -- the plugin's DAP client and its
   debug process.
-- `dc414e22`, `f45b4f0b` -- the plugin's line, method and exception
+- `81a86624`, `8df8c161` -- the plugin's line, method and exception
   breakpoints.
-- `7b047d21` -- the stage's deferred polish.
-- `a05e10a8`, `5380cfcf` -- the documents brought to the stage.
-- `5275e320`, `92979b80`, `b7d7289a`, `bd7f5bdd` -- the deadline, the
+- `9e8003c6` -- the stage's deferred polish.
+- `88992171`, `89e24b43` -- the documents brought to the stage.
+- `09a71913`, `bf4b34e9`, `11657fd2`, `c453a623` -- the deadline, the
   breakable lines' and the racing tests hold on a loaded machine and on
   every platform.
-- `09d49ecc`, `39b81c4e` -- a peer or client that never reads cannot
+- `4a35ce3a`, `c138ee32` -- a peer or client that never reads cannot
   hold off the attach deadline nor wedge the agent: the writer thread,
   its bounded writes and queue.
-- `81b552ea` -- every request answered, the program's end included.
-- `26555e18` -- a stop names no breakpoint the client has replaced.
-- `9435eb6d` -- the agent bounds what a peer and a client hold: frames
+- `8432a12a` -- every request answered, the program's end included.
+- `f27da12e` -- a stop names no breakpoint the client has replaced.
+- `07bba2ba` -- the agent bounds what a peer and a client hold: frames
   bounded before the attach, the attach deadline kept by the agent's
   loop, each message's whole write bounded, the linger a deadline from
   `terminated`, canonical path comparison, and the launcher's secret
   returned in the `process` event.
-- `7ac80b41` -- the plugin trusts only its own process, by its PID and
+- `ad3c4544` -- the plugin trusts only its own process, by its PID and
   a one-time secret, and names the exception at its stop.
-- `68382d21` -- the open work the final review deferred.
-- `0da6a9d2`, `d3786f5f` -- the writer's last words within one deadline,
+- `d74f7f81` -- the open work the final review deferred.
+- `b8ee0138`, `80ac0b4f` -- the writer's last words within one deadline,
   and Windows' verbatim and UNC prefixes in the path comparison.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
@@ -7852,31 +7852,31 @@ with its test reproduced first.
   the carried step would have.
 
 Every commit ran `cargo xtask gates commit` (and `codegen` where its
-files changed); at `572f0379` every end-of-batch gate passed -- the
+files changed); at `72ad757e` every end-of-batch gate passed -- the
 suite under every stress mode, `images`, `caches`, `benchmarks`,
 `release-checks`, `codegen`, `linux`, `aarch64` -- and so did
 `plugin-verification`. A whole-branch review found no Critical defect;
-its findings are fixed (`875a1f0a` to `572f0379`).
+its findings are fixed (`4d4452c7` to `72ad757e`).
 
-- `e79f61d9` -- decision 17's step out of a block, decided.
-- `95adb768` -- Debug at the play button.
-- `4a728dc6`, `88869734` -- fields named by their slots, through the
+- `b65215bc` -- decision 17's step out of a block, decided.
+- `a2d2bb38` -- Debug at the play button.
+- `d412d7a2`, `d897d61a` -- fields named by their slots, through the
   install's walk of the layout.
-- `af4b52a1`, `962fa61d`, `3c41791b` -- a step out of a block leaves the
+- `bcd1b572`, `eec5ea88`, `85af5c58` -- a step out of a block leaves the
   send that took it, however the block was passed, and stops where a
   step over of it would.
-- `fe1c9244`, `3b905461` -- a step goes on in the program's next run and
+- `44b109c6`, `9ea5440f` -- a step goes on in the program's next run and
   passes over the factory on its way out, stepping every initializer.
-- `177b924a` -- the factory known by its frame's kind: an empty body is
+- `eea44062` -- the factory known by its frame's kind: an empty body is
   stepped into again.
-- `af6aedad` -- shadowed fields of two same-named mixins named by their
+- `6e5e59a0` -- shadowed fields of two same-named mixins named by their
   paths, and no panic from a debugger query.
-- `875a1f0a` -- the whole-branch review's findings: a step out decided by
+- `4d4452c7` -- the whole-branch review's findings: a step out decided by
   the creator's own send, a proxy's `doesNotUnderstand:` included; a
   stop at a body's tail standing at its last statement; carried exits
   reported by a pause between runs; no two field labels alike; the
   step stress mode's density restored.
-- `aa332e77`, `39be8a8e`, `572f0379` -- a step out decided by the values
+- `af8eb2f6`, `575410f2`, `72ad757e` -- a step out decided by the values
   the send delivered: the callee's parameters, a delivery's `Message`.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "The debugger"
@@ -7925,39 +7925,39 @@ the binary
 
 Every commit ran `cargo xtask gates commit` (`analyzer` for the
 analyzer's). The end-of-batch gates and `plugin-verification` passed at
-`1128abe8`: every stress suite, `run-corpus` "ran 6, failed 0, skipped
+`8e1de532`: every stress suite, `run-corpus` "ran 6, failed 0, skipped
 205" plain and under each mode, `linux`, `aarch64` (457 s) and the
 plugin's verification (238 s). The stress suites now share the machine's
-cores, two test threads each on 24 (`1128abe8`): at 18 each, tests that
+cores, two test threads each on 24 (`8e1de532`): at 18 each, tests that
 wait on a process they start failed in a different mode at each run.
 
-- `add082a6`, `ef254bf2` -- the factory's frame stopped in by a step
+- `f99c0354`, `306c7fd6` -- the factory's frame stopped in by a step
   into and by a pause.
-- `dca49454`, `20bce702`, `be36f072` -- the header stops, the step from
+- `d979bfbf`, `37c270ef`, `44f4979b` -- the header stops, the step from
   one stepping in its frame once it is filtered, and its frame named only
   while its one-shot waits.
-- `6c545b87` -- the header stops through the debug adapter.
-- `4a18064c` -- `ns-next shipped-sources`.
-- `c84cb391` -- the analyzer treats a shipped module's text as shipped.
-- `511192d5`, `0d5be144` -- the shipped modules as a library in the IDE,
+- `ca8691da` -- the header stops through the debug adapter.
+- `be54d7f8` -- `ns-next shipped-sources`.
+- `6e89a847` -- the analyzer treats a shipped module's text as shipped.
+- `0bc1aded`, `5f1f1a96` -- the shipped modules as a library in the IDE,
   only in Newspeak projects, its look awaited by a session.
-- `eeb8888a` -- the branch review's fixes: a line step stops in a block's
+- `3daad172` -- the branch review's fixes: a line step stops in a block's
   next activation, which the step's stop now tells the agent of
   (`Event::Stopped`'s `elsewhere`).
-- `4063f0fc` -- a continue, a terminate and a hit count at the rewound
+- `b8c1030a` -- a continue, a terminate and a hit count at the rewound
   factory stop.
-- `87d8dd43` -- only the shown library directory's files are named to the
+- `3cf35eca` -- only the shown library directory's files are named to the
   agent.
-- `69ead1d8` -- a program module named like a shipped one never takes its
+- `28432347` -- a program module named like a shipped one never takes its
   breakpoints: every module of the debugging API a `ModuleName`, and a
   shipped module named by its file's path in the core library the client
   hands over at `attach`.
-- `cfb1f0ad` -- a line step stops in a fallback block's next activation.
-- `9a431d50`, `c65883da` -- the step's origin noted only for a step taken
+- `8cfba350` -- a line step stops in a fallback block's next activation.
+- `610ab3e4`, `63058747` -- the step's origin noted only for a step taken
   on top, a line step placed by the first frame a stop shows, and a typed
   class name reaching the program's and the shipped module alike.
-- `12f049c8` -- the stress run's waits outlast a stalled process.
-- `1128abe8` -- the stress suites share the machine's cores.
+- `ce5cc172` -- the stress run's waits outlast a stalled process.
+- `8e1de532` -- the stress suites share the machine's cores.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects
 and gaps" (the library's flag never reset, its breakable lines needing
@@ -8023,26 +8023,26 @@ stops above.
 
 Every commit ran `cargo xtask gates commit`. The end-of-batch gates --
 now without the Docker groups `linux` and `aarch64`, which run on demand
-(`4e7210e4`) -- and `plugin-verification` passed at `4e7210e4`: every
+(`595760cf`) -- and `plugin-verification` passed at `595760cf`: every
 stress suite (780 s), `run-corpus` "ran 6, failed 0, skipped 205" plain
 and under each mode, and the plugin's verification (245 s).
 
-- `054630d6` -- the returned value named by its call.
-- `f647058f` -- the core library's node shows its modules and
+- `3c75b21a` -- the returned value named by its call.
+- `8ca48bc7` -- the core library's node shows its modules and
   `platform/` directly.
-- `19cbf1fc` -- expanded variables stay expanded across a step.
-- `5a591c3e` -- the setting to step into the kernel's and the platform's
+- `e2c6ed38` -- expanded variables stay expanded across a step.
+- `894df293` -- the setting to step into the kernel's and the platform's
   code.
-- `34f25fab` -- the name skips setters, cascades' receivers spelled
+- `50291d2e` -- the name skips setters, cascades' receivers spelled
   apart and comments, sliced from its own module's text.
-- `615bdfee` -- the step filters' classes chosen per project and sent by
+- `27ad9be3` -- the step filters' classes chosen per project and sent by
   their files.
-- `70aac35b` -- the branch review's fixes in the runtime and the
+- `c8d75115` -- the branch review's fixes in the runtime and the
   agent: a step out into a setter assignment records nothing, the
   instruction's names tested, one text per module in the metadata cache,
   the step filters' silence for other programs' files and their
   refusal of `classes`.
-- `d6d17cea` -- the branch review's fixes in the plugin: the chooser
+- `b45ba285` -- the branch review's fixes in the plugin: the chooser
   asks a file's classes as it expands, bounded and cancellable, with a
   speed search; a damaged entry counts as gone; the page for real
   projects only.
@@ -8096,12 +8096,12 @@ up, and why the rest was not (the never type, the `Allocator` API,
   only when it needs one.
 
 Every commit ran `cargo xtask gates commit` and the groups its files
-name. The end-of-batch gates passed at `7dbac16b`: every stress suite
+name. The end-of-batch gates passed at `09078e70`: every stress suite
 (769 s), `run-corpus` "ran 6, failed 0, skipped 205" plain and under
 each mode. The Docker groups `linux` and `aarch64` passed there too:
 5,280 tests on x86_64 Linux and 5,280 under QEMU on AArch64. The first
 `aarch64` run had found the one `extern` block that only AArch64 Linux
-compiles (`3bafc154`).
+compiles (`0e237515`).
 
 ## The debugger's stage 5: evaluation, writing frames and the MCP server (2026-11-17)
 
@@ -8186,7 +8186,7 @@ the hot path of a program run without a debugger, so the stage was not
 measured ("What stage 5 moved").
 
 The commit gates passed on every commit (`commit`, and `codegen` where
-its files changed). The end-of-batch gates passed on `904fec56`:
+its files changed). The end-of-batch gates passed on `7ced3c3b`:
 `images`, `caches`, `benchmarks`, `release-checks`, `codegen`, `stress`
 and `plugin-verification`. Their first run found three problems, all
 fixed before that tree: the memory view answering a frame the suspend
@@ -8209,7 +8209,7 @@ found five defects, each fixed with a test that failed before it:
   temporary directory.
 
 With those and its minors fixed, the end-of-batch gates passed again on
-the final tree, `16facac0`:
+the final tree, `543e1d97`:
 - `images` 2,180 tests;
 - `caches` 545;
 - `benchmarks` 177;
@@ -8222,38 +8222,38 @@ the final tree, `16facac0`:
 
 The Docker groups `linux` and `aarch64` were not run.
 
-- `c5d72d74`, `89603ae9`, `8722f621` -- stage 5's questions decided and
+- `f6ea7b18`, `06a612d5`, `f35eaacb` -- stage 5's questions decided and
   the plan (`docs/superpowers/plans/2026-11-16-2110-debugger-stage-5.md`).
-- `cb5afc64` -- an expression compiles as a block in a stopped frame's
+- `b9679a33` -- an expression compiles as a block in a stopped frame's
   scope.
-- `8e8fb068`, `b61da026` -- the variable table names the closures that
+- `0d275519`, `2dce7aa6` -- the variable table names the closures that
   copy a variable.
-- `7b12fdf9`, `d54a0455`, `b5231b13` -- the evaluation, its abort and
+- `c26da922`, `447b8169`, `9e101a4a` -- the evaluation, its abort and
   its depth reserve.
-- `351a8541`, `cfa30c51` -- setting a variable.
-- `d82ccdce`, `4ee811c5`, `4dafd41f`, `9fe1a281`, `d1c75a5a` -- the
+- `3a283683`, `0bc6e3cd` -- setting a variable.
+- `06aaf4cf`, `17fed5b0`, `46b148e3`, `a6388dcc`, `a97e5f31` -- the
   command-line principle dropped, `shipped-sources` without JSON, and
   the MCP server and the IDE's session as MCP tools planned.
-- `0e3731a7`, `2f6ae5b1`, `c8c40fa2` -- conditions and logpoints.
-- `800ec71b`, `23e1bef6` -- restart frame and force return.
-- `79927e46`, `61a2b637`, `f3ea6069` -- smart step into.
-- `e90b560d`, `dbb854ab` -- marks and the withheld values.
-- `7f10735f`, `806418d9`, `6e71a1ca` -- the memory view.
-- `0eafb6fb`, `0b5fb9b6`, `d59ba06a`, `4009b0c8`, `5464d99b`,
-  `2d4989e3` -- the pause stress mode's evaluations and the defects they
+- `d257def1`, `6e32ae83`, `38c89b10` -- conditions and logpoints.
+- `3b8a3e51`, `b389dd18` -- restart frame and force return.
+- `43373ef7`, `97227b9c`, `d816dee7` -- smart step into.
+- `1e59270b`, `5e3852ca` -- marks and the withheld values.
+- `04d87aab`, `01541228`, `319ec264` -- the memory view.
+- `f15a155f`, `46163a23`, `be03f99c`, `7c565f4a`, `6249880a`,
+  `e8bf317b` -- the pause stress mode's evaluations and the defects they
   found.
-- `5fcbc455`, `a4e4196d`, `8d35f6ee`, `c54f177a` -- the agent's
+- `b9accc28`, `fcda193b`, `83680f30`, `2675d513` -- the agent's
   evaluation, variables and conditions, and the abort in sequence.
-- `71dda1b4`, `61b68593` -- the agent's smart step, restart, force
+- `451597d9`, `fc98be56` -- the agent's smart step, restart, force
   return and memory view.
-- `44374a7b`, `21f851a1`, `627e381c` -- `ns-next mcp`.
-- `b7af1534`, `4f0585c1`, `00313cd7`, `815137ed` -- the plugin.
-- `04ed10db`, `94397570` -- the stage's cosmetic minors and the
+- `45abe4ba`, `5ac93b77`, `9f6565c8` -- `ns-next mcp`.
+- `d6cc55b0`, `f3dca399`, `cf61e807`, `e3f94df3` -- the plugin.
+- `4a5ae0f5`, `d0a04e21` -- the stage's cosmetic minors and the
   documents brought to the stage.
-- `99ac2ad5`, `a79c26cd`, `904fec56` -- what the end-of-batch gates
+- `8cc3d7d2`, `b3131043`, `7ced3c3b` -- what the end-of-batch gates
   found.
-- `aa0c0be2`, `fe008c9e`, `1639d8cd`, `0faeaa09`, `bef88272`,
-  `7262abe2`, `236b7c51`, `6a969cd8`, `16facac0` -- what the final
+- `0a3eab28`, `70bb4d3d`, `45183855`, `5353616b`, `beed16a7`,
+  `8e037742`, `24cb98a6`, `493fa044`, `543e1d97` -- what the final
   review found.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next" (stage 6:
@@ -8326,20 +8326,20 @@ the final tree:
 
 The Docker groups `linux` and `aarch64` were not run.
 
-- `0449ff34`, `1bdf7c4e`, `ace71993` -- the design and the plan
+- `7542d46a`, `9704fe34`, `e3d78e4d` -- the design and the plan
   (`docs/superpowers/plans/2026-11-19-0930-module-identity.md`).
-- `9c03a407` -- ids, versions, ranges and identities.
-- `775b066c` -- metadata comments collected by their §4.3 targets.
-- `a437f3a5`, `38b995ea` -- a module's identity on its root mixin, the
+- `81773ff3` -- ids, versions, ranges and identities.
+- `898a7186` -- metadata comments collected by their §4.3 targets.
+- `eef145ec`, `75ef57b2` -- a module's identity on its root mixin, the
   shipped modules' `newspeak.core.` ids.
-- `93b34c62`, `e7ef033d` -- the string manifest, `as` and the project's
+- `c25d992c`, `54896f7a` -- the string manifest, `as` and the project's
   refusals.
-- `c4c6a2c7`, `d925a251` -- the image's module record.
-- `5792a599`, `4d44d21b` -- the debugger and its clients name modules by
+- `11c299f9`, `ba49e303` -- the image's module record.
+- `50bdf428`, `45448f10` -- the debugger and its clients name modules by
   id and version.
-- `0a470a13` -- the plugin's breakpoint types, memory view and doc
+- `361d0ad4` -- the plugin's breakpoint types, memory view and doc
   comments.
-- `a3813f7b`, `e2f5d8ce` -- the analyzer's findings and hover.
+- `7cd613e8`, `eebde59d` -- the analyzer's findings and hover.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): metadata through
 the mirrors, and a module on another drive or share than its project,
@@ -8397,7 +8397,7 @@ their refusals, `tests/mcp.rs` `debug_start`'s trace and
 The commit gates passed on every commit (`commit`, with `caches` and
 `codegen` where their files changed). The end-of-batch gates passed on
 the final tree, after `release-checks` found that the trace tests did
-not compile without debug assertions (`f6576a4b`):
+not compile without debug assertions (`6638e484`):
 - `images` 2,196 tests;
 - `caches` 549;
 - `benchmarks` 177;
@@ -8410,22 +8410,22 @@ not compile without debug assertions (`f6576a4b`):
 
 The Docker groups `linux` and `aarch64` were not run.
 
-- `3ac19d10`, `28b27d63`, `05dc3765`, `c58fd03f`, `0b3d4edb`, `2830d8c2`
+- `5e37e69c`, `3f3b2ca8`, `86239380`, `745b0587`, `e45ad8c8`, `cd11d60d`
   -- the design and the plan
   (`docs/superpowers/plans/2026-11-18-2153-developer-tool-stage-1-tracing.md`).
-- `b2ddce5d`, `3b9ca334`, `0181fadc`, `8e77c323` -- the tools' name
+- `a71f4c79`, `2647ef2c`, `a4e2231c`, `e21ef280` -- the tools' name
   grammar in `ns-runtime`, the events, their sink, the names and the
   filter.
-- `40caf29e`, `84dfc9c8`, `5536ba57` -- `compile` and `osr`; a leaf only
+- `37c394d5`, `0d9321d0`, `9f2d4717` -- `compile` and `osr`; a leaf only
   records.
-- `e04ecd6c`, `692dac01` -- `optimize` and `inlining`.
-- `799523a6`, `2f2b941d` -- `deoptimize` and `code-zone`.
-- `7da72044`, `b27aba2b` -- `caches`.
-- `495e022b`, `917b80c4`, `5ca5fcaa` -- `ns-next run --trace` and its
+- `91171172`, `5e5d3a30` -- `optimize` and `inlining`.
+- `ce90d04c`, `81b8640a` -- `deoptimize` and `code-zone`.
+- `4101d1d9`, `8540d18a` -- `caches`.
+- `206728e9`, `906c4f52`, `c52bf227` -- `ns-next run --trace` and its
   filter.
-- `5cf617f2`, `3fcbd640` -- `debug_start`'s trace.
-- `040b9536` -- the plugin's runtime options.
-- `f6576a4b` and the documentation commit after it.
+- `27bd5a41`, `0e96d2a0` -- `debug_start`'s trace.
+- `5aabc767` -- the plugin's runtime options.
+- `6638e484` and the documentation commit after it.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
 shell, next; the rarer events untested end to end; the plugin's runtime
@@ -8490,9 +8490,9 @@ Windows x64, `tests/debug_adapter.rs` `nsNext/frameCode` and
 The commit gates passed on every commit (`commit`, with `codegen` where
 its files changed). The end-of-batch gates passed on the final tree,
 after `release-checks` found that three of the stage's tests did not
-compile without debug assertions (`8b00a56c`) and `stress` that the
+compile without debug assertions (`a7feb5ce`) and `stress` that the
 plan and frame-code tests needed the cache, zone and collect stress
-modes off (`887f023f`):
+modes off (`770191ad`):
 - `images` 2,196 tests;
 - `caches` 549;
 - `benchmarks` 177;
@@ -8506,28 +8506,28 @@ modes off (`887f023f`):
 The Docker groups ran too, since the JIT's annotations and `ns-cli`'s
 decoders are platform-dependent: `linux` 5,736 tests, the doctests and
 101 benchmark programs, after its clippy found the pinned listing's
-program dead on Linux (`2d06e68d`) and its suite that the containers
+program dead on Linux (`24ee3a69`) and its suite that the containers
 reaped no orphan, so that `killing_the_server_ends_its_program` saw its
-program a zombie (`3f131ea4`, `docker run --init`); and `aarch64` 5,736
+program a zombie (`6397a95f`, `docker run --init`); and `aarch64` 5,736
 tests under QEMU, `listing/aarch64.rs` compiled and run there for the
 first time.
 
-- `b618dffd`, `f26a9b45` -- the decisions and the plan
+- `045a1647`, `7124c79f` -- the decisions and the plan
   (`docs/superpowers/plans/2026-11-20-1634-developer-tool-stage-2-printing-code.md`).
-- `c6ebeca8` -- listings in the trace's queue; bytecode printed when its
+- `889a04ea` -- listings in the trace's queue; bytecode printed when its
   mixin is made.
-- `f41eb196`, `bfc729aa` -- baseline machine code captured at install,
+- `b261789b`, `2ed095ee` -- baseline machine code captured at install,
   annotated.
-- `e6c24de4`, `f85680be` -- an optimized copy's listing, its scopes and
+- `e0cbabe2`, `64e24789` -- an optimized copy's listing, its scopes and
   their positions.
-- `e943fced` -- the inlining plan of every optimizing compile, with its
+- `ba7d6fe7` -- the inlining plan of every optimizing compile, with its
   outcome.
-- `fbee496d`, `2a972a66` -- `ns-next run --print-*`, the decoders and
+- `58582847`, `f93e892f` -- `ns-next run --print-*`, the decoders and
   the formats.
-- `137804cd`, `88bbbabb` -- the debugger answers a stopped frame's code.
-- `c145f544` -- `nsNext/frameCode` and the MCP tool `debug_code`.
-- `d927a55d` -- the documentation.
-- `8b00a56c`, `887f023f`, `2d06e68d`, `3f131ea4` -- what the gates of
+- `8353b893`, `7bdc1762` -- the debugger answers a stopped frame's code.
+- `a85916f1` -- `nsNext/frameCode` and the MCP tool `debug_code`.
+- `79d34d8e` -- the documentation.
+- `a7feb5ce`, `770191ad`, `24ee3a69`, `6397a95f` -- what the gates of
   the batch's end found, and the gate results after them.
 
 What it leaves open is in [OPEN-WORK.md](OPEN-WORK.md): stage 3, the
@@ -8618,30 +8618,30 @@ tree at their first run, nothing to fix:
 The Docker groups did not run: the stage changed no machine code, no
 code of `ns-memory` or `ns-assembler` and no decoder.
 
-- `794fd46a`, `6556831e` -- the decisions and the plan
+- `f096c3df`, `7a05de03` -- the decisions and the plan
   (`docs/superpowers/plans/2026-11-21-0145-developer-tool-stage-3-the-ide.md`).
-- `f55c342a` -- the trace numbers its bodies and describes them on
+- `7869d66f` -- the trace numbers its bodies and describes them on
   request.
-- `9769f761` -- a bytecode listing lists each body's instructions.
-- `41de95bd`, `9727823f` -- `ns-next run --trace-file`.
-- `cd8aa8a0`, `0e737b1a` -- the run configuration's "Developer Tool" tab.
-- `33bc4d0f`, `01fb88cc` -- watched methods, named by the analyzer.
-- `8c103968`, `0c746d88`, `bb968e65` -- the trace file's reader and a
+- `8af06e0c` -- a bytecode listing lists each body's instructions.
+- `991cfe72`, `225874f3` -- `ns-next run --trace-file`.
+- `df51cce8`, `9321609d` -- the run configuration's "Developer Tool" tab.
+- `d1eac3b9`, `3bd2b77e` -- watched methods, named by the analyzer.
+- `8aae3abd`, `30cbb690`, `620273db` -- the trace file's reader and a
   run's model.
-- `bf60a874` -- traced runs and the "Newspeak JIT" tool window.
-- `793ea55d`, `7113b499` -- the Methods, Events and Inlining tabs.
-- `40eac4cd`, `1fd1ba33`, `0ce1519a` -- gutter state icons and inlay
+- `98074739` -- traced runs and the "Newspeak JIT" tool window.
+- `0d52d243`, `e7af0d3b` -- the Methods, Events and Inlining tabs.
+- `02bfcb63`, `7252be74`, `6fd80eec` -- gutter state icons and inlay
   hints.
-- `39f0ff70`, `fa222e5e` -- the Code tab and the code editor tabs.
-- `04b373ba`, `8e555b5f` -- Show Frame Code.
-- `e6591aaa` -- a traced run end to end.
+- `a3a817f4`, `91cec256` -- the Code tab and the code editor tabs.
+- `de419654`, `d8c67a9a` -- Show Frame Code.
+- `dca005f3` -- a traced run end to end.
 - the last commit -- the documentation and the gate results.
-- `b9a81ae6`, `514bf770`, `9ac09f16`, `40e8f4eb`, `13f406ae` -- a run's
+- `81bb31e0`, `b1f3aae9`, `b8fd3fbd`, `e8b3aa22`, `5b9a22fd` -- a run's
   listings and plans as places in its file, read back off the event
   dispatch thread, and a rerun replacing its ended tab.
-- `56dc8438` -- the Inlining tab and the grouped Events tree show what
+- `954d3a9e` -- the Inlining tab and the grouped Events tree show what
   arrives after them.
-- `f433d221` and the batch's last commit -- every initializer body
+- `10adb501` and the batch's last commit -- every initializer body
   described with its statements and sends, a span the version's text has
   no place for written `null`.
 
@@ -8719,46 +8719,46 @@ bodies' descriptions; and the plugin's `DecorationsTest` and
 The commit gates passed on every commit (`commit`, with `analyzer`
 where the analyzer changed).
 
-- `8f58bb74` -- the plan
+- `670e80b1` -- the plan
   (`docs/superpowers/plans/2026-11-22-0310-mcp-trace.md`).
-- `5a1e83f2`, `07bc09aa` -- a closed standard output ends the run, and
+- `6a2edac1`, `f30443b3` -- a closed standard output ends the run, and
   the host's own output stops at it.
-- `1c1c6455`, `9fd9b12d` -- the three initializer bodies named apart,
+- `a411254d`, `a1e8cad1` -- the three initializer bodies named apart,
   one spelling in every tool.
-- `a97f7a01`, `35c38d82` -- numbered sessions served concurrently, the
+- `45df0054`, `6b45d221` -- numbered sessions served concurrently, the
   server's end ending every wait.
-- `7774bd4e`, `f19db0df` -- a wait answers to pause, stop, cancellation
+- `49a3bf45`, `070bf48d` -- a wait answers to pause, stop, cancellation
   and the server's end.
-- `fa8cde29`, `f4e586d6`, `b1df4758` -- the server's trace files.
-- `4ec1c8b7`, `f471a5e2`, `24504514`, `45029aa9` -- the index that
+- `2a38cce4`, `c23b8db5`, `353b4141` -- the server's trace files.
+- `bd6d1914`, `9949c7fa`, `77eb5c20`, `7c08f928` -- the index that
   follows the file.
-- `e26390e9`, `a1630587` -- the `trace:` line and `debug_trace`.
-- `266da835`, `427cbfb4` -- every synthesized body described, where its
+- `05b3e044`, `8753a3c9` -- the `trace:` line and `debug_trace`.
+- `5455f81d`, `9f6c981c` -- every synthesized body described, where its
   own version declared it.
-- `b510c1a9` -- one gutter icon per class header.
-- `406094d9`, `433b10bf`, `aebc4322`, `ebd6037f` -- `debug_trace_method`.
-- `ebc6155e`, `fff7c58b` -- `debug_trace_listing`, and the plugin's
+- `58e5fd02` -- one gutter icon per class header.
+- `3a53b4c1`, `8d9f1095`, `9c43b61c`, `5b8c39ce` -- `debug_trace_method`.
+- `71e198bd`, `f07dff20` -- `debug_trace_listing`, and the plugin's
   `passed` positions.
-- `3b2b32ee`, `4bd84b32` -- `debug_trace_events`, and a journal's place
+- `54392f73`, `7258fc80` -- `debug_trace_events`, and a journal's place
   in an edited body's current text.
-- `9b329fe2` -- `debug_code`, `debug_stack` and `debug_variables` paged.
-- `925676cd`, `bbb133f2`, `cff564a1`, `ab83be0a` -- the documentation,
+- `11b64a2d` -- `debug_code`, `debug_stack` and `debug_variables` paged.
+- `c75d8baa`, `29ad9ed5`, `7bcd89ad`, `076cec9c` -- the documentation,
   and CLAUDE.md.
-- `e5e5b44b` -- the platform leaves out of the leaf dispatcher, for the
+- `34159091` -- the platform leaves out of the leaf dispatcher, for the
   codegen budget.
-- `bcb99059` -- the final review's fixes: a line longer than an answer
+- `8afa3766` -- the final review's fixes: a line longer than an answer
   cut and passed in every page, a stop's summary held to the budget,
   `debug_stop`'s `trace:` line naming no call, labels with the
   program's arguments, refusals naming the filters and the categories
   not traced, a traced start not yet open told apart, an existing
   `traces/` narrowed to `0700`.
-- `7dafaa64` -- the follower's test waits for the file's deletion.
-- `05369649`, `3782f12c` -- in a file that lists bytecode, a code
+- `cf332efe` -- the follower's test waits for the file's deletion.
+- `a59bd8d4`, `f938e4f5` -- in a file that lists bytecode, a code
   record's scope carries the lines no bytecode record lists.
-- `1520120d` -- the factory test reads its bodies from the bytecode
+- `944122cf` -- the factory test reads its bodies from the bytecode
   listing, whether or not the run compiles them.
 
-Every gate passed at `880c9d14`: the batch's end (the image round trips,
+Every gate passed at `a7c49d90`: the batch's end (the image round trips,
 the cache contention, the benchmark programs, the release checks, the
 codegen budgets, the suite under every stress mode and without the JIT,
 `run-corpus` plain and under each mode, "ran 6, failed 0, skipped
@@ -8782,9 +8782,9 @@ grouping and the text view, whose label counts the categories shown.
 The plugin's `TabsTest` pins the filters, the groupings, the kept
 expansion and the categories' button.
 
-- `94184015` -- the name filter and the grouping in both tabs.
-- `33727705` -- the clear button and the categories' popup.
-- `66891ad4` -- the name fields wider.
+- `67e50ff6` -- the name filter and the grouping in both tabs.
+- `8bd58f5c` -- the clear button and the categories' popup.
+- `de0b18f6` -- the name fields wider.
 
 The commit gates passed on every commit, and the plugin's verification
 against six IDEs at the batch's end; the batch changed the plugin
@@ -8816,20 +8816,20 @@ the optional language id, the `///` line comment, no character
 literals, whitespace that only separates tokens, `outer N` alone -- and
 leave [README.md](design/README.md)'s table of deviations.
 
-- `f73f06df` -- the complete install's decisions.
-- `59bd516e`, `223bc7a7` -- the specification's decisions.
-- `8bd7d595` -- the book's skeleton and `cargo xtask spec`.
-- `01d6a9ee` -- a golden names its rules.
-- `ce75c350` -- the lexical structure.
-- `46d673eb` -- the grammar of modules, classes and members.
-- `010f58b6` -- the grammar of expressions.
-- `2b340cff`, `2ce34208` -- the appendix, the rule that keeps the book,
+- `4aeb640a` -- the complete install's decisions.
+- `9378a3e5`, `68ef84c0` -- the specification's decisions.
+- `0fb86475` -- the book's skeleton and `cargo xtask spec`.
+- `fc7fab2e` -- a golden names its rules.
+- `4cec8876` -- the lexical structure.
+- `9cf33241` -- the grammar of modules, classes and members.
+- `90880e24` -- the grammar of expressions.
+- `999af374`, `20962748` -- the appendix, the rule that keeps the book,
   and the book living and unversioned.
-- `3ac9dee8` -- the commit gate builds the book in its own process.
-- `25e71b40` -- the review's findings: two chapters stated more exactly,
+- `4a3cd4ad` -- the commit gate builds the book in its own process.
+- `390becee` -- the review's findings: two chapters stated more exactly,
   the parser's pattern values, the table of words read by the lexer, a
   golden's `rules` read as TOML.
-- `5750ad7f` -- the book's reader checks fences in list items, rule
+- `0b985653` -- the book's reader checks fences in list items, rule
   lines, unclosed fences, chapter links and the tests a `// spec:` line
   belongs to; the gaps have tests.
 
@@ -8864,14 +8864,14 @@ naming their gap -- the third deferred literal, `Literal::Unbuilt`, with
 image literal tags 14 and 15 and shipped-code tags 11 and 12 -- where the
 send ran synchronously and the pattern answered `nil`.
 
-- `4d67af2e`, `ec51e804`, `ac37e92d`, `bbe70423` -- the eight decisions.
-- `167b470e` -- the plan.
-- `7d47dcfa` -- an asynchronous send and a pattern literal signal their
+- `4300a62c`, `f59c2046`, `e787dc15`, `ed12a167` -- the eight decisions.
+- `b1099cdc` -- the plan.
+- `199df0cf` -- an asynchronous send and a pattern literal signal their
   gap.
-- `49e69196`, `feab6c3c`, `babe4f9f`, `1c9229f1` -- the semantics.
-- `dd58c0ad` -- the run-time semantics.
-- `b58df677` -- the deviations leave the design documents for the book.
-- `25be63cc` -- the review's findings: two texts of the book, stale
+- `11e9fe8e`, `976ee248`, `867eb91e`, `69234e19` -- the semantics.
+- `54483657` -- the run-time semantics.
+- `cb7b22da` -- the deviations leave the design documents for the book.
+- `d47c9d4b` -- the review's findings: two texts of the book, stale
   documents, and goldens for every form of asynchronous send, a hot one in
   every tier, the gaps of `Decimal` and the tuple, and a pattern never
   evaluated.
@@ -8897,13 +8897,13 @@ named by the tests that pin it. One runtime change came with it: the
 decoder refuses a statement map whose range is backwards or leaves its
 body, which it read unchecked.
 
-- `26c2b050` -- the bytecode before the image format.
-- `c6159c5d` -- the plan.
-- `fa79d226` -- bodies, registers and the register effects.
-- `6121c96f`, `2376dfb2` -- the instructions.
-- `9b71ebe6` -- the wire encoding.
-- `915a4fbd` -- the eight-byte form.
-- `476eea56` -- the decoder's rules, and its refusal of a statement map
+- `6556a52d` -- the bytecode before the image format.
+- `ec60fe9c` -- the plan.
+- `7def8ddb` -- bodies, registers and the register effects.
+- `ef1f0620`, `1554365d` -- the instructions.
+- `9896a842` -- the wire encoding.
+- `6da7cbfe` -- the eight-byte form.
+- `e8ae93e1` -- the decoder's rules, and its refusal of a statement map
   leaving its body.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the

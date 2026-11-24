@@ -2,9 +2,9 @@
 
 > **Status: Complete.** All 13 tasks (62 steps) implemented, each reviewed for
 > spec compliance and quality, on `feature/artifact-inspection-stateless-binary`
-> (`c509fe3..e1e1335`), merged to `master` at `ac2c96e`. Five fix rounds, all
+> (`bbce533..4c8f968`), merged to `master` at `bba2a03`. Five fix rounds, all
 > closed in one round each. A whole-branch review then raised two Important
-> findings and seven Minor ones; its single fix wave landed as `e1e1335..3f42aa0`.
+> findings and seven Minor ones; its single fix wave landed as `4c8f968..5283640`.
 >
 > Two things this plan got wrong, corrected during execution and worth knowing
 > before reading it as a reference. The byte-identity guarantee it states has

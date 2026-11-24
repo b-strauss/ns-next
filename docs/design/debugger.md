@@ -2122,19 +2122,19 @@ not.
   the stops, stacks and values expected, run by a scripted DAP client in
   `ns-cli`'s tests.
 - **Stage 3's end-of-batch gates** passed on its final tree
-  (`b3da5ce3`, 2026-11-13): `images`, `caches`, `benchmarks`,
+  (`960d13cc`, 2026-11-13): `images`, `caches`, `benchmarks`,
   `release-checks`, `codegen`, `stress` -- the suite under the fifteen
   modes and with `NS_NEXT_NO_JIT=1`, 1,642 s, and `run-corpus` under
   each -- `linux` and `aarch64`, whose suite took 688 s.
 - **Stage 4's end-of-batch gates** passed on its final tree
-  (`d3786f5f`, 2026-11-14): `images`, `caches`, `benchmarks`,
+  (`80ac0b4f`, 2026-11-14): `images`, `caches`, `benchmarks`,
   `release-checks`, `codegen`, `stress` -- the suite under the fifteen
   modes and with `NS_NEXT_NO_JIT=1`, 3,235 tests each (WIDE 5,009), and
   `run-corpus` "ran 6, failed 0, skipped 205" plain and under each mode
   -- `linux`, `aarch64`, whose suite took 385.7 s, and
   `plugin-verification`.
 - **Stage 5's end-of-batch gates** passed on its final tree
-  (`904fec56`, 2026-11-17): `images`, `caches`, `benchmarks`,
+  (`7ced3c3b`, 2026-11-17): `images`, `caches`, `benchmarks`,
   `release-checks`, `codegen`, `stress` -- the suite under the fifteen
   modes and with `NS_NEXT_NO_JIT=1`, 3,719 tests each (WIDE 5,514), and
   `run-corpus` "ran 6, failed 0, skipped 205" plain and under each mode
@@ -2222,7 +2222,7 @@ of a caught exception beside the read of its handler, measured
 of it those per-frame tests and a sixth that send, as two probe builds
 showed.
 
-Stage 3 was measured against its base on `master` (`e42f896a`) in one
+Stage 3 was measured against its base on `master` (`afd84b58`) in one
 sitting on 2026-11-13, a program without a debugger, by the protocol of
 the `measuring-performance` skill: three pinned builds a side with the
 zone paddings, built at once, three rotated rounds, CD, Havlak,
@@ -2267,7 +2267,7 @@ adds to a program run with a debugger attached is the agent's threads
 and, at every exception the handler search reports, a clone of the
 exception breakpoints' settings. So stage 4 was measured as an attached
 debugger against none, on one binary, in one sitting on 2026-11-14, on
-the tree `f45b4f0b`, by the protocol of the `measuring-performance`
+the tree `8df8c161`, by the protocol of the `measuring-performance`
 skill: two builds, a with the pinned `RUSTFLAGS` and b with them plus
 another code layout (`-C metadata`, every block aligned, the zone
 paddings 208 and 32), each process held to the performance cores before
@@ -2298,7 +2298,7 @@ breakpoints, filters, steps and pauses; uncaught exceptions,
 `doesNotUnderstand:`, errors the VM raises, and resumed or retried
 exceptions; `ns-next bench`, and of the microbenchmarks only
 `bench_signal`'s signal; Linux, AArch64 and Windows on ARM; and the
-agent as the batch ended, measured at `f45b4f0b` before its writes moved
+agent as the batch ended, measured at `8df8c161` before its writes moved
 to the connection's writer thread and were bounded, which adds a thread
 and a queued message per answer to an attached run, nothing to a
 program's own thread.

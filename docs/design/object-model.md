@@ -2761,7 +2761,7 @@ A super send whose handler is a slot accessor is checked before `act`
 walking every time, and `record` never caches such a handler, so no hit
 bypasses the check.
 
-**What the shape cost.** Measured against master (`733c15bd`) and between
+**What the shape cost.** Measured against master (`4c6fe489`) and between
 the tasks, three pinned release builds a side: every program within noise,
 `bench_megamorphic.ns` at +1.3-2.1%, at the edge of build noise and not
 diagnosed ([OPEN-WORK.md](../OPEN-WORK.md), "Next"). Two shapes measured

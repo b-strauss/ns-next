@@ -2821,12 +2821,12 @@ git commit -m "feat: exact rationals and the numeric hash, as plain Rust"
   `reducedNumerator:denominator:`; `platform kernel Fraction`;
   `VALUE_FRACTION`.
 
-`b9147c7f` ("an abstract Collection in the kernel") added a builtin class
-the same way: `git show b9147c7f -- crates/ns-runtime/src/types.rs
+`495e6c61` ("an abstract Collection in the kernel") added a builtin class
+the same way: `git show 495e6c61 -- crates/ns-runtime/src/types.rs
 crates/ns-runtime/src/interpreter/kernel.rs
 crates/ns-runtime/src/image crates/ns-runtime/tests/opcode_tags.rs
 crates/ns-runtime/core-library/PlatformFactory.ns` lists every place a
-builtin is named; `8f7fd915` ("images carry LargeInteger values") added
+builtin is named; `f1206a21` ("images carry LargeInteger values") added
 the inline value tag the same way. Follow both.
 
 A fraction's object: `Format::FixedPointers`, two fields, numerator then

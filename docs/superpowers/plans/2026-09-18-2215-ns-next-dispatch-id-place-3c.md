@@ -4,7 +4,7 @@
 
 **Goal:** Build the two variants of step 3c — the dispatch id in the object
 header (C2), and the id in the header with `ClassData` boxed out of it (C2+)
-— measure both against `393311f`, let the user decide on the numbers, and
+— measure both against `7928289`, let the user decide on the numbers, and
 leave the tree holding the winner (or neither) with every document saying so.
 
 **Architecture:** `Heap::dispatch_id` is the only function that knows where
@@ -37,15 +37,15 @@ moved").
   worktrees for the measurement's other binaries are fine and are removed
   afterwards). This plan is the branch's first commit.
 - Before Task 1, record `git rev-parse HEAD` of `master` as **START**
-  (`fbd0bef` when the plan was written). The baseline 3c is measured against
-  is **`393311f`**, the last commit that changed a send's path
+  (`4a3cee9` when the plan was written). The baseline 3c is measured against
+  is **`7928289`**, the last commit that changed a send's path
   (`docs/PROGRESS.md`); START is measured beside it to show that the
   commits between them (the goldens, resolver refusals) moved nothing.
-  `be3eb40` is carried as in every measurement since step 2.
+  `d804eaf` is carried as in every measurement since step 2.
 - **The user decides on the numbers.** Task 3 ends by presenting them and
   stops; Task 4 does not begin until the user has chosen. The proposed rule
   (`dispatch.md`): the faster wins; within noise, the smaller; if neither
-  beats `393311f`, the id stays on the class object and the question is
+  beats `7928289`, the id stays on the class object and the question is
   recorded as closed by that measurement. It is a proposal the user may
   overrule, not a rule the executor applies.
 - Names are written out (`CLAUDE.md`, "Conventions"): no identifier of one or
@@ -545,7 +545,7 @@ Record this commit's hash as **C2+** in the task report.
 - Create: nothing in the tree. Raw output goes to the session's scratchpad.
 
 **Interfaces:**
-- Consumes: C2 and C2+ (Tasks 1, 2), START, `393311f`, `be3eb40`.
+- Consumes: C2 and C2+ (Tasks 1, 2), START, `7928289`, `d804eaf`.
 - Produces: the numbers Task 4 records and the user decides on.
 
 - [ ] **Step 1: Write out the four sources that are not in the tree**
@@ -561,7 +561,7 @@ from the text the documents give, never reconstructed from their prose**
 
 - [ ] **Step 2: Build the five binaries**
 
-In throwaway worktrees for `393311f`, START and `be3eb40`, and at the C2 and
+In throwaway worktrees for `7928289`, START and `d804eaf`, and at the C2 and
 C2+ commits (a worktree for C2, the branch head for C2+), each built the
 same way, in PowerShell:
 
@@ -578,7 +578,7 @@ the expected answer for every source before timing anything.
 - [ ] **Step 3: Check that the step is still inline**
 
 Both variants change what every cached guard reads, on the path `vm::run`'s
-step inlines. On a release build with debug information of `393311f`, C2
+step inlines. On a release build with debug information of `7928289`, C2
 and C2+, run `dumpbin /disasm` (Visual Studio Build Tools, not on `PATH`)
 and confirm that no `vm::run::closure` is a function of its own; record
 `vm::run`'s instruction count in each (`docs/design/execution.md`, "What the
@@ -593,7 +593,7 @@ nothing else running. Record every number, not a summary.
 
 - [ ] **Step 5: Measure memory and sizes**
 
-- The release and debug `size_of::<Object>()` for `393311f` (56 release),
+- The release and debug `size_of::<Object>()` for `7928289` (56 release),
   C2 and C2+ — the debug one from a throwaway test printing it, not
   committed.
 - The amplification at the graph section each implies, as `memory.md`'s
@@ -602,7 +602,7 @@ nothing else running. Record every number, not a summary.
   have not changed: 136 and 160).
 - Peak working set of `ns-next run-corpus corpus/modules` and of
   `ns-next bench goldens/bench/bench_block.ns --iterations 30` for each of
-  `393311f`, C2 and C2+, in PowerShell:
+  `7928289`, C2 and C2+, in PowerShell:
 
   ```powershell
   $process = Start-Process -FilePath .\ns-next-c2.exe -ArgumentList "run-corpus","corpus/modules" -NoNewWindow -PassThru -Wait
@@ -615,9 +615,9 @@ nothing else running. Record every number, not a summary.
 - [ ] **Step 6: Present the numbers and stop**
 
 Report to the user, in tables: each source's means per sitting for all five
-binaries, the change of C2 and of C2+ against `393311f` with the protocol's
-gate (overlapping, entirely above, entirely below), START against `393311f`,
-both against `be3eb40`, `vm::run`'s instruction counts, the three object
+binaries, the change of C2 and of C2+ against `7928289` with the protocol's
+gate (overlapping, entirely above, entirely below), START against `7928289`,
+both against `d804eaf`, `vm::run`'s instruction counts, the three object
 sizes, the amplifications and the peak working sets. Say what the proposed
 rule would choose and why. **Then wait for the user's decision.** Do not
 begin Task 4 without it.
@@ -702,7 +702,7 @@ git commit -m "docs: record 3c as decided, with its numbers"
 at allocation, an instance's from its class, a class object's from its own
 class side, a decoder placeholder that matches no entry and is set when the
 record is filled, the id never from the bytes, the tracer unaffected; C2+
-(Task 2); both measured against `393311f` in two sittings with `be3eb40`,
+(Task 2); both measured against `7928289` in two sittings with `d804eaf`,
 with the object sizes, the amplification and the memory after `run-corpus`
 (Task 3); the user deciding (Task 3, Step 6; Task 4). `become:`'s exchange
 is recorded, not built (Task 4). One refinement of the design's wording: a

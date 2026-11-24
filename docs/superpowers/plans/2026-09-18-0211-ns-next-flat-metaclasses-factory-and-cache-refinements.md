@@ -40,8 +40,8 @@ citation names.
   worktrees for the measurement's before-binaries are fine and are removed
   afterwards). This plan is the branch's first commit.
 - Before Task 1, record `git rev-parse HEAD` of `master` as **START**
-  (`497aeb8` when the plan was written; its code is 3b's head). Every
-  measurement compares against START and against `be3eb40`.
+  (`0fa191f` when the plan was written; its code is 3b's head). Every
+  measurement compares against START and against `d804eaf`.
 - Names are written out (`CLAUDE.md`, "Conventions"): no identifier of one or
   two characters, no truncated word, in code, tests and commit messages alike.
   Clippy's `min_ident_chars` refuses the short ones.
@@ -1025,13 +1025,13 @@ cargo build --workspace --release
 Remove-Item Env:RUSTFLAGS
 ```
 
-Build START (`497aeb8`) and `be3eb40` the same way, in throwaway worktrees
+Build START (`0fa191f`) and `d804eaf` the same way, in throwaway worktrees
 removed afterwards.
 
 - [ ] **Step 2: Measure**
 
 Run the protocol's seven sources plus `tests-fixtures/bench_megamorphic.ns`,
-two sittings, against START and against `be3eb40`. Record every number, not a summary: the
+two sittings, against START and against `d804eaf`. Record every number, not a summary: the
 report says which source moved how far in each sitting.
 
 - [ ] **Step 3: Check that no send's hit path became a call**

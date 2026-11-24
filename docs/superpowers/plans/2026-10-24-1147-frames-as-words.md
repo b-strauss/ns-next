@@ -388,7 +388,7 @@ reservation" (decided with the user on 2026-10-24), read with "Activations"
 ### Task 8: Measure, decide, and the end of the batch
 
 - [ ] **Step 1: Measure** by execution.md's "What suspending and resuming
-  moved" protocol in full: `master` (`d135623a` or the merge base)
+  moved" protocol in full: `master` (`c0527ec9` or the merge base)
   against the branch's head, three release builds a side with the pinned
   `RUSTFLAGS`, each in its own `--target-dir`, the seven micro sources at
   `--iterations 30`, five rounds a sitting, the sixteen Are We Fast Yet

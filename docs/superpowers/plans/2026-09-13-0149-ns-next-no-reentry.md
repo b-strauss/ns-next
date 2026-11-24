@@ -2113,7 +2113,7 @@ Documents describe the current state in present tense (`docs/design/README.md`,
 
 - [ ] **Step 1: Measure the whole step**
 
-The measurement protocol, with `<parent-commit>` = `be3eb40` (the design
+The measurement protocol, with `<parent-commit>` = `d804eaf` (the design
 commit 2a started from; its code is `master`'s). Record the five medians per
 source and binary, three rounds, and the suite's time (`cargo test
 --workspace`, debug, test binaries already built, two runs) before and after.

@@ -23,8 +23,8 @@ Documentation (Task 7) and the end-of-batch gates with the measurement
 image format, the golden harness (`crates/ns-cli/tests/run_goldens.rs`).
 
 **Spec:** `docs/design/object-model.md`, "Planned: `Behavior`, `Class` and
-`Metaclass`" (designed with the user on 2026-09-25; commits `8ce7d7c`,
-`4b1be7b`, `2b51be1`). Semantics authority: `docs/references/newspeak-spec.md`
+`Metaclass`" (designed with the user on 2026-09-25; commits `9f72443`,
+`8a51782`, `0fe417c`). Semantics authority: `docs/references/newspeak-spec.md`
 §3.2 (metaclasses), §6 and §6.1 (the metaclass mixin applied to `Class`;
 nested classes per enclosing instance), §6.4 (module definitions are values),
 §3.1.1 (value objects), §2.3 (`Outer new Inner = Outer new Inner` is false for

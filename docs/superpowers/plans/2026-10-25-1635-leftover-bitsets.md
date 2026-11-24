@@ -4,7 +4,7 @@
 
 **Goal:** Neither a push nor a return in road step 7a′'s overlapped frames fills scratch registers. A collector pre-pass nils what is dead before every trace, the decoder refuses image code that reads it, and stated construct limits bound the analysis that decides it.
 
-**Architecture:** This plan supersedes `2026-10-25-1248-leftover-analysis.md` from its Task 1 on. That plan's undo-log analysis (`d5ac0409`, `dbfbf042`) is replaced in place, and its `154bd964` (register effects in `bytecode.rs`) stays.
+**Architecture:** This plan supersedes `2026-10-25-1248-leftover-analysis.md` from its Task 1 on. That plan's undo-log analysis (`1f1e3033`, `8b1b6f2a`) is replaced in place, and its `2091ed43` (register effects in `bytecode.rs`) stays.
 
 One forward pass per body computes the *tainted* registers: the scratch registers (`>= local_count`) that may hold a word the body did not write.
 - **At entry:** every scratch register is tainted. The push no longer fills them.
@@ -103,7 +103,7 @@ The top never drops below a live window end. In a debug build, dead registers ho
 
 **Files:**
 - Modify:
-  - `crates/ns-runtime/src/bytecode/leftovers.rs` and `bytecode/leftovers/tests.rs`: the undo-log machinery is replaced. Kept: the explicit-set fixpoint oracle, the crafted-body generators, `every_golden_body_stays_within_the_bound` with its skip accounting, and the flat N=2000 and 125-deep loop cases. Read them at `dbfbf042`.
+  - `crates/ns-runtime/src/bytecode/leftovers.rs` and `bytecode/leftovers/tests.rs`: the undo-log machinery is replaced. Kept: the explicit-set fixpoint oracle, the crafted-body generators, `every_golden_body_stays_within_the_bound` with its skip accounting, and the flat N=2000 and 125-deep loop cases. Read them at `8b1b6f2a`.
   - `crates/ns-runtime/src/bytecode.rs`: `successors`/`falls_through` stay if used.
 - Docs: `docs/design/compiler.md`, "What a callee leaves", rewritten: the rule, the entry state, the floor rule, and the bound.
 
@@ -254,7 +254,7 @@ The top never drops below a live window end. In a debug build, dead registers ho
 **Files:** `docs/design/execution.md`, the measured result; `docs/OPEN-WORK.md`.
 
 - [ ] **Step 1: Run** `cargo xtask gates end-of-batch` at Task 6's head.
-- [ ] **Step 2: Measure** Task 6's head against `c6a126b3`:
+- [ ] **Step 2: Measure** Task 6's head against `78a17506`:
   - three pinned builds a side (a, b, c, flags as in `.superpowers/sdd/2026-10-24-2054-register-windows/task-3-measure-report.md`);
   - all 24 programs, in two sittings, pooled, by the protocol of `task-8-report.md`;
   - for information, a third column with stage 1 plus fix 5 (`.temp/targets/head2-forget-*`);

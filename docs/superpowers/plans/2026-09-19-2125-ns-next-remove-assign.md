@@ -29,7 +29,7 @@ last paragraph), and `docs/PROGRESS.md`, "Where the next session starts", the
 ## Global Constraints
 
 - Work on the branch `feature/remove-assign`, created from `master` at
-  `24e414d`, on the checked-out tree — no worktree.
+  `6b9081c`, on the checked-out tree — no worktree.
 - Nothing under `goldens/**/*.toml` changes. A golden's recorded outcome
   moving is a behaviour change, and this step changes none.
 - The corpus gates stay exactly as they are: `parse-corpus` reports
@@ -47,7 +47,7 @@ last paragraph), and `docs/PROGRESS.md`, "Where the next session starts", the
   --all-targets` warning-free.
 - No measurement: nothing on the run loop's path changes. The four
   measurement sources the documents carry change spelling only, to the one
-  every compared binary accepts (`be3eb40` already parses `name::` at an
+  every compared binary accepts (`d804eaf` already parses `name::` at an
   expression's head, `crates/ns-syntax/src/parser/expr.rs` there), and they
   parse to the same AST as before.
 
@@ -542,7 +542,7 @@ These are the three as every later measurement uses them, written under
 written out in the
 [2c plan](../superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md),
 "Measurement protocol". All four are spelled with the setter send, which every
-compared binary back to `be3eb40` parses; the 2c plan's copy spells `:=`,
+compared binary back to `d804eaf` parses; the 2c plan's copy spells `:=`,
 which the tree has refused since "M4 — Removing `:=`" ([PROGRESS.md](../PROGRESS.md)),
 and is the same program. The three print `20000`:
 ```
@@ -620,7 +620,7 @@ Expected: `275000`. Do the same for the three `bench_new*.ns` sources:
    ## M4 — Removing `:=` (2026-09-19)
 
    Plan: [ns-next-remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md).
-   Branch `feature/remove-assign`, started from `24e414d`, on the checked-out
+   Branch `feature/remove-assign`, started from `6b9081c`, on the checked-out
    tree. Decided with the user on 2026-09-19, while closing the specification
    gaps, as its own small step ahead of closure conversion.
 

@@ -4047,7 +4047,7 @@ body tag 9 and tag 23. No golden's recorded outcome
 changed; two golden sources that read the old two-element message with
 `at:` moved to `Message`'s protocol.
 
-**Measured** 2026-09-26 against `3cbfd31`, the `master` it started from
+**Measured** 2026-09-26 against `0d05a27`, the `master` it started from
 ([execution.md](execution.md), "What exceptions cost"). None of the `bench`
 fixtures uses exceptions. The branch first measured slower on block activation
 and deep returns -- 4.6% to 6.4% -- from two causes it located and fixed: a
@@ -4684,22 +4684,22 @@ Moving the arm's body out of line did not recover it, nor did taking the
 slot base off the activation as well; dropping the fast path did, the
 getter answering a filled slot from its own activation
 (`ReturnSlotIfFilled`, "The mechanism" above). **Re-measured 2026-09-27
-with the fast path gone, all four fixtures are level with `7c6bdbf`**
+with the fast path gone, all four fixtures are level with `fd4a5af`**
 (-0.7% to +0.4%, every comparison overlapping).
 
 **Plan 2, measured 2026-09-28** ([execution.md](execution.md), "What the
-collections module cost"), three builds a side against `6d9974b`: **all
-four bench fixtures are level** (`f9d953a`, -0.2% to +0.5%, every
+collections module cost"), three builds a side against `da103f5`: **all
+four bench fixtures are level** (`f6ac1d4`, -0.2% to +0.5%, every
 comparison overlapping in both sittings), as they should be, since none
 sends a collection message in its timed loop and no send path changed.
-**A start that answers at once was level too** (`816367e`, +0.03 ms, +0.2%,
-the head's build means among `6d9974b`'s): `interpreter/core_library.rs`
+**A start that answers at once was level too** (`1a860d9`, +0.03 ms, +0.2%,
+the head's build means among `da103f5`'s): `interpreter/core_library.rs`
 resolved each shipped module on its first request, so a program that never
 touched `platform collections` never parsed or resolved
 `CollectionsFactory.ns`. When the boot still resolved the whole table
-(`ee4bdc8`), that start cost 0.11 ms (+0.8%) more, every build of it above
+(`44b9fce`), that start cost 0.11 ms (+0.8%) more, every build of it above
 every head build. A start that built one `List` cost about 0.28 ms
-(+2.1%) more than `6d9974b`'s, whose `List` was a builtin class: resolving,
+(+2.1%) more than `da103f5`'s, whose `List` was a builtin class: resolving,
 compiling and instantiating `CollectionsFactory.ns`, which plan 2's lazy
 `collectionsModule` deferred to the first `platform collections`.
 
@@ -4711,7 +4711,7 @@ lines: about 3.7 ms, a hello program's median start going from about 12.3
 ms to about 16.0 ms on the measuring workstation. Building the declared
 classes and naming the world adds nothing measurable beside it. The
 kernel's `ByteArray`, `StringBuilder` and views added about 4.6 ms more,
-measured at `1906a81d`: `Kernel.ns` grew from 4,089 lines to 6,586, and the
+measured at `3d6c6c4c`: `Kernel.ns` grew from 4,089 lines to 6,586, and the
 median start from about 15.4 ms to about 20.1 ms. The embedded shipped code
 took it back: an optimized boot decodes the six modules' compiled code, and
 a hello program's boot went from 13.6 ms to 1.6 ms; building every module
@@ -4723,7 +4723,7 @@ ms, and a first `platform collections` costs 0.31 ms
 **The collections written here, measured 2026-10-10** (sub-project 3 of
 "The kernel completed to Primordial Soup's core API" below), the
 Are We Fast Yet benchmarks, release builds, three builds by three rounds a
-side against `eeaa1d90`: Havlak is 6.3% slower (3,491 ms to 3,711 ms) and
+side against `eed93663`: Havlak is 6.3% slower (3,491 ms to 3,711 ms) and
 DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen within noise,
 -1.7% to +2.3%; Havlak was 23.4% slower before `Map`'s probes sent `hash`
 and `=` inline, the tables were filled by `whileTrue:` and the data array
@@ -4783,7 +4783,7 @@ it not deepen the investment in Rust callbacks while it rewrote the code
 around them; step 2a took the last callback away, as a trampoline step, which
 maps directly onto the leaf the kernel's `Closure>>value` forwards to.
 
-**Measured, the move cost nothing measurable**, against `e2bb31e`, the
+**Measured, the move cost nothing measurable**, against `404ece6`, the
 commit before it, over the eight sources in two sittings: with primitive
 methods −4.5% to +2.1%, no group entirely above in either sitting. Without
 them (`NS_NEXT_NO_PRIMITIVE_METHODS=1`, the same binary) the three sources
@@ -4927,7 +4927,7 @@ super-prefixed clause
 `crates/ns-runtime/tests/object_class_accessors.rs` pins the recognizer and
 the answer under both lowerings.
 
-**Measured** against `909bf40` by the protocol with `-C metadata` layouts
+**Measured** against `2825ec9` by the protocol with `-C metadata` layouts
 ([execution.md](execution.md), "What the value conditions cost"), start-up
 included ([execution.md](execution.md), "What the class accessors cost"). The
 four fixtures under `benchmarks/micro/` name no builtin in their loops and are

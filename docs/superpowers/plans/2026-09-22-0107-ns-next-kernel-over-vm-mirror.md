@@ -2469,9 +2469,9 @@ class DeepThroughTheKernel usingPlatform: platform = Object new (
 ) : ()
 ```
 
-**Record the output `e2bb31e` produces for this file**, under both lowerings,
-before any kernel existed: check out `e2bb31e` in a scratch worktree
-(`git worktree add <scratch> e2bb31e`), run
+**Record the output `404ece6` produces for this file**, under both lowerings,
+before any kernel existed: check out `404ece6` in a scratch worktree
+(`git worktree add <scratch> 404ece6`), run
 `cargo run -p ns-cli -- run <file> --send main:args:` there with
 `--lowering optimized` and `--lowering reference`, confirm the two agree, and
 write that `status`, `stdout` and `stderr` into the `.toml` beside the golden,
@@ -3107,13 +3107,13 @@ class FallThrough usingPlatform: platform = Object new (
 ) : ()
 ```
 
-**Record the output `e2bb31e` produces for this file** under both lowerings,
+**Record the output `404ece6` produces for this file** under both lowerings,
 in a scratch worktree as in Task 4 Step 7, and check this branch matches it.
 The last line ends the run in `doesNotUnderstand: #size`, which is what
-`e2bb31e` does too.
+`404ece6` does too.
 
 Then pin Decision 9, the one observable difference, in a golden of its own —
-**not** recorded from `e2bb31e`, which answered differently, but established
+**not** recorded from `404ece6`, which answered differently, but established
 from §5.10 and checked to agree under both lowerings. Create
 `goldens/kernel/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says.ns`:
 
@@ -3145,7 +3145,7 @@ class HandlerPassedBy usingPlatform: platform = Object new (
 Its record: `status = 1`, `stdout` `before` and a newline, and `stderr`
 `Uncaught Newspeak error: an object does not understand #size` and a newline,
 in the format the other goldens use — run it under both lowerings and confirm
-exactly that before writing the `.toml`. `e2bb31e` printed `before` and
+exactly that before writing the `.toml`. `404ece6` printed `before` and
 `handled here` and exited 0; say so in the commit message.
 
 - [ ] **Step 4: Run every gate**
@@ -3231,23 +3231,23 @@ git commit -m "fix: refuse a build entry only the core library answers"
 
 Write it down before running anything, in the section's draft:
 
-- **Head, primitive methods on**, against `e2bb31e`: level on every source.
+- **Head, primitive methods on**, against `404ece6`: level on every source.
   A leaf send that `IntegerBinary` does not absorb costs one cached send plus
   one field test on the method, where it cost one cached send; the rest of the
   path is the same primitive. The one new cost on *every* method send is that
   field test; if a source that sends no leaf moves, that is where to look.
-- **Head, `NS_NEXT_NO_PRIMITIVE_METHODS=1`**, against `e2bb31e`: slower on
+- **Head, `NS_NEXT_NO_PRIMITIVE_METHODS=1`**, against `404ece6`: slower on
   every source that sends a leaf the fast path does not absorb — each such
   send becomes an activation of the kernel method, a lexical send of
   `vmMirror`, and a `SendMirror`. Name in advance which sources those are,
   from their text: `bench_block.ns` (`value:`), and every source that sends
   `printString`, `at:`, `size` or `show:` in its loop.
-- **Start-up**, against `e2bb31e`: slower by the kernel's parse, resolution,
+- **Start-up**, against `404ece6`: slower by the kernel's parse, resolution,
   compilation and instantiation, which did not exist.
 
 - [ ] **Step 2: Build every binary with the protocol's flags**
 
-For the head, `e2bb31e` and `be3eb40`, in PowerShell:
+For the head, `404ece6` and `d804eaf`, in PowerShell:
 
 ```powershell
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
@@ -3272,7 +3272,7 @@ The seven sources of `execution.md`'s "What removing the re-entries moved",
 plus `goldens/bench/bench_megamorphic.ns`. Four are goldens; the other four
 are not in the tree and must be written out from the text in `execution.md`,
 "What spec-conformant lookup moved" — never reconstructed from their prose
-descriptions. Four binaries each sitting: `e2bb31e`, `be3eb40`, the head, and
+descriptions. Four binaries each sitting: `404ece6`, `d804eaf`, the head, and
 the head under `NS_NEXT_NO_PRIMITIVE_METHODS=1` (the same binary; set the
 variable for its runs only). Follow the protocol those sections follow:
 interleaved rounds, the same `bench --iterations` count, pooled groups.
@@ -3281,7 +3281,7 @@ interleaved rounds, the same `bench --iterations` count, pooled groups.
 
 The time from process start to the first instruction of a trivial module:
 `ns-next run` on a module whose `main:args:` returns immediately, 50 runs per
-binary, `e2bb31e` against the head, interleaved. Report the medians and the
+binary, `404ece6` against the head, interleaved. Report the medians and the
 spread. If the head adds more than a few milliseconds, say so plainly and name
 the next step the design already names for it — embedding the compiled kernel
 as an image generated at build time, never checked in

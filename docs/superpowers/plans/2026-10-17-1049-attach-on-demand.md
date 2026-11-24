@@ -1411,10 +1411,10 @@ git commit -m "test: hold the comment attachment to linear work and to source or
 
 - [ ] **Step 1: Build the trees to compare**
 
-Before is commit `f90be321` (the benchmark, the old attachment); after is `HEAD`. Three builds a side, each in a target directory of its own, all with the alignment pin (`measuring-performance` skill), in PowerShell from the repository root:
+Before is commit `4db39f3f` (the benchmark, the old attachment); after is `HEAD`. Three builds a side, each in a target directory of its own, all with the alignment pin (`measuring-performance` skill), in PowerShell from the repository root:
 
 ```powershell
-git worktree add .temp/before f90be321
+git worktree add .temp/before 4db39f3f
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
 foreach ($build in 1..3) {
   $env:CARGO_TARGET_DIR = "D:\Workspace\ns-next\.temp\target-before-$build"

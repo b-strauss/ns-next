@@ -28,7 +28,7 @@ roots and a collector" — above all "Where a collection can happen", "Host
 roots", "What the collector traces" and "Checking the roots before a
 collector exists: the stress mode" — and [docs/PROGRESS.md](../../PROGRESS.md),
 "Where the next session starts", for the measurement rule against
-`be3eb40`. Read both before Task 1. Also read `CLAUDE.md`'s invariants: every
+`d804eaf`. Read both before Task 1. Also read `CLAUDE.md`'s invariants: every
 one of them applies.
 
 ## Decisions this plan carries
@@ -165,7 +165,7 @@ Deliberately **not** in this plan:
   stress runs it must pass; from Task 7 on those are the whole suite and
   `run-corpus`.
 - Work on the checked-out branch `feature/root-discipline-2b`, created from
-  `master` at `4882a2c`; no worktree except the throwaway ones the
+  `master` at `4df2561`; no worktree except the throwaway ones the
   measurement protocol builds.
 - Conventional commits, each ending with (subagents included):
   ```
@@ -197,7 +197,7 @@ It does nothing in a release build.
 Used by every task that says "measure". All three binaries are compared **in
 one sitting**; a figure from another session is never compared with one from
 this. Per PROGRESS.md, every measurement from 2b up to step 3 compares against
-`be3eb40` as well as against the commit the task started from.
+`d804eaf` as well as against the commit the task started from.
 
 Besides the three fixtures, four throwaway sources exercise the paths 2a
 changed and no fixture does. Write them under `target\bench-2b\` (ignored by
@@ -299,8 +299,8 @@ Check each prints what it should before timing it
 (`cargo run -p ns-cli -- run target\bench-2b\bench_do.ns`).
 
 ```powershell
-# be3eb40 and the commit the task started from, each in a throwaway worktree
-git worktree add ..\ns-next-base be3eb40
+# d804eaf and the commit the task started from, each in a throwaway worktree
+git worktree add ..\ns-next-base d804eaf
 git worktree add ..\ns-next-parent <parent-commit>
 cargo build --release -p ns-cli --manifest-path ..\ns-next-base\Cargo.toml
 cargo build --release -p ns-cli --manifest-path ..\ns-next-parent\Cargo.toml
@@ -331,8 +331,8 @@ cargo test --release -p ns-runtime --lib a_decision_stays_the_size_the_hot_path_
 Record the five medians per source and binary and each group's mean. The
 comparison with the parent is the gate: a change is "no slower" when, for
 every source, the after-group does not lie entirely above the parent-group,
-and "faster" when it lies entirely below. The comparison with `be3eb40` is
-reported, not gated — but if a source's shift against `be3eb40` grows past
+and "faster" when it lies entirely below. The comparison with `d804eaf` is
+reported, not gated — but if a source's shift against `d804eaf` grows past
 what 2a left (`bench_loop.ns` +1.9%, `bench_block.ns` +1.6%, every other
 source level or faster) by more than either group's spread, report it to the
 controller before anything else happens. Put both tables in the task's report;
@@ -1047,7 +1047,7 @@ object, and the while loop's state is boxed. A closure frame record names
 its closure object by id: FRAME_CLOSURE (1) is retired for
 FRAME_CLOSURE_OBJECT (6).
 
-<the measurement table, parent and be3eb40>
+<the measurement table, parent and d804eaf>
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"
@@ -2820,7 +2820,7 @@ activation and every backward jump. Under NS_NEXT_STRESS_MOVES, a debug
 build moves everything there, at every safepoint while the heap is small
 and paced by its size above 1,000 traced entries.
 
-<the measurement table, parent and be3eb40>
+<the measurement table, parent and d804eaf>
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"
@@ -3162,7 +3162,7 @@ Claude-Session: https://claude.ai/code/session_01D1Dip7oZ7mL5jZG3SU4Woj"
 
 - [ ] **Step 1: Measure the whole step**
 
-Follow the measurement protocol with `<parent-commit>` = `4882a2c`, the commit
+Follow the measurement protocol with `<parent-commit>` = `4df2561`, the commit
 2b started from, in two sittings. Record the table in the same shape as
 execution.md's "What removing the re-entries moved".
 
@@ -3215,7 +3215,7 @@ the present tense and what 2c and step 5 will build is still marked planned
 - The M4 row lists this plan's link after `no-reentry`.
 - "Where the next session starts": 2b is done; the next piece is 2c, the
   lifetime brand, to be planned against the code as 2b left it. Carry the
-  open findings forward: the be3eb40 comparison with its current figures
+  open findings forward: the d804eaf comparison with its current figures
   (from Step 1), the two 2a findings still open, and anything this plan
   surfaced.
 - Step 2's list entry: 2b done, with a one-sentence summary and its figures;

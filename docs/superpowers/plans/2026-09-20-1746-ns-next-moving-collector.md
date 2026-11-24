@@ -1507,7 +1507,7 @@ Subject: `feat: report the collector's counts and pauses from bench`
 
 - [ ] **Step 1: Build both binaries with the protocol's flags**
 
-In PowerShell, for the baseline `dc0ffe5` and for the head, each in its own checkout or in turn:
+In PowerShell, for the baseline `baf524d` and for the head, each in its own checkout or in turn:
 
 ```powershell
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"
@@ -1521,7 +1521,7 @@ Remove-Item Env:RUSTFLAGS
 
 - [ ] **Step 3: Take the throughput measurement**
 
-All eight sources, two sittings, head against `dc0ffe5` and against `be3eb40`. Four of the eight are under `goldens/bench/`; the other four — `bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` — are **written out** in `docs/design/execution.md`, "What spec-conformant lookup moved", and must be copied from there, never reconstructed from prose.
+All eight sources, two sittings, head against `baf524d` and against `d804eaf`. Four of the eight are under `goldens/bench/`; the other four — `bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` — are **written out** in `docs/design/execution.md`, "What spec-conformant lookup moved", and must be copied from there, never reconstructed from prose.
 
 - [ ] **Step 4: Take the peak working set**
 

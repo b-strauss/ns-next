@@ -12,7 +12,7 @@
 
 ## What the new version allows: the survey and what is adopted
 
-The counts are from `crates/` and `xtask/` on `master` at `31526007`.
+The counts are from `crates/` and `xtask/` on `master` at `e88daa2e`.
 
 **Adopted (Tasks 2 and 3):**
 

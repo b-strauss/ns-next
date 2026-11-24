@@ -8,7 +8,7 @@
 and hash the method and slot tables with an identity hasher instead of SipHash.
 
 **Architecture:** Twelve deviations were found by probe programs against
-`master` (`59061ec`); each becomes a fixture or a pinned program outcome whose
+`master` (`b41897d`); each becomes a fixture or a pinned program outcome whose
 expectation is derived from the specification, written before the fix. The
 resolver's member sets become each class declaration's *own* declarations under
 their full selectors; `dispatch::walk` decides per access modifier whether to
@@ -51,7 +51,7 @@ task; the living design documents this plan updates are
 
 ## The twelve deviations
 
-| # | Rule | Probe | Spec answer | `59061ec` answers | Task |
+| # | Rule | Probe | Spec answer | `b41897d` answers | Task |
 |---|---|---|---|---|---|
 | 1 | §6.3.2 accessors are methods: a subclass method overrides an inherited accessor | `Child` overrides `x`/`x:` of `Base`'s slot | `42`, `42` | `1`, `5` | 6 |
 | 2 | §6.3.2 an immutable slot has no setter | `self y: 4` | `doesNotUnderstand: #y:` | writes | 6 |
@@ -777,6 +777,6 @@ pub type IdentityMap<K, V> = HashMap<K, V, IdentityBuildHasher>;
 - Modify: `docs/design/execution.md` ("What removing the re-entries moved": a subsection for this step)
 - Modify: `docs/PROGRESS.md`
 
-- [ ] **Step 1: Measure by the protocol** in `execution.md`: every compared binary built with `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"` (PowerShell: `$env:RUSTFLAGS = …` before the build, `Remove-Item Env:RUSTFLAGS` after), the seven sources, two sittings, this branch against `59061ec` and against `be3eb40`. Record medians and ranges per source.
+- [ ] **Step 1: Measure by the protocol** in `execution.md`: every compared binary built with `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"` (PowerShell: `$env:RUSTFLAGS = …` before the build, `Remove-Item Env:RUSTFLAGS` after), the seven sources, two sittings, this branch against `b41897d` and against `d804eaf`. Record medians and ranges per source.
 - [ ] **Step 2: Record the step** in `execution.md` and `PROGRESS.md` (a milestone section, the order-of-work entry, "Where the next session starts": step 3 next, with the two open questions from `dispatch.md` and the known gaps -- lazy slots, the class-side scope question, builtin class names resolved statically rather than as sends to `Object`'s accessors (§3.2)).
 - [ ] **Step 3: All gates**, then commit `docs: record spec-conformant lookup and its measurement`.

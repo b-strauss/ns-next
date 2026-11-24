@@ -59,15 +59,15 @@ struct Budget {
 /// the path the compiler keeps out of line (`place_arguments`, a native
 /// loop's `resume`).
 ///
-/// Each budget is the count measured at `d7488e20`, or where a comment
+/// Each budget is the count measured at `152eee66`, or where a comment
 /// names a later change that shrank it, at that change, with a headroom:
 /// 10% on the instructions, rounded up to a multiple of ten, and 10% but at least
 /// two on the wide loads. An ordinary change moves a function's size by a
 /// few percent (`push_sent` grew 2% over the four commits after
-/// `6d7da106`; a change to the switch sites, reverted, grew `vm::run` 1%)
+/// `786f2bd6`; a change to the switch sites, reverted, grew `vm::run` 1%)
 /// and its wide loads by one or two, which the headroom absorbs. The
 /// incidents went far past it: `push_sent` grew from 276 to 7,265
-/// instructions when a push chain was inlined into it, and at `0037350d`
+/// instructions when a push chain was inlined into it, and at `ff139fb3`
 /// it had 6,588 instructions and 79 wide loads against 4,793 and 12 once
 /// fixed. A change that passes a budget for a reason is a decision:
 /// measure it (the `measuring-performance` skill), then raise the budget

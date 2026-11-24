@@ -1554,7 +1554,7 @@ cargo build --workspace
 
 - [ ] **Step 2: Measurement**
 
-Follow `docs/design/execution.md`'s measurement protocol ("What removing the re-entries moved"). Build `cdc0257` (baseline) and this branch's head as release builds with the pinned flags, in PowerShell, several builds of each tree, pooled:
+Follow `docs/design/execution.md`'s measurement protocol ("What removing the re-entries moved"). Build `4fa3036` (baseline) and this branch's head as release builds with the pinned flags, in PowerShell, several builds of each tree, pooled:
 
 ```powershell
 $env:RUSTFLAGS = "-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"

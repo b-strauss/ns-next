@@ -1625,8 +1625,8 @@ entries filled, and the two entry sizes.
 The figures are in [execution.md](execution.md), "What the inline caches
 moved". `feedback_base` alone, the split into `resolve` and `act`, the
 caches, and the whole step were each measured in two sittings, against 3a's
-head and `be3eb40`. Whole, the step is 4.3–11.3% faster than 3a's head and
-9.4–19.7% faster than `be3eb40` on all seven sources, every group entirely
+head and `d804eaf`. Whole, the step is 4.3–11.3% faster than 3a's head and
+9.4–19.7% faster than `d804eaf` on all seven sources, every group entirely
 below. After the benchmarks the table holds 12–16 sites and the global cache
 9–13 entries; after each `run-corpus` module, at most 2 of each; no site went
 polymorphic in any of them. That measurement closes the open finding that a
@@ -1636,7 +1636,7 @@ The five refinements that followed ("Decisions" below) were measured the same
 way, whole and one change at a time, in [execution.md](execution.md), "What
 the step before 3c moved": the three instantiation sources 2.1–4.1% faster
 than the step's base, the other five 0.2–3.6% slower, every source 6.7–18.2%
-below `be3eb40`, and `vm::run` still one function with no `vm::run::closure`
+below `d804eaf`, and `vm::run` still one function with no `vm::run::closure`
 out of line.
 
 #### Considered, not adopted: a 16-byte entry
@@ -1680,7 +1680,7 @@ road step 3a in the header word's low 22 bits ("The guard in the header
 word" below). Only where `Heap::dispatch_id` reads the id changed; the
 guards, the entries and the global cache did not.
 
-Two variants were built and measured against `393311f`, the last commit
+Two variants were built and measured against `7928289`, the last commit
 before 3c that changed a send's path, where the id lived on the class object
 (in padding the class object's Rust struct already had) and an instance's
 guard cost two arena loads, a class object's one load and an add:
@@ -1701,15 +1701,15 @@ These sizes and amplification figures are this measurement's record; the
 current ones are in [memory.md](memory.md), "What an object costs" and
 "The amplification bound of a rejected load".
 
-**Neither variant is faster than `393311f` by the protocol's gate.** C2+'s
+**Neither variant is faster than `7928289` by the protocol's gate.** C2+'s
 means moved −0.4% to −2.8% in 14 of its 16 source-and-sitting cells, and
 `bench_block.ns` +0.1% / +0.2%, but no source is entirely below
-`393311f` in both sittings for either variant — only single-sitting results,
+`7928289` in both sittings for either variant — only single-sitting results,
 which the protocol does not count. `vm::run`'s step stayed inline in both
 ([execution.md](execution.md), "What 3c moved", which has every number).
 
 **The proposed rule would have kept the id on the class object**: the faster
-wins; within noise, the smaller; if neither beats `393311f`, the id stays
+wins; within noise, the smaller; if neither beats `7928289`, the id stays
 where it is. **The user chose C2+ instead, on architectural grounds** the
 interpreter's measurement cannot see:
 
@@ -2075,7 +2075,7 @@ reclaimable.
   object and the id in the header alone, in two sittings, and **chosen
   against the rule proposed with the measurement**. That rule — the faster
   wins, within noise the smaller, and the id stays on the class object if
-  neither beats `393311f` — would have kept the class object, since neither
+  neither beats `7928289` — would have kept the class object, since neither
   header variant cleared the gate in both sittings on any source. The user
   chose the header for what the interpreter cannot measure: a JIT tier's
   guard is one compare at a fixed offset instead of two dependent loads, a

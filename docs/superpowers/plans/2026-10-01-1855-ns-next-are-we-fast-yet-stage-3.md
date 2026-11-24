@@ -59,7 +59,7 @@ The decisions, each the user's (2026-10-01):
     - `CLAUDE.md` gains the rule, so that every later public member comes with it.
 
 **How the ports were checked when this plan was written.**
-- Each was run on a release build of `master` (`8d75f82`) under both lowerings. Newspeak stand-ins replaced what is still missing: List, Map and Set, `timesRepeat:`, `sin`/`cos`/`asInteger` and String's `at:`/`copyFrom:to:`. Each stand-in copy differs from the file printed here only in the sends it replaces.
+- Each was run on a release build of `master` (`02e6ac2`) under both lowerings. Newspeak stand-ins replaced what is still missing: List, Map and Set, `timesRepeat:`, `sin`/`cos`/`asInteger` and String's `at:`/`copyFrom:to:`. Each stand-in copy differs from the file printed here only in the sends it replaces.
 - Results and release times of one `bench`, with the stand-ins:
 
   | Benchmark | Result | Release time |

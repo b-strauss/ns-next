@@ -6,7 +6,7 @@
 at exit status 0 — the name-keyed §5.7 member set, the dropped local-slot
 declaration (§3.6), the writable parameter and immutable local (§3.6), and the
 non-canonical symbol (§5.1.6) — plus the register copy that §3.6 makes
-unnecessary, measure them once together against `22a56f7`, and leave every
+unnecessary, measure them once together against `e9f97f9`, and leave every
 document describing what was built.
 
 **Architecture:** Everything except the symbols happens in the resolver and
@@ -23,7 +23,7 @@ forwards, and the image decoder fills and polices.
 **Tech Stack:** Rust 1.98.0, edition 2021, the three workspace crates; no new
 dependency.
 
-**Spec:** the living design documents, as committed in `56e2c1f` and amended
+**Spec:** the living design documents, as committed in `52a23ee` and amended
 by Task 2 of this plan for the local-slot declaration:
 `docs/design/dispatch.md` ("Resolution" — the member-set paragraph; "Setter
 sends"; "Decisions"), `docs/design/object-model.md` ("Values and objects" —
@@ -38,12 +38,12 @@ moved".
 ## Global Constraints
 
 - Work on the branch `feature/specification-gaps` (already created from
-  `master` at `6873f09`, holding the design commit `56e2c1f`), on the
+  `master` at `5fa8241`, holding the design commit `52a23ee`), on the
   checked-out tree — no `git worktree` for the work itself (throwaway
   worktrees for the measurement's other binaries are fine and are removed
   afterwards). This plan is committed on the branch before Task 1.
-- The baseline is **`22a56f7`**, the merge of 3c, whose last change to a send's
-  path is `5d3aeff` (`docs/PROGRESS.md`). `be3eb40` is carried beside it, as in
+- The baseline is **`e9f97f9`**, the merge of 3c, whose last change to a send's
+  path is `b94d515` (`docs/PROGRESS.md`). `d804eaf` is carried beside it, as in
   every measurement since step 2.
 - **Outcomes are pinned, not re-derived.** Each task deletes the `skipped` line
   of the goldens it closes and adds goldens for what it newly pins. Any other
@@ -1246,7 +1246,7 @@ git commit -m "fix: enter decoded symbols into the heap's table and refuse a rep
 - Create: nothing in the tree. Raw output goes to the session's scratchpad.
 
 **Interfaces:**
-- Consumes: the branch head after Task 6, `22a56f7`, `be3eb40`.
+- Consumes: the branch head after Task 6, `e9f97f9`, `d804eaf`.
 - Produces: the numbers Task 8 records.
 
 - [ ] **Step 1: Write out the four sources that are not in the tree**
@@ -1265,7 +1265,7 @@ program does, which would make its numbers incomparable — report it if so.
 
 - [ ] **Step 2: Build the three binaries**
 
-In throwaway worktrees for `22a56f7` and `be3eb40`, and on the branch head,
+In throwaway worktrees for `e9f97f9` and `d804eaf`, and on the branch head,
 each built the same way, in PowerShell:
 
 ```powershell
@@ -1281,7 +1281,7 @@ the expected answer for every source before timing anything.
 - [ ] **Step 3: Check that the step is still inline**
 
 Symbol literals and the operand copies change code on the run loop's path.
-On a release build with debug information of `22a56f7` and of the branch
+On a release build with debug information of `e9f97f9` and of the branch
 head, run `dumpbin /disasm` (Visual Studio Build Tools, not on `PATH`) and
 confirm that no `vm::run::closure` is a function of its own; record
 `vm::run`'s instruction count in each (`docs/design/execution.md`, "What the
@@ -1297,9 +1297,9 @@ nothing else running. Record every number, not a summary.
 - [ ] **Step 5: Present the numbers**
 
 Report to the user, in tables: each source's means per sitting for the three
-binaries, the branch head's change against `22a56f7` with the protocol's gate
-(overlapping, entirely above, entirely below), both against `be3eb40`, and
-`vm::run`'s instruction counts. A source entirely above `22a56f7` in both
+binaries, the branch head's change against `e9f97f9` with the protocol's gate
+(overlapping, entirely above, entirely below), both against `d804eaf`, and
+`vm::run`'s instruction counts. A source entirely above `e9f97f9` in both
 sittings is a regression to explain before Task 8, not a number to record and
 move past.
 
@@ -1317,7 +1317,7 @@ move past.
 `execution.md`, "What the specification gaps moved", in the shape of "What 3c
 moved": what changed on a send's path (the operand copies and symbol
 literals; the resolver's changes are ahead of the run loop), the protocol as
-run, the per-round table against `22a56f7`, the means table with `be3eb40`,
+run, the per-round table against `e9f97f9`, the means table with `d804eaf`,
 and the `dumpbin` result.
 
 - [ ] **Step 2: Update the progress tracker**

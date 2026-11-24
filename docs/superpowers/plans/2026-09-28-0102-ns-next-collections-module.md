@@ -1300,7 +1300,7 @@ cargo build --workspace --release
 Remove-Item Env:RUSTFLAGS
 ```
 
-for the base commit `6d9974b` (the commit before this plan's first) and for the branch head, three builds of each tree, pooled. Measure:
+for the base commit `da103f5` (the commit before this plan's first) and for the branch head, three builds of each tree, pooled. Measure:
 
 1. the start-up of a module that answers at once (the same source plan 1 measured, named in "What the platform module cost");
 2. the start-up of a module that sends `platform collections List new` once and answers — the cost of building the collections module on first use, which the base commit does not pay;

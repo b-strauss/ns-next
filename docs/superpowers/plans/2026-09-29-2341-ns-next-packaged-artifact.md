@@ -90,7 +90,7 @@
 
 Every golden's root is `class X usingPlatform: p = …` today. The old CLI instantiates a root whose factory takes no argument (`entry::factory_arguments_for`), so moving the goldens first keeps every lane green, and every later task runs against goldens already in their final form.
 
-A dry run of the script below against a copy of `goldens/` rewrote 262 goldens. The release binary of `b86a7fb` then ran every rewritten golden under both lowerings, and each produced its recorded `status`, `stdout` and `stderr` byte for byte. The five it leaves are migrated by hand (Step 3).
+A dry run of the script below against a copy of `goldens/` rewrote 262 goldens. The release binary of `53b1c3d` then ran every rewritten golden under both lowerings, and each produced its recorded `status`, `stdout` and `stderr` byte for byte. The five it leaves are migrated by hand (Step 3).
 
 **Files:**
 - Modify: `goldens/**/*.ns` (267 files)
