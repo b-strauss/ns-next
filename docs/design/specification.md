@@ -112,8 +112,9 @@ Each decided with the user on 2026-11-23.
 
 ## The order of building it
 
-Semantics first (decided with the user on 2026-11-23), each its own plan,
-branch and end-of-batch gates:
+Semantics first (decided with the user on 2026-11-23), then the bytecode
+before the image format (2026-11-24), each its own plan, branch and
+end-of-batch gates:
 
 1. **The foundation and the syntax**, built: mdBook, the preprocessor, the checks
    of identifiers and references, the rule in `CLAUDE.md`, the book's
@@ -122,8 +123,8 @@ branch and end-of-batch gates:
    tests and the syntax goldens naming their rules.
 2. **The language and the run-time semantics**, built: the other
    deviations decided; the install as it is.
-3. **The image format**: the structure, the tags, the validation rules.
-4. **The bytecode**: the instruction table and the register effects.
+3. **The bytecode**: the instruction table and the register effects.
+4. **The image format**: the structure, the tags, the validation rules.
 5. **The VM invariants**, and the design documents and `CLAUDE.md`
    pointing at the rules by identifier.
 

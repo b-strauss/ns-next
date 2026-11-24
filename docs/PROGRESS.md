@@ -8875,4 +8875,4 @@ send ran synchronously and the pattern answered `nil`.
   evaluated.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-specification's third batch, the image format.
+specification's third batch, the bytecode.
