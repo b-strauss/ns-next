@@ -1,4 +1,4 @@
 stdout = '''
 outer/derived
 '''
-rules = ["syntax.super", "semantics.superclass.clause"]
+rules = ["syntax.super", "semantics.superclass.clause", "bytecode.instruction.send-super"]

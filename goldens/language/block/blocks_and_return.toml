@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure", "semantics.block.non-local-return"]
+rules = ["semantics.block.closure", "semantics.block.non-local-return", "bytecode.instruction.return"]
 stdout = '''
 found
 not found

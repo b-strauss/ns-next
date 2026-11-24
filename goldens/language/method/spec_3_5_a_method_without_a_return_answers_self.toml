@@ -1,4 +1,4 @@
-rules = ["semantics.method.return", "runtime.invoke", "bytecode.instruction.load-self"]
+rules = ["semantics.method.return", "runtime.invoke", "bytecode.instruction.load-self", "bytecode.instruction.implicit-return"]
 stdout = '''
 true
 true

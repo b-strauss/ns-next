@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure", "semantics.block.cannot-return", "runtime.unwind"]
+rules = ["semantics.block.closure", "semantics.block.cannot-return", "runtime.unwind", "bytecode.instruction.non-local-return"]
 status = 1
 stdout = '''
 stashed

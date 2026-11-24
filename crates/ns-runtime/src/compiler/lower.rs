@@ -4970,6 +4970,7 @@ mod tests {
     /// evaluates the mirror, the subject and the leaf's argument, then either
     /// jumps over the block or runs it in this body, where its `^` returns
     /// from the method.
+    // spec: bytecode.instruction.send-mirror
     #[test]
     fn a_mirror_send_lowers_its_failure_block_inline() {
         let code = lower_kernel_method(
@@ -5155,6 +5156,7 @@ mod tests {
         )));
     }
 
+    // spec: bytecode.instruction.integer-binary
     #[test]
     fn an_integer_addition_lowers_to_the_inlined_fast_path() {
         let code = compile_foo("1 + 2");

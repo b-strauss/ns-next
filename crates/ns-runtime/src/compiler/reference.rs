@@ -1767,6 +1767,7 @@ mod tests {
     /// here, its failure block a real closure, and it is marked
     /// `SendInlinable` so that the depth count exempts the block's
     /// activation as it exempts `ifTrue:`'s.
+    // spec: bytecode.instruction.send-inlinable
     #[test]
     fn a_mirror_send_with_a_literal_failure_block_is_a_send_inlinable_over_a_real_closure() {
         let code = compile_kernel_method(

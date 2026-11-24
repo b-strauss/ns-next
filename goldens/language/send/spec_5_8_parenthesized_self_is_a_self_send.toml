@@ -1,4 +1,4 @@
 stdout = '''
 5
 '''
-rules = ["syntax.self", "syntax.primary", "semantics.send.self", "runtime.outer-send"]
+rules = ["syntax.self", "syntax.primary", "semantics.send.self", "runtime.outer-send", "bytecode.instruction.send-lexical"]

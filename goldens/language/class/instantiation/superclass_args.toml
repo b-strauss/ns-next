@@ -1,4 +1,4 @@
-rules = ["semantics.superclass.clause"]
+rules = ["semantics.superclass.clause", "bytecode.instruction.initialize-superclass"]
 stdout = '''
 11
 10

@@ -1,4 +1,4 @@
-rules = ["semantics.mixin.application", "semantics.mixin.clause-order"]
+rules = ["semantics.mixin.application", "semantics.mixin.clause-order", "bytecode.instruction.check-applied-clause"]
 status = 1
 stdout = '''
 before Applied new

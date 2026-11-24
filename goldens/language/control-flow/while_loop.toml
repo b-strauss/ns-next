@@ -1,4 +1,4 @@
-rules = ["semantics.send.ordinary"]
+rules = ["semantics.send.ordinary", "bytecode.instruction.jump", "bytecode.instruction.branch-if-false", "bytecode.instruction.branch-if-true", "bytecode.instruction.jump-if-not-boolean"]
 stdout = '''
 10 0
 '''

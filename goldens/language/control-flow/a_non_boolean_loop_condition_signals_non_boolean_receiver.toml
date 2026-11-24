@@ -1,4 +1,4 @@
-rules = ["semantics.send.ordinary"]
+rules = ["semantics.send.ordinary", "bytecode.instruction.signal-non-boolean"]
 status = 1
 stdout = '''
 before

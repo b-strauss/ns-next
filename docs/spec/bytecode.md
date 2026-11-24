@@ -495,3 +495,319 @@ A simultaneous clause's end.
    the future's value and signals `divergent evaluation: a future was
    forced while it was being computed` for a future already being
    computed.
+
+### SendPublic
+
+r[bytecode.instruction.send-public]
+**Operands.** `selector`, a symbol; `receiver_register`, a register;
+`argument_base` and `argument_sources`, the send's window
+([`bytecode.register.argument-window`](#r-bytecode.register.argument-window));
+`destination`, a register; `call_site`, its call-site number
+([`bytecode.call-site`](#r-bytecode.call-site)).
+**Encoding.** Wire tag 47; eight-byte forms `SendPublic0`, `SendPublic1`,
+`SendPublic2`, `SendPublicWide`.
+**Reads** `receiver_register`, `argument_sources`. **Writes**
+`destination`. **Jumps** nowhere.
+
+An ordinary send to an explicit receiver
+([`semantics.send.ordinary`](language/semantics.md#r-semantics.send.ordinary)).
+
+1. Copy each source into its slot of the window.
+2. `destination` := [Send](runtime.md#r-runtime.send)(the value of
+   `receiver_register`, `selector`, the values of the window).
+
+### SendInlinable
+
+r[bytecode.instruction.send-inlinable]
+**Operands.** As `SendPublic`'s.
+**Encoding.** Wire tag 48; eight-byte forms `SendInlinable0`,
+`SendInlinable1`, `SendInlinable2`, `SendInlinableWide`.
+**Reads** `receiver_register`, `argument_sources`. **Writes**
+`destination`. **Jumps** nowhere.
+
+Exactly `SendPublic`, emitted only by the reference lowering, for the
+sends the optimized lowering inlines as control flow (`ifTrue:`,
+`whileTrue:`, `and:` and their kin). It differs in one respect: a block
+it activates for the control-flow step is not counted against the depth
+limit ([`runtime.depth-limit`](runtime.md#r-runtime.depth-limit)),
+since the optimized lowering never activates that block, so both
+lowerings meet the limit at the same depth.
+
+1. As `SendPublic`'s steps.
+
+### SendLexical
+
+r[bytecode.instruction.send-lexical]
+**Operands.** `depth`, a depth; `selector`, `argument_base`,
+`argument_sources`, `destination` and `call_site` as `SendPublic`'s.
+**Encoding.** Wire tag 46; eight-byte forms `SendLexical0`,
+`SendLexical1`, `SendLexical2`, `SendLexicalWide`.
+**Reads** `argument_sources`. **Writes** `destination`. **Jumps**
+nowhere.
+
+A send whose receiver the resolver decided from the lexical scope: an
+implicit-receiver send that a declaration `depth` levels out answers, or
+`outer N m`
+([`semantics.send.implicit-receiver`](language/semantics.md#r-semantics.send.implicit-receiver),
+[`semantics.send.outer`](language/semantics.md#r-semantics.send.outer)).
+
+1. Copy each source into its slot of the window.
+2. Let *r* be the frame's receiver when `depth` is 0, and otherwise
+   [Outer](runtime.md#r-runtime.outer) applied to the running code and
+   `depth`.
+3. `destination` := the answer of the send of `selector` to *r* with the
+   values of the window, its method found as
+   [ImplicitReceiverLookup](runtime.md#r-runtime.implicit-receiver) and
+   [OuterSend](runtime.md#r-runtime.outer-send) find it: the private and
+   protected members of the declaring class included.
+
+### SendSuper
+
+r[bytecode.instruction.send-super]
+**Operands.** `selector`, `argument_base`, `argument_sources`,
+`destination` and `call_site` as `SendPublic`'s.
+**Encoding.** Wire tag 49; eight-byte forms `SendSuper0`, `SendSuper1`,
+`SendSuper2`, `SendSuperWide`.
+**Reads** `argument_sources`. **Writes** `destination`. **Jumps**
+nowhere.
+
+1. Copy each source into its slot of the window.
+2. `destination` := the answer of the super send of `selector` with the
+   values of the window, as [Send](runtime.md#r-runtime.send) gives it:
+   its receiver the frame's, its lookup starting at the superclass of the
+   current class
+   ([`semantics.send.super`](language/semantics.md#r-semantics.send.super)).
+
+### SendMirror
+
+r[bytecode.instruction.send-mirror]
+**Operands.** `primitive`, a row of the VM mirror's table;
+`mirror_register` and `subject_register`, registers; `argument_base` and
+`argument_sources`, its window; `destination`, a register; `failure`, an
+index.
+**Encoding.** No wire tag: it is emitted only into the shipped core
+library's code, which no image carries
+([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)). Eight-byte forms
+`SendMirror`, `Wide`.
+**Reads** `mirror_register`, `subject_register`, `argument_sources`.
+**Writes** `destination`. **Jumps** to `failure`.
+
+A send to the VM mirror whose failure block was compiled inline at
+`failure`. The row is decided when the code is compiled; the check that
+`mirror_register` holds the mirror stands for the lookup.
+
+1. Copy each source into its slot of the window.
+2. If `mirror_register` does not hold the VM mirror, signal `internal: a
+   mirror send's receiver is not the VM mirror`.
+3. Run the row's operation on the value of `subject_register` and the
+   values of the window. If it answers a value, `destination` := that
+   value. If it declines its operands, go to `failure`.
+
+### Return
+
+r[bytecode.instruction.return]
+**Operands.** `register`, a register.
+**Encoding.** Wire tag 14; eight-byte forms `Return`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
+through.
+
+A `^` outside a block
+([`semantics.method.return`](language/semantics.md#r-semantics.method.return)).
+
+1. End the frame, and make the instruction that made it answer the value
+   of `register`.
+
+### ImplicitReturn
+
+r[bytecode.instruction.implicit-return]
+**Operands.** `register`, a register.
+**Encoding.** Wire tag 15; eight-byte forms `ImplicitReturn`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
+through.
+
+A body that fell off its end: a method answers `self`, a block its last
+expression's value. It runs exactly as `Return` does.
+
+1. As `Return`'s step.
+
+### NonLocalReturn
+
+r[bytecode.instruction.non-local-return]
+**Operands.** `register`, a register.
+**Encoding.** Wire tag 16; eight-byte forms `NonLocalReturn`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
+through.
+
+A `^` inside a block
+([`semantics.block.non-local-return`](language/semantics.md#r-semantics.block.non-local-return)).
+
+1. Let *h* be the *home* of the frame: the method frame the block's
+   outermost making frame runs in.
+2. If *h* has already returned, signal as
+   [`semantics.block.cannot-return`](language/semantics.md#r-semantics.block.cannot-return)
+   says.
+3. [Unwind](runtime.md#r-runtime.unwind)(*h*, the value of `register`).
+
+### SignalNonBoolean
+
+r[bytecode.instruction.signal-non-boolean]
+**Operands.** `register`, a register.
+**Encoding.** Wire tag 40; eight-byte forms `SignalNonBoolean`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
+through.
+
+The guard-failure path of an inlined `whileTrue:` or `whileFalse:`.
+
+1. Signal a `NonBooleanReceiver` with the text `a loop's condition
+   answered v, which is no Boolean`, *v* the value of `register`
+   described. Nothing after it runs.
+
+### Jump
+
+r[bytecode.instruction.jump]
+**Operands.** `target`, an index.
+**Encoding.** Wire tag 17; eight-byte forms `Jump`, `Wide`.
+**Reads** nothing. **Writes** nothing. **Jumps** to `target`; never
+falls through.
+
+1. Go to `target`.
+
+### JumpIfNotBoolean
+
+r[bytecode.instruction.jump-if-not-boolean]
+**Operands.** `register`, a register; `target`, an index.
+**Encoding.** Wire tag 18; eight-byte forms `JumpIfNotBoolean`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** to `target`.
+
+The guard in front of inlined control flow: its target sends the message
+the inlined code stands for to a receiver that is no Boolean.
+
+1. If `register` holds neither `true` nor `false`, go to `target`.
+
+### BranchIfFalse
+
+r[bytecode.instruction.branch-if-false]
+**Operands.** `register`, a register; `target`, an index.
+**Encoding.** Wire tag 19; eight-byte forms `BranchIfFalse`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** to `target`.
+
+1. If `register` holds `false`, go to `target`.
+
+### BranchIfTrue
+
+r[bytecode.instruction.branch-if-true]
+**Operands.** `register`, a register; `target`, an index.
+**Encoding.** Wire tag 20; eight-byte forms `BranchIfTrue`, `Wide`.
+**Reads** `register`. **Writes** nothing. **Jumps** to `target`.
+
+1. If `register` holds `true`, go to `target`.
+
+### IntegerBinary
+
+r[bytecode.instruction.integer-binary]
+**Operands.** `operation`, one of `Add` (`+`), `Subtract` (`-`),
+`Multiply` (`*`), `FloorDivide` (`//`), `Less` (`<`), `Greater` (`>`),
+`LessOrEqual` (`<=`), `GreaterOrEqual` (`>=`) and `Equal` (`=`);
+`destination`, `left` and `right`, registers; `target`, an index.
+**Encoding.** Wire tag 33; eight-byte forms `IntegerAdd`,
+`IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
+`IntegerLess`, `IntegerGreater`, `IntegerLessOrEqual`,
+`IntegerGreaterOrEqual`, `IntegerEqual`, `Wide`.
+**Reads** `left`, `right`. **Writes** `destination`. **Jumps** to
+`target`.
+
+A binary send of the operation's selector, computed inline; the ordinary
+send stands at `target`, so the two answer alike.
+
+1. If `left` and `right` both hold a `SmallInteger`, and the operation
+   on them has a result that is a `SmallInteger` or a Boolean --
+   no divisor 0, no result outside a `SmallInteger`'s range --
+   `destination` := that result.
+2. Otherwise go to `target`.
+
+### AllocateInstance
+
+r[bytecode.instruction.allocate-instance]
+**Operands.** `destination`, a register.
+**Encoding.** Wire tag 41; eight-byte forms `AllocateInstance`, `Wide`.
+**Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
+
+A factory body's allocation; the frame's receiver is the class the
+factory was sent to.
+
+1. `destination` := a new instance of that class, every slot `nil`, as
+   [Instantiate](runtime.md#r-runtime.instantiate)'s allocation makes
+   it, signalling what that step signals for a class that refuses one.
+
+### InitializeInstance
+
+r[bytecode.instruction.initialize-instance]
+**Operands.** `instance` and `destination`, registers.
+**Encoding.** Wire tag 42; eight-byte forms `InitializeInstance`, `Wide`.
+**Reads** `instance`. **Writes** `destination`. **Jumps** nowhere.
+
+A factory body's initialization, with the factory's arguments -- the
+frame's own argument registers, which it names by no operand.
+
+1. `destination` := the answer of the initializer of the frame's receiver
+   class run on the value of `instance` with the frame's arguments, as
+   [Instantiate](runtime.md#r-runtime.instantiate) runs it
+   ([`semantics.instantiation.initializer-order`](language/semantics.md#r-semantics.instantiation.initializer-order)).
+
+### CheckAppliedClause
+
+r[bytecode.instruction.check-applied-clause]
+**Operands.** `steps`, a number of levels; `selector`, a symbol.
+**Encoding.** Wire tag 43; eight-byte forms `CheckAppliedClause`, `Wide`.
+**Reads** nothing. **Writes** nothing. **Jumps** nowhere.
+
+An initializer's check of a `<:` clause, before anything of it runs
+(Bracha §6.1).
+
+1. Let *L* be the level `steps` above the frame's class, the one the
+   clause added. If its primary factory's selector is not `selector`,
+   signal `a mixin application clause of class A sends #selector, but
+   the primary factory of class C is #f`.
+
+### InitializeSuperclass
+
+r[bytecode.instruction.initialize-superclass]
+**Operands.** `steps`, a number of levels; `selector`, a symbol;
+`argument_base`, `argument_sources` and `destination` as a send's.
+**Encoding.** Wire tag 50; eight-byte forms `InitializeSuperclass`,
+`Wide`.
+**Reads** `argument_sources`. **Writes** `destination`. **Jumps**
+nowhere.
+
+An initializer's superclass initialization (Bracha §6.3).
+
+1. Copy each source into its slot of the window.
+2. Let *S* be the class `steps` above the frame's class, the one the
+   superclass clause names. If its primary factory's selector is not
+   `selector`, signal `the superclass clause of class A sends #selector,
+   but the primary factory of class S is #f`.
+3. `destination` := the answer of *S*'s initializer run on the frame's
+   receiver with the values of the window. A chain that ends before
+   `steps` levels has nothing to initialize: `destination` := the
+   receiver.
+
+### InitializeAppliedLevel
+
+r[bytecode.instruction.initialize-applied-level]
+**Operands.** `steps`, a number of levels; `argument_base`,
+`argument_sources` and `destination` as a send's.
+**Encoding.** Wire tag 51; eight-byte forms `InitializeAppliedLevel`,
+`Wide`.
+**Reads** `argument_sources`. **Writes** `destination`. **Jumps**
+nowhere.
+
+The initialization of a level a `<:` clause adds, run just before that
+level's own part, with the applying class's factory arguments already
+evaluated into the window
+([`semantics.mixin.application`](language/semantics.md#r-semantics.mixin.application),
+[`runtime.apply-mixin`](runtime.md#r-runtime.apply-mixin)).
+
+1. Copy each source into its slot of the window.
+2. `destination` := the answer of the own part of the initializer of the
+   mixin of the level `steps` above the frame's class, run on the frame's
+   receiver with the values of the window.
