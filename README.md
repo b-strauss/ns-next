@@ -190,6 +190,9 @@ cargo xtask codegen .temp/stage2
 # references to rules, links -- and render it into
 # target/spec/html/index.html, which opens in a browser; needs mdBook 0.5.4
 cargo xtask spec
+# download the reference papers into docs/references/, each checked against
+# its SHA-256; needs curl
+cargo xtask references
 ```
 
 ## Usage
@@ -329,7 +332,7 @@ docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology
 docs/OPEN-WORK.md    everything still to be done, in detail
 docs/superpowers/    implementation plans, kept as execution records
-docs/references/     the Newspeak papers the design argues from (third-party, see PROVENANCE.md)
+docs/references/     the Newspeak specification, and the papers the design argues from, fetched by `cargo xtask references` (third-party, see PROVENANCE.md)
 ```
 
 `prior-art/` holds the canonical Newspeak implementation, its benchmark suite,
@@ -341,9 +344,20 @@ in the build, the tests or either gate depends on them;
 `opensmalltalk-vm` alone is about 255 MB, so initializing by name is usually the
 better move.
 
+## Acknowledgements
+
+Newspeak is Gilad Bracha's language, and ns-next follows his specification
+and the Newspeak project's implementation. Its core library takes the API of
+Ryan Macnak's Primordial Soup, and its benchmarks come from Stefan Marr's
+SOMns and Are We Fast Yet and from Primordial Soup. `THIRD-PARTY-NOTICES.md`
+lists what is adapted from where.
+
 ## License
 
-MIT — see [LICENSE](LICENSE). The vendored corpus under `corpus/` is third-party
+MIT — see [LICENSE](LICENSE). The code adapted from other projects keeps its
+own notices — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The vendored corpus under `corpus/` is third-party
 material with its own terms — see `corpus/PROVENANCE.md` and `corpus/UPSTREAM-LICENSE`.
+The papers under `docs/references/` are third-party works, not covered by the
+MIT license — see `docs/references/PROVENANCE.md`.
 The submodules under `prior-art/` each keep their own license in their own tree;
 none of their code is vendored here — see `prior-art/PROVENANCE.md`.

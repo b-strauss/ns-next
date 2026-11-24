@@ -1,26 +1,38 @@
 # Reference Papers — Provenance
 
-Primary sources behind `ns-next`'s design decisions, vendored so the design
-documents can cite something that will still be there. All were downloaded on 2026-09-06 from the authors'
-own pages.
+Primary sources behind `ns-next`'s design decisions. The specification and
+its transcription are in the tree; the other seven papers are not, since
+several remain under their publishers' copyrights. `cargo xtask references`
+downloads them from their authors' pages into this directory, which
+`.gitignore` keeps out of the tree, under the file names the design
+documents cite them by, and refuses a download whose SHA-256 is not the
+one below: the documents' section citations name that version. All were
+first retrieved on 2026-09-06.
 
 **These are third-party works and are not covered by this repository's MIT license.**
 Several were published by the ACM, Springer or the IEEE and remain under their
-respective copyrights; the copies here are the author-hosted versions. They are included
-for reference while working on this project. Redistribute them only under whatever terms
-their publishers grant.
+respective copyrights; the links are the author-hosted versions.
 
-| File | Work |
-|---|---|
-| `newspeak-spec.pdf` | Gilad Bracha. *Newspeak Programming Language Draft Specification*. <https://newspeaklanguage.org/spec/newspeak-spec.pdf> |
-| `newspeak-spec.md` | A transcription of the above, for searching. Same work, same copyright. |
-| `newspeak-modules.pdf` | Gilad Bracha, Peter Ahe, Vassili Bykov, Yaron Kashai, William Maddox, Eliot Miranda. *Modules as Objects in Newspeak*. ECOOP 2010, Maribor; Springer LNCS. Best paper award. <https://bracha.org/newspeak-modules.pdf> |
-| `dyla-final.pdf` | Gilad Bracha. *On the Interaction of Method Lookup and Scope with Inheritance and Nesting*. 3rd ECOOP Workshop on Dynamic Languages and Applications, 2007. <https://bracha.org/dyla-final.pdf> |
-| `mirrors.pdf` | Gilad Bracha, David Ungar. *Mirrors: Design Principles for Meta-level Facilities of Object-Oriented Programming Languages*. OOPSLA 2004; Most Influential Paper award, 2014. <https://bracha.org/mirrors.pdf> |
-| `newspeak.pdf` | Gilad Bracha, Peter Ahe, Vassili Bykov, Yaron Kashai, Eliot Miranda. *The Newspeak Programming Platform*. Overview as of May 2008. <https://bracha.org/newspeak.pdf> |
-| `objectsAsSoftwareServices.pdf` | Gilad Bracha. *Objects as Software Services*. Whitepaper accompanying the invited talk at the Dynamic Languages Symposium, OOPSLA 2005. <https://bracha.org/objectsAsSoftwareServices.pdf> |
-| `newspeak-exemplars.pdf` | Gilad Bracha. *Enhancing Liveness with Exemplars in the Newspeak IDE*. <https://newspeaklanguage.org/pubs/newspeak-exemplars.pdf> |
-| `modularity-meets-inheritance.pdf` | Gilad Bracha, Gary Lindstrom. *Modularity Meets Inheritance*. IEEE International Conference on Computer Languages, April 1992. <https://bracha.org/modularity-meets-inheritance.pdf> |
+| File | Work | SHA-256 |
+|---|---|---|
+| `newspeak-spec.pdf` | Gilad Bracha. *Newspeak Programming Language Draft Specification*. <https://newspeaklanguage.org/spec/newspeak-spec.pdf> | `3af7f5a2b41a0a2f465a597a3bf977d94e45ddc8c01e353db00d611debaf8d3b` |
+| `newspeak-spec.md` | A transcription of the above, for searching. Same work, same copyright. | — |
+| `newspeak-modules.pdf` | Gilad Bracha, Peter Ahe, Vassili Bykov, Yaron Kashai, William Maddox, Eliot Miranda. *Modules as Objects in Newspeak*. ECOOP 2010, Maribor; Springer LNCS. Best paper award. <https://bracha.org/newspeak-modules.pdf> | `c46a6b9d852195338bb0fffc4ed6960d4dc6dd738fd89002bb85925a9dd7aeb3` |
+| `dyla-final.pdf` | Gilad Bracha. *On the Interaction of Method Lookup and Scope with Inheritance and Nesting*. 3rd ECOOP Workshop on Dynamic Languages and Applications, 2007. <https://bracha.org/dyla-final.pdf> | `a4cd9130299397cb073efcf789b8fd5bf0fed268d926dee28cb3d8ed1101e5cb` |
+| `mirrors.pdf` | Gilad Bracha, David Ungar. *Mirrors: Design Principles for Meta-level Facilities of Object-Oriented Programming Languages*. OOPSLA 2004; Most Influential Paper award, 2014. <https://bracha.org/mirrors.pdf> | `a5d35871f26dbea062224ebbaf066e4325e8bff66e681ce8d64216a1ea3c5085` |
+| `newspeak.pdf` | Gilad Bracha, Peter Ahe, Vassili Bykov, Yaron Kashai, Eliot Miranda. *The Newspeak Programming Platform*. Overview as of May 2008. <https://bracha.org/newspeak.pdf> | `64579153930f68389e0728534e051c1da07a535d13d7090bec165ce44f6de9f6` |
+| `objectsAsSoftwareServices.pdf` | Gilad Bracha. *Objects as Software Services*. Whitepaper accompanying the invited talk at the Dynamic Languages Symposium, OOPSLA 2005. <https://bracha.org/objectsAsSoftwareServices.pdf> | `fe9a138fbf8b919dea72980f2642e3ca4ff90a3654309c0b73831714a37e9000` |
+| `newspeak-exemplars.pdf` | Gilad Bracha. *Enhancing Liveness with Exemplars in the Newspeak IDE*. <https://newspeaklanguage.org/pubs/newspeak-exemplars.pdf> | `588f0d10e2cd02ceb008c9725989681ee42b3d36307ae0e2c54f0927ea30db4a` |
+| `modularity-meets-inheritance.pdf` | Gilad Bracha, Gary Lindstrom. *Modularity Meets Inheritance*. IEEE International Conference on Computer Languages, April 1992. <https://bracha.org/modularity-meets-inheritance.pdf> | `cfd1929a6c7183e2009979756d9178e620a98459c9dab29d589c19fcc4486e6b` |
+
+## Refreshing a paper
+
+A paper whose author replaces it at its link fails the task, which names
+the checksum it found. Refreshing it is reading the new version, checking
+that `docs/design/`'s and `docs/spec/`'s section citations of it still
+point at the same content, and then writing the new checksum both here and
+in `xtask/src/references.rs`, whose test holds the two to each other.
+The specification in the tree is refreshed as its own entry below says.
 
 ## Why each one is here
 

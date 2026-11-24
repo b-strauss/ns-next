@@ -679,4 +679,7 @@ gap is deleting the `skipped` line; no golden is skipped today.
   execution record of finished work and is legitimately historical, so it is not
   a living document and is left as written.
 - **`docs/references/`** — the primary sources, with `PROVENANCE.md` recording
-  what each one is and why it is here.
+  what each one is and why it is here: the specification and its
+  transcription in the tree, the other papers downloaded by
+  `cargo xtask references`, since several are under their publishers'
+  copyrights.
