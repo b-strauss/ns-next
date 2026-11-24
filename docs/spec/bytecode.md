@@ -1152,3 +1152,94 @@ InitializeAppliedLevel       destination:u8  argument_base:u8  steps:u16  argume
 Wide                         index:u32
 Breakpoint
 ```
+
+## The rules the decoder checks
+
+An image is untrusted input. The image decoder refuses a body, and with
+it the image, unless every rule below holds; it checks them before any
+code of the image runs, and no byte sequence makes it fail otherwise than
+by refusing. The rules are numbered in the order the decoder meets them.
+
+r[bytecode.verify.tags]
+1. Every instruction, literal, integer-operation and code-kind tag is
+   one the [wire tags](#r-bytecode.wire.tags) give, never a retired one,
+   and every symbol id names an entry of the image's symbol table.
+
+r[bytecode.verify.body-fields]
+2. A body's argument count is at most 255 and at most its register count;
+   its local count is at most its register count; its copied values fit
+   between its header and its register count; its source span does not
+   end before it starts; and it holds at most 2^20 instructions
+   ([`bytecode.limit.instructions`](#r-bytecode.limit.instructions),
+   [`bytecode.limit.arguments`](#r-bytecode.limit.arguments)).
+
+r[bytecode.verify.statement-map]
+3. Every range of the statement map lies within the body: its start is
+   at most its end, and its end at most the instruction count.
+
+r[bytecode.verify.registers]
+4. Every register operand of an instruction is below the body's register
+   count and is none of its header's numbers, and no instruction writes
+   an argument register
+   ([`bytecode.register.layout`](#r-bytecode.register.layout),
+   [`bytecode.register.arguments`](#r-bytecode.register.arguments)).
+
+r[bytecode.verify.argument-windows]
+5. Every window lies below the register count and starts at or above
+   both the header's end and the local count; no source is another slot of
+   its window; and no send, superclass clause message or block passes or
+   takes more than 255 arguments
+   ([`bytecode.register.argument-window`](#r-bytecode.register.argument-window)).
+
+r[bytecode.verify.control-flow]
+6. Every jump target is an instruction index of the body, and the body
+   holds at least one instruction and ends with `Return`, `ImplicitReturn`,
+   `NonLocalReturn`, `SignalNonBoolean` or `Jump`, so that control never
+   runs past its end.
+
+r[bytecode.verify.blocks]
+7. A `MakeClosure` names a body of kind `Block` in the image's code table
+   that comes before the body that names it; no block body is named by
+   two of them; its parameter count is the block's argument count and its
+   copied registers are as many as the block's copied count; and blocks
+   nest at most 128 deep, the parser's own limit.
+
+r[bytecode.verify.outer-locals]
+8. An outer local's index, counted in the body `depth` steps out -- the
+   outermost body when the depth exceeds the nesting -- is below that
+   body's local count, and so below its register count, is none of its
+   header's numbers, and, for `StoreOuterLocal`, is not one of its
+   arguments.
+
+r[bytecode.verify.leftovers]
+9. No instruction reads a dead register
+   ([`bytecode.register.leftovers`](#r-bytecode.register.leftovers)).
+   The analysis that decides it refuses a body past what any compiled body
+   reaches: more than 257 jumps open at once, more than 128 loops open at
+   once, two loops that cross, or a jump into a loop past its head.
+
+r[bytecode.verify.large-integer]
+10. A `LargeInteger` literal is in its one canonical encoding: its sign
+    byte is 0 or 1, its value does not fit an `i64`, its most significant
+    digit is not 0, and it is not a negative zero.
+
+r[bytecode.verify.attachment]
+11. A body's kind and argument count agree with what it is attached to:
+    a method's with its selector's arity, an initializer's with its
+    factory's, a superclass clause's with none.
+
+r[bytecode.verify.not-checked]
+The decoder checks no more of a body than these rules. In particular it
+leaves these to the run, where they are checked or cannot go wrong:
+
+- an own-slot instruction's `own_index`, which no body bounds -- the
+  decoder holds every instance of a program class to its class's slot
+  count instead, so that an index outside them reads no other object;
+- a vector's index and size, which `LoadVector` and `StoreVector` check
+  as they run;
+- a `LoadEnclosingObject`'s and a `SendLexical`'s depth: one past the
+  chain of enclosing objects the walk out finds answers `nil`.
+
+The shipped core library's code, which the binary embeds, is not decoded
+by these rules: it is the binary's own, and the binary that built it
+trusts it as it trusts its own machine code.

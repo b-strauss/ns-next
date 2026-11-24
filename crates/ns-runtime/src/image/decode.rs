@@ -535,6 +535,14 @@ pub enum DecodeError {
         target: u32,
         instructions: usize,
     },
+    /// A statement whose range of instructions is backwards or leaves its
+    /// body.
+    StatementMapOutOfRange {
+        statement: usize,
+        start: usize,
+        end: usize,
+        instructions: usize,
+    },
     /// More arguments than registers: an activation is pushed with
     /// `register_count - argument_count` temporaries, which underflows here.
     ArgumentsExceedRegisters {
@@ -1150,6 +1158,15 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "jump target {target} is not an instruction index in a body of {instructions} instruction(s)"
+            ),
+            DecodeError::StatementMapOutOfRange {
+                statement,
+                start,
+                end,
+                instructions,
+            } => write!(
+                f,
+                "statement {statement}'s instructions {start}..{end} are not a range of a body of {instructions} instruction(s)"
             ),
             DecodeError::ArgumentsExceedRegisters {
                 argument_count,
@@ -2045,6 +2062,19 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
             local_count: code.local_count,
             register_count: code.register_count,
         });
+    }
+    // The statement map places a frame's instruction index in its source --
+    // the debugger's stops and lines, the trace's descriptions -- so every
+    // range is one of the body's own, or a reader indexes past it.
+    for (statement, range) in &code.statement_program_counter {
+        if range.start > range.end || range.end > instructions.len() {
+            return Err(DecodeError::StatementMapOutOfRange {
+                statement: *statement,
+                start: range.start,
+                end: range.end,
+                instructions: instructions.len(),
+            });
+        }
     }
     // The VM fetches the instruction at `program_counter` at the top of the
     // loop and again after every fall-through, so an empty body -- or one

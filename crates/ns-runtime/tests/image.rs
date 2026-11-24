@@ -1139,6 +1139,7 @@ fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     }
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1166,6 +1167,7 @@ fn a_make_closure_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     // Post-order means a block's code always precedes its parent's, so an
@@ -1196,6 +1198,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
 }
 
 // spec: bytecode.wire.tags
+// spec: bytecode.verify.tags
 #[test]
 fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1235,6 +1238,7 @@ fn a_retired_code_kind_tag_is_refused() {
 }
 
 // spec: bytecode.wire.tags
+// spec: bytecode.verify.tags
 #[test]
 fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1305,6 +1309,7 @@ fn write_return(writer: &mut encode::Writer) {
 /// call sites were widened (7-10) or before a number stopped being
 /// serialized at all (21-24) -- is refused, not misread.
 // spec: bytecode.wire.tags
+// spec: bytecode.verify.tags
 #[test]
 fn a_retired_send_tag_is_refused() {
     // Every retired number, not just one representative: 7-10 while a call
@@ -1360,6 +1365,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// its tag and whatever followed it -- meets an unknown tag rather than
 /// decoding as whatever literal takes the next free number.
 // spec: bytecode.wire.tags
+// spec: bytecode.verify.tags
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
     let mut payloads = vec![vec![LITERAL_UNBUILT_PATTERN_LITERAL + 1]];
@@ -2067,6 +2073,7 @@ fn non_canonical_large_integer_payloads() -> Vec<(&'static str, Vec<u8>, decode:
     ]
 }
 
+// spec: bytecode.verify.large-integer
 #[test]
 fn a_non_canonical_large_integer_is_refused() {
     for (case, payload, expected) in non_canonical_large_integer_payloads() {
@@ -2503,6 +2510,7 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
 }
 
 // spec: bytecode.wire.tags
+// spec: bytecode.verify.tags
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an
@@ -2595,6 +2603,7 @@ fn every_integer_operation_tag_round_trips() {
 /// `push_step` sizes an activation as `register_count - argument_count`, so
 /// a `copied_count` that does not fit would leave `fill_copied_values`
 /// writing past the registers the body has.
+// spec: bytecode.verify.body-fields
 #[test]
 fn a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error() {
     let mut writer = encode::Writer::new();
@@ -2623,6 +2632,7 @@ fn a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error() {
     );
 }
 
+// spec: bytecode.verify.body-fields
 #[test]
 fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -2718,6 +2728,7 @@ fn code_table_with_nested_blocks(levels: usize) -> Vec<u8> {
 /// crafted `SendInlinable` chain can stack above one counted activation
 /// (`docs/design/compiler.md`, "How the limit counts"), so the decoder caps it
 /// at the parser's own ceiling: one level past it is refused.
+// spec: bytecode.verify.blocks
 #[test]
 fn a_block_nested_one_level_past_the_ceiling_is_a_decode_error() {
     let bytes = code_table_with_nested_blocks(129);
@@ -2756,6 +2767,7 @@ fn a_block_nested_at_the_ceiling_decodes_and_verifies() {
 /// level. Decoded whole and refused afterwards, a few megabytes of chain
 /// would overflow the stack -- an abort, not an error -- the moment the
 /// refused table was dropped.
+// spec: bytecode.verify.blocks
 #[test]
 fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
     let bytes = code_table_with_nested_blocks(100_000);
@@ -7678,6 +7690,7 @@ fn a_real_modules_decoded_code_table_verifies() {
     });
 }
 
+// spec: bytecode.verify.control-flow
 #[test]
 fn a_jump_target_past_the_end_of_its_body_is_refused() {
     let table = table_of(vec![code_with(
@@ -7700,6 +7713,46 @@ fn a_jump_target_past_the_end_of_its_body_is_refused() {
     );
 }
 
+// spec: bytecode.verify.statement-map
+#[test]
+fn a_statement_map_leaving_its_body_is_refused() {
+    // The statement map places a frame's instruction index in its source
+    // for the debugger and the trace, so a range past the body would place
+    // it nowhere.
+    // A backwards range is built field by field: the literal `1..0` is
+    // what this refuses, and clippy refuses it too.
+    let backwards = std::ops::Range { start: 1, end: 0 };
+    for (range, start, end) in [(0..5, 0, 5), (backwards, 1, 0)] {
+        let code = Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 13 }],
+            0,
+            14,
+            0,
+            vec![(0, range)],
+            Span::new(0, 0),
+        ));
+        let error = decode::verify_code_table(&table_of(vec![code]))
+            .expect_err("a statement range outside its body");
+        assert_eq!(
+            error,
+            decode::DecodeError::StatementMapOutOfRange {
+                statement: 0,
+                start,
+                end,
+                instructions: 1
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "statement 0's instructions {start}..{end} are not a range of a body of 1 instruction(s)"
+            )
+        );
+    }
+}
+
+// spec: bytecode.verify.control-flow
 #[test]
 fn every_conditional_jump_target_is_checked_too() {
     // One case per jump-carrying instruction: a check that only covered
@@ -7741,6 +7794,7 @@ fn every_conditional_jump_target_is_checked_too() {
     }
 }
 
+// spec: bytecode.verify.registers
 #[test]
 fn a_register_past_the_bodys_register_file_is_refused() {
     // `read_local`/`write_local` split at `arguments.len()` and index
@@ -7772,6 +7826,7 @@ fn a_register_past_the_bodys_register_file_is_refused() {
     );
 }
 
+// spec: bytecode.verify.registers
 #[test]
 fn a_register_in_a_send_argument_list_is_checked_too() {
     let table = table_of(vec![code_with(
@@ -7799,6 +7854,7 @@ fn a_register_in_a_send_argument_list_is_checked_too() {
     );
 }
 
+// spec: bytecode.verify.registers
 #[test]
 fn a_register_in_a_send_inlinable_is_checked_too() {
     let table = table_of(vec![code_with(
@@ -7830,6 +7886,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 /// past the body's registers is refused even with no argument, and so are
 /// slots whose last runs past them though base and sources are in range.
 // spec: bytecode.register.argument-window
+// spec: bytecode.verify.argument-windows
 #[test]
 fn a_send_whose_argument_slots_leave_the_body_is_refused() {
     let send = |argument_base, argument_sources: Vec<u16>| {
@@ -7882,6 +7939,7 @@ fn a_send_whose_argument_slots_leave_the_body_is_refused() {
 /// An own register, an outer local's index and a send's slots below the
 /// header's end are each refused, in a body taking arguments too.
 // spec: bytecode.register.layout
+// spec: bytecode.verify.registers
 #[test]
 fn a_register_naming_the_frame_header_is_refused() {
     let own = table_of(vec![code_with(
@@ -7958,6 +8016,7 @@ fn a_register_naming_the_frame_header_is_refused() {
 /// `run`'s slots, and the block stores into `run`'s register where
 /// `call:`'s header starts: the image is refused at load, before anything
 /// runs, rather than let the store overwrite the caller word the pop reads.
+// spec: bytecode.verify.outer-locals
 #[test]
 fn a_block_storing_into_its_homes_scratch_under_a_live_callee_is_refused_at_load() {
     let source = indoc! {"
@@ -8099,6 +8158,7 @@ fn outer_access_table(
 /// compiles to makes when its arguments leave no register above the
 /// header, is no write, since it raises before writing.
 // spec: bytecode.register.arguments
+// spec: bytecode.verify.registers
 #[test]
 fn a_write_to_an_argument_register_is_refused() {
     let own = |instructions| {
@@ -8212,6 +8272,7 @@ fn a_write_to_an_argument_register_is_refused() {
 /// scratch, where a callee it sends to lies with its header while the block
 /// runs: an outer load or store there is refused, one into a named local
 /// verifies.
+// spec: bytecode.verify.outer-locals
 #[test]
 fn an_outer_local_in_the_enclosing_frames_scratch_is_refused() {
     let local_count = HEADER_REGISTERS + 1;
@@ -8261,6 +8322,7 @@ fn an_outer_local_in_the_enclosing_frames_scratch_is_refused() {
 /// header, start at or above its body's `local_count`, which is itself
 /// inside the register file.
 // spec: bytecode.register.argument-window
+// spec: bytecode.verify.argument-windows
 #[test]
 fn a_send_whose_slots_start_below_the_scratch_is_refused() {
     let body = |local_count, argument_base| {
@@ -8323,6 +8385,7 @@ fn a_send_whose_slots_start_below_the_scratch_is_refused() {
 /// left there: refused, while a source in its own slot, or outside the
 /// slots, verifies.
 // spec: bytecode.register.argument-window
+// spec: bytecode.verify.argument-windows
 #[test]
 fn a_send_whose_source_is_another_of_its_slots_is_refused() {
     let send = |argument_sources: Vec<u16>| {
@@ -8388,6 +8451,7 @@ fn a_send_whose_source_is_another_of_its_slots_is_refused() {
 
 /// The loop's signal reads its register like any other operand, so a
 /// decoded one out of range is refused before the VM reads it.
+// spec: bytecode.verify.registers
 #[test]
 fn a_register_in_a_non_boolean_signal_is_checked_too() {
     let table = table_of(vec![code_with(
@@ -8421,6 +8485,7 @@ fn a_body_that_ends_in_a_non_boolean_signal_is_terminated() {
     assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
 
+// spec: bytecode.verify.control-flow
 #[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
     // The VM fetches `code.slot(program_counter)` after every
@@ -8464,6 +8529,7 @@ fn a_body_with_an_instantiation_instruction_is_accepted() {
     }
 }
 
+// spec: bytecode.verify.body-fields
 #[test]
 fn more_arguments_than_registers_is_refused() {
     // Every activation is pushed with `register_count - argument_count`
@@ -8483,6 +8549,7 @@ fn more_arguments_than_registers_is_refused() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_make_closure_naming_a_method_body_is_refused() {
     // A closure activation is a `FrameKind::Closure` frame, and
@@ -8516,6 +8583,7 @@ fn a_make_closure_naming_a_method_body_is_refused() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
     // `parameters` and the body's `argument_count` are separate wire fields,
@@ -8552,6 +8620,7 @@ fn a_make_closure_whose_parameters_disagree_with_its_body_is_refused() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_make_closure_whose_copied_list_does_not_match_its_block_is_refused() {
     // The other half of a block's register layout, beside its arity: the
@@ -8593,6 +8662,7 @@ fn a_make_closure_whose_copied_list_does_not_match_its_block_is_refused() {
 /// A `MakeClosure`'s copied registers are read out of the *executing*
 /// frame, like a send's arguments, so they are bounded against the body
 /// that holds the instruction and not against the block's own file.
+// spec: bytecode.verify.registers
 #[test]
 fn a_make_closure_copying_a_register_its_own_body_lacks_is_refused() {
     let block = code_with_copied(
@@ -8626,6 +8696,7 @@ fn a_make_closure_copying_a_register_its_own_body_lacks_is_refused() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_block_body_created_by_two_make_closures_is_refused() {
     // `lower_block_literal` wraps every block body in a fresh `Rc` used by
@@ -8710,6 +8781,7 @@ fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
     );
 }
 
+// spec: bytecode.verify.blocks
 #[test]
 fn a_make_closure_naming_a_body_outside_the_table_is_refused() {
     // `decode_instruction` resolves a `MakeClosure`'s code id against the
@@ -8790,6 +8862,7 @@ fn an_outer_local_within_its_lexical_parents_register_file_verifies() {
         .expect("r16 of a seventeen-register parent");
 }
 
+// spec: bytecode.verify.outer-locals
 #[test]
 fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
     // `LoadOuterLocal`'s index addresses the *outer* frame, so the body's
@@ -8810,6 +8883,7 @@ fn an_outer_local_past_its_lexical_parents_register_file_is_refused() {
     );
 }
 
+// spec: bytecode.verify.outer-locals
 #[test]
 fn an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file() {
     // `frame_at_depth(frame, 0)` is the frame itself.
@@ -8823,6 +8897,7 @@ fn an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file() {
     );
 }
 
+// spec: bytecode.verify.outer-locals
 #[test]
 fn an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_body() {
     // `frame_at_depth` stops hopping at a non-closure activation, so a
@@ -8838,6 +8913,23 @@ fn an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_bo
     );
 }
 
+// spec: bytecode.verify.outer-locals
+#[test]
+fn an_outer_local_naming_its_outer_bodys_header_is_refused() {
+    // Register 0 of a method without arguments is the first number of its
+    // frame header, which holds no variable: a block reading it through an
+    // outer local would read a header word.
+    assert_eq!(
+        decode::verify_code_table(&outer_local_table(15, 1, 0)),
+        Err(decode::DecodeError::HeaderRegister {
+            depth: 1,
+            register: 0,
+            argument_count: 0
+        })
+    );
+}
+
+// spec: bytecode.verify.outer-locals
 #[test]
 fn a_store_to_an_outer_local_is_checked_like_a_load() {
     let block = code_with(
@@ -8882,6 +8974,7 @@ fn a_store_to_an_outer_local_is_checked_like_a_load() {
 // `verify_mixins`'s arity and kind reconciliation.
 // ---------------------------------------------------------------------------
 
+// spec: bytecode.verify.attachment
 #[test]
 fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     // A method frame's `arguments` come from the send, so their count is the
@@ -8914,6 +9007,7 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     });
 }
 
+// spec: bytecode.verify.attachment
 #[test]
 fn a_method_root_naming_a_block_body_is_refused_on_load() {
     let source = indoc! {"
@@ -9025,6 +9119,7 @@ fn a_decoded_factory_entry_carries_the_synthesized_body() {
 /// Each initializer body runs with the factory's arguments as its own, so
 /// a body of another arity would lay its registers out from the wrong
 /// count.
+// spec: bytecode.verify.attachment
 #[test]
 fn an_initializer_whose_arity_disagrees_with_the_factory_is_refused() {
     type Body = fn(&Mixin) -> Option<Rc<CompiledCode>>;
@@ -11418,6 +11513,7 @@ fn corrupt_first_symbol_id(bytes: &mut [u8]) {
     bytes[count_at..count_at + 4].copy_from_slice(&0u32.to_le_bytes());
 }
 
+// spec: bytecode.verify.tags
 #[test]
 fn an_out_of_range_symbol_id_is_an_error_not_a_panic() {
     let mut bytes = snapshot_of(TRIVIAL_MODULE);
@@ -18508,6 +18604,7 @@ fn code_table_error(write: impl FnOnce(&mut encode::Writer)) -> decode::DecodeEr
 
 /// A body claiming one instruction past the limit of 2^20 is refused where
 /// its count is read, before any instruction is: the bytes hold none.
+// spec: bytecode.verify.body-fields
 #[test]
 fn an_image_with_a_body_past_the_instruction_limit_is_refused() {
     let error = code_table_error(|writer| {
@@ -18529,6 +18626,7 @@ fn an_image_with_a_body_past_the_instruction_limit_is_refused() {
 /// A body taking 256 arguments is refused at its header, and so is a
 /// method record of 256 parameters in the mixin table: no compiled program
 /// has either.
+// spec: bytecode.verify.body-fields
 #[test]
 fn an_image_with_a_method_of_256_parameters_is_refused() {
     let error = code_table_error(|writer| {
@@ -18576,6 +18674,7 @@ fn an_image_with_a_method_of_256_parameters_is_refused() {
 
 /// A send of 256 arguments, and a closure of 256 parameters, are refused
 /// where their list's count is read.
+// spec: bytecode.verify.argument-windows
 #[test]
 fn an_image_with_a_send_of_256_arguments_is_refused() {
     let error = code_table_error(|writer| {
@@ -18678,6 +18777,7 @@ fn mirror_register_of_ephemeron_key<'gc>(
 /// so the image carrying the method is refused at load, before any of its
 /// code runs, whatever the pop leaves in that register.
 // spec: bytecode.register.leftovers
+// spec: bytecode.verify.leftovers
 #[test]
 fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
     let source = indoc! {"
@@ -18759,6 +18859,7 @@ fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
 /// the push left there -- is refused, and so is one that reads a register
 /// above a send's slots, where its callee was laid.
 // spec: bytecode.register.leftovers
+// spec: bytecode.verify.leftovers
 #[test]
 fn an_image_reading_unwritten_scratch_is_refused() {
     let table = table_of(vec![code_with(
@@ -18818,6 +18919,7 @@ fn an_image_reading_unwritten_scratch_is_refused() {
 /// A body keeping 258 forward branch targets pending at once, one more
 /// than any compiled body can, is refused at the branch that opens the
 /// 258th, before the analysis takes a bitset for it; one of 257 verifies.
+// spec: bytecode.verify.leftovers
 #[test]
 fn an_image_past_the_verification_bound_is_refused() {
     let nested_branches = |count: u32| {
