@@ -273,6 +273,7 @@ mod tests {
 
     /// The same text in a module `resolve` resolved is an ordinary send:
     /// only a shipped module's `vmMirror` is known to hold the mirror.
+    // spec: bytecode.instruction.send-mirror
     #[test]
     fn does_not_recognize_a_mirror_send_outside_the_kernel() {
         let send = parse_send("vmMirror stringSize: self ifFail: [^nil]");
@@ -326,6 +327,7 @@ mod tests {
         assert!(recognize(&parse_send("x at: [1]")).is_none());
     }
 
+    // spec: bytecode.instruction.integer-binary
     #[test]
     fn every_binary_integer_primitive_is_recognized() {
         // All nine binary members of `IntegerPrimitive`. If a tenth is ever

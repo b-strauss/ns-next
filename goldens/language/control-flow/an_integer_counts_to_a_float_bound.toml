@@ -1,4 +1,4 @@
-rules = ["semantics.send.ordinary"]
+rules = ["semantics.send.ordinary", "bytecode.instruction.integer-binary"]
 stdout = '''
 1
 2

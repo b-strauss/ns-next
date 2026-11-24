@@ -1,4 +1,4 @@
-rules = ["semantics.slot.lazy"]
+rules = ["semantics.slot.lazy", "bytecode.instruction.return-slot-if-filled"]
 stdout = '''
 !!!
 '''

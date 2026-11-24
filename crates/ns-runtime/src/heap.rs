@@ -16165,6 +16165,7 @@ mod tests {
     /// longer than the register file stops at its end rather than writing
     /// into the activation below: an image, not the compiler, is what can
     /// present one.
+    // spec: bytecode.instruction.make-closure
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = frame_heap();
@@ -20139,6 +20140,7 @@ mod tests {
     /// above the header has its arguments as its whole register file, and a
     /// frame of it holds exactly those: the register file the image decoder
     /// holds a decoded frame of the body to (`CompiledCode::frame_register_count`).
+    // spec: bytecode.register.layout
     #[test]
     fn a_frame_of_a_body_whose_arguments_fill_the_ceiling_holds_its_arguments_alone() {
         let mut heap = frame_heap();

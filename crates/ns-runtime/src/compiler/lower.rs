@@ -3311,6 +3311,7 @@ mod tests {
     /// must still hold that value when its consumer executes. A named local's
     /// own register is live storage, so an operand that has to survive an
     /// argument which can write it is copied into a scratch first.
+    // spec: bytecode.instruction.move
     #[test]
     fn an_operand_that_a_later_argument_can_write_is_copied_out_of_its_local() {
         let (method, bindings) = resolve_method(
@@ -4412,6 +4413,7 @@ mod tests {
         );
     }
 
+    // spec: bytecode.instruction.make-closure
     #[test]
     fn a_block_literal_compiles_to_its_own_code_carried_by_make_closure() {
         let code = lower_whole_method(
@@ -4456,6 +4458,7 @@ mod tests {
     /// blocks included, and every body records one past the highest number in
     /// itself and the blocks nested in it (`docs/design/dispatch.md`, "Code
     /// families").
+    // spec: bytecode.call-site
     #[test]
     fn a_family_numbers_its_sends_densely_across_nested_blocks() {
         let source = indoc! {"
@@ -4502,6 +4505,9 @@ mod tests {
     /// The same source as the by-reference model's own test: the block reads
     /// `x` out of its own copied register and writes `t` through the vector
     /// the method built for it, with no frame hop at all.
+    // spec: bytecode.instruction.make-vector
+    // spec: bytecode.instruction.load-vector
+    // spec: bytecode.instruction.store-vector
     #[test]
     fn a_block_reads_a_copied_value_and_writes_through_its_scopes_vector() {
         let code = lower_whole_method(
@@ -4872,6 +4878,7 @@ mod tests {
         );
     }
 
+    // spec: bytecode.instruction.initialize-slot
     #[test]
     fn a_slot_initializer_is_one_statement_ending_in_initialize_slot() {
         let (method, bindings) = resolve_method(
@@ -4963,6 +4970,7 @@ mod tests {
     /// evaluates the mirror, the subject and the leaf's argument, then either
     /// jumps over the block or runs it in this body, where its `^` returns
     /// from the method.
+    // spec: bytecode.instruction.send-mirror
     #[test]
     fn a_mirror_send_lowers_its_failure_block_inline() {
         let code = lower_kernel_method(
@@ -5017,6 +5025,7 @@ mod tests {
 
     /// The instance initializer and a lazy slot's getter run against the
     /// level's own slots; an ordinary method does not.
+    // spec: bytecode.instruction.return-slot-if-filled
     #[test]
     fn an_initializer_and_a_lazy_getter_address_their_own_slots_and_a_method_does_not() {
         let source = indoc! {"
@@ -5147,6 +5156,7 @@ mod tests {
         )));
     }
 
+    // spec: bytecode.instruction.integer-binary
     #[test]
     fn an_integer_addition_lowers_to_the_inlined_fast_path() {
         let code = compile_foo("1 + 2");
@@ -5532,6 +5542,7 @@ mod tests {
     /// is not emitted and makes it too large, and it compiles to the
     /// raising body that names the limit. Emitted directly, since a source
     /// of 2^20 instructions is too slow to compile in the suite.
+    // spec: bytecode.limit.instructions
     #[test]
     fn a_body_past_the_instruction_limit_is_too_large() {
         let bindings = Rc::new(HashMap::new());
@@ -5616,6 +5627,7 @@ mod tests {
     /// exactly; one temporary more needs a register past it, and more
     /// temporaries than registers cannot even be laid out. Neither panics:
     /// both compile to the raising body.
+    // spec: bytecode.limit.registers
     #[test]
     fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
         let fitting = usize::from(u16::MAX - 1 - HEADER_REGISTERS);
@@ -5632,6 +5644,7 @@ mod tests {
 
     /// The scratch registers alone can pass the ceiling: a tuple's elements
     /// are each in a register of their own until `MakeArray` reads them.
+    // spec: bytecode.limit.registers
     #[test]
     fn scratch_registers_past_the_ceiling_compile_to_a_body_that_raises() {
         let tuple = |count: usize| {

@@ -1,4 +1,4 @@
 stdout = '''
 from inner
 '''
-rules = ["syntax.outer.send", "semantics.outer.lexical", "semantics.enclosing-object", "runtime.outer"]
+rules = ["syntax.outer.send", "semantics.outer.lexical", "semantics.enclosing-object", "runtime.outer", "bytecode.instruction.send-lexical"]

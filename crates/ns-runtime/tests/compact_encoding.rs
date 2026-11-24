@@ -146,6 +146,8 @@ fn run_error(source: &str, lowering: Lowering) -> String {
 
 /// Each statement is a `LoadLiteral` of its own constant and a
 /// `StoreLocal`, then the `Return`: the 65,537th constant is in a `Wide`.
+// spec: bytecode.compact.tables
+// spec: bytecode.compact.wide
 #[test]
 fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
     let statements: String = (0..STATEMENTS)
@@ -171,6 +173,8 @@ fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
 /// `LoadLiteral`, an `IntegerBinary`, the `Jump` past its fallback, the
 /// fallback `SendPublic` -- one send site per statement -- and a
 /// `StoreLocal`; then the `Return`. The 65,537th site is in the wide table.
+// spec: bytecode.compact.tables
+// spec: bytecode.compact.wide
 #[test]
 fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
     let statements = "x:: x + 1. ".repeat(STATEMENTS);
@@ -187,6 +191,7 @@ fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
 /// Each statement is a `LoadLiteral` of its own string and a `StoreLocal`,
 /// then the `size` send and the `Return`: the 65,537th string is in a
 /// `Wide`.
+// spec: bytecode.compact.tables
 #[test]
 fn an_allocated_literal_past_sixteen_bits_loads_from_the_wide_form() {
     let statements = "x:: 'a'. ".repeat(STATEMENTS);
@@ -262,6 +267,7 @@ fn make_error(nested: &str, make: &str, lowering: Lowering) -> String {
 /// Every kind of body past the ceiling raises with its own kind's name. An
 /// instance initializer: a slot initialized to a tuple of 65,535 values,
 /// each in a register of its own.
+// spec: bytecode.limit.too-large
 #[test]
 fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -276,6 +282,7 @@ fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
 
 /// A clause message's arguments, one tuple of 65,535 values, which the
 /// class's initializer evaluates: the initializer is past the ceiling.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -299,6 +306,7 @@ fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
 /// its arguments' contiguous slots, so `build:`, which sends the factory
 /// 65,536 arguments, is itself past the ceiling under both lowerings. The
 /// host sends them instead.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -342,6 +350,7 @@ fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
 /// method's too-large error, never an abort. The message comes from the
 /// program's own `doesNotUnderstand:`; the host fills in its selector and
 /// its arguments, which no body under the ceiling could build.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_message_of_more_arguments_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -392,6 +401,7 @@ fn keyword_pattern(count: usize) -> String {
 /// A method of 256 parameters is past the argument limit: it compiles to
 /// the raising body, which the host's send of 256 arguments runs, with the
 /// limit in its message.
+// spec: bytecode.limit.arguments
 #[test]
 fn a_method_of_256_parameters_raises_when_run() {
     let pattern = keyword_pattern(256);
@@ -426,6 +436,7 @@ fn a_method_of_256_parameters_raises_when_run() {
 
 /// A send of 256 arguments makes the body that holds it too large: the
 /// method raises when it runs, never when it compiles.
+// spec: bytecode.limit.arguments
 #[test]
 fn a_send_of_256_arguments_raises_when_run() {
     let arguments = "k: 1 ".repeat(256);

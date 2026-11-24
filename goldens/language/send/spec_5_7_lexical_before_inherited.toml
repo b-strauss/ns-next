@@ -1,4 +1,4 @@
-rules = ["semantics.send.implicit-receiver", "runtime.implicit-receiver"]
+rules = ["semantics.send.implicit-receiver", "runtime.implicit-receiver", "bytecode.instruction.send-lexical"]
 stdout = '''
 91
 inherited by the enclosing class

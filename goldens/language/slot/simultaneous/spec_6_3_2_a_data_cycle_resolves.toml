@@ -1,4 +1,4 @@
-rules = ["semantics.slot.simultaneous"]
+rules = ["semantics.slot.simultaneous", "bytecode.instruction.make-future", "bytecode.instruction.resolve-future", "bytecode.instruction.initialize-slot-provisionally", "bytecode.instruction.load-own-slot"]
 stdout = '''
 true
 true

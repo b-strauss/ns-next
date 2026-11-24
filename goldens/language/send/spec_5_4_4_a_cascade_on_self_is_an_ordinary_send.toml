@@ -1,4 +1,4 @@
-rules = ["semantics.send.cascade"]
+rules = ["semantics.send.cascade", "bytecode.instruction.send-public"]
 stdout = '''
 5
 #secret

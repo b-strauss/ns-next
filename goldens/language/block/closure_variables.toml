@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure"]
+rules = ["semantics.block.closure", "bytecode.instruction.make-closure"]
 stdout = '''
 6
 111

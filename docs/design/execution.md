@@ -11049,6 +11049,11 @@ variant's numbers above.
 
 ## The compact instruction encoding
 
+The forms, their fields and widths, the side tables and which form an
+instruction takes are the specification's (`docs/spec/bytecode.md`, "The
+eight-byte form"), whose table a test holds to `CompactInstruction`; this
+section keeps how they were chosen and measured.
+
 **Status: built** (designed with the user on 2026-10-02 and built the same
 day;
 [plan](../superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md)).

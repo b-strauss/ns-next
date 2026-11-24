@@ -261,6 +261,12 @@ is encoded is below.
 
 ## The instruction encoding
 
+The rules of this encoding -- every tag, every operand's order and width,
+every retired number -- are the specification's
+(`docs/spec/bytecode.md`, "The wire encoding"), whose tables a test holds
+to `opcodes.rs` and to the bytes the encoder writes; this section keeps
+the reasoning and the history.
+
 On the wire an instruction is a `bytecode::Instruction`, written as **a tag
 byte followed by a fixed operand layout** for that tag. Registers are `u16`,
 jump targets are instruction indices, a send's call site is its `u32` number
@@ -1225,6 +1231,10 @@ it as text, and an edit, which compiles it into the program it says
 
 ## Verification
 
+The rules this verification holds a body to are the specification's,
+numbered (`docs/spec/bytecode.md`, "The rules the decoder checks"); this
+section keeps the mechanism, the order of the passes and the reasons.
+
 Two structural passes run before anything the image describes can execute:
 `verify_code_table` over the decoded code table, and `verify_graph` holding
 each frame to the body it names. Between them,
@@ -1344,6 +1354,12 @@ and each of its sources are register operands too, and so is every slot from
 the base on, since the send writes a source into its slot: a body whose last
 slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
 when the base and the sources are inside it.
+
+**The statement map stays within its body.** Every statement's range of
+instructions starts at most where it ends and ends at most at the body's
+instruction count (`StatementMapOutOfRange`), because the debugger's stops
+and lines and the trace's descriptions place a frame's instruction index
+by it (`a_statement_map_leaving_its_body_is_refused`).
 
 **No instruction names its own frame's header numbers.** A body's register
 numbers `argument_count .. argument_count + HEADER_REGISTERS` are its frame

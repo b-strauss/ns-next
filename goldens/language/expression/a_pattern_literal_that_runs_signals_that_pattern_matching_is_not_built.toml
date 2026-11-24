@@ -1,4 +1,4 @@
-rules = ["semantics.gap.pattern"]
+rules = ["semantics.gap.pattern", "bytecode.instruction.load-literal"]
 stdout = '''
 a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)
 a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)

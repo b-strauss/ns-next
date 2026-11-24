@@ -17,6 +17,7 @@
 use ns_runtime::bytecode::CodeKind;
 use ns_runtime::image::opcodes::*;
 
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn instruction_tags_are_fixed() {
     assert_eq!(OPCODE_LOAD_LITERAL, 0);
@@ -77,6 +78,7 @@ fn the_instantiation_instructions_keep_their_numbers() {
 
 /// The instruction section's "next free number" comment is where the next
 /// instruction takes its tag from, so it moves with every new one.
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn the_next_free_instruction_tag_is_fifty_two() {
     // Line by line, so a checkout with CRLF line endings reads it too.
@@ -89,6 +91,7 @@ fn the_next_free_instruction_tag_is_fifty_two() {
     );
 }
 
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn the_integer_binary_opcode_keeps_its_tag() {
     // A tag is assigned once and never renumbered: a stale artifact must hit
@@ -97,6 +100,7 @@ fn the_integer_binary_opcode_keeps_its_tag() {
     assert_eq!(ns_runtime::image::opcodes::OPCODE_INTEGER_BINARY, 33);
 }
 
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_NIL, 0);
@@ -118,6 +122,7 @@ fn literal_tags_are_fixed() {
 /// wrong, and neither the pinning tests above nor the compiler would notice:
 /// the constants are independent `u8`s, so a copy-paste that repeats a number
 /// is well-formed Rust.
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn no_two_tags_share_a_number() {
     let opcodes = [
@@ -199,6 +204,7 @@ fn no_two_tags_share_a_number() {
 
 /// A retired tag stays retired: no live instruction takes its number
 /// (`image/opcodes.rs`).
+// spec: bytecode.wire.tag-assigned-once
 #[test]
 fn retired_instruction_tags_are_never_reused() {
     assert_eq!(

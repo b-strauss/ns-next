@@ -13,6 +13,8 @@ use crate::Symbol;
 
 mod compact;
 pub(crate) mod leftovers;
+#[cfg(test)]
+mod register_effects_tests;
 
 pub use compact::{
     BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
@@ -2284,6 +2286,7 @@ mod tests {
         )
     }
 
+    // spec: bytecode.instruction.initialize-slot
     #[test]
     fn a_body_with_an_own_slot_instruction_addresses_its_own_slots() {
         let instructions = [
@@ -2829,6 +2832,7 @@ method foo: (args 1, registers 4)
     /// Only the run loop's fetch sees a breakpoint: the decoded view and
     /// the readers that match a slot without decoding it answer the
     /// original.
+    // spec: bytecode.compact.breakpoint
     #[test]
     fn a_patched_slot_is_a_breakpoint_only_to_the_fetch() {
         let (code, send) = method_with_a_send();
@@ -2886,6 +2890,7 @@ method foo: (args 1, registers 4)
     /// Every slot patched, in an order other than the slots', answers its
     /// own original, and every one restored in yet another gives the body
     /// back: the originals stay sorted by slot through both.
+    // spec: bytecode.compact.breakpoint
     #[test]
     fn every_slot_patched_in_any_order_keeps_its_original() {
         let (code, _) = method_with_a_send();

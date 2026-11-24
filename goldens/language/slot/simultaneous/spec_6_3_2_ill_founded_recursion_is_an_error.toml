@@ -1,4 +1,4 @@
-rules = ["semantics.slot.simultaneous"]
+rules = ["semantics.slot.simultaneous", "bytecode.instruction.resolve-future"]
 stdout = '''
 divergent evaluation: a future was forced while it was being computed
 '''

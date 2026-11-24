@@ -17,6 +17,10 @@ the dispatch loop — is [execution.md](execution.md).
 
 ## The instruction set
 
+What each instruction reads, writes and does, and the bodies and
+registers it runs on, are the specification's (`docs/spec/bytecode.md`);
+this section and "Registers" keep the reasons and the mechanism.
+
 `Instruction` is the vocabulary a lowering emits: a plain Rust enum, which
 both lowerings and the image decoder hand to a `CodeBuilder`
 (`bytecode/compact.rs`). The builder encodes each instruction at once into

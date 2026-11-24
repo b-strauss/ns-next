@@ -72,6 +72,7 @@ first.
 | The JIT tool window's filters and grouping -- the Methods tab filtered by name as the Events tab is, both in a search field with a clear button; both tabs grouped by nothing, the method or the class; the Events tab's categories in a popup | Complete | 2026-11-22 | -- |
 | The specification's foundation and syntax -- ns-next specified in a book of its own under `docs/spec/`, Markdown rendered by mdBook, each rule named and listing the tests that name it, checked and built at every commit by `cargo xtask spec`; the language's lexical structure and grammar written, five syntax decisions adopted as rules, the appendix of the differences from Bracha; the complete install's decisions recorded before it | Complete | 2026-11-23 | [specification-foundation-and-syntax](superpowers/plans/2026-11-23-0137-specification-foundation-and-syntax.md) |
 | The specification's semantics -- the language's semantics and the run-time semantics as abstract operations written into `docs/spec/`, their rules named by the goldens and tests; every deviation of the design documents decided with the user and carried into the book as an adopted rule or a gap; an asynchronous send and a pattern literal that run signal their gap | Complete | 2026-11-24 | [specification-semantics](superpowers/plans/2026-11-24-0200-specification-semantics.md) |
+| The specification's bytecode -- every instruction on a page of its own, the register effects, the wire encoding and the eight-byte form, both normative, and the rules the image decoder checks on a body, written into `docs/spec/bytecode.md`, four tables held to the code by tests; the decoder refuses a statement map leaving its body | Complete | 2026-11-24 | [specification-bytecode](superpowers/plans/2026-11-24-1601-specification-bytecode.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8874,5 +8875,35 @@ send ran synchronously and the pattern answered `nil`.
   every tier, the gaps of `Decimal` and the tuple, and a pattern never
   evaluated.
 
+## The specification's bytecode (2026-11-24)
+
+[specification.md](design/specification.md), "The third batch's
+decision". The book's third batch, `docs/spec/bytecode.md`: a body's
+fields, its registers -- the arguments, the thirteen header numbers, the
+copied values, the temporaries, the vector and the scratch -- the
+argument windows, the dead registers a callee leaves, the limits and the
+call sites; every instruction on a page in the frame of the JVM
+specification's chapter 6, its effect in steps that call the run-time
+semantics' operations; and, both normative as the user decided, the wire
+encoding an image carries and the eight-byte form the run loop executes.
+Four tables of the chapter are held to the code by tests: the register
+effects to `bytecode.rs`'s exhaustive matches, the wire tags to
+`image/opcodes.rs` with every retired number, the wire layouts of every
+instruction and literal to the bytes the encoder writes, and the
+eight-byte forms to `CompactInstruction`'s variants, fields and widths.
+The rules the image decoder checks on a body are numbered there, each
+named by the tests that pin it. One runtime change came with it: the
+decoder refuses a statement map whose range is backwards or leaves its
+body, which it read unchecked.
+
+- `26c2b050` -- the bytecode before the image format.
+- `c6159c5d` -- the plan.
+- `fa79d226` -- bodies, registers and the register effects.
+- `6121c96f`, `2376dfb2` -- the instructions.
+- `9b71ebe6` -- the wire encoding.
+- `915a4fbd` -- the eight-byte form.
+- `476eea56` -- the decoder's rules, and its refusal of a statement map
+  leaving its body.
+
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-specification's third batch, the bytecode.
+specification's fourth batch, the image format.
