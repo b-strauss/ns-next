@@ -212,6 +212,25 @@ document it belongs to. Decided so far, on 2026-11-23 and 2026-11-24:
    rule, and the prefixes `ReadOnly` and `Frozen` and the mixin names
    `ExtensibleCollection` (ANSI Smalltalk) and `SequencedCollection`
    (Java 21's JEP 431).
+4. **Asynchronous sends and actors (Bracha §5.6, §3.7).** Bracha's rules
+   go into the book -- a send `<-:` answers a promise at once, the message
+   is delivered in a later turn of its actor, even to the current one, in
+   E-Order, and the promise is fulfilled or broken when the turn ends --
+   and are a gap: until actors are built, an asynchronous send that runs
+   signals an error naming the gap, rather than running synchronously and
+   answering the value as it does today, which a program relying on the
+   order gets wrong at exit status 0. It fails when it runs, not when it
+   compiles, so that a module with `<-:` on a path never taken runs on.
+   Nothing of the repository's own sends `<-:`; twelve corpus modules
+   do, and only parse. How a turn waits for a promise is open for the
+   batch that builds actors (`docs/OPEN-WORK.md`): callbacks and promise
+   pipelining as Bracha and E have it, `await` as Swift's actors have it
+   (a reentrant actor whose state may change at each `await`), or a
+   parked stack as Go's goroutines and Java's virtual threads have it (no
+   colouring, but deadlocks if the actor waits, or invisible
+   interleaving if it does not) -- each buildable on the activations
+   ns-next already suspends into frame objects, which a running-world
+   image could then carry.
 
 ## Open
 
