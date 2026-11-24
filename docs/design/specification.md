@@ -249,6 +249,25 @@ document it belongs to. Decided so far, on 2026-11-23 and 2026-11-24:
    implementation has them -- is a topic of its own
    (`docs/OPEN-WORK.md`), weighed against Scala's extractors, Rust's
    `match` and Java's record patterns.
+7. **Reflection (Bracha §8.2).** Bracha's three requirements become rules
+   of the book: several reflective changes installed at once and
+   atomically, the class of an individual object changed, and the
+   current activation reached. What ns-next has -- mirrors that read, one
+   `ClassDeclarationBuilder`'s edits installed atomically -- is written
+   as it is; what it lacks is a gap naming the work that closes it: the
+   complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
+   "Planned: the complete install") for several builders, superclasses,
+   nested classes and classes declared from source, the debugger's stage
+   6 for `ActivationMirror`, and a topic of its own in
+   `docs/OPEN-WORK.md` for changing an individual object's class, which no
+   plan covers yet.
+8. **A module root's clauses (Bracha §6.1).** The root rule
+   ([object-model.md](object-model.md), "The root rule": the seven
+   combinations of `Object` and `Value`, anything else a resolve error
+   before anything runs) becomes a rule of ours, in the appendix: Bracha
+   evaluates the clause "as if it was a top level expression" and leaves
+   open what such an expression reaches with no globals and no enclosing
+   object.
 
 ## Open
 
