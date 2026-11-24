@@ -187,26 +187,210 @@ The classes of the language are reached through protected methods of
 `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`, `Float`,
 `Fraction`, `String`, `Symbol`, `UndefinedObject`, `Array`,
 `ByteArray`, `Closure`, `Exception` and `Error`. A bare name such as
-`String` is an implicit-receiver send, so a class that declares or inherits a member of that name reaches its
+`String` is an implicit-receiver send
+([`semantics.send.implicit-receiver`](#r-semantics.send.implicit-receiver)),
+so a class that declares or inherits a member of that name reaches its
 own, and an enclosing class's member of that name is found before
 `Object`'s. `Top`, the mirror classes and every other class of the core
 library have no such method: a bare `Top` is not understood. Further
 classes are handed out by the platform.
 
-## Gaps
+## Messages
 
-r[semantics.gap.actors]
-Bracha §5.6 makes an asynchronous send, `receiver <-: message`, answer a
-promise at once and deliver the message in a later turn of the receiver's
-actor. ns-next builds no actors: an asynchronous send evaluates its
-receiver and its arguments, left to right, as an ordinary send does, and
-then signals an error, ``asynchronous send of `printString` needs actors,
-which ns-next does not build yet (§5.6)``, naming its message's selector.
-It fails when it runs, never when its module is compiled.
+r[semantics.send.evaluation-order]
+A send evaluates its receiver expression first, then its arguments from
+left to right, and only then looks up and invokes the method (Bracha
+§5.4.1, §5.5); the lookup sees whatever the arguments' evaluation
+changed. An operand keeps the value it was evaluated to even when a later
+operand changes the variable it was read from. A setter send `x: e` used
+as an expression answers the value of `e`, not what the setter answers.
+
+r[semantics.send.ordinary]
+An ordinary send, `receiver message`, sends the message to the object the
+receiver answers. Its method is found by *lookupPublic* from the
+receiver's class up its superclasses: at the first class whose mixin
+declares the selector, a `public` declaration is the answer, a
+`protected` one ends the search with none, and a `private` one is passed
+over (Bracha §5.5, §6.3.1). A method, a slot's accessor and a nested
+class are members alike. A member written with no modifier is
+`protected`, so an ordinary send reaches only `public` members, and a
+`protected` member hides a `public` one of a superclass from it.
+Conditionals and loops -- `ifTrue:`, `and:`, `whileTrue:`,
+`timesRepeat:` -- are ordinary sends to their receiver, whatever the
+implementation does to them: `3 ifTrue: ['a'] ifFalse: ['b']` is not
+understood, and a loop whose condition answers no Boolean signals `a
+loop's condition answered 4, which is no Boolean`.
+
+r[semantics.send.implicit-receiver]
+A send written with no receiver, `m`, is looked up first along the
+lexical scope: a parameter, temporary or local of the enclosing methods
+and blocks named `m` is read or written; otherwise, when a class
+declaration that lexically encloses the send declares a member named by
+the selector, the innermost such declaration `N` decides, and the send is
+the outer send `outer N m`; otherwise the send is `self m` (Bracha §5.7).
+A declaration's members are the ones its own body declares: a member a
+lexically enclosing class only inherits is not in scope. The lexical
+scope is thus searched outwards before the receiver's superclasses are.
+
+r[semantics.send.self]
+A self send, `self m` or `(self) m`, is the outer send `outer C m` for
+the class `C` whose declaration immediately encloses it (Bracha §5.8), so
+it reaches the `public` and `protected` members of the receiver's class
+chain and the `private` members `C` declares. `self` alone answers the
+current receiver.
+
+r[semantics.send.outer]
+An outer send, `outer N m`, sends `m` to the enclosing object of the
+lexically enclosing declaration `N`
+([`semantics.outer.lexical`](#r-semantics.outer.lexical)). When `N`
+declares a `private` member named by the selector, that member is
+invoked; otherwise the method is found by *lookupProtected* from that
+object's class: the first `public` or `protected` declaration is the
+answer, and a `private` one is passed over (Bracha §5.9). A `private`
+member is reached only through its own declaration's scope -- never by a
+subclass, a superclass or another class of the same name.
+
+r[semantics.send.super]
+A super send, `super m`, sends `m` to the current receiver, looking it up
+by *lookupProtected* from the superclass of the class the running method
+was found in -- not of the receiver's class -- so that a chain of super
+sends climbs one level at a time; a `private` method there is passed over
+(Bracha §5.10).
+
+r[semantics.send.cascade]
+A cascade, `e m0; m1; ...; mn`, evaluates the receiver `e` of `m0` once,
+sends each of its messages to that one object in turn and answers the
+value of the last (Bracha §5.4.4). A cascade on `self` is an ordinary
+send: `self foo; bar` reaches only public members.
+
+r[semantics.send.does-not-understand]
+When a send's lookup finds no method, the receiver's `doesNotUnderstand:`
+-- the first defined for its class, whatever its access modifier, or for
+a super send the first defined for the superclass the lookup started at
+-- is invoked with a `Message` holding the selector and the arguments,
+and its answer is the send's value (Bracha §5.5). `Object`'s signals a
+`MessageNotUnderstood`, `an object does not understand #fooBar`, and
+answers the value the exception is resumed with. `doesNotUnderstand:` is
+`protected` on `Object`, so an ordinary send of it is itself not
+understood. A class object's sends reach its class side's
+`doesNotUnderstand:` first.
+
+## Literals
+
+r[semantics.literal.integer]
+A number with neither a fraction nor an exponent denotes an `Integer` of
+its exact value, in base 10 or in the radix written before `r`, `16r1F`
+being 31 (Bracha §5.1.1). An integer is not limited in size: integer
+arithmetic never overflows, and answers an `Integer` however large its
+value is.
+
+r[semantics.literal.float]
+A number with a fraction or an exponent denotes a `Float`: the IEEE 754
+binary64 number nearest its decimal value, `1e3` being `1000.0`. Bracha
+§5.1.1 makes it an exact decimal; ns-next makes it a binary float (see
+the appendix), and its exact decimal is the gap
+[`semantics.gap.decimal`](#r-semantics.gap.decimal). Float arithmetic is
+IEEE 754's, NaN, the infinities and signed zeros included.
+
+r[semantics.number.exact]
+Arithmetic on integers and fractions is exact: dividing two integers that
+do not divide answers a `Fraction` in lowest terms. Numbers of different
+classes compare by their exact values, `1 = 1.0`, and two numbers that
+are equal hash alike.
+
+r[semantics.gap.decimal]
+An exact decimal number has no class and no literal in ns-next yet. A
+`Decimal` class, reached by a protected accessor on `Object`, and its
+literal -- a decimal number followed by `s` and an optional scale,
+`2.50s`, `2.5s2`, `3s2`, `-0.1s`, never with a radix -- are decided and
+not built: `2.5s2` is today the number `2.5` followed by the unary
+message `s2`.
+
+r[semantics.literal.string]
+A string literal denotes a `String` holding the code points its source
+text holds between the quotes, in that order, a doubled quote standing
+for one (Bracha §5.1.5; see the appendix for normalization). A string is
+a value object: two strings of the same code points are equal and
+identical, and a string cannot be changed.
+
+r[semantics.literal.symbol]
+A symbol literal, `#name`, `#at:put:`, `#+` or `#'any text'`, denotes the
+`Symbol` of that text. A symbol is a string, and two equal symbols are
+one object (Bracha §5.1.6).
+
+r[semantics.literal.boolean-and-nil]
+`true` and `false` denote the unique instances of `True` and `False`, and
+`nil` the unique instance of `UndefinedObject` (Bracha §5.1.2, §5.1.3).
+All three are value objects.
+
+r[semantics.gap.immutable-array]
+Bracha §5.1.7 makes a tuple literal, `{e1. e2}`, a shallowly immutable
+tuple, and ns-next decides it is an `ImmutableArray`, a class it does not
+build yet. ns-next evaluates the elements from left to right and answers
+a new `Array` of their values at each evaluation, which a program can
+store into.
+
+r[semantics.literal.block]
+A block literal, `[:x | ...]`, denotes a new `Closure` at each
+evaluation, which keeps the receiver, the class and the variables of the
+activation it was made in (Bracha §5.1.8). Sending it `value`, `value:`,
+... with as many arguments as it has parameters runs its body in a new
+activation and answers the value of its last statement, or `nil` for an
+empty body; any other count signals `wrong number of block arguments:
+block takes 1, got 0`. Its temporaries are fresh at each invocation, and
+it reads and writes the variables it closes over, not copies of them.
 
 r[semantics.gap.pattern]
 Bracha §5.1.9 makes a pattern literal a send to `Pattern`: `<_>` is
-`Pattern wildcard`, `<l>` `Pattern literal: l`. ns-next builds no pattern
-matching: a pattern literal that is evaluated signals an error, `a pattern
-literal needs pattern matching, which ns-next does not build yet (§5.1.9)`.
-It fails when it is evaluated, never when its module is compiled.
+`Pattern wildcard`, `<l>` `Pattern literal: l`, a keyword pattern
+`Pattern keywords: kws patterns: pats`, `Pattern` an implicit-receiver
+send. ns-next builds no pattern matching: a pattern literal that is
+evaluated signals an error, `a pattern literal needs pattern matching,
+which ns-next does not build yet (§5.1.9)`. It fails when it is
+evaluated, never when its module is compiled; the grammar is unchanged.
+
+## Actors and asynchronous sends
+
+r[semantics.actor]
+An actor is a unit of concurrency with a heap of its own; actors share no
+mutable state and communicate only by asynchronous messages, each actor
+processing the messages in its mailbox one at a time, each to its end, a
+*turn* (Bracha §3.7). An actor is made from a top-level mixin.
+
+r[semantics.actor.promise]
+An asynchronous send, `receiver <-: message`, evaluates its receiver,
+then its message's arguments, and answers at once a promise for the
+send's result (Bracha §5.6). The message is delivered as an ordinary send
+in a later turn of the receiver's actor, even when that is the current
+actor; when that send answers, the promise is fulfilled with its result,
+and when it raises an exception, the promise is broken with it. A send to
+a promise is delivered once the promise is resolved, to what it resolved
+to.
+
+r[semantics.actor.turn]
+A turn is never interrupted by another message: an actor neither blocks
+waiting for a message nor processes a second message before the first
+returns (Bracha §3.7). How a turn waits for a promise it needs is not
+decided.
+
+r[semantics.actor.e-order]
+Messages are delivered in E-Order: two messages one actor sends to
+another arrive in the order they were sent, and a message sent to a far
+reference before the reference is passed to a third actor arrives before
+any message that actor sends to it (Bracha §5.6).
+
+r[semantics.actor.remote-representation]
+An argument and a result cross from one actor to another as their remote
+representation: a value object as itself, copied or shared, since it is
+deeply immutable, and any other object as a far reference to it (Bracha
+§3.1.1, §3.7). An actor never holds a far reference into its own heap.
+
+r[semantics.gap.actors]
+ns-next builds none of [`semantics.actor`](#r-semantics.actor) to
+[`semantics.actor.remote-representation`](#r-semantics.actor.remote-representation):
+there are no actors, promises or far references. An asynchronous send
+evaluates its receiver and its arguments, left to right, as an ordinary
+send does, and then signals an error, ``asynchronous send of
+`printString` needs actors, which ns-next does not build yet (§5.6)``,
+naming its message's selector. It fails when it runs, never when its
+module is compiled.

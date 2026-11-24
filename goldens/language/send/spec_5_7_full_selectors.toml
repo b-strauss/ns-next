@@ -1,3 +1,4 @@
+rules = ["semantics.send.implicit-receiver"]
 stdout = '''
 101
 unary at of Base

@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary", "semantics.literal.block"]
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #value

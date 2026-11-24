@@ -1,3 +1,4 @@
+rules = ["semantics.send.cascade"]
 stdout = '''
 5
 #secret

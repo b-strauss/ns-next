@@ -1,3 +1,4 @@
+rules = ["semantics.send.evaluation-order"]
 stdout = '''
 7 8 9 7 8 9 7 8 9
 7 8 9 7 8 9 7 8 9

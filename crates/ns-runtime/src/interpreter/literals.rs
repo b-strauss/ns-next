@@ -229,6 +229,7 @@ pub(crate) fn parse_float_literal(text: &str) -> f64 {
 mod tests {
     use super::{IntegerLiteral, parse_float_literal, parse_integer_literal};
 
+    // spec: semantics.literal.float
     #[test]
     fn a_radix_float_is_its_digits_in_its_radix_times_ten_to_its_exponent() {
         assert_eq!(parse_float_literal("16r1.8"), 1.5);
@@ -239,6 +240,7 @@ mod tests {
         assert_eq!(parse_float_literal("1.5e-3"), 0.0015);
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn plain_decimal_literals_still_parse() {
         assert_eq!(parse_integer_literal("42"), Ok(IntegerLiteral::Small(42)));
@@ -246,6 +248,7 @@ mod tests {
         assert_eq!(parse_integer_literal("0"), Ok(IntegerLiteral::Small(0)));
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn radix_literals_parse_in_every_accepted_shape() {
         assert_eq!(
@@ -272,6 +275,7 @@ mod tests {
         );
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn a_decimal_literal_beyond_i64_is_large() {
         let Ok(IntegerLiteral::Large(integer)) = parse_integer_literal("99999999999999999999")
@@ -284,6 +288,7 @@ mod tests {
     /// A literal that fits a `SmallInteger` is `Small`, and one step past
     /// either 61-bit edge is `Large`, as are the `i64` edges, which lie
     /// beyond them.
+    // spec: semantics.literal.integer
     #[test]
     fn a_literal_at_a_small_integer_edge_is_small_and_one_past_it_is_large() {
         assert_eq!(

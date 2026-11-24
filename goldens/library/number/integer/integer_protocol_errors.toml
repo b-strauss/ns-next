@@ -1,3 +1,4 @@
+rules = ["semantics.literal.integer"]
 stdout = '''
 digitAt: index 3 out of range: valid indices are 1..2 (digitLength 2)
 digitAt: index 0 out of range: valid indices are 1..2 (digitLength 2)

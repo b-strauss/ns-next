@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary", "semantics.literal.block"]
 stdout = '''
 nil
 3

@@ -1,3 +1,4 @@
+rules = ["semantics.literal.string"]
 stdout = '''
 fromUtf8: invalid UTF-8 at byte 2
 fromUtf8: invalid UTF-8 at byte 2

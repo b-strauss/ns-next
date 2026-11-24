@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float", "semantics.number.exact"]
 stdout = '''
 3 + | 3.0 | 3.0 | 3.5 | 6.0 | 6.5 | 0.75 | 9007199254740996.0 | 576460752303423500.0 | 1152921504606847000.0 | Infinity | -Infinity | NaN | 1e+300 | 6 | 7 | + requires a numeric argument, got nil
 -7 + | -7.0 | -7.0 | -6.5 | -4.0 | -3.5 | -9.25 | 9007199254740985.0 | 576460752303423500.0 | 1152921504606847000.0 | Infinity | -Infinity | NaN | 1e+300 | -4 | -3 | + requires a numeric argument, got nil

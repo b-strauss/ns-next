@@ -1,3 +1,4 @@
+rules = ["semantics.send.does-not-understand", "semantics.send.super"]
 stdout = '''
 A handled it
 '''

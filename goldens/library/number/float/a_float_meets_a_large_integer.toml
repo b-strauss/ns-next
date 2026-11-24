@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float", "semantics.number.exact"]
 stdout = '''
 18446744073709552000.0
 true

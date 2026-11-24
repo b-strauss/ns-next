@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary"]
 stdout = '''
 5 nil
 7 7 -1

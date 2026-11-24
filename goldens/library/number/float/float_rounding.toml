@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float"]
 stdout = '''
 receiver | floor | ceiling | rounded | truncated | asInteger
 1.5 | 1.0 | 2.0 | 2.0 | 1.0 | 1

@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float"]
 status = 1
 stderr = '''
 Uncaught Newspeak error: asStringFixed: takes 0 to 20 fraction digits, got 21

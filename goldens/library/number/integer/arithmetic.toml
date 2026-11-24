@@ -1,3 +1,4 @@
+rules = ["semantics.literal.integer"]
 stdout = '''
 42
 '''
