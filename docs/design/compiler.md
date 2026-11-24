@@ -1106,7 +1106,7 @@ Compilation is a total, deterministic lowering; a compiler-invariant violation i
 
 A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
-it, so a method that is never run never fails. Two literals carry that
+it, so a method that is never run never fails. Three literals carry that
 deferral. `Literal::UnresolvedIdentifier` is an identifier the resolver left
 unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
@@ -1166,6 +1166,19 @@ Under the optimized lowering, a tuple whose operands all read one
 parameter's register fits the ceiling and still meets that refusal. Both
 refusals are errors, never aborts ([image-format.md](image-format.md), "The
 instruction encoding", "Verification").
+
+`Literal::Unbuilt` is a construct the language has and ns-next does not
+build yet. `Unbuilt::AsynchronousSend(selector)` stands for a `<-:`
+message: both lowerings evaluate its receiver and its arguments as an
+ordinary send's -- the recognizers never inline one -- and then load it into
+the send's destination, where it raises ``asynchronous send of
+`<selector>` needs actors, which ns-next does not build yet (§5.6)``;
+`Unbuilt::PatternLiteral` stands for a pattern literal and raises `a
+pattern literal needs pattern matching, which ns-next does not build yet
+(§5.1.9)` (`interpreter/literals.rs`, `unbuilt_error`). The image and the
+shipped code carry each with a literal tag of its own
+([frontend.md](frontend.md), "What is kept but ignored, and what a reprint
+drops").
 
 The two lowerings meet the ceiling at different sizes. The reference lowering
 never reuses a register, so every value costs it one; the optimized lowering

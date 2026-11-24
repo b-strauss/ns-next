@@ -10,7 +10,7 @@ use crate::Symbol;
 use crate::bytecode::leftovers::{self, LOOP_LIMIT, LeftoverRefusal, PENDING_LIMIT};
 use crate::bytecode::{
     ARGUMENT_LIMIT, BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock,
-    Emitted, HEADER_REGISTERS, INSTRUCTION_LIMIT, Instruction, IntegerOperation, Literal,
+    Emitted, HEADER_REGISTERS, INSTRUCTION_LIMIT, Instruction, IntegerOperation, Literal, Unbuilt,
     jump_target, register_written,
 };
 use crate::heap::{
@@ -2934,6 +2934,10 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
         LITERAL_BODY_TOO_LARGE => Literal::BodyTooLarge(BodyLimit::Registers),
         LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT => Literal::BodyTooLarge(BodyLimit::Arguments),
         LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT => Literal::BodyTooLarge(BodyLimit::Instructions),
+        LITERAL_UNBUILT_ASYNCHRONOUS_SEND => {
+            Literal::Unbuilt(Unbuilt::AsynchronousSend(decode_symbol(reader, symbols)?))
+        }
+        LITERAL_UNBUILT_PATTERN_LITERAL => Literal::Unbuilt(Unbuilt::PatternLiteral),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",

@@ -155,11 +155,11 @@ parsed at all:
 
 - An asynchronous send, `receiver <-: message`
   ([`syntax.eventual-send`](language/grammar.md#r-syntax.eventual-send)),
-  runs synchronously and answers its value rather than a promise; there
+  signals an error when it runs rather than answering a promise; there
   are no actors yet.
 - A pattern literal
-  ([`syntax.pattern`](language/grammar.md#r-syntax.pattern)) evaluates to
-  `nil`.
+  ([`syntax.pattern`](language/grammar.md#r-syntax.pattern)) signals an
+  error when it is evaluated; there is no pattern matching yet.
 - Type annotations are accepted and have no meaning
   ([`syntax.type-annotation`](language/grammar.md#r-syntax.type-annotation));
   no type system checks them.
@@ -167,8 +167,9 @@ parsed at all:
   parsed; the appendix "Differences from Bracha's Newspeak" lists them as
   gaps.
 
-The first two are gaps of the language's semantics, which records them
-when it is written.
+The first two are gaps of the language's semantics
+([`semantics.gap.actors`](language/semantics.md#r-semantics.gap.actors),
+[`semantics.gap.pattern`](language/semantics.md#r-semantics.gap.pattern)).
 
 Where ns-next deliberately differs from Bracha's Newspeak -- `///` line
 comments, no character literals, `outer N` standing alone -- the same

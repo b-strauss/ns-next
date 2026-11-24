@@ -1,0 +1,10 @@
+/// An asynchronous send fails only when it runs: a body holding one that
+/// never runs it runs to its end.
+class AsynchronousSendNeverRun = () (
+  public main: platform args: arguments = (
+    false ifTrue: [3 <-: printString].
+    platform transcript
+        show: 'ran';
+        newLine.
+  )
+)

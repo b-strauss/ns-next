@@ -159,7 +159,7 @@ pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 51;
 pub const RETIRED_OPCODES: [u8; 16] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24, 25, 26, 27, 28, 44, 45];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL`.
-// Next free number: 14.
+// Next free number: 16.
 
 /// `nil`.
 pub const LITERAL_NIL: u8 = 0;
@@ -192,6 +192,13 @@ pub const LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT: u8 = 12;
 /// The body that stands in for one past `bytecode::INSTRUCTION_LIMIT`
 /// instructions; it raises its error when it runs. No payload.
 pub const LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT: u8 = 13;
+/// An asynchronous send, which ns-next does not build yet; it raises its
+/// error when it runs. Followed by its message's selector, as
+/// `LITERAL_SYMBOL` is.
+pub const LITERAL_UNBUILT_ASYNCHRONOUS_SEND: u8 = 14;
+/// A pattern literal, which ns-next does not build yet; it raises its
+/// error when it runs. No payload.
+pub const LITERAL_UNBUILT_PATTERN_LITERAL: u8 = 15;
 
 /// Literal tags that no longer name anything and are never reused: 6 was the
 /// character literal, retired 2026-09-25 when `"c"` became a one-character

@@ -1793,7 +1793,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   "What stays out".
 - **Pattern literals lowered to §5.1.9's `Pattern` sends** (`Pattern
   wildcard`, `Pattern literal:`, `Pattern keywords:patterns:`) instead of
-  **nil**; needs a pattern AST in place of the kept source text and a library
+  the error naming the gap; needs a pattern AST in place of the kept source text and a library
   `Pattern` class. [frontend.md](design/frontend.md), "What is parsed and
   dropped".
 - **Chains (`:|`, §5.4.4) and object literals (§5.1.10)**, both marked
@@ -2500,17 +2500,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Deviations from the specification
 
 The full table, with the reasoning, is [design/README.md](design/README.md),
-"Deviations from the language specification". Four answer a **correct
+"Deviations from the language specification". Two answer a **correct
 program wrongly at exit status 0**:
 
 - A non-integral literal is a binary `f64`, not an exact `FixedPointNumber`
   (§5.1.1).
-- An asynchronous send (`<-:`) runs synchronously and answers the value, not a
-  promise (§5.6). Set aside by the user until there are actors; the first
-  candidate of a planned section-by-section semantic audit of the
-  specification, like the syntax one.
-- A pattern literal evaluates to **nil** (§5.1.9); see "Pattern literals"
-  above.
 - A string literal keeps its source's code points instead of their Unicode
   normal form C (§5.1.5), so a decomposed and a precomposed `é` differ.
   Nothing in the workspace normalizes; closing it means normalizing where
@@ -2519,6 +2513,9 @@ program wrongly at exit status 0**:
   (noted with the user on 2026-09-29 for when it is taken up), which as a new
   dependency is confirmed then. [frontend.md](design/frontend.md), "A string
   literal is not normalized to NFC".
+
+An asynchronous send (`<-:`, §5.6) and a pattern literal (§5.1.9) signal an
+error naming their gap when they run; see "Pattern literals" above.
 
 The others: no character literals and no
 `Character` (§5.1.4); a tuple literal is a mutable `Array`, not a

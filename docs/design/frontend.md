@@ -595,15 +595,24 @@ grammar's is followed, and §6's own `typeParameterDecl`,
 `class Map <[K, V]> new: capacity <Integer>`, is accepted beside the
 canonical `class List[E]` (decided with the user on 2026-09-27). The
 eventual-send operator `<-:` is likewise
-accepted and recorded in the syntax tree (`MessageSend::eventual`), but the
-runtime ignores it, which makes an asynchronous send (§5.6) run as an
-ordinary synchronous one and answer the value where the specification gives a
-promise. Nothing in the runtime implements actors, so there is no promise to
-answer with; the alternative would be to refuse the operator outright.
+accepted and recorded in the syntax tree (`MessageSend::eventual`). Nothing
+in the runtime implements actors, so there is no promise to answer with: both
+lowerings evaluate an asynchronous send's receiver and arguments as an
+ordinary send's, never inline it, and then, in place of the send, load
+`Literal::Unbuilt(Unbuilt::AsynchronousSend(selector))`, which raises
+``asynchronous send of `<selector>` needs actors, which ns-next does not
+build yet (§5.6)`` (`interpreter::literals::unbuilt_error`). It fails when
+it runs, not when it compiles, so that a module with `<-:` on a path never
+taken runs on (decided with the user on 2026-11-24,
+[specification.md](specification.md), "The second batch's deviations",
+decision 4).
 
 A pattern literal (§5.1.9) is parsed in full and kept as its source text,
-but lowers to **nil**: the section makes `<_>` `Pattern wildcard` and `<l>`
-`Pattern literal: l`, and there is no `Pattern` class for either to reach.
+and lowers to `Literal::Unbuilt(Unbuilt::PatternLiteral)`, which raises
+`a pattern literal needs pattern matching, which ns-next does not build yet
+(§5.1.9)` when it is evaluated: the section makes `<_>` `Pattern wildcard`
+and `<l>` `Pattern literal: l`, and there is no `Pattern` class for either
+to reach (decision 6 there).
 
 **Planned (noted with the user on 2026-09-28): lower a pattern literal to
 the send §5.1.9 defines.** `<_>` becomes `Pattern wildcard`, `<l>` becomes
@@ -613,16 +622,16 @@ symbols and `pats` the list of its values -- `_`, a literal, a `?name`
 variable pattern or a nested pattern, each lowered the same way. `Pattern` is
 an implicit-receiver send, so whatever the environment binds it to answers:
 by default `Object`'s accessor to the library's class, and until a library
-provides one, a clean `doesNotUnderstand: #Pattern` instead of a silent
-`nil`. This needs a pattern AST in place of today's source text, which
+provides one, a clean `doesNotUnderstand: #Pattern` instead of the gap's
+error. This needs a pattern AST in place of today's source text, which
 `parse_pattern_literal` already walks; the library side has prior art in the
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
 Closing it retires the deviations-table row.
 
-Two of the things ignored here -- the asynchronous send and the pattern
-literal -- change what a correct program answers, rather than only what an
-incorrect one is allowed to say. Each has a row in [README.md](README.md)'s
-deviations table; this section is what those rows point at.
+Neither the asynchronous send nor the pattern literal answers a correct
+program wrongly any more: each fails loudly where it runs. Each has a row in
+[README.md](README.md)'s deviations table; this section is what those rows
+point at.
 
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so

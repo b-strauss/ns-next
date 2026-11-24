@@ -1,0 +1,28 @@
+/// An asynchronous send evaluates its receiver and its arguments, left to
+/// right, before it signals that actors are not built.
+class AsynchronousSendOrder = () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([
+          (self receiverShowing: transcript) <-: at: (self argumentShowing: transcript).
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+
+  receiverShowing: transcript = (
+    transcript
+        show: 'receiver';
+        newLine.
+    ^{1. 2}.
+  )
+
+  argumentShowing: transcript = (
+    transcript
+        show: 'argument';
+        newLine.
+    ^1.
+  )
+)

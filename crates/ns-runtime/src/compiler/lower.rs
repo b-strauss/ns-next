@@ -16,7 +16,7 @@ use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
     BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
-    IntegerOperation, Literal as BytecodeLiteral,
+    IntegerOperation, Literal as BytecodeLiteral, Unbuilt,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, DeclaredVariable, MetadataCollector, SendEntry,
@@ -2102,6 +2102,21 @@ impl<'a> Lowerer<'a> {
         })
     }
 
+    /// An asynchronous send, which ns-next does not build yet, in place of
+    /// its send instruction: its receiver and arguments are evaluated, and
+    /// then the load of `Unbuilt::AsynchronousSend` raises the error that
+    /// names the gap (`docs/spec/language/semantics.md`,
+    /// `semantics.gap.actors`). It records no send for the debugger, since
+    /// none is made.
+    fn load_unbuilt_send(&mut self, selector: crate::Symbol, into: Option<u16>) -> u16 {
+        let destination = self.target_register(into);
+        self.emit(Instruction::LoadLiteral {
+            destination,
+            literal: BytecodeLiteral::Unbuilt(Unbuilt::AsynchronousSend(selector)),
+        });
+        destination
+    }
+
     /// `receiver` is the receiver expression the send's value was lowered
     /// from, whose span the debugger's metadata names.
     pub(crate) fn emit_ordinary_send_with_receiver(
@@ -2114,6 +2129,9 @@ impl<'a> Lowerer<'a> {
         let selector = selector_of(message);
         let (argument_base, argument_sources) =
             self.lower_arguments(&[receiver_register], &message.arguments);
+        if message.eventual {
+            return self.load_unbuilt_send(selector, into);
+        }
         let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {
@@ -2278,6 +2296,9 @@ impl<'a> Lowerer<'a> {
                 let depth = *depth;
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
+                if send.message.eventual {
+                    return self.load_unbuilt_send(selector, into);
+                }
                 let result = self.emit_lexical_send(
                     depth,
                     selector,
@@ -2296,6 +2317,9 @@ impl<'a> Lowerer<'a> {
                 );
                 let (argument_base, argument_sources) =
                     self.lower_arguments(&[], &send.message.arguments);
+                if send.message.eventual {
+                    return self.load_unbuilt_send(selector, into);
+                }
                 let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector,
@@ -3127,7 +3151,9 @@ pub(super) fn lower_literal(literal: &ast::Literal) -> BytecodeLiteral {
         ast::Literal::Symbol { value, .. } => BytecodeLiteral::Symbol(crate::Symbol::intern(value)),
         ast::Literal::Boolean { value, .. } => BytecodeLiteral::Boolean(*value),
         ast::Literal::Nil { .. } => BytecodeLiteral::Nil,
-        ast::Literal::Pattern { .. } => BytecodeLiteral::Nil, // patterns are not implemented (no typechecker)
+        // Pattern matching is not built: the literal raises the error that
+        // names the gap when it is evaluated (`semantics.gap.pattern`).
+        ast::Literal::Pattern { .. } => BytecodeLiteral::Unbuilt(Unbuilt::PatternLiteral),
     }
 }
 

@@ -110,6 +110,8 @@ fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_BODY_TOO_LARGE, 11);
     assert_eq!(LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT, 12);
     assert_eq!(LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT, 13);
+    assert_eq!(LITERAL_UNBUILT_ASYNCHRONOUS_SEND, 14);
+    assert_eq!(LITERAL_UNBUILT_PATTERN_LITERAL, 15);
 }
 
 /// Two tags sharing a number would make the encoder ambiguous and the decoder
@@ -178,6 +180,8 @@ fn no_two_tags_share_a_number() {
         LITERAL_BODY_TOO_LARGE,
         LITERAL_BODY_PAST_THE_ARGUMENT_LIMIT,
         LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT,
+        LITERAL_UNBUILT_ASYNCHRONOUS_SEND,
+        LITERAL_UNBUILT_PATTERN_LITERAL,
     ];
     let mut sorted = literals;
     sorted.sort_unstable();

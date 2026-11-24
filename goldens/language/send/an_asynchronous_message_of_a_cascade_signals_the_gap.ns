@@ -1,0 +1,16 @@
+/// An asynchronous message of a cascade signals the gap and names its own
+/// selector, after the cascade's earlier messages ran.
+class AsynchronousCascade = () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([
+          transcript
+              show: 'first';
+              <-: yourself.
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

@@ -1,7 +1,7 @@
 //! The error a deferred literal raises when the VM executes it, and the
 //! number-literal parsers the compiler uses.
 
-use crate::bytecode::BodyLimit;
+use crate::bytecode::{BodyLimit, Unbuilt};
 use crate::types::*;
 use crate::{ArbitraryInteger, Symbol};
 
@@ -19,6 +19,31 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
         receiver,
         format!("internal: unresolved identifier `{name}`"),
     ))
+}
+
+/// The program-level error a construct ns-next does not build yet raises
+/// when it runs: an asynchronous send, after its receiver and arguments
+/// were evaluated, named after its message's selector, and a pattern
+/// literal, named `pattern`. Each text names the gap and Bracha's section
+/// (`docs/spec/language/semantics.md`, `semantics.gap.actors` and
+/// `semantics.gap.pattern`).
+///
+/// Raised by `vm::make_value` for `bytecode::Literal::Unbuilt`.
+pub(crate) fn unbuilt_error<'gc>(unbuilt: &Unbuilt, receiver: Value<'gc>) -> Signal<'gc> {
+    let (selector, text) = match unbuilt {
+        Unbuilt::AsynchronousSend(selector) => (
+            *selector,
+            format!(
+                "asynchronous send of `{selector}` needs actors, which ns-next does not build yet (§5.6)"
+            ),
+        ),
+        Unbuilt::PatternLiteral => (
+            Symbol::intern("pattern"),
+            "a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)"
+                .to_string(),
+        ),
+    };
+    Signal::Error(NewspeakError::error(selector, receiver, text))
 }
 
 /// The program-level error a body past one of the compiler's limits raises

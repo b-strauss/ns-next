@@ -840,6 +840,11 @@ impl Out {
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers) => self.u8(8),
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments) => self.u8(9),
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions) => self.u8(10),
+            Literal::Unbuilt(crate::bytecode::Unbuilt::AsynchronousSend(selector)) => {
+                self.u8(11);
+                self.symbol(*selector);
+            }
+            Literal::Unbuilt(crate::bytecode::Unbuilt::PatternLiteral) => self.u8(12),
         }
     }
 }

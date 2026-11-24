@@ -1,0 +1,5 @@
+rules = ["semantics.gap.pattern"]
+stdout = '''
+a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)
+a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)
+'''

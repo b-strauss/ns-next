@@ -20,7 +20,7 @@ use crate::Symbol;
 use crate::bytecode::leftovers::{self, LeftoverRefusal};
 use crate::bytecode::{
     BodyLimit, CallSite, CodeBuilder, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction,
-    Literal as BytecodeLiteral, register_written, registers_read,
+    Literal as BytecodeLiteral, Unbuilt, register_written, registers_read,
 };
 use crate::debugger::metadata::{
     BlockPlace, BlockSendEntry, BodyMetadata, DeclaredVariable, MetadataCollector, SendEntry,
@@ -959,6 +959,9 @@ impl<'a> Body<'a> {
             }
             Some(Binding::SuperSend) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
+                if send.message.eventual {
+                    return self.load_unbuilt_send(selector, into);
+                }
                 let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendSuper {
                         selector,
@@ -973,6 +976,9 @@ impl<'a> Body<'a> {
             }
             Some(Binding::LexicalSend { depth }) => {
                 let (argument_base, argument_sources) = self.arguments(&send.message.arguments);
+                if send.message.eventual {
+                    return self.load_unbuilt_send(selector, into);
+                }
                 let result = self.emit_send(into, spans, |destination, call_site| {
                     Instruction::SendLexical {
                         depth,
@@ -1022,6 +1028,19 @@ impl<'a> Body<'a> {
         }
     }
 
+    /// An asynchronous send, which ns-next does not build yet, in place of
+    /// its send instruction, as the optimized lowering's
+    /// `load_unbuilt_send` emits it: after its receiver and arguments, a
+    /// load that raises the error naming the gap.
+    fn load_unbuilt_send(&mut self, selector: Symbol, into: Option<u16>) -> u16 {
+        let destination = self.target_register(into);
+        self.emit(Instruction::LoadLiteral {
+            destination,
+            literal: BytecodeLiteral::Unbuilt(Unbuilt::AsynchronousSend(selector)),
+        });
+        destination
+    }
+
     /// `receiver` is the expression the receiver register was lowered
     /// from, whose span the debugger's metadata names.
     fn public_send(
@@ -1033,6 +1052,9 @@ impl<'a> Body<'a> {
     ) -> u16 {
         let selector = selector_of(message);
         let (argument_base, argument_sources) = self.arguments(&message.arguments);
+        if message.eventual {
+            return self.load_unbuilt_send(selector, into);
+        }
         let spans = SendSpans::of_send(receiver, message);
         let result = self.emit_send(into, spans, |destination, call_site| {
             Instruction::SendPublic {

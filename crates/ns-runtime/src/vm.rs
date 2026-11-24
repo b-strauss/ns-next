@@ -23,7 +23,7 @@ use crate::interpreter::future::{Resolution, not_a_closure, value_for_a_value_sl
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
 use crate::interpreter::literals::{
-    BLOCK_BODY, body_named, body_too_large_error_named, unresolved_identifier_error,
+    BLOCK_BODY, body_named, body_too_large_error_named, unbuilt_error, unresolved_identifier_error,
 };
 use crate::interpreter::locals::{
     check_own_slots, filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
@@ -3652,6 +3652,10 @@ fn make_value<'gc>(
                 body_named(mutator.heap.activation_kind(activation))
             };
             return Err(body_too_large_error_named(named, receiver, *limit));
+        }
+        Literal::Unbuilt(unbuilt) => {
+            let receiver = mutator.heap.activation_receiver(activation);
+            return Err(unbuilt_error(unbuilt, receiver));
         }
     })
 }

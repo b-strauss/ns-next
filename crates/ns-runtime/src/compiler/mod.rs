@@ -150,7 +150,7 @@ fn superclass_steps(clause_count: usize, own_level: usize) -> u16 {
 /// naming the one it passed: the smallest
 /// well-formed body of its kind and arity, which raises the too-large error
 /// before it does anything else -- the deferral `Literal::UnresolvedIdentifier`
-/// uses, so that compiling never fails and a body never run never fails
+/// and `Literal::Unbuilt` use, so that compiling never fails and a body never run never fails
 /// (`docs/design/compiler.md`, "Compilation cannot fail"). It takes no
 /// copied values: a too-large block's creator hands it none. Its one
 /// register is the first above the header's numbers

@@ -662,7 +662,8 @@ fn literal_form(literal: &Literal) -> LiteralForm {
         | Literal::Symbol(_)
         | Literal::LargeInteger(_)
         | Literal::UnresolvedIdentifier(_)
-        | Literal::BodyTooLarge(_) => LiteralForm::Allocated,
+        | Literal::BodyTooLarge(_)
+        | Literal::Unbuilt(_) => LiteralForm::Allocated,
     }
 }
 
@@ -2977,6 +2978,10 @@ mod tests {
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers),
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
             Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions),
+            Literal::Unbuilt(crate::bytecode::Unbuilt::AsynchronousSend(Symbol::intern(
+                "printString",
+            ))),
+            Literal::Unbuilt(crate::bytecode::Unbuilt::PatternLiteral),
         ];
         round_trip(
             literals

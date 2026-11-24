@@ -717,6 +717,8 @@ impl Decoder<'_> {
             8 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Registers),
             9 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Arguments),
             10 => Literal::BodyTooLarge(crate::bytecode::BodyLimit::Instructions),
+            11 => Literal::Unbuilt(crate::bytecode::Unbuilt::AsynchronousSend(self.symbol())),
+            12 => Literal::Unbuilt(crate::bytecode::Unbuilt::PatternLiteral),
             tag => panic!("internal: the embedded shipped code has literal tag {tag}"),
         }
     }

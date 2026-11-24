@@ -1,0 +1,4 @@
+rules = ["semantics.gap.actors"]
+stdout = '''
+firstasynchronous send of `yourself` needs actors, which ns-next does not build yet (§5.6)
+'''

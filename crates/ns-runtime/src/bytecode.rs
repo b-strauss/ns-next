@@ -48,6 +48,10 @@ pub(crate) use compact::{CachedSend, CachedSendKind, CreatedBlock};
 /// `interpreter::literals::body_too_large_error`, which names the limit
 /// (`docs/design/compiler.md`, "Compilation cannot fail", "Limits"), so a
 /// body never run never fails.
+///
+/// `Unbuilt` is the third: a construct the language has and ns-next does
+/// not build yet -- an asynchronous send, a pattern literal -- loaded where
+/// its value would be made, raising an error that names the gap.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -59,6 +63,22 @@ pub enum Literal {
     LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
     BodyTooLarge(BodyLimit),
+    Unbuilt(Unbuilt),
+}
+
+/// A construct the language has and ns-next does not build yet, which
+/// compiled to `Literal::Unbuilt`: loaded where its value would be made, it
+/// raises `interpreter::literals::unbuilt_error`, which names the gap
+/// (`docs/spec/language/semantics.md`, its gaps), so a body that never
+/// evaluates one never fails.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Unbuilt {
+    /// An asynchronous send, `receiver <-: message` (§5.6), loaded after
+    /// its receiver and arguments are evaluated; the symbol is its
+    /// message's selector.
+    AsynchronousSend(Symbol),
+    /// A pattern literal, `<x: 1>` (§5.1.9).
+    PatternLiteral,
 }
 
 /// The limit a body that compiled to `Literal::BodyTooLarge` passed, which
@@ -2093,6 +2113,10 @@ fn format_literal(literal: &Literal) -> String {
         Literal::BodyTooLarge(BodyLimit::Registers) => "body-too-large".to_string(),
         Literal::BodyTooLarge(BodyLimit::Arguments) => "body-too-large arguments".to_string(),
         Literal::BodyTooLarge(BodyLimit::Instructions) => "body-too-large instructions".to_string(),
+        Literal::Unbuilt(Unbuilt::AsynchronousSend(selector)) => {
+            format!("unbuilt asynchronous-send '{selector}'")
+        }
+        Literal::Unbuilt(Unbuilt::PatternLiteral) => "unbuilt pattern-literal".to_string(),
     }
 }
 
