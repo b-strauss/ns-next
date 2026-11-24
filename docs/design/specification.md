@@ -231,6 +231,24 @@ document it belongs to. Decided so far, on 2026-11-23 and 2026-11-24:
    interleaving if it does not) -- each buildable on the activations
    ns-next already suspends into frame objects, which a running-world
    image could then carry.
+5. **Values across actors (Bracha §3.1.1, §3.7).** The remote
+   representation -- a value passed as itself, copied or shared, every
+   other argument as a far reference -- goes into the book with the
+   actors, part of the same gap; it is why a value must be deeply
+   immutable, which ns-next enforces today.
+6. **Pattern literals (Bracha §5.1.9).** Bracha's rule goes into the book
+   -- `<_>` is `Pattern wildcard`, `<l>` `Pattern literal: l`, a keyword
+   pattern `Pattern keywords: kws patterns: pats`, `Pattern` an
+   implicit-receiver send -- and is a gap: until pattern matching is
+   built, a pattern literal that is evaluated signals an error naming the
+   gap, rather than answering `nil` as it does today. The grammar stays.
+   The design of pattern matching itself -- how a variable pattern `?y`
+   is bound in the block an application runs, `=>`, `case:otherwise:`,
+   the combinators, a subject's `match:` deciding what it reveals, as
+   Felix Geller's `NSPatternMatching.ns` in Bracha's canonical
+   implementation has them -- is a topic of its own
+   (`docs/OPEN-WORK.md`), weighed against Scala's extractors, Rust's
+   `match` and Java's record patterns.
 
 ## Open
 
