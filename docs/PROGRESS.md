@@ -8868,6 +8868,11 @@ send ran synchronously and the pattern answered `nil`.
   gap.
 - `49e69196`, `feab6c3c`, `babe4f9f`, `1c9229f1` -- the semantics.
 - `dd58c0ad` -- the run-time semantics.
+- `b58df677` -- the deviations leave the design documents for the book.
+- `25be63cc` -- the review's findings: two texts of the book, stale
+  documents, and goldens for every form of asynchronous send, a hot one in
+  every tier, the gaps of `Decimal` and the tuple, and a pattern never
+  evaluated.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's third batch, the image format.
