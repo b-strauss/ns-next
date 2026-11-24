@@ -98,7 +98,10 @@ Each decided with the user on 2026-11-23.
    table and the tag table stand in marked, machine-readable blocks that
    Rust tests hold to the code -- `opcodes.rs` to the tag table among
    them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
-   opened in a browser. mdBook is a development tool, installed as
+   opened in a browser, and the workflow `.github/workflows/spec.yml`
+   runs it at every push to `master` that can change the book and
+   publishes the HTML on GitHub Pages, at
+   <https://b-strauss.github.io/ns-next/>. mdBook is a development tool, installed as
    `cargo-nextest` is, and reaches no binary. The alternatives weighed
    were Sphinx (WebAssembly, Python, the Ferrocene Language
    Specification), ecmarkup (ECMA-262) and Bikeshed (W3C, WHATWG), and,

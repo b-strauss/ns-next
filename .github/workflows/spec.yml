@@ -1,0 +1,71 @@
+# Renders the specification's book (docs/spec/) with `cargo xtask spec` --
+# which checks its rules, the tests' references to them and its links, and
+# lists under each rule the tests that name it -- and publishes it on
+# GitHub Pages. The tests are read from goldens/, crates/ and xtask/, so a
+# change to any of them can change the book.
+
+name: Specification
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/spec/**"
+      - "goldens/**"
+      - "crates/**"
+      - "xtask/**"
+      - ".github/workflows/spec.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push replaces a queued one, but a
+# deployment already running finishes.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  MDBOOK_VERSION: "0.5.4"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it here.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install mdBook
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --silent --show-error --fail --location \
+            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar --extract --gzip --directory "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check and render the book
+        run: cargo xtask spec
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/spec/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

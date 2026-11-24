@@ -327,7 +327,7 @@ corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
 benchmarks/          Are We Fast Yet with its Java and Python counterparts, and the microbenchmarks
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)
-docs/spec/           the specification of ns-next, an mdBook: `cargo xtask spec` renders it
+docs/spec/           the specification of ns-next, an mdBook: `cargo xtask spec` renders it; published at https://b-strauss.github.io/ns-next/
 docs/design/         living design documents — start at its README.md
 docs/PROGRESS.md     milestone chronology
 docs/OPEN-WORK.md    everything still to be done, in detail

@@ -446,7 +446,9 @@ server", "Starting it"); and `spec`, which checks the specification's
 book -- every rule identifier well formed and unique, every chapter in
 `SUMMARY.md`, every test's reference and every link naming a rule -- and
 renders it with mdBook into `target/spec/html/index.html`, each rule
-listing the tests that name it (`spec.rs`; `specification.md`); and
+listing the tests that name it, which `.github/workflows/spec.yml` runs
+and publishes on GitHub Pages at every push to `master` that can change
+the book (`spec.rs`; `specification.md`); and
 `references`, which downloads the reference papers the repository names
 but does not carry into `docs/references/`, which `.gitignore` keeps out
 of the tree, each held to its SHA-256 (`references.rs`;
