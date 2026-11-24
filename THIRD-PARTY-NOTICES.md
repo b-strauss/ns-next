@@ -41,8 +41,9 @@ ns-next, and no code of Primordial Soup's runtime library is copied.
 
 Each of these licences requires its notice below to accompany every copy.
 
-The upstream trees are checked out as submodules under `prior-art/`, at the
-commits named here (`prior-art/PROVENANCE.md`).
+The commits named here are the ones the code was taken from. The upstream
+trees are checked out as submodules under `prior-art/`, some of them since
+moved to later commits (`prior-art/PROVENANCE.md`).
 
 ## num-bigint
 

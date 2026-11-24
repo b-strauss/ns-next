@@ -992,7 +992,7 @@ any other, where it used to write nothing and answer the transcript; it
 never declines, so both forwarders' failure blocks are `[nil]`, as the
 kernel's `terminate:` forwarder's is. `print: object = ( ^self show: object
 printString )` is Newspeak beside it, as canonical Newspeak's transcript has
-both (`prior-art/newspeak/RuntimeForJS.ns`); it was added with a golden
+both (`prior-art/newspeak/platform/JS/Runtime.ns`); it was added with a golden
 rather than on a corpus module's demand. `show:` does not send
 `printString` itself, since a `String`'s `printString` quotes it
 (`goldens/library/platform/the_transcript_prints_any_object`,
@@ -2365,7 +2365,7 @@ for `WeakArray`, `garbageCollect`, six for `Ephemeron`'s accessors, and
 `platform collections` hands out `WeakArray` as well because the corpus
 asks it there (`corpus/modules/Brazil.ns:24`, `VictoryFuelTesting.ns:5`)
 and the canonical Newspeak's collections namespace has it
-(`prior-art/newspeak/Collections.ns:40`); both facets answer the one class
+(`prior-art/newspeak/platform/JS/Collections.ns:40`); both facets answer the one class
 (`tests/platform.rs`, `both_facets_answer_the_kernels_weak_array`).
 It hands out `WeakMap` too, a collection a program looks for among the
 others (decided with the user on 2026-10-16), again the kernel's one class
@@ -2696,7 +2696,7 @@ when a whitelisted module demands it" still governs what gets added.
 declared kernel classes, and a class object's own class is its metaclass
 ("What exists" above). Both references declare exactly these three in their
 kernel source (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
-`prior-art/newspeak/KernelForJS.ns`), and the reflection work needs them — a
+`prior-art/newspeak/platform/JS/InternalKernel.ns`), and the reflection work needs them — a
 mirror's test for a metaclass is `Metaclass = classOf: reflectee`, which
 needs the instance-of relation reified. The flat metaclass hierarchy that
 §3.2 also requires came first: it was corrected ahead of 3c, because the
@@ -3047,7 +3047,7 @@ has — `isNil`, `notNil`, `ifNil:`, `ifNotNil:`, `ifNil:ifNotNil:` and
 `ifNotNil:ifNil:` — answering for every object that is not `nil`, and
 `UndefinedObject` declares the same six the other way round, as SOMns's
 (`prior-art/somns/core-lib/Kernel.ns`) and Newspeak's JS kernel
-(`prior-art/newspeak/KernelForJS.ns`) do; `nil ifNotNil:` answers `nil`,
+(`prior-art/newspeak/platform/JS/InternalKernel.ns`) do; `nil ifNotNil:` answers `nil`,
 `3 ifNil:` answers `3`. `nil printString` answers `'nil'`, as Primordial
 Soup's `UndefinedObject` does, where it answered `Object`'s generic
 `an Object` before (`goldens/runtime/cache/cache_polymorphic_sites`).
@@ -3695,7 +3695,7 @@ handler's `on:do:` for the next handler out. The walk goes through one
 leaf, `activationNextHandler:`, which answers the next enabled `on:do:`
 activation outward and reifies no activation it passes -- as Cog's handler
 search marries only the context it finds (`primitiveFindHandlerContext`,
-`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:84085-84112`) --
+`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:92208-92236`) --
 so a signal allocates the same however deep below its handler it is
 raised, and a frame a compiled tier ran is never turned back into
 interpreted ones for being passed ([execution.md](execution.md),
@@ -4955,7 +4955,8 @@ with every holder. The specification says nothing on `class`, but §8.2
 makes reflection a capability held through mirrors, and the
 object-capability argument of `newspeak.pdf` and `newspeak-modules.pdf`
 applies. Both Newspeak kernels make it protected:
-`prior-art/newspeak/squeak/KernelForSqueak.ns`, line 1193, and Primordial
+`prior-art/newspeak/squeak/KernelForSqueak.ns`, line 1269, where it
+takes a method's default access, protected, and Primordial
 Soup's `KernelForPrimordialSoup.ns`, "to separate the authority of an
 instance from the authority of its class", its class accessors on `Object`
 too. SOMns's root classes declare no `class`.
@@ -5203,7 +5204,7 @@ on its own (decided with the user on 2026-10-06):
 - **`isKindOf…` answers `false` for what a receiver does not declare**:
   `Object>>doesNotUnderstand:` answers `false` for a unary selector that
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
-  (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
+  (`prior-art/newspeak/platform/JS/InternalKernel.ns`) do, and every core class answers
   its own with `true`: `isKindOfArray`, `isKindOfBehavior`,
   `isKindOfBoolean`, `isKindOfClosure`, `isKindOfCollection`,
   `isKindOfFloat`, `isKindOfFraction` (`Integer`'s too, an integer being

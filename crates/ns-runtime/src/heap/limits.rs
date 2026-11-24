@@ -93,9 +93,9 @@ impl Default for TableLimits {
 /// end it would keep, `round_up_to_page(high_mark + headroom)`, it
 /// shrinks towards that end. Spur's `attemptToShrink` after a full
 /// collection, its `shrinkThreshold` against its `growHeadroom`
-/// (`cointerp.c:50168, 50244-50249`). Spur grows additively, by the larger
-/// of what it needs and its headroom (`cointerp.c:26019`,
-/// `:50328-50329`), and its pair is stable because the threshold is at
+/// (`cointerp.c:55337, 55413-55418`). Spur grows additively, by the larger
+/// of what it needs and its headroom (`cointerp.c:30214`,
+/// `:55535-55536`), and its pair is stable because the threshold is at
 /// least the headroom plus one growth step. The reservations here grow by
 /// doubling what they have committed (`heap::frames`, the cells, the
 /// machine entry and application id tables), so their growth step from a

@@ -271,8 +271,8 @@ what Newspeak's liveness requires beyond it.
 - restart frame and force return;
 - hot swap of changed methods, and beyond Java's RedefineClasses -- which
   permits only method bodies to change and leaves running frames in the
-  old code (`jdk/src/hotspot/share/prims/jvmtiRedefineClasses.cpp:954-1063`,
-  `:3873-3934`) -- edit-and-continue of an activation that is running,
+  old code (`jdk/src/hotspot/share/prims/jvmtiRedefineClasses.cpp:950-1059`,
+  `:3869-3930`) -- edit-and-continue of an activation that is running,
   with added locals, as [liveness-and-reflection.md](liveness-and-reflection.md),
   requirement 2, asks;
 - for an uncaught `MessageNotUnderstood`, "Create Method": the method is
@@ -314,7 +314,7 @@ debugging API at the safepoint". What it and the later stages build on:
   an `on:do:` activation `retry` asks to run again, so restarting any frame
   widens what it accepts.
 - **`Continuation`** has the variants `Deliver`, `NestedClass`, `Unwind`,
-  `VmErrorSignalled`, `Reexecute` and `ReturnToSuspended` (`types.rs:407-435`):
+  `VmErrorSignalled`, `Reexecute` and `ReturnToSuspended` (`types.rs:422-467`):
   what a frame's return does besides delivering its value.
 - **The JIT** materializes every compiled frame of its stretch into the
   interpreter's frames at an exit (`jit/materialize.rs`); a frame running
@@ -2412,10 +2412,10 @@ exit, so every other body keeps running in machine code.
   leftover analysis, nor any frame's `program_counter` is touched.
 
 HotSpot patches the same way (`BreakpointInfo::set`/`clear`,
-`jdk/src/hotspot/share/oops/method.cpp:2138-2162`, which deoptimizes all
+`jdk/src/hotspot/share/oops/method.cpp:2131-2155`, which deoptimizes all
 dependents; the template at `cpu/x86/templateTable_x86.cpp:4030-4048`), and
 V8 patches a debug copy of the bytecode array
-(`v8/src/debug/debug.cc:507-525`) after deoptimizing the function
+(`v8/src/debug/debug.cc:555-571`) after deoptimizing the function
 (`PrepareFunctionForDebugExecution`). A debug copy is rejected here
 because a body is held by its mixin's method table, by its creator's
 literal when it is a block, and by every running frame, all of which would
@@ -2439,7 +2439,7 @@ cursor. The agent speaks smart step into as DAP's `stepInTargets` and
 `stepIn`'s `targetId` ("Launching, the start and the end").
 
 - **Step over** sets one-shot breakpoints at every statement start of the
-  frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1364`) and
+  frame's body (V8's `FloodWithOneShot`, `v8/src/debug/debug.cc:1432`) and
   one at the stepping frame's **return point**: the index after the
   instruction its caller stands at -- a send, a `ResolveFuture`, an
   initializer invocation or a `SendMirror` -- never that slot itself, which
@@ -2715,8 +2715,8 @@ actors' scheduler, both planned, will arm the same word.
 
 Cog's heartbeat thread writes `stackLimit`
 (`forceInterruptCheckFromHeartbeat`,
-`opensmalltalk-vm/src/spur64.cog/cointerp.c:16072`; `forceInterruptCheck`
-at `:68263`), and the stack check every frame build makes is the poll;
+`opensmalltalk-vm/src/spur64.cog/cointerp.c:20086`; `forceInterruptCheck`
+at `:73159`), and the stack check every frame build makes is the poll;
 V8's `StackGuard::RequestInterrupt` lowers the stack limit from any thread
 under a lock (`v8/src/execution/stack-guard.cc:169-183`, `ExecutionAccess`);
 HotSpot arms each thread's poll word
@@ -2789,7 +2789,7 @@ need, for a snapshot taken mid-execution
 
 HotSpot's thread waits inside the runtime call that posts the JVMTI event,
 V8's embedder runs a message loop while paused (`runMessageLoopOnPause`,
-`v8/include/v8-inspector.h:262`), and Squeak's and Primordial Soup's
+`v8/include/v8-inspector.h:267`), and Squeak's and Primordial Soup's
 debugged process is suspended while the debugger runs beside it. Leaving
 `vm::run` at every stop and every evaluation, and moving the loop's state
 across the safepoint into `World`, is rejected.
@@ -3140,10 +3140,10 @@ frame stands in the machinery, and is shown and stepped from below it
 as an uncaught exception's is ("Exceptions").
 
 V8 does the same with blackboxing (`v8/src/debug/debug.cc`): a step at a
-return becomes a step out in step-into mode (`:1601-1612`), the step out
-floods the first frame below that is not blackboxed (`:1735-1741`), and
+return becomes a step out in step-into mode (`:1706-1719`), the step out
+floods the first frame below that is not blackboxed (`:1852-1860`), and
 every function entered that is not blackboxed is flooded
-(`PrepareStepIn`, `:1456-1470`); the JDWP agent skips a filtered callee
+(`PrepareStepIn`, `:1517-1531`); the JDWP agent skips a filtered callee
 of a step into by frame-pop and method-entry events
 (`jdk/src/jdk.jdwp.agent/share/native/libjdwp/stepControl.c:588-611`,
 `:476`). The specification allows it without requiring it: a debugger
@@ -3237,9 +3237,9 @@ the sender is on top or no longer on the sender chain
 (`primordialsoup/newspeak/Mirrors.ns:2276-2283`, `:2417-2424`), the
 JDWP agent single-steps after the frame pop "until we reach the next
 safe place to stop" (`stepControl.c:340-347`), and V8 floods the frame
-below and stays in step-into mode (`v8/src/debug/debug.cc:1601-1612`),
+below and stays in step-into mode (`v8/src/debug/debug.cc:1706-1719`),
 flooding the handler's frames on a throw (`PrepareStepOnThrow`,
-`:1488-1555`). Refusing a step out of such a frame is rejected, since the
+`:1549-1646`). Refusing a step out of such a frame is rejected, since the
 end of an `ensure:` block is a common place to step from; treating it as
 a resume loses the place the step was taken from.
 
@@ -3952,7 +3952,7 @@ it (`stepping::takes`) -- only the blocks the compiler lowered inline in
 the stepping body are flooded for it -- and ignores it in any other
 activation of the body: a recursive call deeper on the stack, or a block
 of the same home running in a callee. V8 checks the frame count the same
-way ("We have to ignore recursive calls", `v8/src/debug/debug.cc:822-855`),
+way ("We have to ignore recursive calls", `v8/src/debug/debug.cc:884-917`),
 and the JDWP agent compares `fromDepth` (`stepControl.c:523-697`).
 
 The flood covers the stepping body's own statement starts and those of the
@@ -4972,8 +4972,8 @@ refused leaves the program stopped where it was, nothing begun.
   Activations of the old body's blocks keep running the old block code.
   Cog forces the contexts running a changed method back to bytecode
   program counters the same way (`primitiveVoidVMStateForMethod`,
-  `widowOrForceToBytecodePC`, `opensmalltalk-vm/src/spur64.cog/cointerp.c:24552`,
-  `:21910`), and Primordial Soup restarts a frame in the method looked up
+  `widowOrForceToBytecodePC`, `opensmalltalk-vm/src/spur64.cog/cointerp.c:28733`,
+  `:25937`), and Primordial Soup restarts a frame in the method looked up
   afresh (`restart:withLookup:` and `lookupNewMethod:`,
   `primordialsoup/newspeak/Mirrors.ns:2325-2337`, `:2307-2315`).
 
@@ -5186,7 +5186,7 @@ unverified.
 The token guards the listening socket, since a client that connects can
 run code in the program through evaluation, as the user who started it,
 and on a machine with several users 127.0.0.1 reaches every one of them:
-JDWP checks nothing but a fixed handshake (`socketTransport.c:186`) and
+JDWP checks nothing but a fixed handshake (`socketTransport.c:184`) and
 an `allow` list of addresses. `--debug` takes 128 bits from the
 operating system's random source (`ns-memory`, through the `windows-sys`
 and `libc` it already depends on) and the client presents them as the

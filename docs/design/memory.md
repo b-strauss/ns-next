@@ -1577,7 +1577,7 @@ full collection is a mark-compact despite the name of `markSweep.cpp`
 (`prepare_for_compaction`, `compact`), under a scavenged young generation.
 Spur compacts its old space by sliding, planning every survivor's new
 address before moving any (`planCompactSavingForwarders`, `compact`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:62399`, `:61596`),
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:67633`, `:66830`),
 which is the compaction here. Every current HotSpot collector moves, and the one
 free-list old space it had, CMS's, was deprecated in JDK 9 and removed in
 JDK 14. Primordial Soup is the one that keeps a free list, in its old space
@@ -1866,7 +1866,7 @@ mark after the collection from what is still in use
 `MetaspaceGC::compute_new_size`, `:424-490`); V8 starts marking when the
 memory its objects hold outside the heap passes a limit, and raises the
 limit to what is held then (`Heap::UpdateExternalMemory`,
-`prior-art/v8/src/heap/heap.cc:6915-6968`).
+`prior-art/v8/src/heap/heap.cc:6947-7000`).
 
 **No time-based watchdog.** No collection is started by the clock: every
 one follows from what the program allocated or minted, so a run is
@@ -1895,10 +1895,10 @@ high mark, and more than twice the end the reservation would keep, the
 high mark plus its headroom rounded up to a page. Its first condition is
 Spur's `attemptToShrink` after a full collection, which shrinks only when
 the free old space exceeds `shrinkThreshold` and keeps `growHeadroom`
-(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:50168`,
-`:50244-50249`; its defaults of 32 MiB and 16 MiB, `:51088-51094`). Spur
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:55337`,
+`:55413-55418`; its defaults of 32 MiB and 16 MiB, `:56295-56301`). Spur
 grows additively, by the larger of what it needs and its headroom
-(`cointerp.c:26019`, `:50328-50329`), and its pair is stable because its
+(`cointerp.c:30214`, `:55535-55536`), and its pair is stable because its
 threshold is at least the headroom plus one growth step. The stack, the
 cells and the two id tables grow by doubling what they have committed, so
 their step from a kept end is that end, and one regrowth from it would
@@ -2014,8 +2014,8 @@ gives back whole chunks: a chunk given back has both its views unmapped
 back to placeholders and its section closed, which returns its pages and
 their commit charge, as ZGC maps and unmaps its heap
 (`prior-art/jdk/src/hotspot/os/windows/gc/z/zMapper_windows.cpp:62-75`,
-`:258-312`; HotSpot's placeholders,
-`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3573-3618`); the
+`:258-310`; HotSpot's placeholders,
+`prior-art/jdk/src/hotspot/os/windows/os_windows.cpp:3594-3639`); the
 zone needs Windows 10 version 1803 for it, and refuses to be made
 without it (`CodeZone::reserve`, `MemoryError::Unsupported`). Linux
 punches a hole into the zone's memory object, Apple AArch64 frees its
@@ -2550,8 +2550,8 @@ owning it makes possible:
   `scavengeThreshold` in machine code for `new`, closures and boxed floats
   (`genPrimitiveNew`, `genCreateFullClosure:…`,
   `genInstantiateFloatValue:into:scratchReg:scratchReg:mayFail:`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64SysV.c:16464`, `:19026`,
-  `:15181`);
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64SysV.c:17412`, `:20080`,
+  `:15872`);
   Strongtalk does it in generated stubs its compiled code calls
   (`test_for_scavenge`, `prior-art/strongtalk/vm/prims/generatedPrimitives.cpp:52-69`).
   A `malloc` call cannot be inlined; a bump of the space's top can, which
@@ -2642,7 +2642,7 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   reservation's base, so the base must be fixed and the reservation
   contiguous, as HotSpot's compressed oops require; Spur's segments at
   scattered addresses (`addSegmentOfSize:`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:63653`) do not fit.
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:68887`) do not fit.
   Strongtalk has this shape: `ReservedSpace` reserves, `VirtualSpace::expand`
   commits (`prior-art/strongtalk/vm/runtime/virtualspace.cpp:27-31`, `:73-135`;
   `VirtualAlloc` with `MEM_RESERVE`, then `MEM_COMMIT`,
@@ -2949,7 +2949,7 @@ objects lie end to end from the region's start up to its top.
   header, whose top byte is that same 255 and whose low 56 bits are the
   count, so a walk standing at an allocation's first word tells an overflow
   word from a header, as Spur's does (`numSlotsOfAny:`, `objectAfter:`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:55584`, `:55781`).
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60825`, `:60998`).
   The space is its first use: the arena's blocks knew their own length.
   The space is walked linearly by these counts (`space::object_at`), over
   the ranges its regions occupy (`Space::occupied`: the past survivor
@@ -2988,7 +2988,7 @@ objects lie end to end from the region's start up to its top.
   which slides marked objects
   down and plans their new addresses before moving any (`compact`,
   `planCompactSavingForwarders`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`).
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:66830`, `:67633`).
   The mark bit is in the header ("Marking"); the forwarding addresses live
   in a side table, a live-word bitmap with a prefix count per 64 words,
   whose buffer is kept between collections and whose chunks a collection
@@ -3080,7 +3080,7 @@ generations moved".
   `SurvivorRatio=8` (decision 3 below). The survivor spaces lie first and
   the old space above the nursery, as Spur lays its heap out
   (`setHeapBase:memoryLimit:endOfMemory:`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60020`) and
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:65254`) and
   Strongtalk its generations
   (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`).
   The first survivor space starts at `FIRST_OBJECT`, so it is 16 bytes
@@ -3137,7 +3137,7 @@ generations moved".
 ### The scavenger
 
 A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
-`doScavenge:` (`cointerp.c:48477`) and Strongtalk's `Universe::scavenge`
+`doScavenge:` (`cointerp.c:53614`) and Strongtalk's `Universe::scavenge`
 (`universe_more.cpp:81-137`) are.
 
 - **The roots** are what a full collection marks from -- the `Activation`
@@ -3164,8 +3164,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   forward"). A reference to a forwarder is followed along the whole chain
   (`evacuate`), and the object at its end is copied only if it is young and
   not already in the future survivor space, as Spur's
-  `scavengeReferentsOf:` decides (`cointerp.c:43278`, the
-  `isReallyYoungObject:` test at `:43316-43322`). A young object is copied
+  `scavengeReferentsOf:` decides (`cointerp.c:48090`, the
+  `isReallyYoungObject:` test at `:48132-48137`). A young object is copied
   once per scavenge, and nothing names a bulk forward's forwarder once the
   forward ends, so every chain a scavenge meets is one link of its own. A
   bulk forward's old forwarder that is remembered -- its class word names
@@ -3278,7 +3278,7 @@ is the one decision 3 states, and the scavenger's own test pins it.
 An old object that comes to name a young one sets its remembered bit and
 joins the remembered set (`Heap::write_barrier`, then `Heap::remember`),
 per object, as Spur's `storePointer:ofObject:withValue:`
-(`cointerp.c:60688`; `remember:`, `:42843`) and Primordial Soup's
+(`cointerp.c:65922`; `remember:`, `:47466`) and Primordial Soup's
 `HeapObject::Store` (`prior-art/primordialsoup/vm/object.h:257-273`)
 remember, rather than Strongtalk's cards: simpler, and cheaper to emit. The
 test is two comparisons against `NURSERY_END` -- the holder is old, the
@@ -3428,7 +3428,7 @@ Decided with the user on 2026-10-04:
    HotSpot's Serial and Parallel collectors do. One forwarding table covers
    both generations, so every handle is rewritten once. Rejected: Spur's
    mark, then scavenge-and-tenure, then compact the old space (`fullGC`,
-   `cointerp.c:50168`), which relocates twice per full collection; and
+   `cointerp.c:55337`), which relocates twice per full collection; and
    tenure everything, then mark and compact the old space, which keeps
    young garbage reachable only from dead remembered objects alive until
    the next full collection.
@@ -3475,9 +3475,9 @@ has this fast path -- one compare of the new top against a limit, the
 header precomputed, the identity hash left 0 until first requested:
 Cog's interpreter compares `freeStart + numBytes` against
 `scavengeThreshold`
-(`prior-art/opensmalltalk-vm/src/spur64.cog/gcc3x-cointerp.c:51349-51358`)
+(`prior-art/opensmalltalk-vm/src/spur64.cog/gcc3x-cointerp.c:56559-56568`)
 and its `ee` allocators for closures, floats and contexts leave the body
-to the caller's stores (`:48869-48918`); Strongtalk bumps eden with one
+to the caller's stores (`:54007-54056`); Strongtalk bumps eden with one
 compare (`prior-art/strongtalk/vm/memory/space.hpp:143-152`); Primordial
 Soup checks the size and the top
 (`prior-art/primordialsoup/vm/heap.h:373-387`). Strongtalk and Soup
@@ -3486,7 +3486,7 @@ collect inside the allocator when the bump fails, which ns-next does not
 Cog's shape, in which an allocation only requests a collection, is the
 one followed here. It is also the shape the JIT tiers take over, as
 Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
-(`cogitX64SysV.c:16464`, `:19026`).
+(`cogitX64SysV.c:17412`, `:20080`).
 
 ### The fast path
 
@@ -3551,7 +3551,7 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   before a scavenge or a compaction recounts them, so the heap's
   statistics stay the interpreter's. Cog's machine code carries on past
   its threshold into the slack and calls a trampoline that only schedules
-  the scavenge (`cogitX64SysV.c:19053-19077`); here the limit already
+  the scavenge (`cogitX64SysV.c:20107-20131`); here the limit already
   lies below the threshold, so the leaf is the interpreter's own
   decision, and no word of machine code holds the threshold.
 

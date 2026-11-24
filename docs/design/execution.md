@@ -270,12 +270,12 @@ pub struct ActivationReference {
   `SmallInteger`, an absent handle nil. Cog's and Primordial Soup's frames
   are the model: a flags word that reads as a `SmallInteger` (Cog's
   `1 + (numArgs << 8)`,
-  `prior-art/opensmalltalk-vm/src/spur64.stack/interp.c:52829-52832`;
+  `prior-art/opensmalltalk-vm/src/spur64.stack/interp.c:56793-56796`;
   Soup's `(numArgs << 1) | isClosure`,
   `prior-art/primordialsoup/vm/interpreter.cc:46-55`), the code named in
   the frame, the receiver and temporaries tagged. Both still hold raw
   words -- a saved frame pointer and a bytecode pointer -- which Cog's scan
-  skips by offset (`interp.c:57557-57596`) and Soup turns into indexes
+  skips by offset (`interp.c:61544-61583`) and Soup turns into indexes
   around every collection (`interpreter.cc:1875-1905`). Here every link is
   an index, since `ns-runtime` forbids `unsafe`, so nothing needs either:
   **the collector traces every tagged word of the stack**, `[0, top)`, as
@@ -8812,9 +8812,9 @@ no higher, and the three builds a side a final measurement takes.
 because a stack bytecode pushes and pops every intermediate value, and
 its gain is the stack entry consumed before anything spills it: it
 keeps its temporaries written through (`tempsValidAndVolatileEntriesSpilled`,
-`prior-art/opensmalltalk-vm/src/spur64.sista/cogitX64SysV.c:40797-40860`)
+`prior-art/opensmalltalk-vm/src/spur64.sista/cogitX64SysV.c:43243-43306`)
 and voids the cache at every merge (`mergeWithFixupIfRequired`,
-`:40924-40990`). The register code here writes each intermediate once,
+`:43370-43436`). The register code here writes each intermediate once,
 to the register its consumer reads, so that traffic does not exist. And
 the store Cog skips may not be skipped here: the leftover analysis takes
 every register a frame writes as cleaned, so a skipped store would leave
@@ -8824,7 +8824,7 @@ value kept would keep alive an object the interpreter lets go, which a
 `WeakArray` shows. V8's Sparkplug, the baseline over Ignition, a
 register machine like this one, caches nothing but the accumulator and
 stores every register the interpreter would
-(`prior-art/v8/docs/compiler/sparkplug/compiler-sparkplug.md:17`, `:33`),
+(`prior-art/v8/docs/compiler/sparkplug/compiler-sparkplug.md:19`, `:77`),
 and leaves register allocation to Maglev. So the baseline reads and
 writes the slots, and register allocation is road step 9's ("The
 register cache" in "Planned: the baseline JIT"). Decided with the user
@@ -10995,7 +10995,7 @@ experiment that decided against it.
 **Prior art.** Primordial Soup's primitives push their result onto the stack
 themselves and answer only whether they succeeded (`Primitives::Invoke`);
 Cog's primitives do the same through `pop:thenPush:`
-(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:72079`). Neither hands
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:76993`). Neither hands
 a result object back to the loop.
 
 **The sink, as designed.** `interpreter/` would have gained a trait,
@@ -11109,7 +11109,7 @@ code:
   literal array (`prior-art/primordialsoup/vm/interpreter.cc:1062-1577`;
   `vm/object.h:818-826`). Its loop is a plain `switch`, with `ip`, `sp` and
   `fp` as fields of the interpreter (`interpreter.cc:1055-1062`,
-  `interpreter.h:206-208`).
+  `interpreter.h:202-204`).
 - **Strongtalk** aligns 32-bit words inside the byte stream so that the
   generated assembly interpreter reads them in one load, and keeps each
   send's inline cache in those words, rewriting the opcode as the site goes
@@ -11123,8 +11123,8 @@ code:
   literal frame, dispatches by computed goto, and its baseline JIT walks the
   bytecode through a descriptor table and maps a machine-code pc back to a
   bytecode pc through a byte map
-  (`prior-art/opensmalltalk-vm/src/spur64.sista/gcc3x-cointerp.c:10856-10878`,
-  `cogitX64SysV.c:396-413`, `:8090-8160`).
+  (`prior-art/opensmalltalk-vm/src/spur64.sista/gcc3x-cointerp.c:11440-11464`,
+  `cogitX64SysV.c:404-421`, `:8286-8381`).
 
 What their density answers is not ns-next's question: their code lives in
 the heap and the snapshot -- Primordial Soup even swaps every saved `ip` for
@@ -11766,9 +11766,9 @@ which is Cog's and Strongtalk's: neither has stack maps, because every
 value live at a point the runtime can see is a tagged word in the frame.
 Cog flushes its register-cached values before every send, backward
 branch, conditional jump and trap (`ssFlushTo:`,
-`cogitX64SysV.c:40797-40812`, `:38825-38840`, `:34200-34210`,
-`:36290-36298`) and traces every word of both frame kinds
-(`cointerp.c:20768-20860`); Strongtalk spills every live value before a
+`cogitX64SysV.c:43243-43258`, `:41019-41034`, `:35843-35853`,
+`:37934-37942`) and traces every word of both frame kinds
+(`cointerp.c:27851-27943`); Strongtalk spills every live value before a
 send (`compiler/codeGenerator.cpp:1396-1412`) and traces every word of a
 compiled frame (`runtime/frame.cpp:342-349`). Cog's citations in this
 section are to the generated C under
@@ -11784,7 +11784,7 @@ section are to the generated C under
   baseline frame and an interpreted one differ only in which code
   resumes them. The header word that tells them apart is a bit in the
   flags word, since the code word is a `CodeId` and not an address Cog
-  could compare against its code zone (`cointerp.c:19944-19947`).
+  could compare against its code zone (`cointerp.c:27029-27032`).
 - **The hot path writes two header words: the receiver and the current
   class.** A compiled call places its callee on its argument slots as the
   interpreter's send does, and writes the callee's receiver and current
@@ -11800,8 +11800,8 @@ section are to the generated C under
   (decided with the user on 2026-10-28). Every system read writes its
   frame's identifying words eagerly -- Cog's prologue four (the method,
   the context, the receiver, the saved frame pointer;
-  `cogitX64SysV.c:31390-31443`), Sparkplug's six, the interpreter frame's
-  (`prior-art/v8/src/builtins/x64/builtins-x64.cc:1906-1929`) -- so a
+  `cogitX64SysV.c:33035-33085`), Sparkplug's six, the interpreter frame's
+  (`prior-art/v8/src/builtins/x64/builtins-x64.cc:2008-2031`) -- so a
   call costs two stores more than HotSpot's and less than Cog's. A value
   that lives across a send the code did not inline is stored into its
   slot before the send, as HotSpot and V8 spill every live value across
@@ -11820,7 +11820,7 @@ section are to the generated C under
 - **Machine code holds no handle**, as compiled code holds none today
   ([compiler.md](compiler.md), "Readers of compiled code take the
   mixin"): a literal object is loaded through the heap's tables, so the
-  collector never patches code, where Cog's has to (`cogitX64SysV.c:9453-9792`).
+  collector never patches code, where Cog's has to (`cogitX64SysV.c:9971-10310`).
 - **An inlined scope lies at the interpreter's position** (decided with
   the user on 2026-11-07): where the interpreter would push its
   activation, on its sender's argument slots, its thirteen header
@@ -11884,7 +11884,7 @@ today. So the stored program counter is written by no instruction of
 compiled code -- Strongtalk maps a return address to its scope and
 bytecode index the same way (`code/nmethod.cpp:508-531`,
 `runtime/vframe.cpp:52-61`), Cog lazily
-(`mustMapMachineCodePC:context:`, `cointerp.c:21633`) -- and "Where
+(`mustMapMachineCodePC:context:`, `cointerp.c:28716`) -- and "Where
 `program_counter` is stored" above stays true of every frame an observer
 sees.
 
@@ -11910,14 +11910,14 @@ sees.
 - **Compiled code creates no fallback closure.** An inlined conditional
   whose receiver is not a Boolean hands its frame to the interpreter at
   that instruction, to run it again there, as Cog converts its frame at
-  `mustBeBoolean` (`cointerp.c:16346-16366`).
+  `mustBeBoolean` (`cointerp.c:22380-22400`).
 
 ### Safepoints and the depth limit
 
 - **A poll writes nothing back.** Only the cold path of a poll that found
   a request spills the registers its code caches and takes the exit;
   receiver and arguments may travel into a callee in machine registers,
-  as Cog passes up to two (`numRegArgs`, `cogitX64SysV.c:2761`), the
+  as Cog passes up to two (`numRegArgs`, `cogitX64SysV.c:2819`), the
   callee storing them only where it needs them.
 - **The entry's poll is the depth check.** A safepoint request lowers the
   limit a compiled push compares the depth against, Cog's `stackLimit`
@@ -11962,11 +11962,11 @@ sees.
   every value in its slot. Nothing of the frame is rewritten: its words
   are already machine code's. Cog switches at a back jump and only there,
   rewriting its interpreter frame into a machine-code one
-  (`attemptToSwitchToMachineCode:`, `cointerp.c:14623-14735`,
-  `:8379-8393`); V8's Sparkplug switch keeps the frame, rewrites one
+  (`attemptToSwitchToMachineCode:`, `cointerp.c:20659-20771`,
+  `:8772-8786`); V8's Sparkplug switch keeps the frame, rewrites one
   slot and enters at the loop header's start
   (`Generate_InterpreterOnStackReplacement_ToBaseline`,
-  `src/builtins/x64/builtins-x64.cc:5660-5767`;
+  `src/builtins/x64/builtins-x64.cc:6119-6226`;
   `GetBaselinePCForNextExecutedBytecode`, `src/objects/code-inl.h:405-425`).
   Without it a hot loop in a method entered once -- a benchmark's main
   loop -- would never run compiled.
@@ -11983,7 +11983,7 @@ sees.
   `jit::back_edge_ready`, which counts the jump the safepoint stopped as
   any other. Cog never leaves at a poll -- its
   backward jump calls the interrupt check's trampoline, which returns
-  into the code (`cogitX64SysV.c:38851-38858`) -- but here a safepoint is
+  into the code (`cogitX64SysV.c:41045-41052`) -- but here a safepoint is
   the run loop's alone, so the poll exits, and the run loop enters the
   code again as it does a frame returned to. Decided with the user on
   2026-11-02.
@@ -12081,7 +12081,7 @@ sees.
   kernel's handler search steps with one leaf, `activationNextHandler:`,
   which walks the frames itself and reifies only the `on:do:` activation
   it answers, as Cog's handler search does (`primitiveFindHandlerContext`,
-  primitive 197, `cointerp.c:84085-84112`), so an exception through
+  primitive 197, `cointerp.c:92208-92236`), so an exception through
   optimized code converts nothing it does not stop at
   ([core-library.md](core-library.md), "Exceptions"). The search for
   unwind markers is the Rust unwinder's, which reads each frame's marker
@@ -12186,7 +12186,7 @@ The shape was decided with the road step's design (2026-11-04 and
   bytecode, abstractly interpreting its registers -- each register maps
   to the node that last defined it, as Maglev's `InterpreterFrameState`
   maps Ignition's (`maglev/maglev-graph-builder.cc`;
-  `compiler/maglev/compiler-maglev.md:9-83` of the design documents) -- and
+  `compiler/maglev/compiler-maglev.md:3-107` of the design documents) -- and
   reading the feedback as it goes. Each node emits its own code through
   the macro assembler's idioms, with no instruction selection, and a
   linear-scan allocator, Maglev's `StraightForwardRegisterAllocator`'s
@@ -12194,12 +12194,12 @@ The shape was decided with the road step's design (2026-11-04 and
   area once stage 5 unboxes a number. Rejected: a sea of nodes, which V8 left for a control-flow graph
   in Turboshaft because nearly every operation sits on an effect chain,
   graphs are hard to debug and compile slowly
-  (`compiler/why-cfg.md:21-52` of the design documents), all truer of Newspeak, where nearly
+  (`compiler/why-cfg.md:14-24` of the design documents), all truer of Newspeak, where nearly
   everything is a send; Strongtalk's graph, which is not SSA and keeps
   every value live across a basic block in a stack slot
   (`compiler/regAlloc.cpp:55-95`); and two optimizing tiers now, which
   the graph keeps open -- Turbolev builds TurboFan's input from Maglev's
-  graph (`flags/flag-definitions.h:1789`). Strongtalk's heuristics, not
+  graph (`flags/flag-definitions.h:1792`). Strongtalk's heuristics, not
   its IR, decide inlining and which body is recompiled.
 - **The backend is the repository's own**: `ns-assembler`'s encoders and
   the macro assembler the baseline JIT uses, so the write barrier, the
@@ -12931,7 +12931,7 @@ frame's registers within `u16::MAX` (decided in the plan,
 estimated frequency -- their sender's, times `LOOP_WEIGHT`, 8, for
 each loop around the site, times the callee's budget share spent since
 it was armed, at least `LEAST_BUDGET_SHARE`, 1/64 -- as TurboFan queues
-its candidates (`compiler/js-inlining-heuristic.cc:225-395`), a site
+its candidates (`compiler/js-inlining-heuristic.cc:225-403`), a site
 never executed excluded. What is observed is never inlined: a body
 with an unwind marker -- `on:do:`, `ensure:`, `ifCurtailed:` -- and
 every kernel method whose activation a leaf reads or marks, a mirror
@@ -13303,9 +13303,9 @@ its design documents, under `prior-art/v8/docs/`.
   compile requests a safepoint; there the mutator checks the epoch of
   every application the code rests on and installs it, or discards it
   and requests the compile again, as V8 retries a compile whose
-  dependencies changed (`compiler/compilation-dependencies.cc:1450-1510`)
+  dependencies changed (`compiler/compilation-dependencies.cc:1455-1518`)
   and HotSpot discards one under `Compile_lock`
-  (`ci/ciEnv.cpp:977-998`). The body runs its baseline code meanwhile,
+  (`ci/ciEnv.cpp:975-996`). The body runs its baseline code meanwhile,
   its budget parked. The same compiler runs synchronously on the same
   snapshot for the tests and the stress modes. Reading the live heap
   from the thread, HotSpot's and V8's way, is not an option: the heap is
@@ -13338,9 +13338,9 @@ constant. What is not:
   holds -- its receiver's application, its blocks' code ids, the kind of
   each number. The entry loads every register from the frame's words,
   which are already the interpreter's -- the buffer HotSpot first copies
-  (`runtime/sharedRuntime.cpp:3803-3815`) -- and checks each
+  (`runtime/sharedRuntime.cpp:3835-3847`) -- and checks each
   specialization once, as C2's `load_interpreter_state` does
-  (`opto/parse1.cpp:209-355`); the frame enters at a later back jump,
+  (`opto/parse1.cpp:210-445`); the frame enters at a later back jump,
   whose budget's cold path finds the code installed, and a
   specialization that does not hold leaves the frame in its baseline
   code and counts as a trap. A compile of its own per loop head, as
@@ -13388,9 +13388,9 @@ them from callee counts (`compiler/rscope.cpp:337-346`; "Inlining",
   collection, which halves the counts, arm it again. The compiler orders
   a type-case by frequency, leaves a type below a threshold to a send,
   and at a megamorphic site whose leading type has 90% of the sends,
-  HotSpot's `TypeProfileMajorReceiverPercent` (`opto/c2_globals.hpp:713`),
+  HotSpot's `TypeProfileMajorReceiverPercent` (`opto/c2_globals.hpp:721`),
   inlines that type behind a real send for the rest
-  (`opto/doCall.cpp:258-345`). Before the counting is built, the share of
+  (`opto/doCall.cpp:259-346`). Before the counting is built, the share of
   polymorphic and megamorphic sends in the benchmarks is measured with
   `JitStatistics`; the window's size and rhythm are measured.
 
@@ -13441,7 +13441,7 @@ with their home ("Inlining" above). What is not:
 - **A callee whose scope creates a block that escapes** is inlined once
   optimized code creates the block itself, its home an inlined frame
   object (stage 4, below): until then the plan sends it.
-- **Late inlining**, C2's (`opto/doCall.cpp:243-253`), inlines after
+- **Late inlining**, C2's (`opto/doCall.cpp:244-254`), inlines after
   optimization a send whose receiver the graph proved -- an object a
   callee returns, a value object made and used at once -- as a pass of
   its own, built with escape analysis.
@@ -13450,7 +13450,7 @@ with their home ("Inlining" above). What is not:
 
 - **Each SSA value has a representation**: tagged, Int64 or Float64,
   chosen by the feedback, as Maglev's nodes carry theirs
-  (`maglev/maglev-ir.h:922-931`; `maglev-graph-builder.cc:1590-1690`).
+  (`maglev/maglev-ir.h:935-944`; `maglev-graph-builder.cc:1623-1723`).
 - **The 61-bit range is checked only where a value is tagged again.** Two
   `SmallInteger`s added in 64 bits give the exact result unless 64 bits
   overflow, so each operation checks only the flag its instruction sets,
@@ -13464,7 +13464,7 @@ with their home ("Inlining" above). What is not:
   the raw area; leaving optimized code, one in `SmallFloat`'s range is
   tagged, any other allocates a `Float`, which escape analysis removes
   where it can. A loop phi whose inputs share a representation takes it,
-  Maglev's phi untagging (`maglev/maglev-phi-representation-selector.h:167-308`),
+  Maglev's phi untagging (`maglev/maglev-phi-representation-selector.h:167-313`),
   so a loop over numbers tags nothing. Mixed arithmetic follows the
   kernel's semantics exactly and is tested against the interpreter.
   The operations themselves are built: `floats::emit` computes every
@@ -13549,7 +13549,7 @@ relied on before it installs (stage 8), and a list per application of
 the code that depends on it, where the install today scans every
 copy's dependencies (`JitState::copies_depending`). Strongtalk marks by class
 (`code/zone.cpp:634-650`), HotSpot by its dependency kinds
-(`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1772-1792`), V8
+(`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1778-1799`), V8
 by its `DependentCode` groups (`objects/dependent-code.h:37-70`).
 
 ### Verification
@@ -13562,12 +13562,12 @@ scope's words and of each poll's entry, and the optimizer's goldens
 ("Inlining", "Verification"). Not
 built: on-stack replacement at the first back jump under
 `NS_NEXT_STRESS_OPTIMIZE`, as V8's `stress_maglev`
-(`flags/flag-definitions.h:601`), with stage 6;
+(`flags/flag-definitions.h:621`), with stage 6;
 `NS_NEXT_STRESS_INLINED_FRAMES`, every read of an inlined frame object
 taking an exit and every non-local return into an inlined home taken in
 turn by its continuation and by the unwinder, with stage 4; the
 verification of representations after every pass, as Maglev's
-`maglev_assert` (`:679-682, 757`), and of each interrupt point's
+`maglev_assert` (`:696-699, 774`), and of each interrupt point's
 metadata against the leftover analysis's liveness once a value lives
 outside its frame word and its eliminated blocks, and assertions in the generated code of the
 types the compiler assumed; and differential tests that run generated
@@ -14396,7 +14396,7 @@ on either side of the crossing, not the crossing.
 **What the prior art does.** None of the three pays a crossing of the
 platform convention per call; each pays it only where its runtime calls
 in. HotSpot's `Method::set_code` swaps the pointer every interpreted
-invoke jumps through (`share/oops/method.cpp:1448-1488`,
+invoke jumps through (`share/oops/method.cpp:1441-1481`,
 `cpu/x86/interp_masm_x86.cpp:731`); the frameless i2c adapter, 12 to 20
 instructions, loads the arguments into the compiled convention and jumps
 (`cpu/x86/sharedRuntime_x86_64.cpp:1099-1263`), so no interpreter frame
@@ -14408,16 +14408,16 @@ C++ calls Java (`cpu/x86/stubGenerator_x86_64.cpp:186-379`). V8's
 Ignition and Sparkplug share one frame layout, one slot apart
 (`src/execution/frame-constants.h:744-837`); every caller jumps through
 the function's dispatch entry, which `UpdateCodeImpl` points at the
-baseline code (`src/objects/js-function-inl.h:142-157`), and a return
+baseline code (`src/objects/js-function-inl.h:140-161`), and a return
 lands in the interpreter's trampoline with the value in its accumulator,
 which reads the call's opcode for its length alone
-(`src/builtins/x64/builtins-x64.cc:1262-1276`); `JSEntry` crosses only
-from C++ (`:347-553`). Cog's interpreter, a C loop as this one is a Rust
+(`src/builtins/x64/builtins-x64.cc:1334-1348`); `JSEntry` crosses only
+from C++ (`:378-616`). Cog's interpreter, a C loop as this one is a Rust
 loop, builds the callee's frame itself and jumps into the method past
-its frame-building prologue (`cointerp.c:11322-11395`); machine code
+its frame-building prologue (`cointerp.c:14190-14261`); machine code
 returns to an interpreted caller through a trampoline that resets the C
 stack and jumps into `interpret()` afresh
-(`cogitX64SysV.c:8334-8393`), so no C frame ever waits for machine code.
+(`cogitX64SysV.c:8844-8903`), so no C frame ever waits for machine code.
 
 **Why a call stub and not Cog's switch.** Cog never returns into the C
 frame that entered machine code; here the run loop's frames hold `Rc`s
@@ -14663,7 +14663,7 @@ lowering of one instruction:
   unconditional jumps to labels, calls, returns -- and one encoder each for
   x64 and AArch64, with labels, branches sized in one pass (forward
   branches at their longest, backward ones exactly, as Cog's
-  `generateInstructionsAt` does, `:38529-38596`), and one contract on the
+  `generateInstructionsAt` does, `:40721-40790`), and one contract on the
   condition flags that every encoder honours: each operation sets, keeps
   or clobbers them, and says which conditions it defines. AArch64
   materializes a constant in place with a `movz`/`movk` sequence of at
@@ -14742,8 +14742,8 @@ per-architecture idioms; nothing above changes.
 ### Executable memory
 
 - **Strict W^X on every platform.** V8, HotSpot and Cog run code pages
-  read-write-execute on x64 Windows and Linux (`src/heap/memory-allocator.cc:682-697`;
-  `os/windows/os_windows.cpp:3740`; Cog's
+  read-write-execute on x64 Windows and Linux (`src/heap/memory-allocator.cc:681-696`;
+  `os/windows/os_windows.cpp:3761`; Cog's
   `prior-art/opensmalltalk-vm/platforms/win32/vm/sqWin32SpurAlloc.c:190-205`), and switch per thread
   on Apple AArch64 (`pthread_jit_write_protect_np`;
   `src/common/code-memory-access-inl.h:323-332`;
@@ -14757,7 +14757,7 @@ per-architecture idioms; nothing above changes.
   (`prior-art/opensmalltalk-vm/platforms/unix/vm/sqUnixMemory.c:335-373`), which also lets road step
   9 compile on a thread of its own while machine code runs -- V8 turns
   concurrent Sparkplug off where it can only toggle
-  (`src/flags/flag-definitions.h:1269-1274`); on Apple AArch64 it is
+  (`src/flags/flag-definitions.h:1290-1295`); on Apple AArch64 it is
   `MAP_JIT` with the per-thread switch. On Windows each view is a range
   of placeholders, one per chunk of 1 MiB, and each chunk a section of
   its own mapped into both, so that a chunk given back returns its
@@ -14765,12 +14765,12 @@ per-architecture idioms; nothing above changes.
 - **One reservation of at most 128 MiB**, AArch64's `bl` reach, so every
   call within the zone is direct on both architectures; the stubs sit at
   its base and never move, as Cog's trampolines do
-  (`initializeCodeZoneFromupTo`, `:36320-36409`, generates them and then
+  (`initializeCodeZoneFromupTo`, `:37964-38098`, generates them and then
   aligns `methodZoneBase` above them) and as V8's short builtin calls
-  rely on (`src/execution/isolate.cc:5872-5918`).
+  rely on (`src/execution/isolate.cc:5941-5987`).
 - **AArch64's instruction cache is flushed once per install**, over the
   installed range, as HotSpot batches it
-  (`AArch64ICacheInvalidationContext`, `share/runtime/icache.hpp:132-157`).
+  (`AArch64ICacheInvalidationContext`, `os_cpu/linux_aarch64/icache_linux_aarch64.hpp:64-142`).
   x64 needs no flush.
 
 ### The native stack carries the return addresses
@@ -14779,13 +14779,13 @@ The return addresses of compiled frames are on the **native stack of
 the thread that runs the interpreter**, so that a call into Rust needs
 no switch of stacks. HotSpot and V8 call their
 runtime on the same stack their compiled code runs on, with no switch
-(`cpu/x86/c1_Runtime1_x86.cpp:78`; `src/builtins/x64/builtins-x64.cc:4524`,
+(`cpu/x86/c1_Runtime1_x86.cpp:78`; `src/builtins/x64/builtins-x64.cc:4934`,
 switching only for WebAssembly), while Cog switches to the C stack on
 every call into the runtime and back (`genSmalltalkToCStackSwitch`,
-`:8580-8590`). With the return addresses on the thread's own stack, a
+`:9078-9088`). With the return addresses on the thread's own stack, a
 leaf call is a plain call, and Windows' stack probes and unwinder find
 the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
-"gets hopelessly confused" by a stack switch (`:8264-8275`).
+"gets hopelessly confused" by a stack switch (`:8489-8500`).
 
 - **The activation stack is unchanged**: compiled frames' words are
   there, at the interpreter's positions; the native stack holds only the
@@ -14801,11 +14801,11 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
   slot at `[sp]`, so the exit's walk, the cut and the lookup of a body by
   a return address read the same layout, a slot's size apart
   (`Abi::stack_slot_bytes`). V8 (`EnterFrame`,
-  `src/codegen/arm64/macro-assembler-arm64.cc:3109`) and HotSpot
-  (`build_frame`, `cpu/aarch64/macroAssembler_aarch64.cpp:5965-5973`)
+  `src/codegen/arm64/macro-assembler-arm64.cc:3124`) and HotSpot
+  (`build_frame`, `cpu/aarch64/macroAssembler_aarch64.cpp:5996-6004`)
   keep it so. Rejected: Cog's second stack pointer, `x16`, which its
   frames are pushed on in 8-byte words and from which it aligns `sp`
-  before each call into C (`cogitARMv8.c:345`, `:6359`) -- a register
+  before each call into C (`cogitARMv8.c:345`, `:6560`) -- a register
   taken, and a native stack laid out unlike x64's. Three operations of
   `ns-assembler` carry it, each nothing or the plain instruction on x64, whose machine code they leave byte for byte
   as it was:
@@ -14854,13 +14854,13 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
 The internal convention is ns-next's own; only the entry and the leaf
 shim cross the platform ABI. Pinned in callee-saved registers while
 machine code runs: **the frame base** on the activation stack, **the
-mutator's context** (HotSpot's `r15_thread`, Cog's `VarBaseReg`, `:351`),
+mutator's context** (HotSpot's `r15_thread`, Cog's `VarBaseReg`, `:357`),
 and **the object space's base**, since a handle is a byte offset and
 every field access is base plus offset (HotSpot's `r12_heapbase`, V8's
-`r14` pointer-compression base, `src/codegen/x64/register-x64.h:360-391`).
+`r14` pointer-compression base, `src/codegen/x64/register-x64.h:363-394`).
 A send passes the receiver and up to two arguments in machine registers
 as well as in their slots' places, the callee storing them only where it
-needs them (Cog's `numRegArgs`, `:2761`). Which machine register plays
+needs them (Cog's `numRegArgs`, `:2819`). Which machine register plays
 which role is the macro assembler's, per convention: `Abi` names three,
 `Windows64`, `SystemV` and `Aapcs64` -- the last Linux's and Apple's
 alike, which differ in nothing the JIT relies on -- and each answers its
@@ -14894,12 +14894,12 @@ host by `jit::cross_assembly_tests`, and runs on AArch64 under QEMU
 The caches stay data, shared with the interpreter; machine code reads
 and writes the same sites at the same `feedback_base`, so road step 9
 reads one profile whichever tier ran, as Maglev reads the feedback vector
-Ignition and Sparkplug share (`src/maglev/maglev-graph-builder.cc:6503-6564`;
-`builtins-x64.cc:1886-1929`). HotSpot has moved its compiled inline
+Ignition and Sparkplug share (`src/maglev/maglev-graph-builder.cc:6434-6495`;
+`builtins-x64.cc:1988-2031`). HotSpot has moved its compiled inline
 caches out of the code into data (`CompiledICData`,
 `share/code/compiledIC.hpp:57-97`); Cog keeps them in code and so scans
 the whole zone to unlink every send to a method on every install
-(`unlinkSendsToandFreeIf`, `:12523-12604`), which live editing would
+(`unlinkSendsToandFreeIf`, `:13044-13125`), which live editing would
 make frequent. "A cache records what the lookup decided; it never
 decides" holds unchanged.
 
@@ -14925,7 +14925,7 @@ decides" holds unchanged.
   holds four, `code/compiledPIC.hpp:36`; Cog's six, SOMns's chain six),
   and past that the megamorphic stub probes the global cache from
   machine code, as Cog's open PIC probes the interpreter's method cache
-  (`:29031-29168`). A miss calls the lookup as a leaf, which fills the
+  (`:30611-30748`). A miss calls the lookup as a leaf, which fills the
   entry and the cell.
 - **A lexical, `self`, `outer` or private send checks no receiver
   guard** where the resolution does not depend on the receiver's class,
@@ -14933,7 +14933,7 @@ decides" holds unchanged.
   (`prior-art/somns/src/som/interpreter/nodes/dispatch/LexicallyBoundDispatchNode.java:17-35`).
 - **Measured, not decided: an indirect call through the cell or a
   patched direct call.** V8's Sparkplug+ and HotSpot patch only a call's
-  target, monotonically (`src/ic/ic.cc:851-869`, `:899-920`;
+  target, monotonically (`src/ic/ic.cc:865-883`, `:913-934`;
   `share/code/compiledIC.cpp:190-255`); patching writes code, so it costs
   a write through the second mapping and a flush on AArch64. The
   baseline calls indirectly through the cell; Strongtalk's "10%" for a
@@ -14944,7 +14944,7 @@ decides" holds unchanged.
   compare beside it -- so whether a patched direct call pays stays open
   ("What sends in machine code moved").
 - **No counts in the cache entries** in road step 8. HotSpot's C2 inlines
-  on receiver frequencies (`share/opto/doCall.cpp:258-350`) and pays about
+  on receiver frequencies (`share/opto/doCall.cpp:259-351`) and pays about
   30% for full profiling (`share/compiler/compilationPolicy.hpp:129-131`);
   Strongtalk inlined on its caches' contents and callee invocation counts
   alone (`compiler/rscope.cpp:318-355`). Whether road step 9 needs counts
@@ -14963,7 +14963,7 @@ Strongtalk, V8 and HotSpot again for it.
 - **A callee with no machine code is compiled by the miss.** The leaf
   that fills an entry counts the callee's entry as a push would and
   compiles it at its second, as Cog's `ceSend` compiles a method its
-  send finds in the method cache (`cointerp.c:16708-16807`); only a body
+  send finds in the method cache (`cointerp.c:22743-22842`); only a body
   the compiler refuses leaves the call to an exit, which the run loop
   turns into an interpreted push. So installing code no longer needs the
   zone unshared: it is installed while machine code runs, which never
@@ -14972,7 +14972,7 @@ Strongtalk, V8 and HotSpot again for it.
   chosen from the entry's target alone, when it is filled: a slot getter
   loads the field; a constant, the receiver or a parameter answers it --
   Cog's quick methods (`genQuickReturnConst`, `genQuickReturnInstVar`,
-  `genQuickReturnSelf`, `cogitX64SysV.c:30418-30463`); a slot setter
+  `genQuickReturnSelf`, `cogitX64SysV.c:32012-32057`); a slot setter
   stores through the inline write barrier; a method whose fast path
   is a leaf-safe mirror row runs the row's leaf through a leaf of its own;
   a private or `super` slot accessor compares the guard its entry
@@ -15006,7 +15006,7 @@ Strongtalk, V8 and HotSpot again for it.
   gain beyond noise ("Safepoints and the depth limit").
 - **The megamorphic stub probes a machine-readable mirror of the global
   cache** beside the cells, written wherever the global cache is, as
-  Cog's open PIC probes the method cache (`cogitX64SysV.c:29031-29168`),
+  Cog's open PIC probes the method cache (`cogitX64SysV.c:30611-30748`),
   Strongtalk's megamorphic stub its lookup cache
   (`prior-art/strongtalk/vm/code/stubRoutines.cpp:315-435`), V8's
   megamorphic load its stub cache and HotSpot's vtable stub the vtable;
@@ -15042,7 +15042,7 @@ or more, and a result to box with eden full. The goldens under
   wherever it declines, so that the row's failures stay its leaf's
   (`targets::emit_row_stub`). This is Cog's compiled primitive
   (`genFloatArithmetic:preOpCheck:boxed:`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64WIN64.c:14690-14755`),
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cogitX64WIN64.c:15432-15497`),
   not code inline at every arithmetic site: a site stays the size of a
   send, and the stub, about 455 bytes on x64, is shared by every site
   of its row (30 stubs, about 14 KB a zone; [OPEN-WORK.md](../OPEN-WORK.md)
@@ -15070,13 +15070,13 @@ or more, and a result to box with eden full. The goldens under
   the exponent's offset `896 << 53` taken off, shifted and tagged, every
   constant from `Heap::machine_layout()`), after the range test
   `is_small_float_bits` states -- Cog's
-  `genJumpNotSmallFloatValueBits:scratch:` (`:15321-15357`) -- and
+  `genJumpNotSmallFloatValueBits:scratch:` (`:16055-16091`) -- and
   boxes any other through eden's bump (`box_float`), writing the
   `FloatHeader` and `FloatClass` machine words as `Heap::allocate_float`
   writes them, a new object's stores needing no barrier: Cog's
   `genInstantiateFloatValue:into:scratchReg:scratchReg:mayFail:`
-  (`:15196-15270`) and Maglev's `Float64ToTagged`, which allocates its
-  heap number inline (`prior-art/v8/src/maglev/maglev-ir.cc:5900-5915`).
+  (`:15911-15985`) and Maglev's `Float64ToTagged`, which allocates its
+  heap number inline (`prior-art/v8/src/maglev/maglev-ir.cc:5982-5997`).
   With eden full the operation declines and the leaf allocates, and
   collects if it must.
 - **Four groups of rows.** Binary, a `Float` receiver's `+ - * /` and
@@ -15112,11 +15112,11 @@ or more, and a result to box with eden full. The goldens under
   is compiled with, without asking, and the check, plain integer code,
   invites the compiler to no instruction past SSE2 before the message
   is printed. HotSpot asks CPUID once at start (`generate_get_cpu_info`,
-  `prior-art/jdk/src/hotspot/cpu/x86/vm_version_x86.cpp:124`, and the
-  SSE level it settles, `:959-972`) and emits `roundsd` only with
-  SSE4.1 (`Op_RoundDoubleMode`, `prior-art/jdk/src/hotspot/cpu/x86/x86.ad:3171`),
+  `prior-art/jdk/src/hotspot/cpu/x86/vm_version_x86.cpp:125`, and the
+  SSE level it settles, `:989-1002`) and emits `roundsd` only with
+  SSE4.1 (`Op_RoundDoubleMode`, `prior-art/jdk/src/hotspot/cpu/x86/x86.ad:3166`),
   and V8 probes its `CpuFeatures` likewise
-  (`prior-art/v8/src/codegen/x64/assembler-x64.cc:181-245`); both serve
+  (`prior-art/v8/src/codegen/x64/assembler-x64.cc:188-253`); both serve
   every processor since the first x86-64, which ns-next does not: one
   requirement replaces a detection, a choice in the macro assembler and
   a stress mode that forces the base forms, without which no test on a
@@ -15136,12 +15136,12 @@ does, so every compiled frame's registers hold every value an observer
 can need at every instruction, and an exit flushes nothing. This is V8's
 Sparkplug's arrangement, which keeps only Ignition's accumulator in a
 machine register and stores every register the interpreter would
-(`docs/compiler/sparkplug/compiler-sparkplug.md:17`, `:33`); HotSpot's
+(`docs/compiler/sparkplug/compiler-sparkplug.md:19`, `:77`); HotSpot's
 C1, an optimizing compiler, keeps nothing across a call
 (`share/c1/c1_LinearScan.cpp:1254-1286`). Cog's simulated stack, which
 caches its operand stack in registers and spills it before every send,
-merge and trap (`ssFlushTo:`, `:40797-40860`, `:40924-40990`,
-`:38825-38840`), pays because a stack bytecode pushes and pops every
+merge and trap (`ssFlushTo:`, `:43243-43306`, `:43370-43436`,
+`:41019-41034`), pays because a stack bytecode pushes and pops every
 intermediate value; this register code writes each once, and the store
 Cog skips may not be skipped here. Measured before it was built, a cache
 would have served 27% to 75% of the frame loads, and doubling every
@@ -15159,9 +15159,9 @@ compare is not built.
 ### When a body is compiled
 
 - **Synchronously, at its second entry**, as Cog compiles on an
-  interpreter method-cache hit (`cointerp.c:5880-5905`); V8 compiles
+  interpreter method-cache hit (`cointerp.c:6122-6147`); V8 compiles
   Sparkplug code at about eight invocations weighted by length, in
-  batches (`src/execution/tiering-manager.cc:158-170`). The counter is
+  batches (`src/execution/tiering-manager.cc:162-174`). The counter is
   data on the compiled code, not in machine code. A body that cannot be
   compiled -- past a size the zone's layout bounds -- is marked and never
   tried again.
@@ -15171,7 +15171,7 @@ compare is not built.
   and the 40th (`jit::COMPILE_AT_BACK_JUMP`) compiles the body,
   synchronously, and switches, as Cog
   does at its 40 back jumps (`MinBackwardJumpCountForCompile`,
-  `cointerp.c:218`, `:2759`, `:8379-8409`), which compiles there too.
+  `cointerp.c:223`, `:2803`, `:8772-8802`), which compiles there too.
   The interpreter's backward jump pays one load and one compare inline
   (`JitSlot::back_edge_is_armed`, true while the body counts its entries
   or is compiled); the count, the compile and the question whether the
@@ -15195,7 +15195,7 @@ compare is not built.
   entry, as early as Cog's, and synchronously, where HotSpot's lowest
   compiled tier is a profiling compiler run on a thread of its own and
   its switch copies the frame into an OSR nmethod of its own
-  (`SharedRuntime::OSR_migration_begin`, `share/runtime/sharedRuntime.cpp:3815-3884`).
+  (`SharedRuntime::OSR_migration_begin`, `share/runtime/sharedRuntime.cpp:3847-3916`).
   An abandoned body counts nothing and is not entered: its state is no
   longer counting, and its revival is by entries, as it is today.
   "Between the tiers" above says how the frame switches. Decided with
@@ -15203,7 +15203,7 @@ compare is not built.
 - **Compilation on a thread of its own** is road step 9's; the second
   mapping keeps it open. Its optimizing compiler needs one, since its
   compile is costly; V8 compiles even its Sparkplug code there by
-  default (`concurrent_sparkplug`, `src/flags/flag-definitions.h:1276`).
+  default (`concurrent_sparkplug`, `src/flags/flag-definitions.h:1297`).
   The baseline compiler stays synchronous: a compile on a thread of its
   own would take its time off the mutator, but leave the body
   interpreted until the code is installed at a safepoint, and the miss
@@ -15231,9 +15231,9 @@ by a different rule.
 
 Machine code holds no handle, so nothing of it is patched or relocated by
 a collection -- V8 relocates embedded objects and pins pages with running
-code (`src/heap/mark-compact.cc:6339-6364`), HotSpot rewrites immediate
+code (`src/heap/mark-compact.cc:6090-6116`), HotSpot rewrites immediate
 oops (`share/code/nmethod.cpp:2073-2084`), Cog keeps a list of methods
-referring to young objects (`addToYoungReferrers`, `:12662-12674`).
+referring to young objects (`addToYoungReferrers`, `:13275-13287`).
 Literals are loaded through the heap's tables. A body's data words -- its
 `MakeClosure`s' closure sites ("Stage 4" below) -- lie in the zone right
 after its code, reached relative to the instructions that read them, so
@@ -15249,7 +15249,7 @@ next offset and 1 MiB, by the band and the damping every reservation
 beside the object space shrinks by
 ([memory.md](memory.md), "Giving committed memory back"). The default zone is 16 MiB
 (`jit::DEFAULT_ZONE_BYTES`), a first guess within the 128 MiB bound;
-Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:6851-6856`).
+Cog's default is 1,433,600 bytes (`defaultCogCodeSize`, `:7002-7007`).
 Decided with the user on 2026-10-30, as the first of the six decisions
 that make everything that grows reclaimable (plan
 `docs/superpowers/plans/2026-10-30-0103-jit-closures.md`, "Part 4d").
@@ -15268,9 +15268,9 @@ that make everything that grows reclaimable (plan
   A compile from inside a leaf -- the miss leaf, the initializer leaf, a
   future's `resolve` -- only sets the flags. Cog likewise only sets a flag
   when a compile finds no room (`callForCogCompiledCodeCompaction`,
-  `cointerp.c:12068-12074`, from a failed compile such as
-  `cogitX64SysV.c:4147-4149`) and compacts at its next event check
-  (`cointerp.c:65051-65054`). The refused compile also sets
+  `cointerp.c:15039-15045`, from a failed compile such as
+  `cogitX64SysV.c:4273-4275`) and compacts at its next event check
+  (`cointerp.c:17223-17226`). The refused compile also sets
   `JitState.zone_exhausted`, and records the bytes it needed
   (`JitState.wanted_bytes`), as the refused body's slot records its own
   (`JitSlot.needed`). While the exhaustion holds, a body that came due
@@ -15300,7 +15300,7 @@ that make everything that grows reclaimable (plan
   cell a compaction pointed at the miss stub costs the miss leaf on every
   hit -- those hits are held entries too, and pay towards the retry. Cog
   compacts at every compile that finds no room
-  (`callForCogCompiledCodeCompaction`, `cointerp.c:12068-12074`); a
+  (`callForCogCompiledCodeCompaction`, `cointerp.c:15039-15045`); a
   compaction here walks every cell, so a retry at every held entry would
   cost that walk per entry while active code fills the zone. The
   doubling bounds the fruitless compactions by the logarithm of the
@@ -15316,21 +15316,21 @@ that make everything that grows reclaimable (plan
 - **The usage counts** (`InstalledBody.usage`), Cog's `cmUsageCount`:
   - a body is born at 2 (`zone::INITIAL_USAGE`), what Cog's
     `initialMethodUsageCount` answers for a method whose primitive has no
-    machine-code generator (`:8837-8850`);
+    machine-code generator (`:9392-9405`);
   - a cache cell or a machine entry row written to name it raises it,
     while it is below 3 (`zone::LINKED_USAGE_CEILING`) -- only when a
     cell is written from its entry (`jit::cell_entry`) or a push writes a
     row (`jit::note_block_entry`), never on a call or an entry, so the hot
     path is unchanged -- as Cog raises a linked send's target while it is
     below `CMMaxUsageCount / 2` (`incrementUsageOfTargetIfLinkedSend`,
-    `:8697-8698`); the check of the cells (`jit::expected_cell_entry`)
+    `:9207-9208`); the check of the cells (`jit::expected_cell_entry`)
     raises nothing, so that a debug build frees as a release one does;
   - a body with an activation on the activation stack or in a
     suspension row (`Heap::active_codes`) is set to 7
     (`zone::MAXIMUM_USAGE`, `CMMaxUsageCount`, `:85`), as Cog's
-    `markMethodAndReferents` sets an active method (`:10073-10074`);
+    `markMethodAndReferents` sets an active method (`:10648-10649`);
   - every compaction halves every survivor's count (`compactCompiledCode`,
-    `:12756-12757`, `:12806-12807`).
+    `:13369-13370`, `:13419-13420`).
 - **The freeing.**
   - These are always freed: a dead body (its `CompiledCode` no longer
     upgrades: its mixin's row was freed or superseded) and a body its
@@ -15339,15 +15339,15 @@ that make everything that grows reclaimable (plan
   - A full collection frees them at once, after it reclaimed the ids
     (`JitState::free_dead_bodies`, from `World::collect`), as Cog's full
     collection frees the machine code of every unmarked method
-    (`freeUnmarkedMachineCode`, `:7473-7505`, from `cointerp.c:54977`).
+    (`freeUnmarkedMachineCode`, `:7642-7674`, from `cointerp.c:60218`).
     No holder needs writing: a cache entry holds its method, and so its
     code, so no cell names a dead body; its code id was freed with it,
     which cleared its machine entry row; and no activation runs it. The
     bytes freed since the last compaction -- by a collection or an
     abandonment -- are counted (`JitState.bytes_freed_since_compaction`,
-    Cog's `methodBytesFreedSinceLastCompaction`, `:12887`), and once they
+    Cog's `methodBytesFreedSinceLastCompaction`, `:13500`), and once they
     reach a quarter of the bodies' room, the quarter Cog's compaction
-    aims at (`freeOlderMethodsForCompaction`, `:12907-12911`), the
+    aims at (`freeOlderMethodsForCompaction`, `:13522-13526`), the
     collection asks for a compaction, which the run loop's next safepoint
     serves. Cog compacts only when a compile finds no room; asking at the
     collection as well keeps a zone full of dead code from refusing the
@@ -15357,7 +15357,7 @@ that make everything that grows reclaimable (plan
     the zone's end and the bodies marked free -- reach a quarter of the
     bodies' room past the stubs, as Cog's zone size is its method zone's
     past the trampolines, and what the refused compile needed
-    (`freeOlderMethodsForCompaction`, `:12897-12927`). A body freed this
+    (`freeOlderMethodsForCompaction`, `:13512-13542`). A body freed this
     way goes back to counting its entries. The freed bodies lie apart,
     and the survivors, re-aligned, can leave less than their sum, so the
     plan is made and, short of the aim, freeing goes on for the
@@ -15387,16 +15387,16 @@ that make everything that grows reclaimable (plan
     at the twins (three layouts), 15% faster with the table (interim,
     one build a side, 290.5 ms to 246.9).
 - **The slide and the fix-ups**, in Cog's order (`compactCogCompiledCode`,
-  `:5723-5743`):
+  `:5852-5872`):
   1. mark the active bodies (Cog's `markActiveMethodsAndReferents`,
-     `cointerp.c:17709-17727`);
+     `cointerp.c:21728-21746`);
   2. free what is always freed;
   3. free by usage;
   4. plan (`zone::CompactionPlan`): each survivor, in ascending order, at
      the next address its own alignment (`InstalledBody.alignment`)
      allows from the end of the stubs (`Zone.bodies_start`), which
      yields an old-start to new-start table (`planCompaction`,
-     `:13098-13115`) -- a body keeps its alignment so that its data words
+     `:13713-13730`) -- a body keeps its alignment so that its data words
      stay on cache lines of their own;
   5. remap every address outside the bodies through the plan: every
      cache cell (the sites', the polymorphic blocks' and the global
@@ -15408,15 +15408,15 @@ that make everything that grows reclaimable (plan
      stub's address stays. This comes before the bytes move, as Cog
      updates the stack zone and relocates its methods' references before
      it copies (`updateStackZoneReferencesToCompiledCodePreCompaction`,
-     `cointerp.c:21546-21601`; `relocateMethodsPreCompaction`,
-     `:13400-13418`);
+     `cointerp.c:25573-25628`; `relocateMethodsPreCompaction`,
+     `:14015-14033`);
   6. slide each survivor's bytes, code and data words, down in ascending
      order, through a buffer the writer reads back (`compactCompiledCode`,
-     `:12740-12824`), and fill every byte the survivors no longer cover --
+     `:13353-13437`), and fill every byte the survivors no longer cover --
      the gaps their alignment leaves and the room freed past the last --
      with stops (`macro_assembler::stop_bytes(Abi::host(), length)`, `int3` on
      x64, `udf #0` on AArch64), as Cog
-     fills the freed end of its zone (`stopsFromto`, `:5738`), so that an
+     fills the freed end of its zone (`stopsFromto`, `:5867`), so that an
      address a holder failed to remap traps rather than running stale
      code;
   7. rewrite the JIT's own records: the installed bodies, each
@@ -15445,8 +15445,8 @@ that make everything that grows reclaimable (plan
 - **A refusal is not permanent.** `ZoneFull` refuses no body for good:
   after a compaction bodies compile again, as Cog forgets which methods
   it found uncoggable after every compaction (`nilUncoggableMethods`,
-  `cointerp.c:14432-14433`) and as HotSpot, which stops compiling when
-  its code cache is full (`share/compiler/compileBroker.cpp:2371-2377`),
+  `cointerp.c:18127-18128`) and as HotSpot, which stops compiling when
+  its code cache is full (`share/compiler/compileBroker.cpp:2380-2386`),
   starts again once a collection's code unloading freed memory
   (`CodeCache::maybe_restart_compiler`, `share/code/codeCache.cpp:1083-1093`,
   from `share/gc/shared/classUnloadingContext.cpp:121`). Only a body
@@ -15540,9 +15540,9 @@ from falling between the agent's two writes ([debugger.md](debugger.md),
 constants and never reads the limit word. A back edge compares the
 whole request word with zero, as the interpreter's poll does, so that
 every bit, the hold's included, takes the safepoint -- one compare,
-as Cog's backward jumps check `stackLimit` (`:38851-38858`); V8 polls at
+as Cog's backward jumps check `stackLimit` (`:41045-41052`); V8 polls at
 a back edge only when its budget runs out
-(`src/interpreter/interpreter-generator.cc:2520-2521`). A back edge's
+(`src/interpreter/interpreter-generator.cc:2521-2522`). A back edge's
 poll that finds a request exits at the loop's head
 (`vm::Leave::SafepointAtLoopHead`, as an interpreted backward jump that
 finds one leaves its stretch), and once the safepoint is served the
@@ -15555,14 +15555,14 @@ depth limit" above).
 ### What the templates emit inline
 
 Cog's machine code proves each: `SmallInteger` arithmetic with tag checks
-and an overflow fallback (`genSpecialSelectorArithmetic`, `:39772`),
-compares fused with the following branch (`:35512`), the Boolean test of
+and an overflow fallback (`genSpecialSelectorArithmetic`, `:42057`),
+compares fused with the following branch (`:37155`), the Boolean test of
 a conditional -- one compare each here, `true` and `false` being
 immediates -- bump allocation in eden that requests a scavenge past the
 threshold and carries on into the slack, the collection waiting for the
-next safepoint (`genCreateFullClosure…`, `:19554-19620`), and the write
+next safepoint (`genCreateFullClosure…`, `:20327-20393`), and the write
 barrier with its early outs -- an immediate value, a young destination, an
-old value, an already remembered object (`:21739-21780`).
+old value, an already remembered object (`:23273-23314`).
 
 ### Stage 4: closures, non-local return, allocation and the barrier
 
@@ -15611,20 +15611,20 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   up to the ceiling, allocate old and born remembered once eden is spent
   -- and never collects. Cog carries on into the slack past its threshold
   inline and calls a trampoline that only schedules the scavenge
-  (`:19053-19077`, `cointerp.c:39866-39873`); here the limit already
+  (`:20107-20131`, `cointerp.c:44401-44408`); here the limit already
   stands below the threshold, so the leaf is the interpreter's own
   decision.
 - **The write barrier is inline with Cog's four early outs** -- an
   immediate or nil value, a young holder, an old value, an already
   remembered holder (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`,
-  `:21032-21082`) -- and only remembering an object calls a leaf, as
-  only Cog's `ceStoreCheckTrampoline` calls `remember:` (`:21075`). A
+  `:22856-22906`) -- and only remembering an object calls a leaf, as
+  only Cog's `ceStoreCheckTrampoline` calls `remember:` (`:22899`). A
   store into an object machine code has just allocated takes no barrier,
   as Cog's `genStoreSourceReg:slotIndex:intoNewObjectInDestReg:` takes
-  none (`:21120-21125`).
+  none (`:22944-22949`).
 - **`MakeClosure` reifies its frame inline, as Cog marries a frame in
   machine code** (`genGetActiveContextLarge:inBlock:`,
-  `:19271-19560`): the frame's reified word is tested inline, and a frame
+  `:20327-20575`): the frame's reified word is tested inline, and a frame
   not yet reified has its frame object bump-allocated and filled by
   machine code -- its receiver and current class from the frame, its
   home from the closure of a block's frame, its program counter as a
@@ -15671,7 +15671,7 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   the interpreter's push of the closure does -- the arity, the code, the
   receiver and current class from the captured frame -- and enters the
   block's machine code, as Cog's `genPrimitiveFullClosureValue` jumps into
-  the block (`:32704-32750`); the block's prologue fills its copied
+  the block (`:35455-35501`); the block's prologue fills its copied
   values where a method's nils its locals, and stores the closure as its
   frame's operand, which no return address derives. An interpreter's
   send of a closure whose body's machine entry row names machine code
@@ -15807,7 +15807,7 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   a forcing in Rust needs a continuation of its own, which no compiled
   call carries, and would cost an exit per future a clause's end forces.
 - **Non-local return is cut by a routine of its own, as Cog's
-  `ceNonLocalReturn` cuts it** (`cointerp.c:12761-13100`; `jit/cut.rs`):
+  `ceNonLocalReturn` cuts it** (`cointerp.c:15730-16070`; `jit/cut.rs`):
   a `NonLocalReturn`'s template calls the cut stub
   (`stubs::assemble_cut_stub`, `BlockWord::CutStub`) with its program
   counter. The cut takes the block's home as `raise_return` takes it,
@@ -15923,10 +15923,10 @@ the second time only on demand (`jit::baseline::BodyCopy`):
   `JitStatistics::freed_twins`, apart from the bodies.
 
 Prior art: Cog compiles a method twice when only one path needs a frame
-(`compileTwoPathFrameBuild`, `cogitX64SysV.c:30937-30990`, whose comment
+(`compileTwoPathFrameBuild`, `cogitX64SysV.c:33416-33469`, whose comment
 measures the frame build at 20% on the path that never needed it); V8
 exchanges interpreter and baseline frames mid-function over one frame
-layout (`builtins/x64/builtins-x64.cc:5657-5660`); Strongtalk puts a
+layout (`builtins/x64/builtins-x64.cc:6116-6119`); Strongtalk puts a
 block's cost on the path that uses it (`vm/compiler/node.hpp:1179-1227`).
 Exiting at the fallback's `MakeClosure` was rejected: it carves out a valid
 construct, and its exits would abandon the whole method. Cog's lazy

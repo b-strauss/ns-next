@@ -81,8 +81,8 @@ const COMPILE_AT_ENTRY: u32 = 2;
 /// The interpreted backward jump at which a body without machine code is
 /// compiled, and its frame switched into the code at the loop's head: its
 /// 40th, Cog's `MinBackwardJumpCountForCompile`
-/// (`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:218`, `:2759`,
-/// counted at `:8379-8409`), so that a loop in a body entered once -- a
+/// (`prior-art/opensmalltalk-vm/src/spur64.sista/cointerp.c:223`, `:2803`,
+/// counted at `:8772-8802`), so that a loop in a body entered once -- a
 /// benchmark's main loop -- runs compiled (`docs/design/execution.md`,
 /// "When a body is compiled").
 const COMPILE_AT_BACK_JUMP: u32 = 40;
@@ -1547,7 +1547,7 @@ impl InstalledBody {
     /// Raises the usage of a body a cell or a machine entry row is written
     /// to name, while it is below `zone::LINKED_USAGE_CEILING`, as Cog
     /// raises a linked send's target below `CMMaxUsageCount / 2`
-    /// (`incrementUsageOfTargetIfLinkedSend`, `cogitX64SysV.c:8697-8698`):
+    /// (`incrementUsageOfTargetIfLinkedSend`, `cogitX64SysV.c:9207-9208`):
     /// only the active bodies reach the maximum.
     fn note_linked(&self) {
         let usage = self.usage.get();
@@ -1687,7 +1687,7 @@ pub(crate) struct JitState {
     /// compaction: the run loop's next safepoint compacts it
     /// (`Mutator::compact_code_zone`), as Cog only sets a flag when a
     /// compile finds no room (`callForCogCompiledCodeCompaction`,
-    /// `cointerp.c:12068-12074`) and compacts at its next event check.
+    /// `cointerp.c:15039-15045`) and compacts at its next event check.
     compaction_requested: bool,
     /// Whether a compile found no room and no compaction has freed a
     /// quarter of the zone since, nor a full collection run: a body that
@@ -1716,7 +1716,7 @@ pub(crate) struct JitState {
     /// that ends the exhaustion resets it.
     fruitless_compactions: u32,
     /// The bytes of the bodies freed since the last compaction: Cog's
-    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:12887`). A
+    /// `methodBytesFreedSinceLastCompaction` (`cogitX64SysV.c:13500`). A
     /// full collection that finds a quarter of the bodies' room so freed
     /// asks for a compaction (`JitState::note_full_collection`).
     bytes_freed_since_compaction: u32,
@@ -4831,7 +4831,7 @@ fn compile_into_slot(
         // No room is no reason to refuse the body for good: it counts its
         // entries again, and the zone is compacted at the next safepoint,
         // as Cog forgets which methods it could not compile at every
-        // compaction (`nilUncoggableMethods`, `cointerp.c:14432-14433`).
+        // compaction (`nilUncoggableMethods`, `cointerp.c:18127-18128`).
         // A compile from inside a leaf, which cannot compact, only sets
         // the flags.
         // While the zone is already exhausted, a body that does not fit

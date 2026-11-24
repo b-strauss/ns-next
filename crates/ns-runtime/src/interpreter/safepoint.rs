@@ -324,7 +324,7 @@ impl Interpreter {
         }
         // A compile found the code zone full: compacted before a
         // collection is served, as Cog compacts its method zone at its next
-        // event check (`cointerp.c:65051-65054`). Here, between two
+        // event check (`cointerp.c:17223-17226`). Here, between two
         // stretches, machine code is not running and no return address
         // into the zone exists, so a body moves without a walk of the
         // native stack (`jit::zone`).
