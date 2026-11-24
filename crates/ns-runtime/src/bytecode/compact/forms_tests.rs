@@ -5,9 +5,13 @@
 use super::*;
 use crate::spec_tables::bytecode_table;
 
+/// How many forms there are: the arms of `form_name`. A new variant adds
+/// an arm there, which the compiler demands, and raises this count beside
+/// it, which the test holds `every_form` -- and so the book's rows -- to.
+const FORM_KINDS: usize = 64;
+
 /// The name of `form`'s variant. The match has no `_` arm, so that a new
-/// variant fails to compile until it is named here -- and then, unless
-/// `every_form` builds one and the book's table has its row, the test.
+/// variant fails to compile until it is named here.
 fn form_name(form: CompactInstruction) -> &'static str {
     match form {
         CompactInstruction::LoadNil { .. } => "LoadNil",
@@ -412,6 +416,7 @@ fn every_eight_byte_form_is_the_books() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), count, "every form is built once");
+    assert_eq!(count, FORM_KINDS, "a value of every form");
     let mut book: Vec<&str> = rows.iter().map(|row| row[0].as_str()).collect();
     book.sort_unstable();
     assert_eq!(book, names, "one row per form");

@@ -2,6 +2,58 @@
 //! (`docs/spec/bytecode.md`), which the tests of the instructions, their
 //! wire encoding and their eight-byte form hold the code to.
 
+use crate::bytecode::Instruction;
+
+/// How many kinds of instruction there are: the arms of
+/// `instruction_name`. A new instruction adds an arm there, which the
+/// compiler demands, and raises this count beside it, which the tables'
+/// tests then hold their samples -- and so the book's rows -- to.
+pub(crate) const INSTRUCTION_KINDS: usize = 37;
+
+/// The name of `instruction`'s kind, as the book's pages and rows give it.
+/// The match has no `_` arm, so that a new instruction must be named here.
+pub(crate) fn instruction_name(instruction: &Instruction) -> &'static str {
+    match instruction {
+        Instruction::LoadLiteral { .. } => "LoadLiteral",
+        Instruction::LoadSelf { .. } => "LoadSelf",
+        Instruction::LoadEnclosingObject { .. } => "LoadEnclosingObject",
+        Instruction::Move { .. } => "Move",
+        Instruction::StoreLocal { .. } => "StoreLocal",
+        Instruction::LoadOuterLocal { .. } => "LoadOuterLocal",
+        Instruction::StoreOuterLocal { .. } => "StoreOuterLocal",
+        Instruction::SendLexical { .. } => "SendLexical",
+        Instruction::SendPublic { .. } => "SendPublic",
+        Instruction::SendInlinable { .. } => "SendInlinable",
+        Instruction::SendSuper { .. } => "SendSuper",
+        Instruction::SendMirror { .. } => "SendMirror",
+        Instruction::MakeClosure { .. } => "MakeClosure",
+        Instruction::MakeArray { .. } => "MakeArray",
+        Instruction::MakeVector { .. } => "MakeVector",
+        Instruction::LoadVector { .. } => "LoadVector",
+        Instruction::StoreVector { .. } => "StoreVector",
+        Instruction::InitializeSlot { .. } => "InitializeSlot",
+        Instruction::ReturnSlotIfFilled { .. } => "ReturnSlotIfFilled",
+        Instruction::MakeFuture { .. } => "MakeFuture",
+        Instruction::ResolveFuture { .. } => "ResolveFuture",
+        Instruction::LoadOwnSlot { .. } => "LoadOwnSlot",
+        Instruction::InitializeSlotProvisionally { .. } => "InitializeSlotProvisionally",
+        Instruction::Return { .. } => "Return",
+        Instruction::ImplicitReturn { .. } => "ImplicitReturn",
+        Instruction::NonLocalReturn { .. } => "NonLocalReturn",
+        Instruction::SignalNonBoolean { .. } => "SignalNonBoolean",
+        Instruction::Jump { .. } => "Jump",
+        Instruction::JumpIfNotBoolean { .. } => "JumpIfNotBoolean",
+        Instruction::BranchIfFalse { .. } => "BranchIfFalse",
+        Instruction::BranchIfTrue { .. } => "BranchIfTrue",
+        Instruction::IntegerBinary { .. } => "IntegerBinary",
+        Instruction::AllocateInstance { .. } => "AllocateInstance",
+        Instruction::InitializeInstance { .. } => "InitializeInstance",
+        Instruction::CheckAppliedClause { .. } => "CheckAppliedClause",
+        Instruction::InitializeSuperclass { .. } => "InitializeSuperclass",
+        Instruction::InitializeAppliedLevel { .. } => "InitializeAppliedLevel",
+    }
+}
+
 /// The chapter the tables stand in, as the book has it.
 const BYTECODE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),

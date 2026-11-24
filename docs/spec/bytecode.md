@@ -54,12 +54,16 @@ A body's kind is one of four:
 
 r[bytecode.body.statement-map]
 The statement map gives, for each statement of the body, the half-open
-range of instruction indices the statement compiled to. For a method or a
-block the statements are its local variables' initializers in declaration
-order, then the statements of its code body; for an initializer, each
-slot's initializer, then each initializer expression, in that order. A
-frame stands at a statement boundary when its instruction index is the
-start of a range.
+range of instruction indices the statement compiled to. For a method or
+a block the statements are the initializers of its local variables that
+have one, in declaration order, then the statements of its code body.
+For an initializer they are, in order: one statement of the checks of
+its `<:` clauses, when it has any; one of its superclass initialization;
+one per level a `<:` clause adds; one per slot that has an initializer,
+in declaration order; then each initializer expression. A lazy slot's
+getter has one statement, its initializer, after the
+`ReturnSlotIfFilled` it begins with. A frame stands at a statement
+boundary when its instruction index is the start of a range.
 
 ## Registers
 
@@ -98,8 +102,10 @@ its arguments are the window's registers, its header where they end.
 
 r[bytecode.register.leftovers]
 A register the frame did not write since it was last overwritten by a
-callee is dead. When a send executes, every register above its window is
-dead: the callee's header and registers lie over them. No instruction
+callee is dead. When an instruction with a window executes -- a send but
+`SendMirror`, `InitializeSuperclass`, `InitializeAppliedLevel` -- every
+register from the end of its window, or from the local count when that
+is higher, is dead: the callee's header and registers lie over them. No instruction
 reads a register that is dead along any path from the body's entry to it
 -- a loop's back edges and the entry included, where every scratch
 register is dead -- and a reference lowering, an image and every
@@ -233,7 +239,7 @@ and the three a body defers to its run, `UnresolvedIdentifier`,
    ([`semantics.module.root-rule`](language/semantics.md#r-semantics.module.root-rule)).
 2. If *literal* is `BodyTooLarge` naming a limit, signal `b too large:
    reason`, where *b* is `method`, `block`, `initializer`, `factory` or
-   `superclass clause`, the body's kind, and *reason* is `it needs more
+   `superclass clause`, the kind of the activation running the body, and *reason* is `it needs more
    than 65535 registers`, `it takes or sends more than 255 arguments` or
    `it needs more than 1048576 instructions`
    ([`bytecode.limit.too-large`](#r-bytecode.limit.too-large)).
@@ -307,8 +313,9 @@ register number of the frame `depth` steps out.
 **Reads** no register of its own frame. **Writes** `destination`.
 **Outer reach** `depth`. **Jumps** nowhere.
 
-1. Let *f* be the executing frame. Repeat `depth` times: let *f* be the
-   frame that made the closure *f* runs.
+1. Let *f* be the executing frame. Repeat `depth` times: if *f* runs a
+   closure, let *f* be the frame that made it; otherwise stop, so that a
+   depth past the nesting finds the outermost frame.
 2. `destination` := the value of register `index` of *f*.
 
 ### StoreOuterLocal
@@ -474,7 +481,9 @@ r[bytecode.instruction.make-future]
 **Encoding.** [Wire](#r-bytecode.wire.tags) tag 36; [eight-byte](#r-bytecode.compact.forms) forms `MakeFuture`, `Wide`.
 **Reads** `closure`. **Writes** `destination`. **Jumps** nowhere.
 
-1. `destination` := a new unresolved future whose computation is the
+1. If `closure` holds no closure, signal `MakeFuture needs a block`;
+   only an image can make it so.
+2. `destination` := a new unresolved future whose computation is the
    closure in `closure`
    ([`semantics.slot.simultaneous`](language/semantics.md#r-semantics.slot.simultaneous)).
 
@@ -829,6 +838,14 @@ instruction count (`u32`); and its instructions. Its outer reach, whether
 it addresses its own slots and its family size are not written: the
 decoder derives them from the instructions, as the compiler does.
 
+The fields of a body's record, in order, each with its width;
+`statements` is the statement map, a `u32` count and that many entries of
+three `u32`s, and `instructions` the instructions themselves:
+
+```spec-table wire-body
+kind:u8  argument_count:u16  register_count:u16  copied_count:u16  local_count:u16  source_start:u32  source_end:u32  statement_map:statements  uncached:u8  instruction_count:u32  instructions:instructions
+```
+
 r[bytecode.wire.instruction]
 An instruction is written as its tag (`u8`) followed by its operands, in
 the order and the widths its row of the layout table gives: `u8`, `u16`
@@ -1158,7 +1175,7 @@ Breakpoint
 An image is untrusted input. The image decoder refuses a body, and with
 it the image, unless every rule below holds; it checks them before any
 code of the image runs, and no byte sequence makes it fail otherwise than
-by refusing. The rules are numbered in the order the decoder meets them.
+by refusing.
 
 r[bytecode.verify.tags]
 1. Every instruction, literal, integer-operation and code-kind tag is

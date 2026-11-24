@@ -2064,8 +2064,9 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
         });
     }
     // The statement map places a frame's instruction index in its source --
-    // the debugger's stops and lines, the trace's descriptions -- so every
-    // range is one of the body's own, or a reader indexes past it.
+    // the debugger's stops and lines, the trace's descriptions -- so a range
+    // that is backwards or leaves the body would place an instruction in no
+    // statement, or a statement outside the body.
     for (statement, range) in &code.statement_program_counter {
         if range.start > range.end || range.end > instructions.len() {
             return Err(DecodeError::StatementMapOutOfRange {

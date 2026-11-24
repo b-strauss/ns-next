@@ -11,7 +11,7 @@ use ns_syntax::Span;
 
 use super::*;
 use crate::builtins::primitive::MirrorPrimitive;
-use crate::spec_tables::bytecode_table;
+use crate::spec_tables::{INSTRUCTION_KINDS, bytecode_table, instruction_name};
 
 /// One instruction of every kind, under the name its row has, with the
 /// value of each of its register and target fields: every value distinct,
@@ -453,6 +453,15 @@ fn every_instruction_has_the_register_effects_the_book_gives() {
         })
         .collect();
     let samples = every_sample();
+    let kinds: std::collections::BTreeSet<_> = samples
+        .iter()
+        .map(|sample| instruction_name(&sample.instruction))
+        .collect();
+    assert_eq!(
+        kinds.len(),
+        INSTRUCTION_KINDS,
+        "a sample of every kind of instruction"
+    );
     assert_eq!(
         rows.keys().copied().collect::<Vec<_>>(),
         {
@@ -463,8 +472,7 @@ fn every_instruction_has_the_register_effects_the_book_gives() {
         "one row per instruction"
     );
     for sample in &samples {
-        let variant = format!("{:?}", sample.instruction);
-        let variant = variant.split([' ', '{']).next().expect("a variant name");
+        let variant = instruction_name(&sample.instruction);
         assert_eq!(
             sample.name.split('/').next(),
             Some(variant),

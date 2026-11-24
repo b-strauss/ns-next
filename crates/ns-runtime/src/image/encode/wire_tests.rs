@@ -10,7 +10,7 @@ use ns_syntax::Span;
 
 use super::*;
 use crate::Symbol;
-use crate::spec_tables::bytecode_table;
+use crate::spec_tables::{INSTRUCTION_KINDS, bytecode_table, instruction_name};
 
 /// The value of one field, as the sample was built with it.
 #[derive(Clone)]
@@ -702,6 +702,14 @@ fn the_books_wire_tags_are_the_encoders() {
             integer_operation_tag(operation),
         ));
     }
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|(space, ..)| space == "instruction")
+            .count(),
+        INSTRUCTION_KINDS - 1,
+        "a tag for every kind of instruction but `SendMirror`"
+    );
     assert_eq!(named, expected, "the named tags");
     let retired_expected: BTreeSet<_> = RETIRED_OPCODES
         .iter()
@@ -735,7 +743,22 @@ fn each_instruction_is_written_as_the_book_lays_it_out() {
     ids.ids.insert(Rc::as_ptr(&block) as usize, CODE_ID);
     let layouts = layouts();
     let samples = every_instruction(&block);
+    let kinds: BTreeSet<_> = samples
+        .iter()
+        .map(|sample| instruction_name(&sample.instruction))
+        .collect();
+    // Every kind but `SendMirror`, which has no wire form.
+    assert_eq!(
+        kinds.len(),
+        INSTRUCTION_KINDS - 1,
+        "a sample of every kind of instruction an image carries"
+    );
     for sample in &samples {
+        assert_eq!(
+            sample.name,
+            instruction_name(&sample.instruction),
+            "the sample's name is its kind's"
+        );
         let cells = layouts
             .get(sample.name)
             .unwrap_or_else(|| panic!("the wire layouts have no row {}", sample.name));
@@ -783,4 +806,54 @@ fn each_instruction_is_written_as_the_book_lays_it_out() {
         named,
         "one layout row per instruction with a wire tag and per literal"
     );
+}
+
+// spec: bytecode.wire.body
+#[test]
+fn a_body_is_written_as_the_book_lays_it_out() {
+    let code = CompiledCode::new(
+        CodeKind::Method,
+        vec![Instruction::Return { register: 13 }],
+        1,
+        20,
+        0,
+        vec![(0, 0..1)],
+        Span::new(3, 9),
+    );
+    let mut written = Writer::new();
+    encode_code(
+        &mut written,
+        &code,
+        &CodeIds::default(),
+        &mut symbols::Builder::new(),
+    )
+    .expect("the body encodes");
+    let rows = bytecode_table("wire-body");
+    assert_eq!(rows.len(), 1, "one row of the body's fields");
+    let mut expected = Writer::new();
+    for cell in &rows[0] {
+        match cell.as_str() {
+            "kind:u8" => expected.write_u8(code_kind_tag(CodeKind::Method)),
+            "argument_count:u16" => expected.write_u16(1),
+            "register_count:u16" => expected.write_u16(20),
+            "copied_count:u16" => expected.write_u16(0),
+            "local_count:u16" => expected.write_u16(14),
+            "source_start:u32" => expected.write_u32(3),
+            "source_end:u32" => expected.write_u32(9),
+            "statement_map:statements" => {
+                expected.write_u32(1);
+                for number in [0, 0, 1] {
+                    expected.write_u32(number);
+                }
+            }
+            "uncached:u8" => expected.write_u8(0),
+            "instruction_count:u32" => expected.write_u32(1),
+            "instructions:instructions" => {
+                expected.write_u8(OPCODE_RETURN);
+                expected.write_u16(13);
+            }
+            other => panic!("the body's record has no field `{other}`"),
+        }
+    }
+    assert_eq!(written.into_bytes(), expected.into_bytes());
 }

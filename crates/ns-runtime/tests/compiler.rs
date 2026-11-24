@@ -97,6 +97,7 @@ fn the_method_dispatch_finds_carries_its_body() {
     });
 }
 
+// spec: bytecode.body.statement-map
 #[test]
 fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indices() {
     let source = indoc! {"
@@ -164,6 +165,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
     assert_eq!(initializer.register_count, 17);
 }
 
+// spec: bytecode.body.statement-map
 #[test]
 fn an_uninitialized_slot_emits_nothing() {
     let source = indoc! {"
@@ -433,6 +435,7 @@ fn a_full_initializer_checks_every_applied_clause_before_the_superclass_message(
 /// initializers took in their clauses. The expectations were read off
 /// `disasm --initializer` of `vm_initializer.rs`'s three-level chain before
 /// the change, not derived from the compiler that now emits them.
+// spec: bytecode.body.statement-map
 #[test]
 fn the_own_part_is_the_body_of_today() {
     let source = indoc! {"
