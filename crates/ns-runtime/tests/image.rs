@@ -1067,6 +1067,7 @@ fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
 /// happens to look right if the decoder replays the same emission order the
 /// compiler used, rather than, say, numbering block by block after the root.
 // spec: bytecode.call-site
+// spec: bytecode.wire.call-sites
 #[test]
 fn a_decoded_family_is_numbered_as_the_compiler_numbered_it() {
     let source = indoc! {"
@@ -1194,6 +1195,7 @@ fn a_forward_make_closure_code_id_is_a_decode_error_not_a_panic() {
     );
 }
 
+// spec: bytecode.wire.tags
 #[test]
 fn an_invalid_code_kind_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1232,6 +1234,7 @@ fn a_retired_code_kind_tag_is_refused() {
     }
 }
 
+// spec: bytecode.wire.tags
 #[test]
 fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -1301,6 +1304,7 @@ fn write_return(writer: &mut encode::Writer) {
 /// A body written with any retired send tag -- a stale artifact from before
 /// call sites were widened (7-10) or before a number stopped being
 /// serialized at all (21-24) -- is refused, not misread.
+// spec: bytecode.wire.tags
 #[test]
 fn a_retired_send_tag_is_refused() {
     // Every retired number, not just one representative: 7-10 while a call
@@ -1355,6 +1359,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// carried as text (`RETIRED_LITERALS`), and a stale artifact's payload --
 /// its tag and whatever followed it -- meets an unknown tag rather than
 /// decoding as whatever literal takes the next free number.
+// spec: bytecode.wire.tags
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
     let mut payloads = vec![vec![LITERAL_UNBUILT_PATTERN_LITERAL + 1]];
@@ -2497,6 +2502,7 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
     );
 }
 
+// spec: bytecode.wire.tags
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an
@@ -8659,6 +8665,7 @@ fn a_block_body_created_by_two_make_closures_is_refused() {
 /// exactly as decoded, not partially numbered: `lexical_parents` runs to
 /// completion before any send is touched, so a family that never starts
 /// numbering never mutates anything.
+// spec: bytecode.wire.call-sites
 #[test]
 fn number_call_site_families_leaves_the_table_untouched_when_it_fails() {
     let block = code_with(

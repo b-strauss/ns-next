@@ -19,6 +19,9 @@ use super::opcodes::*;
 use super::shipped_names::{NamePosition, ShippedKind, ShippedName};
 use super::{mixins, symbols};
 
+#[cfg(test)]
+mod wire_tests;
+
 pub const MAGIC: &[u8; 4] = b"NSNX";
 /// The format version, refused on load when it does not match and never
 /// migrated. It is not bumped when the layout or the compiler's codegen
