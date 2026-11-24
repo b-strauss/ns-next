@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 4011000
 1004000

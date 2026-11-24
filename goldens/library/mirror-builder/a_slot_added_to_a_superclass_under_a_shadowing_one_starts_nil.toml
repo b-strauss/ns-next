@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
 stdout = '''
 1 2 4 3 5 an object does not understand #d 6
 1 2 4 3 5 nil 6

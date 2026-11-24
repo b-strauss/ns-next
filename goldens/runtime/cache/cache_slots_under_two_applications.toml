@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 cell v | narrow cell
 cell v | wide wide a wide c cell

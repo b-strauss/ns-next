@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit"]
 stdout = '''
 1001000
 '''

@@ -1,4 +1,4 @@
-rules = ["semantics.value.identity"]
+rules = ["semantics.value.identity", "runtime.memory.identity-hash"]
 stdout = '''
 true
 true

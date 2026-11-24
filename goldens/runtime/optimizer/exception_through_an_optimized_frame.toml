@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 1782659400
 6049

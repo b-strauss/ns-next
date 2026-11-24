@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
 stdout = '''
 1 2 2 4 3 5 6
 1 nil 2 4 3 5 6

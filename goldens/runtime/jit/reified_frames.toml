@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 3 3 0 cannotReturn: the enclosing method activation has already returned
 8 8 1 cannotReturn: the enclosing method activation has already returned

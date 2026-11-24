@@ -2119,6 +2119,7 @@ mod tests {
     /// Every refused forward declines, and leaves both sides as they were:
     /// each old object is still itself, no root names its replacement, and
     /// each `Point` and `Wide` still answers its own `sum`.
+    // spec: runtime.forward-identity
     #[test]
     fn a_refused_forward_changes_nothing() {
         let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);
@@ -2988,6 +2989,7 @@ mod tests {
 
     /// An instance of a program's subclass of a shipped class is the
     /// program's: its class's own mixin is not shipped.
+    // spec: runtime.forward-identity
     #[test]
     fn a_program_subclass_of_a_shipped_class_is_forwarded() {
         let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);
