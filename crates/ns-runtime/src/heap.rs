@@ -16165,6 +16165,7 @@ mod tests {
     /// longer than the register file stops at its end rather than writing
     /// into the activation below: an image, not the compiler, is what can
     /// present one.
+    // spec: bytecode.instruction.make-closure
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = frame_heap();

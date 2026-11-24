@@ -2286,6 +2286,7 @@ mod tests {
         )
     }
 
+    // spec: bytecode.instruction.initialize-slot
     #[test]
     fn a_body_with_an_own_slot_instruction_addresses_its_own_slots() {
         let instructions = [

@@ -1,4 +1,4 @@
-rules = ["semantics.gap.actors"]
+rules = ["semantics.gap.actors", "bytecode.instruction.load-literal"]
 stdout = '''
 asynchronous send of `answer` needs actors, which ns-next does not build yet (§5.6)
 asynchronous send of `answer` needs actors, which ns-next does not build yet (§5.6)

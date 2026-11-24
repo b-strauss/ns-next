@@ -1,4 +1,4 @@
-rules = ["semantics.gap.immutable-array"]
+rules = ["semantics.gap.immutable-array", "bytecode.instruction.make-array"]
 stdout = '''
 9
 1

@@ -1566,6 +1566,7 @@ fn a_body_past_the_argument_limit_round_trips_and_still_raises() {
 /// Each reason a body is too large has a literal tag of its own, and
 /// decodes to the literal that names it.
 // spec: bytecode.limit.too-large
+// spec: bytecode.instruction.load-literal
 #[test]
 fn each_too_large_literal_decodes_to_its_reason() {
     for (tag, limit) in [
@@ -1604,6 +1605,7 @@ fn each_too_large_literal_decodes_to_its_reason() {
 /// Each construct ns-next does not build has a literal tag of its own, and
 /// decodes to the literal that names it: an asynchronous send with its
 /// selector, a pattern literal with nothing.
+// spec: bytecode.instruction.load-literal
 #[test]
 fn each_unbuilt_literal_decodes_to_its_construct() {
     let selector = Symbol::intern("printString");

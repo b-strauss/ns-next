@@ -1,4 +1,4 @@
-rules = ["semantics.method.return", "semantics.block.closure"]
+rules = ["semantics.method.return", "semantics.block.closure", "bytecode.instruction.store-local"]
 stdout = '''
 1
 '''

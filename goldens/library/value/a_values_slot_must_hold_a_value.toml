@@ -1,4 +1,4 @@
-rules = ["semantics.value.conditions", "runtime.slot.write"]
+rules = ["semantics.value.conditions", "runtime.slot.write", "bytecode.instruction.initialize-slot"]
 status = 1
 stdout = '''
 an Object

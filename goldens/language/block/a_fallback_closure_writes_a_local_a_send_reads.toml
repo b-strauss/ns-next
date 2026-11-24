@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure"]
+rules = ["semantics.block.closure", "bytecode.instruction.load-outer-local", "bytecode.instruction.store-outer-local"]
 stdout = '''
 10
 10

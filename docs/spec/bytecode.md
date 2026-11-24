@@ -123,7 +123,8 @@ A body that would pass one of these limits compiles to a body whose first
 instruction loads the literal `BodyTooLarge` naming the limit it passed
 -- the registers first, when its named variables do not fit, otherwise
 the first its compilation met -- so that the program fails only when the
-body runs, signalling an error that names the limit.
+body runs, signalling an error that names the limit
+([`bytecode.instruction.load-literal`](#r-bytecode.instruction.load-literal)).
 
 ## Call sites
 
@@ -202,3 +203,295 @@ CheckAppliedClause           -                                              -   
 InitializeSuperclass         argument_sources                               destination  -        yes            0            no
 InitializeAppliedLevel       argument_sources                               destination  -        yes            0            no
 ```
+
+## Instructions
+
+Each instruction has a page in the frame of the JVM specification's
+chapter 6: its operands, its encodings -- its tag in the wire encoding
+and its eight-byte forms -- what it reads, writes and jumps to (as the
+[register effects](#r-bytecode.register-effects) give it), its effect in
+numbered steps, and the errors it signals. A *register* operand is a
+register number of the executing frame, a *depth* a number of steps out,
+an *index* an instruction index of the body. "*r* := *v*" writes the
+value *v* into register *r*.
+
+### LoadLiteral
+
+r[bytecode.instruction.load-literal]
+**Operands.** `destination`, a register; `literal`, one of `Nil`,
+`Boolean`, `SmallInteger`, `Float`, `String`, `Symbol`, `LargeInteger`,
+and the three a body defers to its run, `UnresolvedIdentifier`,
+`BodyTooLarge` and `Unbuilt`.
+**Encoding.** Wire tag 0; eight-byte forms `LoadNil`, `LoadTrue`,
+`LoadFalse`, `LoadSmallInteger`, `LoadConstant`, `LoadLiteral`, `Wide`.
+**Reads** nothing. **Writes** `destination`, but for `BodyTooLarge`.
+**Jumps** nowhere; falls through, but for `BodyTooLarge`.
+
+1. If *literal* is `UnresolvedIdentifier` naming *n*, signal
+   ``internal: unresolved identifier `n` ``. A resolved module carries
+   one only as a module root's clause receiver, which never runs
+   ([`semantics.module.root-rule`](language/semantics.md#r-semantics.module.root-rule)).
+2. If *literal* is `BodyTooLarge` naming a limit, signal `b too large:
+   reason`, where *b* is `method`, `block`, `initializer`, `factory` or
+   `superclass clause`, the body's kind, and *reason* is `it needs more
+   than 65535 registers`, `it takes or sends more than 255 arguments` or
+   `it needs more than 1048576 instructions`
+   ([`bytecode.limit.too-large`](#r-bytecode.limit.too-large)).
+3. If *literal* is `Unbuilt` for an asynchronous send of selector *s*,
+   signal ``asynchronous send of `s` needs actors, which ns-next does not
+   build yet (§5.6)``
+   ([`semantics.gap.actors`](language/semantics.md#r-semantics.gap.actors));
+   if it is `Unbuilt` for a pattern literal, signal `a pattern literal
+   needs pattern matching, which ns-next does not build yet (§5.1.9)`
+   ([`semantics.gap.pattern`](language/semantics.md#r-semantics.gap.pattern)).
+4. Otherwise `destination` := the literal's value: `nil`, `true`,
+   `false`, the `SmallInteger` or the `Float`; a new `String` each time it
+   runs; the `Symbol` of the text; a new `LargeInteger` each time it runs,
+   for an integer beyond a `SmallInteger`'s range
+   ([`semantics.literal.integer`](language/semantics.md#r-semantics.literal.integer),
+   [`semantics.literal.string`](language/semantics.md#r-semantics.literal.string),
+   [`semantics.literal.symbol`](language/semantics.md#r-semantics.literal.symbol)).
+
+### LoadSelf
+
+r[bytecode.instruction.load-self]
+**Operands.** `destination`, a register.
+**Encoding.** Wire tag 1; eight-byte forms `LoadSelf`, `Wide`.
+**Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
+
+1. `destination` := the frame's receiver.
+
+### LoadEnclosingObject
+
+r[bytecode.instruction.load-enclosing-object]
+**Operands.** `destination`, a register; `depth`, a depth.
+**Encoding.** Wire tag 35; eight-byte forms `LoadEnclosingObject`,
+`Wide`.
+**Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
+
+`outer N` with no message after it
+([`semantics.outer.alone`](language/semantics.md#r-semantics.outer.alone)).
+
+1. `destination` := [Outer](runtime.md#r-runtime.outer) applied to the
+   running code and `depth`: the enclosing object `depth` levels out from
+   the class that declares the running code.
+
+### Move
+
+r[bytecode.instruction.move]
+**Operands.** `destination` and `source`, registers.
+**Encoding.** Wire tag 3; eight-byte forms `Move`, `Wide`.
+**Reads** `source`. **Writes** `destination`. **Jumps** nowhere.
+
+1. `destination` := the value of `source`.
+
+### StoreLocal
+
+r[bytecode.instruction.store-local]
+**Operands.** `source`, a register; `slot`, the register of a named
+local of the executing frame.
+**Encoding.** Wire tag 4; eight-byte forms `StoreLocal`, `Wide`.
+**Reads** `source`. **Writes** `slot`. **Jumps** nowhere.
+
+An assignment to a local; reading one needs no instruction, since its
+register is its value.
+
+1. `slot` := the value of `source`.
+
+### LoadOuterLocal
+
+r[bytecode.instruction.load-outer-local]
+**Operands.** `destination`, a register; `depth`, a depth; `index`, a
+register number of the frame `depth` steps out.
+**Encoding.** Wire tag 5; eight-byte forms `LoadOuterLocal`, `Wide`.
+**Reads** no register of its own frame. **Writes** `destination`.
+**Outer reach** `depth`. **Jumps** nowhere.
+
+1. Let *f* be the executing frame. Repeat `depth` times: let *f* be the
+   frame that made the closure *f* runs.
+2. `destination` := the value of register `index` of *f*.
+
+### StoreOuterLocal
+
+r[bytecode.instruction.store-outer-local]
+**Operands.** `source`, a register; `depth` and `index` as
+`LoadOuterLocal`'s.
+**Encoding.** Wire tag 6; eight-byte forms `StoreOuterLocal`, `Wide`.
+**Reads** `source`. **Writes** no register of its own frame. **Outer
+reach** `depth`. **Jumps** nowhere.
+
+1. Let *f* be the frame `LoadOuterLocal`'s step 1 finds.
+2. Register `index` of *f* := the value of `source`.
+
+### MakeClosure
+
+r[bytecode.instruction.make-closure]
+**Operands.** `destination`, a register; `code`, a body of kind `Block`;
+`parameters`, the block's parameter names, as many as `code`'s argument
+count; `copied`, registers, as many as `code`'s copied count.
+**Encoding.** Wire tag 29; eight-byte forms `MakeClosure`, `Wide`.
+**Reads** `copied`. **Writes** `destination`. **Outer reach** `code`'s
+outer reach less one. **Jumps** nowhere.
+
+1. Let *c* be a new closure of `code` whose making frame is the executing
+   frame and whose copied values are the values of `copied`, in order
+   ([`semantics.block.closure`](language/semantics.md#r-semantics.block.closure)).
+2. If `code`'s outer reach is not 0, the executing frame keeps its
+   registers after it returns, for *c* and the closures it makes to
+   reach.
+3. `destination` := *c*.
+
+An activation of *c* has the receiver and the current class of its making
+frame, its parameters in its argument registers and its copied values in
+the registers after its header.
+
+### MakeArray
+
+r[bytecode.instruction.make-array]
+**Operands.** `destination`, a register; `element_registers`, registers.
+**Encoding.** Wire tag 12; eight-byte forms `MakeArray`, `Wide`.
+**Reads** `element_registers`. **Writes** `destination`. **Jumps**
+nowhere.
+
+A tuple literal `{e1. e2}`, whose elements are evaluated first
+([`semantics.gap.immutable-array`](language/semantics.md#r-semantics.gap.immutable-array)).
+
+1. `destination` := a new `Array` whose elements are the values of
+   `element_registers`, in order.
+
+### MakeVector
+
+r[bytecode.instruction.make-vector]
+**Operands.** `destination`, a register; `size`, a count.
+**Encoding.** Wire tag 30; eight-byte forms `MakeVector`, `Wide`.
+**Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
+
+A body's *indirection vector*: the `Array` the variables live in that a
+block it makes writes, so that the body and every such block share them.
+A body has at most one, made before its first statement.
+
+1. `destination` := a new `Array` of `size` elements, each `nil`.
+
+### LoadVector
+
+r[bytecode.instruction.load-vector]
+**Operands.** `destination` and `vector`, registers; `index`, an element
+index.
+**Encoding.** Wire tag 31; eight-byte forms `LoadVector`, `Wide`.
+**Reads** `vector`. **Writes** `destination`. **Jumps** nowhere.
+
+1. If `vector` holds no `Array` with an element `index`, counted from 0,
+   signal `internal: an indirection vector is not the Array its code
+   expects`.
+2. `destination` := that element.
+
+### StoreVector
+
+r[bytecode.instruction.store-vector]
+**Operands.** `vector` and `source`, registers; `index`, an element
+index.
+**Encoding.** Wire tag 32; eight-byte forms `StoreVector`, `Wide`.
+**Reads** `vector`, `source`. **Writes** no register. **Jumps** nowhere.
+
+1. If `vector` holds no `Array` with an element `index`, signal as
+   `LoadVector` does.
+2. Element `index` of that `Array` := the value of `source`.
+
+### InitializeSlot
+
+r[bytecode.instruction.initialize-slot]
+**Operands.** `source`, a register; `own_index`, the slot's position
+among the slots its mixin declares, in declaration order.
+**Encoding.** Wire tag 13; eight-byte forms `InitializeSlot`, `Wide`.
+**Reads** `source`. **Writes** no register. **Own slots** yes. **Jumps**
+nowhere.
+
+A slot's initial value, in an initializer or a lazy slot's getter. The
+slot is the receiver's field at the frame's *slot base* -- the first
+field of the level of the class the frame was entered at -- plus
+`own_index`, so that one body serves every application of its mixin.
+
+1. If the receiver no longer has the slots of that level, signal as
+   [`runtime.slot.guard`](runtime.md#r-runtime.slot.guard) says.
+2. Let *v* be the value of `source`. If the receiver is a value object,
+   *v* is first resolved when it is a future, and if *v* is not a value,
+   signal `cannot store v in C's slot s: a value object is deeply
+   immutable, so every slot it declares holds a value`
+   ([`semantics.value`](language/semantics.md#r-semantics.value)).
+3. The slot := *v*.
+
+### InitializeSlotProvisionally
+
+r[bytecode.instruction.initialize-slot-provisionally]
+**Operands.** As `InitializeSlot`'s.
+**Encoding.** Wire tag 39; eight-byte forms
+`InitializeSlotProvisionally`, `Wide`.
+**Reads** `source`. **Writes** no register. **Own slots** yes. **Jumps**
+nowhere.
+
+The future a simultaneous slot clause stores first, which the clause's
+end replaces with its value by an `InitializeSlot`
+([`semantics.slot.simultaneous`](language/semantics.md#r-semantics.slot.simultaneous)).
+
+1. As `InitializeSlot`'s step 1.
+2. The slot := the value of `source`, unchecked.
+
+### LoadOwnSlot
+
+r[bytecode.instruction.load-own-slot]
+**Operands.** `destination`, a register; `own_index` as
+`InitializeSlot`'s.
+**Encoding.** Wire tag 38; eight-byte forms `LoadOwnSlot`, `Wide`.
+**Reads** nothing. **Writes** `destination`. **Own slots** yes.
+**Jumps** nowhere.
+
+A simultaneous clause's end reads each slot back without a getter send,
+which a subclass could override.
+
+1. As `InitializeSlot`'s step 1.
+2. `destination` := the slot's value.
+
+### ReturnSlotIfFilled
+
+r[bytecode.instruction.return-slot-if-filled]
+**Operands.** `own_index` as `InitializeSlot`'s.
+**Encoding.** Wire tag 34; eight-byte forms `ReturnSlotIfFilled`, `Wide`.
+**Reads** nothing. **Writes** no register. **Own slots** yes. **Jumps**
+nowhere; falls through when the slot is empty.
+
+A lazy slot's getter's first instruction
+([`semantics.slot.lazy`](language/semantics.md#r-semantics.slot.lazy)).
+
+1. As `InitializeSlot`'s step 1.
+2. If the slot holds anything but `nil`, return its value from the
+   method, as `Return` does.
+3. Otherwise go on with the next instruction, the slot's initializer.
+
+### MakeFuture
+
+r[bytecode.instruction.make-future]
+**Operands.** `destination` and `closure`, registers.
+**Encoding.** Wire tag 36; eight-byte forms `MakeFuture`, `Wide`.
+**Reads** `closure`. **Writes** `destination`. **Jumps** nowhere.
+
+1. `destination` := a new unresolved future whose computation is the
+   closure in `closure`
+   ([`semantics.slot.simultaneous`](language/semantics.md#r-semantics.slot.simultaneous)).
+
+### ResolveFuture
+
+r[bytecode.instruction.resolve-future]
+**Operands.** `destination` and `source`, registers.
+**Encoding.** Wire tag 37; eight-byte forms `ResolveFuture`, `Wide`.
+**Reads** `source`. **Writes** `destination`. **Jumps** nowhere.
+
+A simultaneous clause's end.
+
+1. Let *v* be the value of `source`.
+2. If *v* is not a future, `destination` := *v*.
+3. If *v* is a resolved future, `destination` := its value.
+4. Otherwise `destination` := the answer of
+   [Send](runtime.md#r-runtime.send)(*v*, `resolve`, ()), which computes
+   the future's value and signals `divergent evaluation: a future was
+   forced while it was being computed` for a future already being
+   computed.
