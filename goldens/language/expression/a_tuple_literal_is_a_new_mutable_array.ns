@@ -1,0 +1,22 @@
+/// A tuple literal is to be an `ImmutableArray`, which is not built: today
+/// each evaluation answers a new `Array`, which a program can store into.
+class TupleIsMutable = () (
+  public main: platform args: arguments = (
+    |
+      first = self tuple.
+      second = self tuple.
+    |
+    first at: 1 put: 9.
+    platform transcript
+        show: (first at: 1) printString;
+        newLine;
+        show: (second at: 1) printString;
+        newLine;
+        show: (first == second) printString;
+        newLine.
+  )
+
+  tuple = (
+    ^{1. 2}.
+  )
+)

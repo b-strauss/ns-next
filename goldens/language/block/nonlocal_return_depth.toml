@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure", "semantics.block.non-local-return"]
+rules = ["semantics.block.closure", "semantics.block.non-local-return", "runtime.unwind"]
 stdout = '''
 1
 42

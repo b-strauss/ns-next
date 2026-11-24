@@ -1,4 +1,4 @@
-rules = ["semantics.method.return"]
+rules = ["semantics.method.return", "runtime.invoke"]
 stdout = '''
 true
 true

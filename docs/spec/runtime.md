@@ -266,8 +266,12 @@ r[runtime.install]
 A `ClassDeclarationBuilder`'s `install`
 ([`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)).
 
-1. If the builder's class is the core library's, or its header changes
-   its name, access or superclass, signal and change nothing.
+1. If the builder's class is the core library's, signal and change
+   nothing. If its header changes the class's name, access or superclass,
+   signal `the header renames Inner to Renamed; an edit keeps a class's
+   name`, `the header changes the access of Inner; an edit keeps it` or
+   `the header changes the superclass of Inner; an edit keeps it`, and
+   change nothing.
 2. Compile the staged declaration against the module's current text; if
    it does not compile, signal and change nothing.
 3. At once and running no code: make the new mixin the mixin of every

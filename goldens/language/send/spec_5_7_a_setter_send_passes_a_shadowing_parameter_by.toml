@@ -1,4 +1,4 @@
-rules = ["semantics.send.implicit-receiver"]
+rules = ["semantics.send.implicit-receiver", "runtime.implicit-receiver"]
 stdout = '''
 the parameter
 written from the block

@@ -1,4 +1,4 @@
-rules = ["semantics.exception.signal", "semantics.exception.handler"]
+rules = ["semantics.exception.signal", "semantics.exception.handler", "runtime.handler-search"]
 stdout = '''
 2
 inner a

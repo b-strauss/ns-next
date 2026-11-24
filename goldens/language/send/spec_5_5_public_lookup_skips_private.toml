@@ -1,4 +1,4 @@
-rules = ["semantics.send.ordinary", "semantics.access.private"]
+rules = ["semantics.send.ordinary", "semantics.access.private", "runtime.lookup"]
 stdout = '''
 1
 '''

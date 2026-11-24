@@ -967,8 +967,8 @@ mod tests {
 
     // spec: syntax.eventual-send
     #[test]
-    fn an_eventual_send_runs_as_an_ordinary_one() {
-        // `x <-: new` — async unary send, built as the ordinary send `x new`.
+    fn an_eventual_send_is_built_as_a_send_of_its_message() {
+        // `x <-: new` — async unary send, built as a send of `new` marked eventual.
         let ExpressionKind::Send(send) = parse_expression("x <-: new").kind else {
             panic!("{:?}", parse_expression("x <-: new"))
         };

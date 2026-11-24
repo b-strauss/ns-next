@@ -1,0 +1,4 @@
+rules = ["semantics.gap.decimal"]
+stdout = '''
+an object does not understand #s2
+'''

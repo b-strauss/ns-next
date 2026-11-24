@@ -1,4 +1,4 @@
-rules = ["semantics.slot.accessors"]
+rules = ["semantics.slot.accessors", "runtime.slot.read", "runtime.slot.write", "semantics.slot.mutable"]
 stdout = '''
 no setter ran
 42

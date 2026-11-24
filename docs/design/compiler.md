@@ -45,11 +45,11 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier | BodyTooLarge(limit)`, with integer and float text parsed at
-  compile time rather than at each execution. `LargeInteger` carries an
-  integer literal beyond a `SmallInteger`'s 61 bits as its digits (an
-  `ArbitraryInteger`); `UnresolvedIdentifier` and `BodyTooLarge` are the
-  deferred cases, see "Compilation cannot fail".
+  UnresolvedIdentifier | BodyTooLarge(limit) | Unbuilt(construct)`, with integer
+  and float text parsed at compile time rather than at each execution.
+  `LargeInteger` carries an integer literal beyond a `SmallInteger`'s 61
+  bits as its digits (an `ArbitraryInteger`); `UnresolvedIdentifier`,
+  `BodyTooLarge` and `Unbuilt` are the deferred cases, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a

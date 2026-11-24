@@ -630,8 +630,8 @@ error. This needs a pattern AST in place of today's source text, which
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
 Closing it closes the gap `semantics.gap.pattern`.
 
-Neither the asynchronous send nor the pattern literal answers a correct
-program wrongly any more: each fails loudly where it runs. Each is a gap of
+The asynchronous send and the pattern literal each fail loudly where they
+run. Each is a gap of
 the specification of ns-next, `semantics.gap.actors` and
 `semantics.gap.pattern` (`docs/spec/language/semantics.md`).
 

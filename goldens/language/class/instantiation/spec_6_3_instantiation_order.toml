@@ -1,4 +1,4 @@
-rules = ["semantics.instantiation.initializer-order"]
+rules = ["semantics.instantiation.initializer-order", "runtime.instantiate"]
 stdout = '''
 superclass argument
 base slot sees the superclass argument

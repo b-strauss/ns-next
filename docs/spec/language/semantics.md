@@ -46,9 +46,10 @@ are checked, each where the instance would come into being:
 2. No class of the chain defines `==` but `Value`: `cannot instantiate P:
    a value class may not define ==, and Q defines it`.
 3. Every enclosing object of the class is a value object: `cannot
-   instantiate P: a value class's enclosing objects must be values, and
-   its enclosing object, a Counter, is not one` (naming the level whose
-   enclosing object fails when it is not the class's own).
+instantiate Valued: a value class's enclosing objects must be values, and
+its enclosing object, an instance of Holder, is not one`, or, naming
+the level whose enclosing object fails when it is not the class's own,
+`... and Counter's enclosing object, an instance of Holder, is not one`.
 4. Every slot the instance's classes declare is initialized with a value
    object: storing anything else signals `cannot store an Array of 2 in
    Holder's slot elements: a value object is deeply immutable, so every
@@ -204,8 +205,8 @@ A send evaluates its receiver expression first, then its arguments from
 left to right, and only then looks up and invokes the method (Bracha
 §5.4.1, §5.5); the lookup sees whatever the arguments' evaluation
 changed. An operand keeps the value it was evaluated to even when a later
-operand changes the variable it was read from. A setter send `x: e` used
-as an expression answers the value of `e`, not what the setter answers.
+operand changes the variable it was read from. A setter-send assignment
+`x:: e` answers the value of `e`, not what the setter answers.
 
 r[semantics.send.ordinary]
 An ordinary send, `receiver message`, sends the message to the object the

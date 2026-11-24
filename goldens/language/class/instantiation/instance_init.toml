@@ -1,4 +1,4 @@
-rules = ["semantics.instantiation.factory", "semantics.instantiation.initializer-order"]
+rules = ["semantics.instantiation.factory", "semantics.instantiation.initializer-order", "semantics.slot.mutable"]
 stdout = '''
 init ran
 hi 2

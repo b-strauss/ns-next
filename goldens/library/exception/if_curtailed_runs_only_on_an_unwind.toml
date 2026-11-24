@@ -1,4 +1,4 @@
-rules = ["semantics.exception.signal", "semantics.exception.ensure"]
+rules = ["semantics.exception.signal", "semantics.exception.ensure", "runtime.unwind"]
 stdout = '''
 3
 curtailed

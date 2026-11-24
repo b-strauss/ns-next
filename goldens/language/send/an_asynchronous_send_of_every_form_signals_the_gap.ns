@@ -1,0 +1,46 @@
+/// Every form of send can be asynchronous, and each signals the gap rather
+/// than running synchronously: a self, an outer and a super send, the
+/// selectors the compiler would otherwise inline -- a conditional, a loop
+/// and a short-circuit -- and an integer operation.
+class AsynchronousForms = () (
+  class Inner = () (
+    public outerForm = (
+      ^outer AsynchronousForms <-: answer.
+    )
+  )
+
+  answer = (
+    ^42.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self caught: [self <-: answer]);
+        newLine.
+    transcript
+        show: (self caught: [Inner new outerForm]);
+        newLine.
+    transcript
+        show: (self caught: [super <-: printString]);
+        newLine.
+    transcript
+        show: (self caught: [true <-: ifTrue: ['ran']]);
+        newLine.
+    transcript
+        show: (self caught: [[false] <-: whileTrue: ['ran']]);
+        newLine.
+    transcript
+        show: (self caught: [true <-: and: [true]]);
+        newLine.
+    transcript
+        show: (self caught: [3 <-: + 4]);
+        newLine.
+  )
+
+  caught: block = (
+    ^[block value printString] on: Error do: [:error | error messageText].
+  )
+)

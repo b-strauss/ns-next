@@ -1,0 +1,10 @@
+rules = ["semantics.gap.actors"]
+stdout = '''
+asynchronous send of `answer` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `answer` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `printString` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `ifTrue:` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `whileTrue:` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `and:` needs actors, which ns-next does not build yet (§5.6)
+asynchronous send of `+` needs actors, which ns-next does not build yet (§5.6)
+'''

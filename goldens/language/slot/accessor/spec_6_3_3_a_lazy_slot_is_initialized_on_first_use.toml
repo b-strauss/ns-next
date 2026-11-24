@@ -1,4 +1,4 @@
-rules = ["semantics.slot.lazy"]
+rules = ["semantics.slot.lazy", "runtime.slot.read"]
 stdout = '''
 before: 
 42

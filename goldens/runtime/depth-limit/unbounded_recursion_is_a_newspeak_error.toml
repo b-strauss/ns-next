@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "semantics.gap.tail-calls"]
 status = 1
 stdout = '''
 start

@@ -3620,8 +3620,8 @@ fn destination_behind(
     }
 }
 
-/// Materializes a literal -- including the two deferred error cases,
-/// `UnresolvedIdentifier` and `BodyTooLarge`, which raise through
+/// Materializes a literal -- including the three deferred error cases,
+/// `UnresolvedIdentifier`, `BodyTooLarge` and `Unbuilt`, which raise through
 /// `literals.rs`'s own constructors rather than rebuilding the error here:
 /// error text lives in `interpreter/`, never in the VM. A `LargeInteger` is
 /// a fresh object each time it runs, since a value needs no identity.

@@ -1,4 +1,4 @@
-rules = ["semantics.send.does-not-understand", "semantics.send.super"]
+rules = ["semantics.send.does-not-understand", "semantics.send.super", "runtime.does-not-understand"]
 stdout = '''
 A handled it
 '''

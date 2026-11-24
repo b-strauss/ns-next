@@ -1,0 +1,4 @@
+rules = ["semantics.gap.pattern"]
+stdout = '''
+ran
+'''

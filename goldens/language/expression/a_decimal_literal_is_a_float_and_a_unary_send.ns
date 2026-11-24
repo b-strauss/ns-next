@@ -1,0 +1,10 @@
+/// The `Decimal` literal is decided and not built: `2.5s2` is today the
+/// number `2.5` followed by the unary message `s2`, which a `Float` does not
+/// understand.
+class DecimalNotBuilt = () (
+  public main: platform args: arguments = (
+    platform transcript
+        show: ([2.5 s2] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

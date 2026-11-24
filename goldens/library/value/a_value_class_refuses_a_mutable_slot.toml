@@ -1,4 +1,4 @@
-rules = ["semantics.value.conditions"]
+rules = ["semantics.value.conditions", "runtime.instantiate"]
 status = 1
 stdout = '''
 before

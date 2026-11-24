@@ -1,0 +1,21 @@
+/// A method run often enough for the baseline and the optimizing tier
+/// still signals the gap at its asynchronous send, every time, from
+/// compiled code as from the interpreter.
+class HotAsynchronousSend = () (
+  public main: platform args: arguments = (
+    |
+      count ::= 0.
+    |
+    1 to: 3000 do: [:index | [self hot: index] on: Error do: [:error | count:: count + 1]].
+    platform transcript
+        show: count printString;
+        newLine.
+    platform transcript
+        show: ([self hot: 1] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+
+  hot: index = (
+    ^index <-: + 1.
+  )
+)

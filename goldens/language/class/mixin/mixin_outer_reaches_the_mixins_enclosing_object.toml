@@ -1,4 +1,4 @@
-rules = ["semantics.mixin.application", "semantics.outer.lexical"]
+rules = ["semantics.mixin.application", "semantics.outer.lexical", "runtime.outer"]
 stdout = '''
 Marker's outer Library is the library
 Applied's outer Host is the host
