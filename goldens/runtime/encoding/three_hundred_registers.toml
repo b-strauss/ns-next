@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "bytecode.compact.wide"]
 status = 0
 stdout = '''
 451

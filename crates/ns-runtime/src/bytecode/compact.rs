@@ -15,6 +15,9 @@ use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CallSite, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{Immediate, ImmediateKind};
 
+#[cfg(test)]
+mod forms_tests;
+
 /// One instruction in eight bytes, matched on by the run loop. A register
 /// is a `u8`, a jump target an absolute `u32` instruction index, and
 /// anything else an index into one of the body's tables. An instruction
@@ -2950,6 +2953,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<CompactInstruction>(), 8);
     }
 
+    // spec: bytecode.compact.round-trip
     #[test]
     fn every_literal_round_trips() {
         let literals = [
@@ -2994,6 +2998,7 @@ mod tests {
         );
     }
 
+    // spec: bytecode.compact.choice
     #[test]
     fn a_literal_takes_the_form_its_value_needs() {
         let mut builder = CodeBuilder::never_wide_by_stress();
@@ -3040,6 +3045,7 @@ mod tests {
         ));
     }
 
+    // spec: bytecode.compact.choice
     #[test]
     fn sends_of_up_to_two_arguments_are_narrow_and_wider_ones_wide() {
         let mut builder = CodeBuilder::never_wide_by_stress();
@@ -3082,6 +3088,7 @@ mod tests {
         }
     }
 
+    // spec: bytecode.compact.round-trip
     #[test]
     fn every_instruction_round_trips_narrow_and_wide() {
         let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
@@ -3315,6 +3322,7 @@ mod tests {
     /// eight-byte forms and their wide ones, take an eight-byte form
     /// wherever their registers fit a byte, and reach no other frame's
     /// registers.
+    // spec: bytecode.compact.round-trip
     #[test]
     fn each_instantiation_instruction_round_trips_through_its_compact_form() {
         let instructions = instantiation_instructions();
@@ -3365,6 +3373,7 @@ mod tests {
     /// patched in the form it took: in its slot, in a mirror site's
     /// `failure`, or in the wide table. `never_wide_by_stress` keeps the
     /// narrow half narrow under `NS_NEXT_STRESS_WIDE`.
+    // spec: bytecode.compact.round-trip
     #[test]
     fn a_patched_target_round_trips_narrow_and_wide() {
         let primitive =
@@ -3453,6 +3462,7 @@ mod tests {
         }
     }
 
+    // spec: bytecode.compact.choice
     #[test]
     fn past_sixteen_bits_a_table_index_takes_the_wide_form() {
         let mut builder = CodeBuilder::never_wide_by_stress();
@@ -3484,6 +3494,7 @@ mod tests {
     /// take `Wide` and read back exactly. `never_wide_by_stress` keeps
     /// `NS_NEXT_STRESS_WIDE` from making every entry wide and so hiding the
     /// boundary.
+    // spec: bytecode.compact.choice
     #[test]
     fn past_sixteen_bits_the_other_tables_take_the_wide_form() {
         let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(

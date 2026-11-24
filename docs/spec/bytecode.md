@@ -222,7 +222,7 @@ r[bytecode.instruction.load-literal]
 `Boolean`, `SmallInteger`, `Float`, `String`, `Symbol`, `LargeInteger`,
 and the three a body defers to its run, `UnresolvedIdentifier`,
 `BodyTooLarge` and `Unbuilt`.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 0; eight-byte forms `LoadNil`, `LoadTrue`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 0; [eight-byte](#r-bytecode.compact.forms) forms `LoadNil`, `LoadTrue`,
 `LoadFalse`, `LoadSmallInteger`, `LoadConstant`, `LoadLiteral`, `Wide`.
 **Reads** nothing. **Writes** `destination`, but for `BodyTooLarge`.
 **Jumps** nowhere; falls through, but for `BodyTooLarge`.
@@ -256,7 +256,7 @@ and the three a body defers to its run, `UnresolvedIdentifier`,
 
 r[bytecode.instruction.load-self]
 **Operands.** `destination`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 1; eight-byte forms `LoadSelf`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 1; [eight-byte](#r-bytecode.compact.forms) forms `LoadSelf`, `Wide`.
 **Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
 
 1. `destination` := the frame's receiver.
@@ -265,7 +265,7 @@ r[bytecode.instruction.load-self]
 
 r[bytecode.instruction.load-enclosing-object]
 **Operands.** `destination`, a register; `depth`, a depth.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 35; eight-byte forms `LoadEnclosingObject`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 35; [eight-byte](#r-bytecode.compact.forms) forms `LoadEnclosingObject`,
 `Wide`.
 **Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
 
@@ -280,7 +280,7 @@ r[bytecode.instruction.load-enclosing-object]
 
 r[bytecode.instruction.move]
 **Operands.** `destination` and `source`, registers.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 3; eight-byte forms `Move`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 3; [eight-byte](#r-bytecode.compact.forms) forms `Move`, `Wide`.
 **Reads** `source`. **Writes** `destination`. **Jumps** nowhere.
 
 1. `destination` := the value of `source`.
@@ -290,7 +290,7 @@ r[bytecode.instruction.move]
 r[bytecode.instruction.store-local]
 **Operands.** `source`, a register; `slot`, the register of a named
 local of the executing frame.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 4; eight-byte forms `StoreLocal`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 4; [eight-byte](#r-bytecode.compact.forms) forms `StoreLocal`, `Wide`.
 **Reads** `source`. **Writes** `slot`. **Jumps** nowhere.
 
 An assignment to a local; reading one needs no instruction, since its
@@ -303,7 +303,7 @@ register is its value.
 r[bytecode.instruction.load-outer-local]
 **Operands.** `destination`, a register; `depth`, a depth; `index`, a
 register number of the frame `depth` steps out.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 5; eight-byte forms `LoadOuterLocal`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 5; [eight-byte](#r-bytecode.compact.forms) forms `LoadOuterLocal`, `Wide`.
 **Reads** no register of its own frame. **Writes** `destination`.
 **Outer reach** `depth`. **Jumps** nowhere.
 
@@ -316,7 +316,7 @@ register number of the frame `depth` steps out.
 r[bytecode.instruction.store-outer-local]
 **Operands.** `source`, a register; `depth` and `index` as
 `LoadOuterLocal`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 6; eight-byte forms `StoreOuterLocal`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 6; [eight-byte](#r-bytecode.compact.forms) forms `StoreOuterLocal`, `Wide`.
 **Reads** `source`. **Writes** no register of its own frame. **Outer
 reach** `depth`. **Jumps** nowhere.
 
@@ -329,7 +329,7 @@ r[bytecode.instruction.make-closure]
 **Operands.** `destination`, a register; `code`, a body of kind `Block`;
 `parameters`, the block's parameter names, as many as `code`'s argument
 count; `copied`, registers, as many as `code`'s copied count.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 29; eight-byte forms `MakeClosure`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 29; [eight-byte](#r-bytecode.compact.forms) forms `MakeClosure`, `Wide`.
 **Reads** `copied`. **Writes** `destination`. **Outer reach** `code`'s
 outer reach less one. **Jumps** nowhere.
 
@@ -349,7 +349,7 @@ the registers after its header.
 
 r[bytecode.instruction.make-array]
 **Operands.** `destination`, a register; `element_registers`, registers.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 12; eight-byte forms `MakeArray`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 12; [eight-byte](#r-bytecode.compact.forms) forms `MakeArray`, `Wide`.
 **Reads** `element_registers`. **Writes** `destination`. **Jumps**
 nowhere.
 
@@ -363,7 +363,7 @@ A tuple literal `{e1. e2}`, whose elements are evaluated first
 
 r[bytecode.instruction.make-vector]
 **Operands.** `destination`, a register; `size`, a count.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 30; eight-byte forms `MakeVector`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 30; [eight-byte](#r-bytecode.compact.forms) forms `MakeVector`, `Wide`.
 **Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
 
 A body's *indirection vector*: the `Array` the variables live in that a
@@ -377,7 +377,7 @@ A body has at most one, made before its first statement.
 r[bytecode.instruction.load-vector]
 **Operands.** `destination` and `vector`, registers; `index`, an element
 index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 31; eight-byte forms `LoadVector`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 31; [eight-byte](#r-bytecode.compact.forms) forms `LoadVector`, `Wide`.
 **Reads** `vector`. **Writes** `destination`. **Jumps** nowhere.
 
 1. If `vector` holds no `Array` with an element `index`, counted from 0,
@@ -390,7 +390,7 @@ index.
 r[bytecode.instruction.store-vector]
 **Operands.** `vector` and `source`, registers; `index`, an element
 index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 32; eight-byte forms `StoreVector`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 32; [eight-byte](#r-bytecode.compact.forms) forms `StoreVector`, `Wide`.
 **Reads** `vector`, `source`. **Writes** no register. **Jumps** nowhere.
 
 1. If `vector` holds no `Array` with an element `index`, signal as
@@ -402,7 +402,7 @@ index.
 r[bytecode.instruction.initialize-slot]
 **Operands.** `source`, a register; `own_index`, the slot's position
 among the slots its mixin declares, in declaration order.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 13; eight-byte forms `InitializeSlot`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 13; [eight-byte](#r-bytecode.compact.forms) forms `InitializeSlot`, `Wide`.
 **Reads** `source`. **Writes** no register. **Own slots** yes. **Jumps**
 nowhere.
 
@@ -424,7 +424,7 @@ field of the level of the class the frame was entered at -- plus
 
 r[bytecode.instruction.initialize-slot-provisionally]
 **Operands.** As `InitializeSlot`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 39; eight-byte forms
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 39; [eight-byte](#r-bytecode.compact.forms) forms
 `InitializeSlotProvisionally`, `Wide`.
 **Reads** `source`. **Writes** no register. **Own slots** yes. **Jumps**
 nowhere.
@@ -441,7 +441,7 @@ end replaces with its value by an `InitializeSlot`
 r[bytecode.instruction.load-own-slot]
 **Operands.** `destination`, a register; `own_index` as
 `InitializeSlot`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 38; eight-byte forms `LoadOwnSlot`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 38; [eight-byte](#r-bytecode.compact.forms) forms `LoadOwnSlot`, `Wide`.
 **Reads** nothing. **Writes** `destination`. **Own slots** yes.
 **Jumps** nowhere.
 
@@ -455,7 +455,7 @@ which a subclass could override.
 
 r[bytecode.instruction.return-slot-if-filled]
 **Operands.** `own_index` as `InitializeSlot`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 34; eight-byte forms `ReturnSlotIfFilled`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 34; [eight-byte](#r-bytecode.compact.forms) forms `ReturnSlotIfFilled`, `Wide`.
 **Reads** nothing. **Writes** no register. **Own slots** yes. **Jumps**
 nowhere; falls through when the slot is empty.
 
@@ -471,7 +471,7 @@ A lazy slot's getter's first instruction
 
 r[bytecode.instruction.make-future]
 **Operands.** `destination` and `closure`, registers.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 36; eight-byte forms `MakeFuture`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 36; [eight-byte](#r-bytecode.compact.forms) forms `MakeFuture`, `Wide`.
 **Reads** `closure`. **Writes** `destination`. **Jumps** nowhere.
 
 1. `destination` := a new unresolved future whose computation is the
@@ -482,7 +482,7 @@ r[bytecode.instruction.make-future]
 
 r[bytecode.instruction.resolve-future]
 **Operands.** `destination` and `source`, registers.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 37; eight-byte forms `ResolveFuture`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 37; [eight-byte](#r-bytecode.compact.forms) forms `ResolveFuture`, `Wide`.
 **Reads** `source`. **Writes** `destination`. **Jumps** nowhere.
 
 A simultaneous clause's end.
@@ -504,7 +504,7 @@ r[bytecode.instruction.send-public]
 ([`bytecode.register.argument-window`](#r-bytecode.register.argument-window));
 `destination`, a register; `call_site`, its call-site number
 ([`bytecode.call-site`](#r-bytecode.call-site)).
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 47; eight-byte forms `SendPublic0`, `SendPublic1`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 47; [eight-byte](#r-bytecode.compact.forms) forms `SendPublic0`, `SendPublic1`,
 `SendPublic2`, `SendPublicWide`.
 **Reads** `receiver_register`, `argument_sources`. **Writes**
 `destination`. **Jumps** nowhere.
@@ -520,7 +520,7 @@ An ordinary send to an explicit receiver
 
 r[bytecode.instruction.send-inlinable]
 **Operands.** As `SendPublic`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 48; eight-byte forms `SendInlinable0`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 48; [eight-byte](#r-bytecode.compact.forms) forms `SendInlinable0`,
 `SendInlinable1`, `SendInlinable2`, `SendInlinableWide`.
 **Reads** `receiver_register`, `argument_sources`. **Writes**
 `destination`. **Jumps** nowhere.
@@ -540,7 +540,7 @@ lowerings meet the limit at the same depth.
 r[bytecode.instruction.send-lexical]
 **Operands.** `depth`, a depth; `selector`, `argument_base`,
 `argument_sources`, `destination` and `call_site` as `SendPublic`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 46; eight-byte forms `SendLexical0`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 46; [eight-byte](#r-bytecode.compact.forms) forms `SendLexical0`,
 `SendLexical1`, `SendLexical2`, `SendLexicalWide`.
 **Reads** `argument_sources`. **Writes** `destination`. **Jumps**
 nowhere.
@@ -566,7 +566,7 @@ implicit-receiver send that a declaration `depth` levels out answers, or
 r[bytecode.instruction.send-super]
 **Operands.** `selector`, `argument_base`, `argument_sources`,
 `destination` and `call_site` as `SendPublic`'s.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 49; eight-byte forms `SendSuper0`, `SendSuper1`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 49; [eight-byte](#r-bytecode.compact.forms) forms `SendSuper0`, `SendSuper1`,
 `SendSuper2`, `SendSuperWide`.
 **Reads** `argument_sources`. **Writes** `destination`. **Jumps**
 nowhere.
@@ -587,7 +587,7 @@ r[bytecode.instruction.send-mirror]
 index.
 **Encoding.** No wire tag: it is emitted only into the shipped core
 library's code, which no image carries
-([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)). Eight-byte forms
+([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)). [Eight-byte](#r-bytecode.compact.forms) forms
 `SendMirror`, `Wide`.
 **Reads** `mirror_register`, `subject_register`, `argument_sources`.
 **Writes** `destination`. **Jumps** to `failure`.
@@ -607,7 +607,7 @@ A send to the VM mirror whose failure block was compiled inline at
 
 r[bytecode.instruction.return]
 **Operands.** `register`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 14; eight-byte forms `Return`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 14; [eight-byte](#r-bytecode.compact.forms) forms `Return`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
 through.
 
@@ -621,7 +621,7 @@ A `^` outside a block
 
 r[bytecode.instruction.implicit-return]
 **Operands.** `register`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 15; eight-byte forms `ImplicitReturn`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 15; [eight-byte](#r-bytecode.compact.forms) forms `ImplicitReturn`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
 through.
 
@@ -634,7 +634,7 @@ expression's value. It runs exactly as `Return` does.
 
 r[bytecode.instruction.non-local-return]
 **Operands.** `register`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 16; eight-byte forms `NonLocalReturn`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 16; [eight-byte](#r-bytecode.compact.forms) forms `NonLocalReturn`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
 through.
 
@@ -652,7 +652,7 @@ A `^` inside a block
 
 r[bytecode.instruction.signal-non-boolean]
 **Operands.** `register`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 40; eight-byte forms `SignalNonBoolean`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 40; [eight-byte](#r-bytecode.compact.forms) forms `SignalNonBoolean`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** nowhere; never falls
 through.
 
@@ -666,7 +666,7 @@ The guard-failure path of an inlined `whileTrue:` or `whileFalse:`.
 
 r[bytecode.instruction.jump]
 **Operands.** `target`, an index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 17; eight-byte forms `Jump`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 17; [eight-byte](#r-bytecode.compact.forms) forms `Jump`, `Wide`.
 **Reads** nothing. **Writes** nothing. **Jumps** to `target`; never
 falls through.
 
@@ -676,7 +676,7 @@ falls through.
 
 r[bytecode.instruction.jump-if-not-boolean]
 **Operands.** `register`, a register; `target`, an index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 18; eight-byte forms `JumpIfNotBoolean`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 18; [eight-byte](#r-bytecode.compact.forms) forms `JumpIfNotBoolean`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** to `target`.
 
 The guard in front of inlined control flow: its target sends the message
@@ -688,7 +688,7 @@ the inlined code stands for to a receiver that is no Boolean.
 
 r[bytecode.instruction.branch-if-false]
 **Operands.** `register`, a register; `target`, an index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 19; eight-byte forms `BranchIfFalse`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 19; [eight-byte](#r-bytecode.compact.forms) forms `BranchIfFalse`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** to `target`.
 
 1. If `register` holds `false`, go to `target`.
@@ -697,7 +697,7 @@ r[bytecode.instruction.branch-if-false]
 
 r[bytecode.instruction.branch-if-true]
 **Operands.** `register`, a register; `target`, an index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 20; eight-byte forms `BranchIfTrue`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 20; [eight-byte](#r-bytecode.compact.forms) forms `BranchIfTrue`, `Wide`.
 **Reads** `register`. **Writes** nothing. **Jumps** to `target`.
 
 1. If `register` holds `true`, go to `target`.
@@ -709,7 +709,7 @@ r[bytecode.instruction.integer-binary]
 `Multiply` (`*`), `FloorDivide` (`//`), `Less` (`<`), `Greater` (`>`),
 `LessOrEqual` (`<=`), `GreaterOrEqual` (`>=`) and `Equal` (`=`);
 `destination`, `left` and `right`, registers; `target`, an index.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 33; eight-byte forms `IntegerAdd`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 33; [eight-byte](#r-bytecode.compact.forms) forms `IntegerAdd`,
 `IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
 `IntegerLess`, `IntegerGreater`, `IntegerLessOrEqual`,
 `IntegerGreaterOrEqual`, `IntegerEqual`, `Wide`.
@@ -729,7 +729,7 @@ send stands at `target`, so the two answer alike.
 
 r[bytecode.instruction.allocate-instance]
 **Operands.** `destination`, a register.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 41; eight-byte forms `AllocateInstance`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 41; [eight-byte](#r-bytecode.compact.forms) forms `AllocateInstance`, `Wide`.
 **Reads** nothing. **Writes** `destination`. **Jumps** nowhere.
 
 A factory body's allocation; the frame's receiver is the class the
@@ -743,7 +743,7 @@ factory was sent to.
 
 r[bytecode.instruction.initialize-instance]
 **Operands.** `instance` and `destination`, registers.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 42; eight-byte forms `InitializeInstance`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 42; [eight-byte](#r-bytecode.compact.forms) forms `InitializeInstance`, `Wide`.
 **Reads** `instance`. **Writes** `destination`. **Jumps** nowhere.
 
 A factory body's initialization, with the factory's arguments -- the
@@ -758,7 +758,7 @@ frame's own argument registers, which it names by no operand.
 
 r[bytecode.instruction.check-applied-clause]
 **Operands.** `steps`, a number of levels; `selector`, a symbol.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 43; eight-byte forms `CheckAppliedClause`, `Wide`.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 43; [eight-byte](#r-bytecode.compact.forms) forms `CheckAppliedClause`, `Wide`.
 **Reads** nothing. **Writes** nothing. **Jumps** nowhere.
 
 An initializer's check of a `<:` clause, before anything of it runs
@@ -774,7 +774,7 @@ An initializer's check of a `<:` clause, before anything of it runs
 r[bytecode.instruction.initialize-superclass]
 **Operands.** `steps`, a number of levels; `selector`, a symbol;
 `argument_base`, `argument_sources` and `destination` as a send's.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 50; eight-byte forms `InitializeSuperclass`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 50; [eight-byte](#r-bytecode.compact.forms) forms `InitializeSuperclass`,
 `Wide`.
 **Reads** `argument_sources`. **Writes** `destination`. **Jumps**
 nowhere.
@@ -796,7 +796,7 @@ An initializer's superclass initialization (Bracha §6.3).
 r[bytecode.instruction.initialize-applied-level]
 **Operands.** `steps`, a number of levels; `argument_base`,
 `argument_sources` and `destination` as a send's.
-**Encoding.** [Wire](#r-bytecode.wire.tags) tag 51; eight-byte forms `InitializeAppliedLevel`,
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 51; [eight-byte](#r-bytecode.compact.forms) forms `InitializeAppliedLevel`,
 `Wide`.
 **Reads** `argument_sources`. **Writes** `destination`. **Jumps**
 nowhere.
@@ -1007,4 +1007,148 @@ literal/BodyTooLarge/Arguments
 literal/BodyTooLarge/Instructions
 literal/Unbuilt/AsynchronousSend  selector:symbol
 literal/Unbuilt/PatternLiteral
+```
+
+## The eight-byte form
+
+The form in which a body is stored and the run loop executes it. It is
+not part of an image: the decoder encodes every instruction it reads into
+it, and the encoder writes each instruction it reads back out of it.
+
+r[bytecode.compact.slot]
+Each instruction is one slot of eight bytes, so that an instruction index
+is a slot's index: a jump target, a statement map's range and a frame's
+instruction index mean the same in both encodings. A slot is one of the
+forms of the table, its first byte the form. In a slot a register is a
+`u8`, a jump target an absolute `u32` instruction index, a depth or a
+level count a `u16`, and anything that does not fit is an index into one
+of the body's side tables.
+
+r[bytecode.compact.tables]
+A body's side tables, each indexed from 0 in the order its entries were
+added:
+
+- `constants`, the immediates `LoadConstant` loads: a `SmallInteger`
+  outside an `i32`'s range, a `Float` that is a `SmallFloat64`;
+- `literals`, the literals `LoadLiteral` makes a value of each time it
+  runs: a `String`, a `Symbol`, a `LargeInteger`, a `Float` outside the
+  `SmallFloat64` range, and the three deferred ones;
+- `send_sites`, one per send: its selector, its call site, a
+  `SendLexical`'s depth, and for a wide send its destination, receiver,
+  window and sources;
+- `blocks`, one per `MakeClosure`: its body, its parameters and its copied
+  registers;
+- `mirror_sites`, one per `SendMirror`: its window, its sources and its
+  failure index;
+- `superclass_sites`, one per `InitializeSuperclass`: its level count,
+  selector, window and sources;
+- `register_lists`, a `MakeArray`'s element registers and an
+  `InitializeAppliedLevel`'s sources;
+- `wide`, the instruction itself for every `Wide` slot.
+
+r[bytecode.compact.choice]
+The form an instruction takes is decided by the instruction alone and the
+tables' lengths so far:
+
+1. `LoadLiteral` of `nil`, `true` or `false` takes `LoadNil`, `LoadTrue`
+   or `LoadFalse`; of a `SmallInteger` in an `i32`'s range,
+   `LoadSmallInteger`; of another `SmallInteger` or a `SmallFloat64`,
+   `LoadConstant`; of anything else, `LoadLiteral`.
+2. A send of no, one or two arguments takes its kind's `0`, `1` or `2`
+   form, and of more its `Wide` form, which reads everything from its send
+   site.
+3. `IntegerBinary` takes the form of its operation, `IntegerAdd` to
+   `IntegerEqual`.
+4. Every other instruction takes the form of its name.
+5. An instruction whose eight-byte form would hold a register above 255,
+   or append to a table that already holds 65,536 entries, takes its wide
+   form instead: a public, inlinable, lexical or super send its kind's wide
+   form, every other instruction `Wide`.
+
+r[bytecode.compact.wide]
+A `Wide` slot holds the index of its instruction in `wide`; it does what
+its instruction does. Any instruction stored in its wide form behaves as
+in its eight-byte form: a stress mode stores every instruction wide, and
+every program behaves the same under it.
+
+r[bytecode.compact.breakpoint]
+A `Breakpoint` slot is one a debugger's breakpoint patched, the slot it
+replaced kept beside the slots. No compiler emits one, no image holds
+one, and every reader but the run loop's fetch reads the slot it replaced.
+
+r[bytecode.compact.round-trip]
+A body read back from its slots and tables gives the instructions it was
+built from, and two bodies are the same when they mean the same: a body
+built narrow equals the same body built wide.
+
+r[bytecode.compact.forms]
+The forms, with their fields in the order of the slot, each with its
+width: `u8x2` is two registers, `symbol` a selector, `primitive` a row of
+the VM mirror's table.
+
+```spec-table compact-forms
+LoadNil                      destination:u8
+LoadTrue                     destination:u8
+LoadFalse                    destination:u8
+LoadSmallInteger             destination:u8  value:i32
+LoadConstant                 destination:u8  constant:u16
+LoadLiteral                  destination:u8  literal:u16
+LoadSelf                     destination:u8
+LoadEnclosingObject          destination:u8  depth:u16
+Move                         destination:u8  source:u8
+StoreLocal                   source:u8  slot:u8
+LoadOuterLocal               destination:u8  index:u8  depth:u16
+StoreOuterLocal              source:u8  index:u8  depth:u16
+SendPublic0                  destination:u8  receiver:u8  argument_base:u8  site:u16
+SendPublic1                  destination:u8  receiver:u8  argument_base:u8  source:u8  site:u16
+SendPublic2                  destination:u8  receiver:u8  argument_base:u8  sources:u8x2  site:u16
+SendPublicWide               site:u32
+SendInlinable0               destination:u8  receiver:u8  argument_base:u8  site:u16
+SendInlinable1               destination:u8  receiver:u8  argument_base:u8  source:u8  site:u16
+SendInlinable2               destination:u8  receiver:u8  argument_base:u8  sources:u8x2  site:u16
+SendInlinableWide            site:u32
+SendLexical0                 destination:u8  argument_base:u8  site:u16
+SendLexical1                 destination:u8  argument_base:u8  source:u8  site:u16
+SendLexical2                 destination:u8  argument_base:u8  sources:u8x2  site:u16
+SendLexicalWide              site:u32
+SendSuper0                   destination:u8  argument_base:u8  site:u16
+SendSuper1                   destination:u8  argument_base:u8  source:u8  site:u16
+SendSuper2                   destination:u8  argument_base:u8  sources:u8x2  site:u16
+SendSuperWide                site:u32
+SendMirror                   destination:u8  mirror:u8  subject:u8  primitive:primitive  site:u16
+MakeClosure                  destination:u8  block:u16
+MakeArray                    destination:u8  elements:u16
+MakeVector                   destination:u8  size:u16
+LoadVector                   destination:u8  vector:u8  index:u16
+StoreVector                  vector:u8  source:u8  index:u16
+InitializeSlot               source:u8  own_index:u32
+ReturnSlotIfFilled           own_index:u32
+MakeFuture                   destination:u8  closure:u8
+ResolveFuture                destination:u8  source:u8
+LoadOwnSlot                  destination:u8  own_index:u32
+InitializeSlotProvisionally  source:u8  own_index:u32
+Return                       register:u8
+ImplicitReturn               register:u8
+NonLocalReturn               register:u8
+SignalNonBoolean             register:u8
+Jump                         target:u32
+JumpIfNotBoolean             register:u8  target:u32
+BranchIfFalse                register:u8  target:u32
+BranchIfTrue                 register:u8  target:u32
+IntegerAdd                   destination:u8  left:u8  right:u8  target:u32
+IntegerSubtract              destination:u8  left:u8  right:u8  target:u32
+IntegerMultiply              destination:u8  left:u8  right:u8  target:u32
+IntegerFloorDivide           destination:u8  left:u8  right:u8  target:u32
+IntegerLess                  destination:u8  left:u8  right:u8  target:u32
+IntegerGreater               destination:u8  left:u8  right:u8  target:u32
+IntegerLessOrEqual           destination:u8  left:u8  right:u8  target:u32
+IntegerGreaterOrEqual        destination:u8  left:u8  right:u8  target:u32
+IntegerEqual                 destination:u8  left:u8  right:u8  target:u32
+AllocateInstance             destination:u8
+InitializeInstance           destination:u8  instance:u8
+CheckAppliedClause           steps:u16  selector:symbol
+InitializeSuperclass         destination:u8  site:u16
+InitializeAppliedLevel       destination:u8  argument_base:u8  steps:u16  arguments:u16
+Wide                         index:u32
+Breakpoint
 ```

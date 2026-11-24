@@ -146,6 +146,8 @@ fn run_error(source: &str, lowering: Lowering) -> String {
 
 /// Each statement is a `LoadLiteral` of its own constant and a
 /// `StoreLocal`, then the `Return`: the 65,537th constant is in a `Wide`.
+// spec: bytecode.compact.tables
+// spec: bytecode.compact.wide
 #[test]
 fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
     let statements: String = (0..STATEMENTS)
@@ -171,6 +173,8 @@ fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
 /// `LoadLiteral`, an `IntegerBinary`, the `Jump` past its fallback, the
 /// fallback `SendPublic` -- one send site per statement -- and a
 /// `StoreLocal`; then the `Return`. The 65,537th site is in the wide table.
+// spec: bytecode.compact.tables
+// spec: bytecode.compact.wide
 #[test]
 fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
     let statements = "x:: x + 1. ".repeat(STATEMENTS);
@@ -187,6 +191,7 @@ fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
 /// Each statement is a `LoadLiteral` of its own string and a `StoreLocal`,
 /// then the `size` send and the `Return`: the 65,537th string is in a
 /// `Wide`.
+// spec: bytecode.compact.tables
 #[test]
 fn an_allocated_literal_past_sixteen_bits_loads_from_the_wide_form() {
     let statements = "x:: 'a'. ".repeat(STATEMENTS);
