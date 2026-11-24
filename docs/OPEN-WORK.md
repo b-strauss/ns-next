@@ -15,16 +15,15 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its third batch: the bytecode**
+**The specification of ns-next, its fourth batch: the image format**
 (decided with the user on 2026-11-23, before the debugger's stage 6 goes
-on, and on 2026-11-24 before the image format;
-[specification.md](design/specification.md), "The order of building
-it", item 3): the instructions, their eight-byte encoding, each
-instruction's register effects and the rules the decoder checks, written
-into `docs/spec/bytecode.md` with their rules named by the tests that
-check them. The first two batches,
-the book with the syntax and the semantics with the run-time semantics,
-are built. The batches after it are that document's "The order of
+on; [specification.md](design/specification.md), "The order of building
+it", item 4): the structure of an image, its sections and tags, its
+validation and its bounds, written into `docs/spec/image-format.md` with
+their rules named by the tests that check them; a body's own encoding and
+the rules the decoder checks on it are the bytecode chapter's already.
+The first three batches, the book with the syntax, the semantics with
+the run-time semantics, and the bytecode, are built. The batches after it are that document's "The order of
 building it"; the complete install resumes after the fifth.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
