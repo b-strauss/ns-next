@@ -292,7 +292,9 @@ binary64 number nearest its decimal value, `1e3` being `1000.0`. Bracha
 §5.1.1 makes it an exact decimal; ns-next makes it a binary float (see
 the appendix), and its exact decimal is the gap
 [`semantics.gap.decimal`](#r-semantics.gap.decimal). Float arithmetic is
-IEEE 754's, NaN, the infinities and signed zeros included.
+IEEE 754's, NaN, the infinities and signed zeros included, but for `=`:
+a float is a value object, whose `=` must be an equivalence, so every
+NaN equals every other and hashes alike.
 
 r[semantics.number.exact]
 Arithmetic on integers and fractions is exact: dividing two integers that

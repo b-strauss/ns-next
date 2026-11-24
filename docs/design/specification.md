@@ -4,8 +4,8 @@ ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
-decided and in which order it is built. The first batch is built: the
-book under `docs/spec/`, its title page and introduction followed by an
+decided and in which order it is built. The first two batches are
+built. The first: the book under `docs/spec/`, its title page and introduction followed by an
 informal overview of the language that states no rule
 (`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
 identifiers, the tests' references to them and its links and renders it,
@@ -14,8 +14,14 @@ book with it, and the language's lexical structure and grammar, each
 rule with its tests, the special characters, the reserved words and the
 words with tokens of their own as tables the lexer's and the parser's
 tests hold to the code, and the appendix of the differences from
-Bracha's Newspeak. The parts after the grammar say what they will cover
-and are not written yet.
+Bracha's Newspeak. The second: the language's semantics
+(`docs/spec/language/semantics.md`) and the run-time semantics as
+abstract operations (`docs/spec/runtime.md`), each rule named by the
+goldens and tests that check it, the deviations below carried into the
+book, and an asynchronous send and a pattern literal that run signalling
+an error naming their gap (`Literal::Unbuilt`; [compiler.md](compiler.md),
+"Compilation cannot fail"). The bytecode, the image format and the VM
+invariants say what they will cover and are not written yet.
 
 ## Why
 
@@ -26,8 +32,8 @@ install does to a removed class's objects had to be answered from five
 documents at once, and every invariant of `CLAUDE.md` has already produced
 a real defect. Bracha's specification (`docs/references/newspeak-spec.pdf`)
 leaves parts open or marked *Unimplemented*, and ns-next has already
-decided syntax it departs from ([README.md](README.md), "Deviations from
-the language specification"). The specification states the rules once,
+decided syntax and semantics it departs from, which the book's appendix
+lists. The specification states the rules once,
 normatively; the design documents keep the reasoning and the mechanism and
 point at the rules (decided with the user on 2026-11-23, before the
 complete install, [liveness-and-reflection.md](liveness-and-reflection.md),
@@ -114,8 +120,8 @@ branch and end-of-batch gates:
    skeleton of five parts and the appendix; and the lexical structure and
    the grammar, the syntax deviations decided one by one, the parser's
    tests and the syntax goldens naming their rules.
-2. **The language and the run-time semantics**, the other deviations
-   decided; the install as it is.
+2. **The language and the run-time semantics**, built: the other
+   deviations decided; the install as it is.
 3. **The image format**: the structure, the tags, the validation rules.
 4. **The bytecode**: the instruction table and the register effects.
 5. **The VM invariants**, and the design documents and `CLAUDE.md`
@@ -127,11 +133,11 @@ specification as it changes the runtime.
 
 ## The second batch's deviations
 
-Each of [README.md](README.md)'s remaining deviations is decided with the
-user before the second batch's plan is written; the plan carries each
-decision into the book -- a rule of ours in the appendix, or Bracha's
-rule with ns-next's behaviour marked a gap -- and into the design
-document it belongs to. Decided so far, on 2026-11-23 and 2026-11-24:
+Each deviation the design documents recorded before the second batch
+was decided with the user, and the batch carried each decision into the
+book -- a rule of ours in the appendix, or Bracha's rule with
+ns-next's behaviour marked a gap -- and into the design document it
+belongs to. The decisions, taken on 2026-11-23 and 2026-11-24:
 
 1. **Non-integral literals (Bracha §5.1.1).** `2.5` stays a binary
    `Float`: a rule of ours, in the appendix. An exact decimal is a class

@@ -71,6 +71,7 @@ first.
 | The MCP server's sessions and trace tools -- numbered sessions served concurrently, each by a worker thread a pause, a stop, a cancellation and the server's end reach during a wait; a traced session's `--trace-file` written into a file the server owns in the user's own directory, claimed by a held lock, and indexed as it grows; the `trace:` line and four bounded tools, `debug_trace`, `debug_trace_method`, `debug_trace_listing` and `debug_trace_events`, every cut answer ending in its exact next call, and `debug_code`, `debug_stack` and `debug_variables` paged alike; a class's three initializer bodies named apart; every body the compiler synthesizes described; and a closed standard output ending the run with status 1 | Complete | 2026-11-22 | [mcp-trace](superpowers/plans/2026-11-22-0310-mcp-trace.md) |
 | The JIT tool window's filters and grouping -- the Methods tab filtered by name as the Events tab is, both in a search field with a clear button; both tabs grouped by nothing, the method or the class; the Events tab's categories in a popup | Complete | 2026-11-22 | -- |
 | The specification's foundation and syntax -- ns-next specified in a book of its own under `docs/spec/`, Markdown rendered by mdBook, each rule named and listing the tests that name it, checked and built at every commit by `cargo xtask spec`; the language's lexical structure and grammar written, five syntax decisions adopted as rules, the appendix of the differences from Bracha; the complete install's decisions recorded before it | Complete | 2026-11-23 | [specification-foundation-and-syntax](superpowers/plans/2026-11-23-0137-specification-foundation-and-syntax.md) |
+| The specification's semantics -- the language's semantics and the run-time semantics as abstract operations written into `docs/spec/`, their rules named by the goldens and tests; every deviation of the design documents decided with the user and carried into the book as an adopted rule or a gap; an asynchronous send and a pattern literal that run signal their gap | Complete | 2026-11-24 | [specification-semantics](superpowers/plans/2026-11-24-0200-specification-semantics.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8834,3 +8835,39 @@ What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's second batch, the language's semantics and the run-time
 semantics. The developer tool's stage 4, the shell, is set back, when to
 take it up not decided.
+
+## The specification's semantics (2026-11-24)
+
+[specification.md](design/specification.md), "The second batch's
+deviations". The book's second batch: the language's semantics,
+`docs/spec/language/semantics.md` -- objects and values, classes and
+enclosing objects, mixins, `outer`, the root rule, messages, literals,
+actors, methods and blocks, slots, access control, instantiation,
+exceptions, modules and programs, reflection and the depth limit -- and
+the run-time semantics, `docs/spec/runtime.md`, as abstract operations in
+ECMA-262's form: lookup, the sends, enclosing objects, mixin
+application, instantiation, slot access, unwinding, the handler search,
+the bulk forward, the install, the VM mirror, the depth limit and what a
+program observes of memory. The goldens and tests name the rules they
+check. Every deviation [README.md](design/README.md)'s table recorded
+was decided with the user, one at a time, and left the table, which is
+gone: the binary float, the string literal's code points and the root
+rule are adopted as ns-next's rules in the appendix; an exact `Decimal`
+and its literal, the `ImmutableArray` tuple with the read-only and value
+collections, actors, pattern matching, tail calls and three parts of
+reflection are gaps, and the four that are decided and not built are
+items of [OPEN-WORK.md](OPEN-WORK.md). One runtime change came with it:
+an asynchronous send and a pattern literal that run signal an error
+naming their gap -- the third deferred literal, `Literal::Unbuilt`, with
+image literal tags 14 and 15 and shipped-code tags 11 and 12 -- where the
+send ran synchronously and the pattern answered `nil`.
+
+- `4d67af2e`, `ec51e804`, `ac37e92d`, `bbe70423` -- the eight decisions.
+- `167b470e` -- the plan.
+- `7d47dcfa` -- an asynchronous send and a pattern literal signal their
+  gap.
+- `49e69196`, `feab6c3c`, `babe4f9f`, `1c9229f1` -- the semantics.
+- `dd58c0ad` -- the run-time semantics.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+specification's third batch, the image format.

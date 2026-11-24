@@ -96,7 +96,8 @@ that way -- of several alternatives the first that matches in full wins, and
 an optional part is taken whenever it matches -- over the lexer's tokens, not
 over characters. Tokens are what a reader sees, and reading characters would
 make spacing matter where nobody means it to; the one place that shows is
-recorded as a deviation ("Words that are not reserved"). Where a rule is
+a difference from Bracha the specification's appendix lists ("Words that
+are not reserved"). Where a rule is
 ambiguous between a token and a production, the parser tries the production in
 full and restores the cursor when it fails (`Parser::checkpoint`/`restore`),
 as `at_lazy_slot`, `at_binary_equals_factory` and `parse_slot_declarations` do.
@@ -193,8 +194,9 @@ The productions, and what the parser does with each:
 - `pattern → "<" patternLiteral ">"` (§5.1.9): `_`, a number, symbol, string
   or tuple, or keywords each with an optional value -- `_`, a literal,
   `?name` or a nested pattern (`<x: <y: 1>>`, whose closing `>>` the parser
-  splits). Parsed in full and kept as its text; what it evaluates to is a
-  deviation ("What is kept but ignored, and what a reprint drops").
+  splits). Parsed in full and kept as its text; evaluating it signals the gap
+  `semantics.gap.pattern` ("What is kept but ignored, and what a reprint
+  drops").
 - `super` is followed by a message (§5.10) and `outer` by a class's name
   (§5.9), both at the parser. `outer N` with no message after it is the
   enclosing object ([dispatch.md](dispatch.md), "Shapes the resolver must
@@ -236,16 +238,16 @@ doubling, `""""`, would have lexed those as an unterminated string. `""""`
 therefore reads as `"""` followed by the start of another string, and appears
 in the corpus only inside comments.
 
-**A string literal is not normalized to NFC**, a recorded deviation
-([README.md](README.md), "Deviations from the language specification"):
-§5.1.5 makes a literal's value "the encoding of the string in Unicode normal
-form C", and the lexer keeps the code points the source text holds, so a
-decomposed `é` stays two code points and differs from a precomposed one. No
-code anywhere in the workspace normalizes. Closing it means normalizing where
-source text becomes a string. It is not on the road to a high-performance VM
-([OPEN-WORK.md](../OPEN-WORK.md)); the Unicode normalization data it needs is
-to come from the `unicode-normalization` crate (noted with the user on
-2026-09-29 for when it is taken up). The string representation
+**A string literal is not normalized to NFC**, a rule of the specification
+of ns-next, `semantics.literal.string`, which its appendix lists as a
+difference from §5.1.5, whose literal is "the encoding of the string in
+Unicode normal form C": the lexer keeps the code points the source text
+holds, so a decomposed `é` stays two code points and differs from a
+precomposed one. No language normalizes its literals, normalizing only
+literals leaves every string built at run time as it was, and the tables
+cost about 127 KB (`unicode-normalization`, measured 2026-11-24; decided
+with the user that day, [specification.md](specification.md), "The second
+batch's deviations", decision 2). The string representation
 ([object-model.md](object-model.md), "The object layout") stores
 whatever code points it is given and does not depend on it.
 
@@ -626,12 +628,12 @@ provides one, a clean `doesNotUnderstand: #Pattern` instead of the gap's
 error. This needs a pattern AST in place of today's source text, which
 `parse_pattern_literal` already walks; the library side has prior art in the
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
-Closing it retires the deviations-table row.
+Closing it closes the gap `semantics.gap.pattern`.
 
 Neither the asynchronous send nor the pattern literal answers a correct
-program wrongly any more: each fails loudly where it runs. Each has a row in
-[README.md](README.md)'s deviations table; this section is what those rows
-point at.
+program wrongly any more: each fails loudly where it runs. Each is a gap of
+the specification of ns-next, `semantics.gap.actors` and
+`semantics.gap.pattern` (`docs/spec/language/semantics.md`).
 
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
