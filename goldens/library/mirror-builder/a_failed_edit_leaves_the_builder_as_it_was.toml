@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install"]
 stdout = '''
 Subject's edited source does not parse: expected an expression, found RightParenthesis (line 12)
 addFromSource: of Subject's methods takes one method declaration

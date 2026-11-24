@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install"]
 stdout = '''
 #oldHelper
 #oldRemainder #oldHelper #newHelper

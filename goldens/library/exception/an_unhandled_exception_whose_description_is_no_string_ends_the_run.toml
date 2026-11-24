@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.unhandled"]
 status = 1
 stdout = '''
 before

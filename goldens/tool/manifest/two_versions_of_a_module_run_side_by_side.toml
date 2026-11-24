@@ -1,3 +1,4 @@
+rules = ["semantics.module.manifest", "semantics.module.identity"]
 stdout = '''
 one
 two

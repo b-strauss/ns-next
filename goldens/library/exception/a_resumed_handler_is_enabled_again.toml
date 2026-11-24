@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.handler"]
 stdout = '''
 2
 inner a

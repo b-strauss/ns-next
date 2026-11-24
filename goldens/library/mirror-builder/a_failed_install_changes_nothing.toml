@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install"]
 stdout = '''
 Subject's edited source does not resolve: class `Subject` has multiple definitions of `x` (line 9)
 true

@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 Klass Klass false
 fixed false false #public true

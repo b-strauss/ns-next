@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install"]
 stdout = '''
 the header renames Subject to Renamed; an edit keeps a class's name
 the header changes the superclass of Subject; an edit keeps it

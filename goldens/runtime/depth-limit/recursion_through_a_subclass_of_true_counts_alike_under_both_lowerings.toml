@@ -1,3 +1,4 @@
+rules = ["semantics.depth-limit"]
 status = 1
 stdout = '''
 0

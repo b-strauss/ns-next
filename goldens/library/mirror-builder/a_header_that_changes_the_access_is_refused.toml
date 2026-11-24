@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install"]
 stdout = '''
 the header changes the access of Subject; an edit keeps it
 the header changes the access of Subject; an edit keeps it

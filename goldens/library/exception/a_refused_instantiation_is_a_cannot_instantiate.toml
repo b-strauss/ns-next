@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.value.conditions", "semantics.instantiation.factory"]
 stdout = '''
 Symbol
 Odd

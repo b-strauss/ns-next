@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 true true true false
 Plain class true true false true

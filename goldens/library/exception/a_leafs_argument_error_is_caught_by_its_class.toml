@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal"]
 stdout = '''
 7
 index 7 out of range: valid indices are 1..3 (size 3)

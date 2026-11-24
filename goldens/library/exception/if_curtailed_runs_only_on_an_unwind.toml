@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.ensure"]
 stdout = '''
 3
 curtailed

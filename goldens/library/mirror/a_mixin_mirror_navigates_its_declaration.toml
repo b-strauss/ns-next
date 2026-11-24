@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 Holder true true nil
 First class true true false

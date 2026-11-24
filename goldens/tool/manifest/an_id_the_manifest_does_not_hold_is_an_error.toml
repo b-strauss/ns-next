@@ -1,2 +1,3 @@
+rules = ["semantics.module.manifest"]
 status = 1
 stderr = "Uncaught Newspeak error during instantiation: no module `Missing`\n"

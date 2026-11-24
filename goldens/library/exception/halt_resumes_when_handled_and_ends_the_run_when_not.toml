@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.unhandled", "semantics.exception.resumable"]
 status = 1
 stdout = '''
 3

@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 true
 reflectee: a core-library class reached by navigation is not handed out

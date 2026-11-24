@@ -7,7 +7,8 @@ follows him, and the operations its rules rely on -- a lookup, a send, an
 instantiation -- are written out step by step in the part "Run-time
 semantics".
 
-An error a rule says is *signalled* is an `Error` a handler can catch;
+An error a rule says is *signalled* is an `Error` a handler can catch
+([`semantics.exception.signal`](#r-semantics.exception.signal));
 one left unhandled ends the program with exit status 1 and a line
 `Uncaught Newspeak error: ` followed by its text. An error a rule says is
 *a resolve error* is found before anything of the program runs, and
@@ -193,7 +194,8 @@ so a class that declares or inherits a member of that name reaches its
 own, and an enclosing class's member of that name is found before
 `Object`'s. `Top`, the mirror classes and every other class of the core
 library have no such method: a bare `Top` is not understood. Further
-classes are handed out by the platform.
+classes are handed out by the platform
+([`semantics.program.platform`](#r-semantics.program.platform)).
 
 ## Messages
 
@@ -432,7 +434,7 @@ r[semantics.gap.tail-calls]
 Bracha §3.6 eliminates tail calls to the extent that a program can
 observe them, and marks it *Unimplemented*. ns-next keeps every
 activation until it returns: a recursion of any kind is bounded by the
-depth limit.
+depth limit ([`semantics.depth-limit`](#r-semantics.depth-limit)).
 
 ## Slots
 
@@ -532,3 +534,143 @@ on the class side is the metaclass, and the class of a class is its
 metaclass. A class-side method's lexical scope is its class's: an
 implicit-receiver or outer send reaches the enclosing declarations as
 an instance method's does.
+
+## Exceptions
+
+r[semantics.exception.signal]
+An exception is an instance of `Exception` or a subclass. `signal`, or
+`signal: text` with its message text, searches the handlers of the
+activations from the signalling one outwards, innermost first, for one
+whose class `handles:` it, and runs the first one found (Bracha §8.6
+leaves exceptions to the library; ns-next's are `Kernel.ns`'s). `Error`
+is the class of the errors the language and the core library signal:
+`MessageNotUnderstood`, `ArgumentError`, `CannotReturn`,
+`CannotInstantiate` and the rest are its subclasses, and an
+implementation's own errors, the depth limit's among them, are `Error`s
+a handler can catch.
+
+r[semantics.exception.handler]
+`[body] on: ExceptionClass do: [:exception | handler]` runs `body`, and
+answers its value unless an exception the class handles is signalled
+while it runs; then the handler block runs with the exception, while
+`body`'s activations still exist, and its value is the value of
+`on:do:`. Within the handler the exception answers `return: value`,
+which ends `on:do:` with `value`; `retry`, which runs `body` again;
+`pass`, which searches the handlers further out; and `resume: value`,
+which answers `value` from the `signal`. An exception signalled by a
+handler block is searched for from outside its own `on:do:`. `return:`,
+`retry`, `resume:` and `pass` sent to an exception no handler is running
+for signal `return: sent to an exception that is not being handled` (with
+the selector sent).
+
+r[semantics.exception.ensure]
+`[body] ensure: [last]` runs `last` once after `body`, whether `body`
+answers or its activation is ended by an unwind -- a non-local return, a
+handler's `return:` or `retry`, or the end of the run on an unhandled
+error. `[body] ifCurtailed: [last]` runs `last` only when `body` is
+ended by an unwind.
+
+r[semantics.exception.unhandled]
+An exception no handler handles runs its default action. An `Error`'s
+and a `Halt`'s end the program, after every pending `ensure:` block has
+run, with exit status 1 and the line `Uncaught Newspeak error: ` followed
+by the exception's description: its message text, or else the name of its
+class.
+
+r[semantics.exception.resumable]
+`Exception`, `MessageNotUnderstood` and `Halt` are resumable, `Error` and
+its other subclasses are not: `resume:` sent to a non-resumable exception
+signals `cannot resume a non-resumable exception`. A
+`MessageNotUnderstood` resumed with a value makes the send that was not
+understood answer that value.
+
+## Modules and programs
+
+r[semantics.module.identity]
+A module definition may declare its identity in a metadata comment above
+its class, `(* :module: com.acme.Json@1.0.0 *)`: an id, a dotted name
+whose last segment is the class's name, and a semantic version. A module
+with none has its class's name as its id. Ids beginning `newspeak.` are
+the core library's and no program's.
+
+r[semantics.module.manifest]
+A program of several modules is a project. Its main module's primary
+factory receives a manifest, which answers each module definition of the
+project by its id: `manifest at: 'com.acme.Json'` for an id of one
+version, `manifest at: 'com.acme.Json' version: '2'` for the highest
+version a range matches. Asking for an id the project does not hold
+signals ``no module `Missing` ``, and for a range no version matches
+``no module `com.acme.util.Util` of version 3; there are 1.0.0, 2.0.0``.
+A module's code names no other module: what it needs, its factory's
+parameters are handed.
+
+r[semantics.program.main]
+A program is run by instantiating its main module definition -- with
+`new`, or for a project with the manifest -- and sending the instance
+`main: platform args: arguments`, with the platform and a list of the
+program's command-line arguments, empty when there are none (Bracha
+§8.4). The program ends when `main:args:` answers, with exit status 0.
+An error left unhandled while the module is instantiated is reported as
+`Uncaught Newspeak error during instantiation: ` followed by its text.
+
+r[semantics.program.platform]
+The platform is the one object through which a program reaches the world
+outside it (Bracha §8.3): `platform transcript`, which prints to the
+standard output; `platform kernel`, `platform collections`,
+`platform typedArrays` and `platform mirrors`, which hand out the core
+library's classes beyond `Object`'s accessors; and the clock. The
+platform and its parts are value objects. Nothing reaches the VM's
+primitives but the core library.
+
+## Reflection
+
+r[semantics.reflection.mirrors]
+A program reflects on itself through mirrors, which are capabilities:
+only code holding `platform mirrors`, or a mirror it was handed, reflects
+(Bracha §8.2). An object mirror reads its reflectee's class and slots
+without sending the reflectee anything; a class mirror walks the
+superclass chain; a mixin mirror answers its declaration's own members
+and source. A mirror hands out nothing of the core library's own
+modules: a shipped class reached by navigation is held back.
+
+r[semantics.reflection.atomic-install]
+Several reflective changes are applied simultaneously and atomically: if
+any fails, none takes place (Bracha §8.2). ns-next applies the edits of
+one `ClassDeclarationBuilder` so: a class's slots, factory and
+initializer, its methods on either side and its lazy slots, changed for
+every application of its mixin at once, the instances whose layout
+changed migrated with their identity, and a running activation finishing
+with the code it began with. A failed install changes nothing, and the
+core library's classes cannot be edited.
+
+r[semantics.gap.reflection.several-builders]
+ns-next installs one builder's edits at a time: several builders' edits
+are not one atomic change, and a superclass change, the nested classes
+and a class declared from source with no predecessor cannot be edited.
+The complete install closes this gap
+(`docs/design/liveness-and-reflection.md`, "Planned: the complete
+install").
+
+r[semantics.gap.reflection.object-class]
+Bracha §8.2 lets a program change the class of an individual object. No
+mirror of ns-next does; it is a topic of its own in `docs/OPEN-WORK.md`.
+
+r[semantics.gap.reflection.activation]
+Bracha §8.2 lets a program reach the current activation and its
+properties, its continuation among them. No mirror of ns-next reaches an
+activation; the debugger's stage 6, with its `ActivationMirror`, closes
+this gap.
+
+## The depth limit
+
+r[semantics.depth-limit]
+A run holds at most 100,000 activations at once. A send or a block
+activation that would exceed it signals `stack overflow: recursion too
+deep`, an `Error` a handler can catch; the handler and the `ensure:`
+blocks of the unwind run within a reserve of 1,000 activations more, and
+a handler that overruns the reserve ends the run as an unhandled error
+does. Every activation counts, a program's and the core library's alike,
+but for a block a conditional or a loop runs as its argument -- `ifTrue:`,
+`and:`, `whileTrue:` and their kin on a Boolean or a block literal --
+which never counts, so that the limit is reached at the same depth
+however the implementation compiles a program.

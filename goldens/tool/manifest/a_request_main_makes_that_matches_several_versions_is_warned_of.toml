@@ -1,3 +1,4 @@
+rules = ["semantics.module.manifest"]
 stdout = '''
 2.3.1
 '''

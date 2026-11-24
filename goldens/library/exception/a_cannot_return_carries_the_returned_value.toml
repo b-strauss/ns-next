@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.block.cannot-return"]
 stdout = '''
 too late
 CannotReturn

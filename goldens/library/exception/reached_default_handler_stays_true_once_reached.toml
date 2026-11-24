@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.unhandled"]
 stdout = '''
 false
 7

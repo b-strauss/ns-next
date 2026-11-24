@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.handler"]
 stdout = '''
 outer
 inner outer
