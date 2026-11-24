@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application", "semantics.mixin.standalone"]
 stdout = '''
 the superclass clause of class Marker sends #new, but the primary factory of class Base is #k:
 below

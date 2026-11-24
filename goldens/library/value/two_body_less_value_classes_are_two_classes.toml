@@ -1,3 +1,4 @@
+rules = ["semantics.value", "semantics.value.identity", "semantics.value.conditions"]
 stdout = '''
 false false false false
 true true true

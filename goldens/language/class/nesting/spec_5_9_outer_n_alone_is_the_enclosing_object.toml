@@ -4,4 +4,4 @@ true
 holder
 holder
 '''
-rules = ["syntax.outer.alone"]
+rules = ["syntax.outer.alone", "semantics.outer.alone"]

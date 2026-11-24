@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application"]
 stdout = '''
 Base foo, Base foo, an object does not understand #a, Base foo, Base foo, M1 foo
 Base foo, Base foo, an object does not understand #a, Base foo, Base foo, M1 foo

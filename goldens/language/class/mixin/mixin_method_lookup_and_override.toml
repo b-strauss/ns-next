@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application"]
 stdout = '''
 Trait answers greet
 Combined overrides describe, then Trait answers describe

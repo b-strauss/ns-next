@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application"]
 stdout = '''
 true true true an object does not understand #zork an object does not understand #zork
 true true true an object does not understand #zork an object does not understand #zork

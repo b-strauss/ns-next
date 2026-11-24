@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application", "semantics.mixin.clause-order"]
 stdout = '''
 2
 M3

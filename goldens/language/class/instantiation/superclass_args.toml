@@ -1,3 +1,4 @@
+rules = ["semantics.superclass.clause"]
 stdout = '''
 11
 10

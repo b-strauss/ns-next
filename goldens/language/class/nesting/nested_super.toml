@@ -1,4 +1,4 @@
 stdout = '''
 outer/derived
 '''
-rules = ["syntax.super"]
+rules = ["syntax.super", "semantics.superclass.clause"]

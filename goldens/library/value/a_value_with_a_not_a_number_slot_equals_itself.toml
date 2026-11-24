@@ -1,3 +1,4 @@
+rules = ["semantics.value", "semantics.value.identity"]
 stdout = '''
 two NaNs true true true
 zeros true true true

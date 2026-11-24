@@ -1,3 +1,4 @@
+rules = ["semantics.value", "semantics.value.identity"]
 stdout = '''
 untouched true true true
 one touched true true true

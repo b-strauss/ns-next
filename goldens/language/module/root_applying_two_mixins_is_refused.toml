@@ -1,3 +1,4 @@
+rules = ["semantics.module.root-rule"]
 status = 1
 stderr = '''
 resolve error: a module's root class may inherit only Object or Value, or write Object <: Value, and its mixin application clause 2 names Value

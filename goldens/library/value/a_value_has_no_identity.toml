@@ -1,3 +1,4 @@
+rules = ["semantics.value", "semantics.value.identity"]
 stdout = '''
 String true true
 Symbol true true

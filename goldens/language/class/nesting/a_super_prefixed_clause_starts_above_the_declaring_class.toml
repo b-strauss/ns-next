@@ -1,3 +1,4 @@
+rules = ["semantics.superclass.clause", "semantics.class.declaring"]
 stdout = '''
 from Base
 '''
