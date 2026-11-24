@@ -4456,6 +4456,7 @@ mod tests {
     /// blocks included, and every body records one past the highest number in
     /// itself and the blocks nested in it (`docs/design/dispatch.md`, "Code
     /// families").
+    // spec: bytecode.call-site
     #[test]
     fn a_family_numbers_its_sends_densely_across_nested_blocks() {
         let source = indoc! {"
@@ -5532,6 +5533,7 @@ mod tests {
     /// is not emitted and makes it too large, and it compiles to the
     /// raising body that names the limit. Emitted directly, since a source
     /// of 2^20 instructions is too slow to compile in the suite.
+    // spec: bytecode.limit.instructions
     #[test]
     fn a_body_past_the_instruction_limit_is_too_large() {
         let bindings = Rc::new(HashMap::new());
@@ -5616,6 +5618,7 @@ mod tests {
     /// exactly; one temporary more needs a register past it, and more
     /// temporaries than registers cannot even be laid out. Neither panics:
     /// both compile to the raising body.
+    // spec: bytecode.limit.registers
     #[test]
     fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
         let fitting = usize::from(u16::MAX - 1 - HEADER_REGISTERS);
@@ -5632,6 +5635,7 @@ mod tests {
 
     /// The scratch registers alone can pass the ceiling: a tuple's elements
     /// are each in a register of their own until `MakeArray` reads them.
+    // spec: bytecode.limit.registers
     #[test]
     fn scratch_registers_past_the_ceiling_compile_to_a_body_that_raises() {
         let tuple = |count: usize| {

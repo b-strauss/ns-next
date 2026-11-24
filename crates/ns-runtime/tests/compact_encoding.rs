@@ -262,6 +262,7 @@ fn make_error(nested: &str, make: &str, lowering: Lowering) -> String {
 /// Every kind of body past the ceiling raises with its own kind's name. An
 /// instance initializer: a slot initialized to a tuple of 65,535 values,
 /// each in a register of its own.
+// spec: bytecode.limit.too-large
 #[test]
 fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -276,6 +277,7 @@ fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
 
 /// A clause message's arguments, one tuple of 65,535 values, which the
 /// class's initializer evaluates: the initializer is past the ceiling.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -299,6 +301,7 @@ fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
 /// its arguments' contiguous slots, so `build:`, which sends the factory
 /// 65,536 arguments, is itself past the ceiling under both lowerings. The
 /// host sends them instead.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -342,6 +345,7 @@ fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
 /// method's too-large error, never an abort. The message comes from the
 /// program's own `doesNotUnderstand:`; the host fills in its selector and
 /// its arguments, which no body under the ceiling could build.
+// spec: bytecode.limit.too-large
 #[test]
 fn a_message_of_more_arguments_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -392,6 +396,7 @@ fn keyword_pattern(count: usize) -> String {
 /// A method of 256 parameters is past the argument limit: it compiles to
 /// the raising body, which the host's send of 256 arguments runs, with the
 /// limit in its message.
+// spec: bytecode.limit.arguments
 #[test]
 fn a_method_of_256_parameters_raises_when_run() {
     let pattern = keyword_pattern(256);
@@ -426,6 +431,7 @@ fn a_method_of_256_parameters_raises_when_run() {
 
 /// A send of 256 arguments makes the body that holds it too large: the
 /// method raises when it runs, never when it compiles.
+// spec: bytecode.limit.arguments
 #[test]
 fn a_send_of_256_arguments_raises_when_run() {
     let arguments = "k: 1 ".repeat(256);

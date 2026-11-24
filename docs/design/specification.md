@@ -132,6 +132,23 @@ The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
 "Planned: the complete install") resumes after the fifth, and changes the
 specification as it changes the runtime.
 
+## The third batch's decision
+
+Decided with the user on 2026-11-24: **both encodings of an instruction
+are normative.** The bytecode chapter gives each instruction's wire
+encoding, the one an image carries (`image/encode.rs`, `image/opcodes.rs`),
+and its eight-byte form, the one the run loop executes
+(`bytecode/compact.rs`), each held to the code by a test over a
+machine-readable table, so that a change to either changes the book.
+The alternatives weighed: the wire encoding alone, as the JVM
+specification gives the class file's instructions and leaves out the
+fast bytecodes HotSpot rewrites them into
+(`prior-art/jdk/src/hotspot/share/interpreter/bytecodes.hpp`, the codes
+past `number_of_java_codes`), which would have left the eight-byte form
+free to change for the interpreter's sake without the book; and the
+eight-byte form as informative prose without rules, which no test would
+have held to the code.
+
 ## The second batch's deviations
 
 Each deviation the design documents recorded before the second batch

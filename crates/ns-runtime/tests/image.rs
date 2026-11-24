@@ -1066,6 +1066,7 @@ fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
 /// whose blocks share no number with each other or with the root only
 /// happens to look right if the decoder replays the same emission order the
 /// compiler used, rather than, say, numbering block by block after the root.
+// spec: bytecode.call-site
 #[test]
 fn a_decoded_family_is_numbered_as_the_compiler_numbered_it() {
     let source = indoc! {"
@@ -1524,6 +1525,7 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
 /// A body past the argument limit -- here one sending 256 arguments --
 /// travels as its raising body too, and raises the message it raises from
 /// source, the limit named.
+// spec: bytecode.limit.arguments
 #[test]
 fn a_body_past_the_argument_limit_round_trips_and_still_raises() {
     let arguments = "k: 1 ".repeat(256);
@@ -1563,6 +1565,7 @@ fn a_body_past_the_argument_limit_round_trips_and_still_raises() {
 
 /// Each reason a body is too large has a literal tag of its own, and
 /// decodes to the literal that names it.
+// spec: bytecode.limit.too-large
 #[test]
 fn each_too_large_literal_decodes_to_its_reason() {
     for (tag, limit) in [
@@ -7818,6 +7821,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 /// A send copies each source into its slot and reads its slots, so a base
 /// past the body's registers is refused even with no argument, and so are
 /// slots whose last runs past them though base and sources are in range.
+// spec: bytecode.register.argument-window
 #[test]
 fn a_send_whose_argument_slots_leave_the_body_is_refused() {
     let send = |argument_base, argument_sources: Vec<u16>| {
@@ -7869,6 +7873,7 @@ fn a_send_whose_argument_slots_leave_the_body_is_refused() {
 /// a write there would overwrite a live frame's caller or register count.
 /// An own register, an outer local's index and a send's slots below the
 /// header's end are each refused, in a body taking arguments too.
+// spec: bytecode.register.layout
 #[test]
 fn a_register_naming_the_frame_header_is_refused() {
     let own = table_of(vec![code_with(
@@ -8085,6 +8090,7 @@ fn outer_access_table(
 /// into the last argument, which the body a body past the register ceiling
 /// compiles to makes when its arguments leave no register above the
 /// header, is no write, since it raises before writing.
+// spec: bytecode.register.arguments
 #[test]
 fn a_write_to_an_argument_register_is_refused() {
     let own = |instructions| {
@@ -8246,6 +8252,7 @@ fn an_outer_local_in_the_enclosing_frames_scratch_is_refused() {
 /// What makes the refusal above sound: a send's slots, and so its callee's
 /// header, start at or above its body's `local_count`, which is itself
 /// inside the register file.
+// spec: bytecode.register.argument-window
 #[test]
 fn a_send_whose_slots_start_below_the_scratch_is_refused() {
     let body = |local_count, argument_base| {
@@ -8307,6 +8314,7 @@ fn a_send_whose_slots_start_below_the_scratch_is_refused() {
 /// another of its own slots would answer whatever the order of the writes
 /// left there: refused, while a source in its own slot, or outside the
 /// slots, verifies.
+// spec: bytecode.register.argument-window
 #[test]
 fn a_send_whose_source_is_another_of_its_slots_is_refused() {
     let send = |argument_sources: Vec<u16>| {
@@ -18660,6 +18668,7 @@ fn mirror_register_of_ephemeron_key<'gc>(
 /// compiled body reads a register above a send's slots before writing it,
 /// so the image carrying the method is refused at load, before any of its
 /// code runs, whatever the pop leaves in that register.
+// spec: bytecode.register.leftovers
 #[test]
 fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
     let source = indoc! {"
@@ -18740,6 +18749,7 @@ fn an_image_reading_the_mirror_a_kernel_method_left_is_refused() {
 /// A body whose return reads a scratch register nothing wrote -- a word
 /// the push left there -- is refused, and so is one that reads a register
 /// above a send's slots, where its callee was laid.
+// spec: bytecode.register.leftovers
 #[test]
 fn an_image_reading_unwritten_scratch_is_refused() {
     let table = table_of(vec![code_with(

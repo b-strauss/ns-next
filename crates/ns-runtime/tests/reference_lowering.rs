@@ -294,6 +294,7 @@ fn the_reference_lowering_emits_the_same_prologue() {
 
 /// The reference lowering is the uncached oracle: every send it emits is
 /// `CallSite::UNCACHED`, and none of its bodies has a family.
+// spec: bytecode.call-site
 #[test]
 fn the_reference_lowering_emits_every_send_uncached() {
     let source = indoc! {"

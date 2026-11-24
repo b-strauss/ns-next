@@ -13,6 +13,8 @@ use crate::Symbol;
 
 mod compact;
 pub(crate) mod leftovers;
+#[cfg(test)]
+mod register_effects_tests;
 
 pub use compact::{
     BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,

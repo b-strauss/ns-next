@@ -2157,6 +2157,7 @@ mod tests {
 
     /// The instruction limit, on the counter the reference lowering keeps,
     /// as `lower.rs`'s test of the same name holds the optimized one to it.
+    // spec: bytecode.limit.instructions
     #[test]
     fn a_body_past_the_instruction_limit_is_too_large() {
         let bindings: Bindings = Rc::new(HashMap::new());
@@ -2226,6 +2227,7 @@ mod tests {
     /// `u16::MAX - 1 - HEADER_REGISTERS` statements fill the ceiling
     /// exactly, and one more passes it -- which compiles to the raising
     /// body rather than panicking.
+    // spec: bytecode.limit.registers
     #[test]
     fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
         let fitting = usize::from(u16::MAX - 1 - HEADER_REGISTERS);

@@ -37,6 +37,8 @@ pub(crate) mod numeric;
 pub mod platform;
 pub mod resolver;
 pub mod shipped_code;
+#[cfg(test)]
+mod spec_tables;
 pub mod symbol;
 pub mod tool_names;
 pub(crate) mod trace;
