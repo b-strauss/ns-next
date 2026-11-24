@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{
     BodyLimit, CallSite, CodeKind, CompiledCode, HEADER_REGISTERS, Instruction, IntegerOperation,
-    Literal,
+    Literal, Unbuilt,
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
@@ -1356,7 +1356,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT + 1]];
+    let mut payloads = vec![vec![LITERAL_UNBUILT_PATTERN_LITERAL + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1593,6 +1593,49 @@ fn each_too_large_literal_decodes_to_its_reason() {
             Instruction::LoadLiteral {
                 destination: HEADER_REGISTERS,
                 literal: Literal::BodyTooLarge(limit),
+            }
+        );
+    }
+}
+
+/// Each construct ns-next does not build has a literal tag of its own, and
+/// decodes to the literal that names it: an asynchronous send with its
+/// selector, a pattern literal with nothing.
+#[test]
+fn each_unbuilt_literal_decodes_to_its_construct() {
+    let selector = Symbol::intern("printString");
+    for (payload, unbuilt) in [
+        (
+            vec![LITERAL_UNBUILT_ASYNCHRONOUS_SEND, 0, 0, 0, 0],
+            Unbuilt::AsynchronousSend(selector),
+        ),
+        (
+            vec![LITERAL_UNBUILT_PATTERN_LITERAL],
+            Unbuilt::PatternLiteral,
+        ),
+    ] {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1); // one code entry
+        code_header(&mut writer, CodeKind::Method, 0, HEADER_REGISTERS + 1);
+        writer.write_u32(2); // two instructions
+        writer.write_u8(OPCODE_LOAD_LITERAL);
+        writer.write_u16(HEADER_REGISTERS);
+        for byte in &payload {
+            writer.write_u8(*byte);
+        }
+        writer.write_u8(OPCODE_IMPLICIT_RETURN);
+        writer.write_u16(HEADER_REGISTERS);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let table = match decode::decode_code_table(&mut reader, &table_with(&["printString"])) {
+            Ok(table) => table,
+            Err(error) => panic!("tag {}: {error}", payload[0]),
+        };
+        assert_eq!(
+            table.codes[0].instruction(0),
+            Instruction::LoadLiteral {
+                destination: HEADER_REGISTERS,
+                literal: Literal::Unbuilt(unbuilt),
             }
         );
     }

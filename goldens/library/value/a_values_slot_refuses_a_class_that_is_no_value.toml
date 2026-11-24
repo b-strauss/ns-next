@@ -1,3 +1,4 @@
+rules = ["semantics.value.conditions"]
 status = 1
 stdout = '''
 Accepted

@@ -1,3 +1,4 @@
+rules = ["semantics.program.main"]
 arguments = ["first", "second word", "-x"]
 stdout = '''
 3

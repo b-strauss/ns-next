@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary"]
 status = 0
 stdout = '''
 wrong number of block arguments: block takes 1, got 0

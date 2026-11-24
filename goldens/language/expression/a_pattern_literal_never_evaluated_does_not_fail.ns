@@ -1,0 +1,10 @@
+/// A pattern literal fails only when it is evaluated: a body holding one
+/// that never evaluates it runs to its end.
+class PatternNeverEvaluated = () (
+  public main: platform args: arguments = (
+    false ifTrue: [<x: 1>].
+    platform transcript
+        show: 'ran';
+        newLine.
+  )
+)

@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application", "semantics.mixin.clause-order"]
 status = 1
 stdout = '''
 ms

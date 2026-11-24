@@ -27,7 +27,8 @@ Not built yet, and the limits worth knowing before trying it on real code:
 - **No exact non-integral literal.** The numbers are a symmetric tower --
   `7 / 2` is the `Fraction` `(7/2)` and `1 = 1.0` is `true` -- but there is no
   fraction literal, and a non-integral literal such as `0.1` is a binary float,
-  not the exact decimal §5.1.1 names (a recorded deviation).
+  not the exact decimal §5.1.1 names (a rule of ns-next's own, which the
+  specification's appendix lists).
 - **The platform is minimal**, and widens only when a whitelisted corpus module or a
   program under `benchmarks/` needs something: a transcript, the kernel's classes
   and exceptions, a collections module with `List`, and `time` with its
@@ -35,8 +36,8 @@ Not built yet, and the limits worth knowing before trying it on real code:
   collections, streams and mirrors that do not exist yet. The fourteen Are We Fast
   Yet benchmarks and Primordial Soup's Ton80 Richards and DeltaBlue run under
   their harness in `benchmarks/are-we-fast-yet/newspeak/`.
-- **No actors.** An eventual send runs synchronously and answers its value
-  rather than a promise, a pattern literal evaluates to **nil**, and
+- **No actors.** An eventual send and a pattern literal signal an error
+  naming their gap when they run, and
   Typed-Newspeak annotations parse and are discarded. Mirrors read a program
   and a MirrorBuilder edits and installs it (`platform mirrors`).
 - **A debugger without hot swap yet.** `ns-next run --debug` speaks the

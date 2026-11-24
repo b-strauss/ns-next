@@ -1,0 +1,6 @@
+rules = ["semantics.gap.immutable-array"]
+stdout = '''
+9
+1
+false
+'''

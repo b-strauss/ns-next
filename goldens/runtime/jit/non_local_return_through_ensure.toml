@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 round 0: ensured 2 ensured 0 curtailed 2 0 inner outer 2 below 2
 round 1: ensured 3 ensured 0 curtailed 3 0 inner outer 3 below 3

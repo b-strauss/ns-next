@@ -1,3 +1,4 @@
+rules = ["semantics.module.manifest"]
 stdout = '''
 0
 '''

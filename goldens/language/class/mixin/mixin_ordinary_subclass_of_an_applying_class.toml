@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application"]
 stdout = '''
 -- Applied from: a
 ms evaluated with a

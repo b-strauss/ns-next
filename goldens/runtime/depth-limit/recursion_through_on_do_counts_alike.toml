@@ -1,3 +1,4 @@
+rules = ["semantics.depth-limit", "runtime.depth-limit"]
 stdout = '''
 stack overflow: recursion too deep
 stack overflow: recursion too deep

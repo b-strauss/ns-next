@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 Square false Square class true
 Square Shape Object Top nil

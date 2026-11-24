@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 true true true
 an object does not understand #MirrorsFactory

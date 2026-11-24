@@ -1,3 +1,4 @@
+rules = ["semantics.class.per-enclosing-object", "runtime.apply-mixin"]
 stdout = '''
 true
 true

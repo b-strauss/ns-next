@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{
-    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal,
+    BodyLimit, CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal, Unbuilt,
 };
 use crate::heap::{Heap, MixinId, ObjectShape};
 use crate::interpreter::future;
@@ -778,6 +778,13 @@ fn encode_literal(
         }
         Literal::BodyTooLarge(BodyLimit::Instructions) => {
             writer.write_u8(LITERAL_BODY_PAST_THE_INSTRUCTION_LIMIT)
+        }
+        Literal::Unbuilt(Unbuilt::AsynchronousSend(selector)) => {
+            writer.write_u8(LITERAL_UNBUILT_ASYNCHRONOUS_SEND);
+            writer.write_u32(symbols.intern(selector.as_str()));
+        }
+        Literal::Unbuilt(Unbuilt::PatternLiteral) => {
+            writer.write_u8(LITERAL_UNBUILT_PATTERN_LITERAL)
         }
     }
     Ok(())

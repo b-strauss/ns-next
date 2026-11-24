@@ -452,8 +452,12 @@ Literals:
   runs ([compiler.md](compiler.md), "Compilation cannot fail").
 - 12 `BodyTooLarge(Arguments)`: the same, for a body past the argument
   limit of 255 ([compiler.md](compiler.md), "Limits").
-- 13 `BodyTooLarge(Instructions)`: the same, for a body past the
-  instruction limit of 2^20.
+$1
+- 14 `Unbuilt(AsynchronousSend)`: followed by the message's selector, a
+  symbol id as tag 5's; an asynchronous send, which raises its error when
+  it runs ([compiler.md](compiler.md), "Compilation cannot fail").
+- 15 `Unbuilt(PatternLiteral)`: no payload; a pattern literal, which
+  raises its error when it runs.
 
 **A count past its field refuses the image, never aborts it, except the
 count of heap objects.** A count a

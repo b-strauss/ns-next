@@ -1,3 +1,4 @@
+rules = ["semantics.module.manifest"]
 stdout = '''
 hello, modules
 2

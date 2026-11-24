@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 inner of a
 inner of b

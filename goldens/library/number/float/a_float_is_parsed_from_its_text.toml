@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float"]
 stdout = '''
 3.0
 3.0

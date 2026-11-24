@@ -1,3 +1,4 @@
+rules = ["semantics.outer.lexical", "semantics.enclosing-object", "runtime.outer"]
 stdout = '''
 own method: top
 inherited method: top

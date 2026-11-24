@@ -1,3 +1,4 @@
+rules = ["semantics.object", "runtime.memory.identity-hash"]
 stdout = '''
 1
 2

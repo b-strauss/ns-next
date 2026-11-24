@@ -129,6 +129,7 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     );
 }
 
+// spec: semantics.outer.lexical
 #[test]
 fn undeclared_outer_class_name_is_a_resolve_error() {
     let module = ns_syntax::parse(indoc! {"
@@ -146,6 +147,7 @@ fn undeclared_outer_class_name_is_a_resolve_error() {
 /// outer send too -- resolved when an enclosing class has that name, and a
 /// compile-time error when none has, rather than a send of `outer` that
 /// nothing understands at run time.
+// spec: semantics.outer.lexical
 #[test]
 fn a_lowercase_outer_class_name_is_an_outer_send() {
     assert_eq!(
@@ -605,6 +607,7 @@ fn every_working_combination_of_object_and_value_resolves() {
 
 /// The primary factory before the `=` is not a clause, so the rule leaves it
 /// free.
+// spec: semantics.module.root-rule
 #[test]
 fn the_root_rule_leaves_the_primary_factory_free() {
     for (factory, clauses) in [
@@ -623,6 +626,7 @@ fn the_root_rule_leaves_the_primary_factory_free() {
 
 /// Every other root clause is one resolve error, spanning the clause at
 /// fault as written, with the tail the instantiation refusal names.
+// spec: semantics.module.root-rule
 #[test]
 fn every_other_root_clause_is_one_resolve_error_at_that_clause() {
     let rule = "a module's root class may inherit only Object or Value, or write Object <: Value";

@@ -589,7 +589,8 @@ fn placeholder(span: Span) -> Expression {
 pub struct MessageSend {
     pub selector: Selector,
     pub arguments: Vec<Expression>,
-    /// Sent with `<-:` (§5.6). The runtime runs it as an ordinary send.
+    /// Sent with `<-:` (§5.6). The runtime evaluates its receiver and
+    /// arguments and then signals that it builds no actors.
     pub eventual: bool,
     /// Type arguments written right after a unary selector, `foo bar[E]`.
     pub type_arguments: Option<TypeAnnotation>,

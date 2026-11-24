@@ -1,0 +1,6 @@
+rules = ["semantics.gap.actors"]
+stdout = '''
+receiver
+argument
+asynchronous send of `at:` needs actors, which ns-next does not build yet (§5.6)
+'''

@@ -1215,7 +1215,8 @@ fn allocated_literal(literal: &Literal) -> bool {
         | Literal::Boolean(_)
         | Literal::SmallInteger(_)
         | Literal::UnresolvedIdentifier(_)
-        | Literal::BodyTooLarge(_) => false,
+        | Literal::BodyTooLarge(_)
+        | Literal::Unbuilt(_) => false,
     }
 }
 

@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 enclosingObject: the enclosing object of a core-library class is not reflected
 reflectee: a core-library class reached by navigation is not handed out

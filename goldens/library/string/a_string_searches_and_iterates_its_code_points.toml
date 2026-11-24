@@ -1,3 +1,4 @@
+rules = ["semantics.literal.string"]
 stdout = '''
 97 98 99 
 97 233 128512 98 

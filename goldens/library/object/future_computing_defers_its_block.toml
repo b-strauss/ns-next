@@ -1,3 +1,4 @@
+rules = ["semantics.slot.simultaneous"]
 stdout = '''
 0
 42

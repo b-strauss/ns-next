@@ -112,8 +112,8 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    offending clause, for every module root, before anything runs
    (`classes::root_clause_defect`; [object-model.md](object-model.md), "The
    root rule"). The specification leaves such a clause to fail when it is
-   evaluated; refusing it statically is a recorded deviation
-   ([README.md](README.md), "Deviations from the language specification").
+   evaluated; refusing it statically is a rule of the specification of
+   ns-next, `semantics.module.root-rule`, which its appendix lists.
 
    The member set also holds the declaration's **primary factory selector** —
    the one its own message pattern spells out, or `new` when it writes none.

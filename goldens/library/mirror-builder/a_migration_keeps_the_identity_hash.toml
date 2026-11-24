@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.memory.identity-hash"]
 stdout = '''
 nil
 true true true

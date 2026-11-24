@@ -1,3 +1,4 @@
+rules = ["semantics.block.closure"]
 stdout = '''
 11121
 60

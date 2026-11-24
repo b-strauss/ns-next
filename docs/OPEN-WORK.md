@@ -15,21 +15,15 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its second batch: the language's
-semantics and the run-time semantics** (decided with the user on
-2026-11-23, before the debugger's stage 6 goes on;
-[specification.md](design/specification.md), "The order of building
-it", item 2): what a module means when it runs, and the operations it is
-built from as abstract operations -- lookup and access, instantiation,
-slot access, `outer`, unwinding and exceptions, `become:`, the install
-and the mirrors, the VM mirror as a capability, the depth limit, what a
-program observes of memory -- written into `docs/spec/` with their rules
-named by the goldens and tests that check them, and every remaining
-deviation of [README.md](design/README.md)'s table decided with the user
-one by one, adopted as a rule or marked a gap. The first batch, the book
-and the syntax, is built. The batches after it are that document's
-"The order of building it"; the complete install resumes after the
-fifth.
+**The specification of ns-next, its third batch: the image format**
+(decided with the user on 2026-11-23, before the debugger's stage 6 goes
+on; [specification.md](design/specification.md), "The order of building
+it", item 3): the structure of an image, its sections and tags, its
+validation and its bounds, written into `docs/spec/image-format.md` with
+their rules named by the tests that check them. The first two batches,
+the book with the syntax and the semantics with the run-time semantics,
+are built. The batches after it are that document's "The order of
+building it"; the complete install resumes after the fifth.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
@@ -1791,11 +1785,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   document covers it yet; the decision to keep it apart is in the plan
   [ns-next-are-we-fast-yet-stage-1](superpowers/plans/2026-09-30-1353-ns-next-are-we-fast-yet-stage-1.md),
   "What stays out".
-- **Pattern literals lowered to §5.1.9's `Pattern` sends** (`Pattern
-  wildcard`, `Pattern literal:`, `Pattern keywords:patterns:`) instead of
-  **nil**; needs a pattern AST in place of the kept source text and a library
-  `Pattern` class. [frontend.md](design/frontend.md), "What is parsed and
-  dropped".
 - **Chains (`:|`, §5.4.4) and object literals (§5.1.10)**, both marked
   *Unimplemented* by the specification; object literals need the activation as
   enclosing object and a syntax choice. [frontend.md](design/frontend.md),
@@ -1829,17 +1818,41 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   one would change no program, only the memory of non-Latin text (noted
   with the user on 2026-10-12). [object-model.md](design/object-model.md),
   "Strings have two widths".
-- **`ReadOnlyTuple` and value collections.** Neither is built (decided
-  with the user on 2026-10-10): tuple literals stay mutable `Array`s, the
-  recorded deviation from §5.1.7 ("Deviations from the specification"
-  below), and there is no deeply immutable collection a value may hold. A
-  `ReadOnlyTuple` is only shallowly immutable and fits under the kernel's
-  `Collection` class as it is. A value collection does not: its class must
-  inherit `Value` (§3.1.1), and `Collection` is under `Object` beside
-  `Value`, so building one turns `Collection` into a mixin applied both to
-  `Object` and to `Value`, as SOMns's `ArrayReadMixin` is.
-  [core-library.md](design/core-library.md), "Decisions", "Collections and
-  strings".
+- **`Decimal` and its literal** (decided with the user on 2026-11-23). An
+  exact decimal is a kernel class of its own, `Decimal`, reached through a
+  protected accessor on `Object`, with the literal `2.50s`, `2.5s2`,
+  `3s2`, `-0.1s` (no radix); today `2.5s2` is `2.5` and the send `s2`.
+  Open for the batch that builds it: what a scale below the digits written
+  means (`3.14159s2`). The specification's gap `semantics.gap.decimal`;
+  [specification.md](design/specification.md), "The second batch's
+  deviations", decision 1.
+- **Read-only and value collections, and `ImmutableArray` as the tuple
+  literal's class** (decided with the user on 2026-11-24). A tuple literal
+  becomes a shallowly immutable `ImmutableArray`, and the collections get
+  read-only and value variants built from seven mixins applied to
+  `Object` and to `Value` alike (`Collection`, `OrderedCollection`,
+  `IndexedCollection`, `MutableIndexedCollection`, `GrowableCollection`,
+  `KeyedCollection`, `MutableKeyedCollection`), with `ImmutableArray`,
+  `ValueArray`, `ImmutableMap`, `ValueMap`, `ImmutableSet`, `ValueSet`,
+  the views `ReadOnlyArray`, `ReadOnlyMap` and `ReadOnlySet`, and the
+  conversions `asImmutable`, `asValueArray`, `asValueMap`, `asValueSet`
+  and `asReadOnly`; `String` stays outside the hierarchy. The whole
+  hierarchy and where each class lives are
+  [specification.md](design/specification.md), "The second batch's
+  deviations", decision 3; the specification's gap
+  `semantics.gap.immutable-array`.
+- **Pattern matching** (decided with the user on 2026-11-24 to be a
+  topic of its own). A pattern literal signals the gap
+  `semantics.gap.pattern` today. The design is open: how a variable
+  pattern `?y` is bound in the block an application runs, `=>`,
+  `case:otherwise:`, the combinators, a subject's `match:` deciding what it
+  reveals, as Felix Geller's `NSPatternMatching.ns` in Bracha's canonical
+  implementation has them, weighed against Scala's extractors, Rust's
+  `match` and Java's record patterns; lowering a literal to §5.1.9's
+  `Pattern` sends is part of it.
+  [specification.md](design/specification.md), "The second batch's
+  deviations", decision 6; [frontend.md](design/frontend.md), "What is
+  kept but ignored, and what a reprint drops".
 
 ## Planned: images, liveness and reflection
 
@@ -2218,7 +2231,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       producing it would leave them passing vacuously.
 - **Reflection beyond road step 5b2a**: a class declared from source with
   no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
-  at run time), a shape-changing `setClass:`, a superclass change, adding,
+  at run time), a superclass change, adding,
   replacing and removing nested classes, and `installAtomically:` over
   several builders. Once an install can remove a nested declaration, the
   removed declaration's row stays in its module's tree, which a full
@@ -2325,7 +2338,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Actors and real concurrency**: an M:N scheduler, per-actor heaps as
   snapshot units, promises for `<-:`, and copying value objects across an
   actor boundary. The treatment of in-flight cross-actor promises at snapshot
-  time still needs design. [liveness-and-reflection.md](design/liveness-and-reflection.md).
+  time still needs design. How a turn waits for a promise is open
+  (decided with the user on 2026-11-24): callbacks and promise pipelining
+  as Bracha and E have it, `await` as Swift's actors have it, or a parked
+  stack as Go's goroutines and Java's virtual threads have it
+  ([specification.md](design/specification.md), "The second batch's
+  deviations", decision 4). Until then an asynchronous send signals the
+  gap `semantics.gap.actors`. [liveness-and-reflection.md](design/liveness-and-reflection.md).
 - **Running an ephemeron's finalizer comes with the actors' event loop**
   (decided with the user on 2026-10-16). Today an `Ephemeron`'s finalizer
   is held and never run: a collection whose key is reached by nothing but
@@ -2499,41 +2518,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Deviations from the specification
 
-The full table, with the reasoning, is [design/README.md](design/README.md),
-"Deviations from the language specification". Four answer a **correct
-program wrongly at exit status 0**:
-
-- A non-integral literal is a binary `f64`, not an exact `FixedPointNumber`
-  (§5.1.1).
-- An asynchronous send (`<-:`) runs synchronously and answers the value, not a
-  promise (§5.6). Set aside by the user until there are actors; the first
-  candidate of a planned section-by-section semantic audit of the
-  specification, like the syntax one.
-- A pattern literal evaluates to **nil** (§5.1.9); see "Pattern literals"
-  above.
-- A string literal keeps its source's code points instead of their Unicode
-  normal form C (§5.1.5), so a decomposed and a precomposed `é` differ.
-  Nothing in the workspace normalizes; closing it means normalizing where
-  source text becomes a string. It is not on the road yet. The Unicode
-  normalization data is to come from the `unicode-normalization` crate
-  (noted with the user on 2026-09-29 for when it is taken up), which as a new
-  dependency is confirmed then. [frontend.md](design/frontend.md), "A string
-  literal is not normalized to NFC".
-
-The others: no character literals and no
-`Character` (§5.1.4); a tuple literal is a mutable `Array`, not a
-`ReadOnlyTuple` (§5.1.7; "`ReadOnlyTuple` and value collections" above);
-a modifier needs no whitespace after it (§6.3.3,
-§6.3.4); `///` starts a line comment wherever it stands, so a binary
-selector ends before it (§4.2); `outer N` without a message answers the
-enclosing object (§5.9);
-value objects are never copied across an actor boundary (§3.1.1); the
-MirrorBuilder changes one class at a time and not every part of it
-(§8.2): no mirror changes the class of an individual object or reaches
-the current activation ("The activation and thread mirrors" above),
-several builders are not installed as one, a superclass, the nested
-classes and a class from source with no predecessor are not edited
-("Reflection beyond road step 5b2a" above).
+Every difference from Bracha's specification is a rule of the
+specification of ns-next, and its appendix, "Differences from Bracha's
+Newspeak" (`docs/spec/appendix/differences-from-bracha.md`), lists them:
+the differences adopted as ns-next's own rules, and the gaps -- the
+constructs not built yet, each a rule whose identifier holds the segment
+`gap`. A gap's work is the item above that names its rule.
 
 ## Open design questions
 
@@ -2650,7 +2640,13 @@ classes and a class from source with no predecessor are not edited
   class of another shape would pay a walk of the whole heap for one object.
   The canonical Newspeak's `setClass:` rewrites the class word in place
   (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5b2a
-  leaves it out.
+  leaves it out. It is the specification's gap
+  `semantics.gap.reflection.object-class`, a topic of its own (decided with
+  the user on 2026-11-24, [specification.md](design/specification.md), "The
+  second batch's deviations", decision 7): open besides the cost are what
+  happens to the slots the two classes do not share, and what it may do to
+  a value object, a builtin instance or the receiver of a running
+  activation.
   [object-model.md](design/object-model.md), "`become:` is an eager bulk
   forward".
 - **Whether lazy forwarding is revisited.** `become:` is eager, one walk per

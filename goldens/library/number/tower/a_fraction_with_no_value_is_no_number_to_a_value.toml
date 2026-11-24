@@ -1,3 +1,4 @@
+rules = ["semantics.number.exact"]
 stdout = '''
 false false
 false false

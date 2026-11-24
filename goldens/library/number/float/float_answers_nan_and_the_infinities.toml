@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float"]
 stdout = '''
 true true true true
 Infinity -Infinity true true true

@@ -68,6 +68,7 @@ fn load_past_the_resolver(source: &str) -> (Interpreter, Root) {
 /// A root the resolver refuses still has its instantiation refused when a
 /// host builds its `ResolvedModule` by hand: the module loads, its class
 /// exists and answers its class side, and only an instance is refused.
+// spec: semantics.module.root-rule
 #[test]
 fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
     let source = indoc! {"
@@ -93,6 +94,7 @@ fn a_defective_root_built_past_the_resolver_refuses_only_an_instance() {
 
 /// Every combination of `Object` and `Value` the root rule allows loads and
 /// instantiates.
+// spec: semantics.module.root-rule
 #[test]
 fn every_allowed_root_form_instantiates() {
     for header in [
@@ -116,6 +118,7 @@ fn every_allowed_root_form_instantiates() {
 /// itself and keeps the slot legally; only the class whose chain inherits
 /// `Value` through the `<:` clause is refused, where its instance would come
 /// into being.
+// spec: semantics.value.conditions
 #[test]
 fn a_mutable_slot_above_the_value_level_is_refused() {
     let source = indoc! {"
@@ -153,6 +156,7 @@ fn a_mutable_slot_above_the_value_level_is_refused() {
 /// An unknown root superclass is refused by the resolver like every other
 /// root defect, by the root rule rather than by a failed lookup, so no
 /// `main:args:` of such a module ever runs.
+// spec: semantics.module.root-rule
 #[test]
 fn an_unknown_root_superclass_is_a_resolve_error_of_the_root_rule() {
     let source = indoc! {"
@@ -185,6 +189,7 @@ fn an_unknown_root_superclass_is_a_resolve_error_of_the_root_rule() {
 /// object itself comes into being without complaint
 /// (`docs/design/object-model.md`, "A value object's four conditions",
 /// "Enclosing objects are values"); only `Derived new` is refused.
+// spec: semantics.value.conditions
 #[test]
 fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
     let source = indoc! {"
@@ -227,6 +232,7 @@ fn a_value_subclass_is_checked_for_its_own_enclosing_object() {
 /// example this follows
 /// (`goldens/language/class/nesting/spec_2_3_superclass_of_a_nested_class.ns`, which creates
 /// such a class and never instantiates it).
+// spec: semantics.value.conditions
 #[test]
 fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiated() {
     let source = indoc! {"

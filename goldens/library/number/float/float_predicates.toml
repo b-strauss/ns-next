@@ -1,3 +1,4 @@
+rules = ["semantics.literal.float"]
 stdout = '''
 receiver | sqrt | negated | abs | isNaN | isFinite | isInfinite
 1.5 | 1.224744871391589 | -1.5 | 1.5 | false | true | false

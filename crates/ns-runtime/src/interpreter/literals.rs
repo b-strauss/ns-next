@@ -1,7 +1,7 @@
 //! The error a deferred literal raises when the VM executes it, and the
 //! number-literal parsers the compiler uses.
 
-use crate::bytecode::BodyLimit;
+use crate::bytecode::{BodyLimit, Unbuilt};
 use crate::types::*;
 use crate::{ArbitraryInteger, Symbol};
 
@@ -19,6 +19,31 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
         receiver,
         format!("internal: unresolved identifier `{name}`"),
     ))
+}
+
+/// The program-level error a construct ns-next does not build yet raises
+/// when it runs: an asynchronous send, after its receiver and arguments
+/// were evaluated, named after its message's selector, and a pattern
+/// literal, named `pattern`. Each text names the gap and Bracha's section
+/// (`docs/spec/language/semantics.md`, `semantics.gap.actors` and
+/// `semantics.gap.pattern`).
+///
+/// Raised by `vm::make_value` for `bytecode::Literal::Unbuilt`.
+pub(crate) fn unbuilt_error<'gc>(unbuilt: &Unbuilt, receiver: Value<'gc>) -> Signal<'gc> {
+    let (selector, text) = match unbuilt {
+        Unbuilt::AsynchronousSend(selector) => (
+            *selector,
+            format!(
+                "asynchronous send of `{selector}` needs actors, which ns-next does not build yet (§5.6)"
+            ),
+        ),
+        Unbuilt::PatternLiteral => (
+            Symbol::intern("pattern"),
+            "a pattern literal needs pattern matching, which ns-next does not build yet (§5.1.9)"
+                .to_string(),
+        ),
+    };
+    Signal::Error(NewspeakError::error(selector, receiver, text))
 }
 
 /// The program-level error a body past one of the compiler's limits raises
@@ -204,6 +229,7 @@ pub(crate) fn parse_float_literal(text: &str) -> f64 {
 mod tests {
     use super::{IntegerLiteral, parse_float_literal, parse_integer_literal};
 
+    // spec: semantics.literal.float
     #[test]
     fn a_radix_float_is_its_digits_in_its_radix_times_ten_to_its_exponent() {
         assert_eq!(parse_float_literal("16r1.8"), 1.5);
@@ -214,6 +240,7 @@ mod tests {
         assert_eq!(parse_float_literal("1.5e-3"), 0.0015);
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn plain_decimal_literals_still_parse() {
         assert_eq!(parse_integer_literal("42"), Ok(IntegerLiteral::Small(42)));
@@ -221,6 +248,7 @@ mod tests {
         assert_eq!(parse_integer_literal("0"), Ok(IntegerLiteral::Small(0)));
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn radix_literals_parse_in_every_accepted_shape() {
         assert_eq!(
@@ -247,6 +275,7 @@ mod tests {
         );
     }
 
+    // spec: semantics.literal.integer
     #[test]
     fn a_decimal_literal_beyond_i64_is_large() {
         let Ok(IntegerLiteral::Large(integer)) = parse_integer_literal("99999999999999999999")
@@ -259,6 +288,7 @@ mod tests {
     /// A literal that fits a `SmallInteger` is `Small`, and one step past
     /// either 61-bit edge is `Large`, as are the `i64` edges, which lie
     /// beyond them.
+    // spec: semantics.literal.integer
     #[test]
     fn a_literal_at_a_small_integer_edge_is_small_and_one_past_it_is_large() {
         assert_eq!(

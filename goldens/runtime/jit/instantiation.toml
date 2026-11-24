@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 2 1 12 base 1 tagged 1 own middle outermost false
 0 0 an Object cannot instantiate MyString: a value class's enclosing objects must be values, and its enclosing object, an instance of Instantiation, is not one

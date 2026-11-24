@@ -1,0 +1,4 @@
+rules = ["semantics.gap.actors"]
+stdout = '''
+ran
+'''

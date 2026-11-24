@@ -1,3 +1,4 @@
+rules = ["semantics.slot.simultaneous"]
 status = 1
 stdout = ''
 stderr = '''

@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal"]
 stdout = '''
 Exception
 Error

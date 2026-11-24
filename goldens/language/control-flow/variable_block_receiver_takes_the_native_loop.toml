@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary"]
 stdout = '''
 3
 '''

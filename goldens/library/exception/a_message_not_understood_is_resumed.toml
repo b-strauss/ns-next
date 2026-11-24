@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.resumable"]
 stdout = '''
 42
 43

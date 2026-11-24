@@ -1,3 +1,4 @@
+rules = ["semantics.send.implicit-receiver", "runtime.implicit-receiver"]
 stdout = '''
 91
 inherited by the enclosing class

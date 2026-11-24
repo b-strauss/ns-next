@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.send.does-not-understand"]
 stdout = '''
 the public one
 an object does not understand #secret

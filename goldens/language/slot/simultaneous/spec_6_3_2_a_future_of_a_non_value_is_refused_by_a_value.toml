@@ -1,3 +1,4 @@
+rules = ["semantics.slot.simultaneous"]
 stdout = '''
 cannot store an Array of 2 in Pair's slot first: a value object is deeply immutable, so every slot it declares holds a value
 '''

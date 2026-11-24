@@ -1,0 +1,5 @@
+rules = ["semantics.gap.actors"]
+stdout = '''
+3000
+asynchronous send of `+` needs actors, which ns-next does not build yet (§5.6)
+'''

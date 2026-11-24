@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
 stdout = '''
 installed
 1 nil 2 nil

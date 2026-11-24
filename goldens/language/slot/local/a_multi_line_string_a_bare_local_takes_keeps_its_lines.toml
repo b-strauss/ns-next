@@ -1,3 +1,4 @@
+rules = ["semantics.method.return", "semantics.block.closure"]
 stdout = '''
 12
 first

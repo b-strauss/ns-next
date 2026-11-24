@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application", "semantics.value"]
 stdout = '''
 true
 true

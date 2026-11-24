@@ -1,3 +1,4 @@
+rules = ["semantics.builtin-names"]
 stdout = '''
 local
 '''

@@ -1,3 +1,4 @@
+rules = ["semantics.reflection.mirrors"]
 stdout = '''
 getSlot: no slot named computation that a mirror may read
 getSlot: requires a Symbol

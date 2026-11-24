@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.handler"]
 stdout = '''
 caught missed missed caught
 missed caught missed missed

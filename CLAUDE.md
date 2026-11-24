@@ -449,12 +449,14 @@ renders it with mdBook into `target/spec/html/index.html`, each rule
 listing the tests that name it (`spec.rs`; `specification.md`).
 
 `docs/spec/` — the specification of ns-next, an mdBook of Markdown
-chapters: the language (its lexical structure and grammar written, its
-semantics not yet), the run-time semantics, the bytecode, the image
-format and the VM invariants, each normative rule preceded by an
-identifier line `r[lex.comment.line]`, and an appendix of the
-differences from Bracha's Newspeak, which is the book's source and no
-longer its measure (`docs/design/specification.md`).
+chapters: an informal overview, the language (its lexical structure,
+grammar and semantics), the run-time semantics as abstract operations,
+the bytecode, the image format and the VM invariants (the last three not
+written yet), each normative rule preceded by an identifier line
+`r[lex.comment.line]`, and an appendix of the differences from Bracha's
+Newspeak -- the ones adopted as ns-next's own rules and the gaps, the
+constructs not built yet, each a rule whose identifier holds `gap` --
+which is the book's source and no longer its measure (`docs/design/specification.md`).
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -541,8 +543,9 @@ leaf.
 **Compiling an already-resolved module can never raise a `NewspeakError`.** It is
 a total, deterministic lowering; a compiler-invariant violation is `panic!` /
 `debug_assert!`. A program-level error is deferred to execution
-(`Literal::UnresolvedIdentifier`, and `Literal::BodyTooLarge` for a body past
-the `u16` register ceiling), so a method never run never fails.
+(`Literal::UnresolvedIdentifier`, `Literal::BodyTooLarge` for a body past
+the `u16` register ceiling, and `Literal::Unbuilt` for an asynchronous send
+or a pattern literal), so a method never run never fails.
 
 **An expression's value register must still hold that value when its consumer
 executes.** A named local's register is live storage; `lower_operand` copies it,
@@ -1020,7 +1023,7 @@ debugger's `parse_code_body` is.
 A commit that changes observable behaviour, a format or an invariant
 changes the rule for it in the specification (`docs/spec/`) in the same
 commit, for every part the book already writes -- today the lexical
-structure and the grammar. A new test names the rules it checks: a
+structure, the grammar, the semantics and the run-time semantics. A new test names the rules it checks: a
 golden in its `.toml`, `rules = ["syntax.outer.alone"]`, a Rust test in a
 comment line `// spec: syntax.outer.alone` directly above its `#[test]`;
 a reference to a rule the book does not declare, and a `// spec:` line

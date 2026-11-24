@@ -94,6 +94,11 @@ fn recognize_quick_method(
             parameter_position(identifier, &parameters, bindings).map(MethodFastPath::Parameter)
         }
         ast::ExpressionKind::Send(send) => {
+            // An asynchronous send is no send ns-next carries out: it signals
+            // its gap, which a fast path would skip.
+            if send.message.eventual {
+                return None;
+            }
             let ast::ExpressionKind::Identifier(identifier) = &send.receiver.kind else {
                 return None;
             };
@@ -793,6 +798,21 @@ mod tests {
                 "ifNil: nilBlock ifNotNil: notNilBlock = ( ^notNilBlock cull: self )"
             ),
             Some(MethodFastPath::CullParameter(1))
+        );
+    }
+
+    /// An asynchronous `value` or `cull:` signals the gap of actors, so it
+    /// takes no fast path that would run it synchronously.
+    // spec: semantics.gap.actors
+    #[test]
+    fn does_not_recognize_an_asynchronous_send() {
+        assert_eq!(
+            fast_path_in_the_kernel("ifTrue: block = ( ^block <-: value )"),
+            None
+        );
+        assert_eq!(
+            fast_path_in_the_kernel("ifNotNil: block = ( ^block <-: cull: self )"),
+            None
         );
     }
 

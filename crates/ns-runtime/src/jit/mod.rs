@@ -168,7 +168,8 @@ pub(crate) fn immediate_literal(
         | Literal::Symbol(_)
         | Literal::LargeInteger(_)
         | Literal::UnresolvedIdentifier(_)
-        | Literal::BodyTooLarge(_) => None,
+        | Literal::BodyTooLarge(_)
+        | Literal::Unbuilt(_) => None,
     }
 }
 

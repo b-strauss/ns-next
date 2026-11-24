@@ -1,0 +1,10 @@
+/// An asynchronous send needs actors, which ns-next does not build yet:
+/// one that runs signals an error naming the gap rather than running
+/// synchronously.
+class AsynchronousSendRuns = () (
+  public main: platform args: arguments = (
+    platform transcript
+        show: ([3 <-: printString] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

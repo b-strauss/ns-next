@@ -1,3 +1,4 @@
+rules = ["semantics.literal.string", "semantics.literal.symbol"]
 status = 0
 stdout = '''
 true

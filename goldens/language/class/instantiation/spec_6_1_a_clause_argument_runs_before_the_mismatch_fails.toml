@@ -1,3 +1,4 @@
+rules = ["semantics.superclass.clause"]
 status = 1
 stdout = '''
 argument

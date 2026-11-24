@@ -65,6 +65,11 @@ fn as_inlinable_block(expression: &ast::Expression) -> Option<&ast::BlockExpress
 /// Only ever offered ordinary explicit-receiver sends (see `lower_send`);
 /// looks at the message shape and the argument/receiver expressions only.
 pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
+    // An asynchronous message is no send ns-next carries out: inlining it
+    // would run it synchronously, where it has to signal its gap.
+    if send.message.eventual {
+        return None;
+    }
     let ast::Selector::Keyword(selector) = &send.message.selector else {
         return None;
     };
@@ -114,6 +119,9 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
 /// lexical send is never inlined, because its lookup does not start where an
 /// explicit-receiver send's does.
 pub(crate) fn recognize_integer_binary(send: &ast::Send) -> Option<IntegerOperation> {
+    if send.message.eventual {
+        return None;
+    }
     let ast::Selector::Binary(selector) = &send.message.selector else {
         return None;
     };
@@ -155,7 +163,7 @@ pub(crate) fn recognize_mirror_send<'a>(
     bindings: &HashMap<Span, Binding>,
     send: &'a ast::Send,
 ) -> Option<(MirrorPrimitive, &'a ast::BlockExpression)> {
-    if !matches!(bindings.get(&send.span), Some(Binding::MirrorSend)) {
+    if send.message.eventual || !matches!(bindings.get(&send.span), Some(Binding::MirrorSend)) {
         return None;
     }
     let ast::Selector::Keyword(selector) = &send.message.selector else {

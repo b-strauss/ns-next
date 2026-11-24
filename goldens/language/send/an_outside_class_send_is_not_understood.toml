@@ -1,3 +1,4 @@
+rules = ["semantics.send.ordinary", "semantics.access.protected"]
 stdout = '''
 class
 class

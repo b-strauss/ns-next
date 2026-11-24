@@ -1,0 +1,15 @@
+/// A pattern literal needs pattern matching, which ns-next does not build
+/// yet: one that is evaluated signals an error naming the gap rather than
+/// answering nil.
+class PatternLiteralRuns = () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([<_>] on: Error do: [:error | error messageText]);
+        newLine;
+        show: ([<x: 1>] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

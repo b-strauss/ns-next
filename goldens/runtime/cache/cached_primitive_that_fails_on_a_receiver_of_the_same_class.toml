@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 status = 1
 stdout = '''
 true 'abc'

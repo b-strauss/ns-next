@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application", "semantics.mixin.clause-order"]
 stdout = '''
 Applied new is tagged x
 Applied new tag is x

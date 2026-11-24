@@ -115,9 +115,9 @@ one 64-bit-indexed word holds the `f64`'s bits and no handle, and
 `Mutator::new_float` decides which by Spur's range test. Soup boxes every
 float, which costs an allocation per floating-point result; Spur's split
 keeps the common range immediate. Both are §5.1.1's binary float; the
-`FixedPointNumber` that section names for non-integral literals (the
-recorded deviation, [core-library.md](core-library.md)) would be a class of
-the numeric tower, not a tag. A `Fraction` is an object too, of the
+`FixedPointNumber` that section names for non-integral literals -- `Decimal`, the gap
+`semantics.gap.decimal` -- would be a class of the numeric tower, not a
+tag. A `Fraction` is an object too, of the
 fixed-pointer format, its two fields the numerator and the denominator in
 normal form, each a `SmallInteger` or a `LargeInteger`
 ([core-library.md](core-library.md), "The numeric tower"). A boxed
@@ -1655,9 +1655,9 @@ the Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
 anything runs: `resolver::root_clause_defect` classifies the root's clauses
 and the resolver reports the first defect at the offending clause's span, so
 the editor underlines exactly that clause. The specification would leave the
-failure to evaluation; checking it statically is a recorded deviation
-([README.md](README.md), "Deviations from the language specification"),
-taken because a module root is not an ordinary class and a program must not
+failure to evaluation; checking it statically is a rule of the
+specification of ns-next, `semantics.module.root-rule`, which its appendix
+lists as a difference from §6.1, taken because a module root is not an ordinary class and a program must not
 run when its artifact cannot be built — deferring it to instantiation let a
 project module nothing instantiated run under `run` while `build` refused it.
 `run` and `build` print it alike, as "resolve error: a module's root class

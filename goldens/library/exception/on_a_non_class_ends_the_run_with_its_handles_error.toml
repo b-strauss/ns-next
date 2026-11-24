@@ -1,3 +1,4 @@
+rules = ["semantics.exception.signal", "semantics.exception.handler"]
 status = 1
 stdout = '''
 caught #handles:

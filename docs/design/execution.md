@@ -11181,8 +11181,8 @@ unchanged:
   so the code stays heap-independent and needs no `Trace`;
 - `literals`, the `Literal`s `LoadLiteral` allocates afresh each time it
   runs: a `String`, a `Symbol`, a `LargeInteger`, a `Float` outside the
-  `SmallFloat64` range, and the deferred `UnresolvedIdentifier` and
-  `BodyTooLarge`;
+  `SmallFloat64` range, and the deferred `UnresolvedIdentifier`,
+  `BodyTooLarge` and `Unbuilt`;
 - `send_sites`, one `SendSite` per send: its selector, its `CallSite`, the
   lexical depth for a `SendLexical`, and, for a wide send, its destination,
   receiver, argument base and argument sources;

@@ -1,3 +1,4 @@
+rules = ["semantics.mixin.application"]
 stdout = '''
 User new:
 Base initializer

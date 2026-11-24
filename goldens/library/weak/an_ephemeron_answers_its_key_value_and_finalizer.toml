@@ -1,3 +1,4 @@
+rules = ["runtime.memory.ephemeron"]
 stdout = '''
 nil
 nil

@@ -1440,12 +1440,15 @@ its rounding to a double and its exact comparison with a float ("The
 numeric tower" below), but no code is taken from it, so it has no entry
 in `THIRD-PARTY-NOTICES.md`.
 
-## Deviation: a non-integral literal is a binary float
+## A non-integral literal is a binary float
 
 §5.1.1: "Non-integral numbers denote an object that obeys the protocol of class
 `FixedPointNumber`" — an exact decimal type, chosen there so that "financial
 applications in particular" get "accurate decimal numbers" and users are not
-exposed to floating point's "counterintuitive ways". `2.5` here is an `f64`
+exposed to floating point's "counterintuitive ways". ns-next's rule differs
+(`semantics.literal.float`, which the specification's appendix lists;
+decided with the user on 2026-11-23, [specification.md](specification.md),
+"The second batch's deviations", decision 1): `2.5` here is an `f64`
 (`compiler/lower.rs` parses the literal's text straight into one), so the
 arithmetic is binary floating point: `(0.1 + 0.2) = 0.3` answers `false` where
 an exact decimal type answers `true`.
@@ -1459,8 +1462,9 @@ The specification records the same divergence in its own implementation
 ("non-integral numbers are currently represented as instances of the Squeak
 class `Fraction`. This is a bug"), and it names the open design question —
 whether a user chooses the numeric implementation — rather than settling it.
-A golden for the rule would have to be skipped behind a decimal type that
-does not exist, so the deviation is recorded here instead.
+ns-next settles it with a class of its own for exact decimals, `Decimal`,
+and a literal of its own, `2.50s`, both a gap until a batch builds them
+(`semantics.gap.decimal`; [OPEN-WORK.md](../OPEN-WORK.md)).
 
 ## A NaN equals a NaN
 
@@ -5229,10 +5233,11 @@ on its own (decided with the user on 2026-10-06):
   is built on, refuses such keys too. `identityHash` of a value is its
   `hash`, since `==` on a value is `=`.
 
-Kept as recorded deviations, not taken up: tuple literals stay mutable
-`Array`s (§5.1.7), a non-integral literal stays a `Float` (§5.1.1, "Deviation:
-a non-integral literal is a binary float" above), and there is no
-`Character` (§5.1.4).
+Not taken up here: tuple literals stay mutable `Array`s until
+`ImmutableArray` is built (the gap `semantics.gap.immutable-array`), a
+non-integral literal stays a `Float` (§5.1.1, "A non-integral literal is a
+binary float" above), and there is no `Character` (§5.1.4); the
+specification of ns-next's appendix lists all three.
 
 **Six sub-projects, in this order**, each with its own design and plan
 (decided with the user on 2026-10-06):
@@ -5337,12 +5342,12 @@ a non-integral literal is a binary float" above), and there is no
   the public `size:` setter. Road step 5's atomic install is to be its
   first user: it maps old objects to new ones and must not run a program's
   `=`. `NotFound` stays in the collections module, under `Error`. No
-  immutable variants yet: no `ReadOnlyTuple` (§5.1.7 stays a recorded
-  deviation) and no value collections, and `Collection` being a class bars
-  neither -- a `ReadOnlyTuple` is only shallowly immutable and fits under
-  it, and a deeply immutable value collection would turn `Collection` into
+  immutable variants yet: no `ImmutableArray` (§5.1.7's tuple, the gap
+  `semantics.gap.immutable-array`) and no value collections; their
+  hierarchy, decided with the user on 2026-11-24, turns `Collection` into
   a mixin applied to `Object` and to `Value`
-  ([OPEN-WORK.md](../OPEN-WORK.md)). Leaves stand where Primordial Soup has
+  ([specification.md](specification.md), "The second batch's
+  deviations", decision 3; [OPEN-WORK.md](../OPEN-WORK.md)). Leaves stand where Primordial Soup has
   primitives -- `Array`'s `copyFrom:to:` and
   `replaceFrom:to:with:startingAt:`, `String`'s two searches and
   `withAll:`, and the kernel-private activation's `methodName` for

@@ -1,3 +1,4 @@
+rules = ["runtime.send"]
 stdout = '''
 pass 2000: a loop's condition answered 7, which is no Boolean
 pass 2000: an object does not understand #ifTrue:
