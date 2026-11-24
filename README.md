@@ -348,9 +348,9 @@ better move.
 
 Newspeak is Gilad Bracha's language, and ns-next follows his specification
 and the Newspeak project's implementation. Its core library takes the API of
-Ryan Macnak's Primordial Soup, and its benchmarks come from Stefan Marr's
-SOMns and Are We Fast Yet and from Primordial Soup. `THIRD-PARTY-NOTICES.md`
-lists what is adapted from where.
+Ryan Macnak's Primordial Soup -- the API only, every body written anew -- and
+its benchmarks come from Stefan Marr's SOMns and Are We Fast Yet and from
+Primordial Soup. `THIRD-PARTY-NOTICES.md` lists what is adapted from where.
 
 ## License
 

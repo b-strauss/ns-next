@@ -34,6 +34,11 @@ any names the upstream file it comes from in a header:
 Beside the adapted code, `corpus/` holds Newspeak sources copied verbatim
 from the Newspeak project, unchanged, as the parser's test corpus (below).
 
+The core library's `Kernel.ns` and `CollectionsFactory.ns` take Primordial
+Soup's core API -- its classes, selectors and behaviour -- but none of its
+implementation: every method body and every comment in them is written for
+ns-next, and no code of Primordial Soup's runtime library is copied.
+
 Each of these licences requires its notice below to accompany every copy.
 
 The upstream trees are checked out as submodules under `prior-art/`, at the
