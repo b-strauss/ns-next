@@ -3669,6 +3669,18 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
+- The stress modes never run on GitHub Actions (decided with the user
+  2026-11-25, to come right after the CI workflow): the commit gate runs
+  on Linux x64, Windows x64 and macOS on Apple silicon
+  (`.github/workflows/tests.yml`), but the fifteen stress modes and the
+  run without the JIT run only locally, on Windows, and the AArch64 JIT
+  has never run under them on its own hardware. Planned as a workflow of
+  its own, `stress.yml`, run nightly and by hand, never on a pull
+  request: a matrix of mode by platform, Linux and macOS first, one
+  mode a job since a mode's suite takes as long as the commit gate's on
+  these runners, each followed by `run-corpus` under its mode, and one
+  cargo cache key per platform, so that the jobs do not evict each
+  other's builds from the repository's 10 GB.
 - **A frame's code under the stress modes** (noted 2026-11-20, with the
   developer tool's stage 2). The pause and step stress modes' readers
   never issue `Command::FrameCode`, so `jit::frame_code_listing`'s check
