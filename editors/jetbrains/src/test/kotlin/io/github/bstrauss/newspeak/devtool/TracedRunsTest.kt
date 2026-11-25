@@ -11,8 +11,10 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindowEP
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManager
+import com.intellij.ui.content.ContentUI
 import io.github.bstrauss.newspeak.devtool.editor.CodeListing
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.editor.ListingPosition
@@ -25,6 +27,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JComponent
+import javax.swing.JPanel
 
 class TracedRunsTest : BasePlatformTestCase() {
     private lateinit var contents: ContentManager
@@ -35,7 +39,10 @@ class TracedRunsTest : BasePlatformTestCase() {
     override fun setUp() {
         super.setUp()
         allowTheTemporaryDirectory(testRootDisposable)
-        contents = ContentFactory.getInstance().createContentManager(true, project)
+        // The tool window's own content UI decides a selection in the manager alone; a tabbed pane's,
+        // which `createContentManager(Boolean, Project)` makes, lays its tabs out in the look and feel,
+        // whose macOS one recomputes them mid-removal from a stale count and throws.
+        contents = ContentFactory.getInstance().createContentManager(PlainContentUi(), true, project)
         Disposer.register(testRootDisposable, contents)
         tracedRuns = TracedRuns(project) { contents }
         Disposer.register(testRootDisposable, tracedRuns)
@@ -206,13 +213,15 @@ class TracedRunsTest : BasePlatformTestCase() {
         val (first, second) = tracedRuns.runs
         assertSame(second, tracedRuns.selected)
         assertEquals(second.name, contents.selectedContent?.displayName)
-        // Selecting a tab selects its run, and closing the selected one selects the newest left.
+        // Selecting a tab selects its run, and closing the selected one selects the run of the tab the
+        // manager selects then, the one selected before it, as a tool window's manager does.
         contents.setSelectedContent(contents.contents.first())
         assertSame(first, tracedRuns.selected)
         start(configuration("Third"))
         tracedRuns.close(tracedRuns.selected!!)
         assertEquals(listOf(first, second), tracedRuns.runs)
-        assertSame(second, tracedRuns.selected)
+        assertSame(first, tracedRuns.selected)
+        assertEquals(first.name, contents.selectedContent?.displayName)
         assertEquals(2, contents.contentCount)
     }
 
@@ -378,3 +387,31 @@ class TracedRunsTest : BasePlatformTestCase() {
         assertEquals(0, contents.contentCount)
     }
 }
+
+/** A content UI with no tabs of its own, as the tool window's: one selected content, chosen by the manager. */
+private class PlainContentUi : ContentUI {
+    private val panel = JPanel()
+
+    override fun getComponent(): JComponent = panel
+
+    override fun setManager(manager: ContentManager) {}
+
+    override fun isSingleSelection(): Boolean = true
+
+    override fun isToSelectAddedContent(): Boolean = true
+
+    override fun canBeEmptySelection(): Boolean = false
+
+    override fun beforeDispose() {}
+
+    override fun canChangeSelectionTo(content: Content, implicit: Boolean): Boolean = true
+
+    override fun getCloseActionName(): String = "Close"
+
+    override fun getCloseAllButThisActionName(): String = "Close Others"
+
+    override fun getPreviousContentActionName(): String = "Previous"
+
+    override fun getNextContentActionName(): String = "Next"
+}
+

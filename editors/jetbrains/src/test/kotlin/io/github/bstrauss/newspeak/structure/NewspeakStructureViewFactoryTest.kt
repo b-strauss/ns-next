@@ -91,7 +91,13 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         for (icon in listOf(NewspeakIcons.ROOT_CLASS, NewspeakIcons.VALUE_CLASS)) {
             assertNotNull(icon)
             // A tree icon's size as the platform scales its own, which a display or a font can make other than 16.
-            val loaded = "$icon (${icon.javaClass.name}), its resource ${NewspeakIcons::class.java.getResource("/icons/nodes/root_class.svg")}"
+            val resource = NewspeakIcons::class.java.getResource("/icons/nodes/root_class.svg")
+            val decoded = try {
+                resource?.let { url -> com.github.weisj.jsvg.parser.SVGLoader().load(url)?.size() }
+            } catch (failure: Throwable) {
+                failure.stackTraceToString()
+            }
+            val loaded = "$icon (${icon.javaClass.name}), its resource $resource, decoded by jsvg as $decoded"
             assertEquals(loaded, AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
             assertEquals(loaded, AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }

@@ -64,7 +64,7 @@ internal fun isLogpoint(breakpoint: XBreakpoint<*>): Boolean =
  */
 internal fun logMessageOf(expression: String): String = "{" + (if (expression.startsWith("{")) " " else "") + expression + "}"
 
-private typealias NewspeakLineBreakpoint = XLineBreakpoint<NewspeakLineBreakpointProperties>
+internal typealias NewspeakLineBreakpoint = XLineBreakpoint<NewspeakLineBreakpointProperties>
 private typealias NewspeakMethodBreakpoint = XBreakpoint<NewspeakMethodBreakpointProperties>
 private typealias NewspeakExceptionBreakpoint = XBreakpoint<NewspeakExceptionBreakpointProperties>
 
