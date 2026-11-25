@@ -1144,14 +1144,21 @@ mod tests {
         // `hash` above, whose integer literal is none either.
         ("True", "printString"),
         ("False", "printString"),
+        ("True", "asString"),
+        ("False", "asString"),
         ("UndefinedObject", "printString"),
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         ("Closure", "cull:"),
+        ("Closure", "cull:cull:"),
+        ("Closure", "cull:cull:cull:"),
         // A loop is Newspeak, its sends visible to the JIT tiers: the
         // inlined loop of `[self value] whileTrue: [body value]`.
         ("Closure", "whileTrue:"),
         ("Closure", "whileFalse:"),
+        ("Closure", "whileTrue"),
+        ("Closure", "whileFalse"),
+        ("Closure", "repeat"),
         // A walk in Newspeak, over the size its leaf reads: a loop sending
         // `at:` and `value:`.
         ("Array", "do:"),

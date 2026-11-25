@@ -253,7 +253,11 @@ impl Primitive {
             // A write stores its element, and a value of the wrong kind is
             // an error rather than `false`.
             Primitive::Element(_) => false,
-            Primitive::Block(BlockPrimitive::Value | BlockPrimitive::ArgumentCount) => false,
+            Primitive::Block(
+                BlockPrimitive::Value
+                | BlockPrimitive::ArgumentCount
+                | BlockPrimitive::ValueWithArguments,
+            ) => false,
             Primitive::Platform(
                 PlatformPrimitive::Show
                 | PlatformPrimitive::NewLine
@@ -764,6 +768,9 @@ impl ElementAccess {
 pub enum BlockPrimitive {
     Value,
     ArgumentCount,
+    /// `valueWithArguments:`: the block activated with an Array's
+    /// elements as its arguments, in order.
+    ValueWithArguments,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3326,6 +3333,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         "exceptionCaught:at:ifFail:",
         "exceptionCaughtAt:",
         Primitive::Activation(ActivationPrimitive::ExceptionCaught),
+    ),
+    // An exit, as `value`'s rows: it activates the block, with the
+    // elements of an Array as its arguments (`builtins::block`).
+    mirror(
+        "block:valueWithArguments:ifFail:",
+        "valueWithArguments:",
+        Primitive::Block(BlockPrimitive::ValueWithArguments),
     ),
 ];
 

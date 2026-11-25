@@ -2831,7 +2831,8 @@ class Kernel vmMirror: mirror = Value (
   /// inlines, counts no activation for it either
   /// (`docs/design/core-library.md`, "`True` and `False` are quick
   /// methods"). An argument that is no block is sent `value` like any
-  /// other object; `printString` and `hash` alone are ordinary methods.
+  /// other object; `printString`, `asString` and `hash` alone are
+  /// ordinary methods.
   public class True = Boolean () (
     /// Evaluates `trueBlock`; `falseBlock` is not evaluated.
     ///
@@ -2929,6 +2930,14 @@ class Kernel vmMirror: mirror = Value (
       ^'true'.
     )
 
+    /// Names the receiver as its literal, as `printString` does.
+    ///
+    /// @answers the String 'true'.
+    /// @see `printString`.
+    public asString = (
+      ^'true'.
+    )
+
     /// Hashes the receiver to a constant, unlike `false`'s.
     ///
     /// `true` is equal only to itself (`Value>>=`), so any constant agrees
@@ -2944,7 +2953,7 @@ class Kernel vmMirror: mirror = Value (
   /// The class of `false`.
   ///
   /// Its methods are `True`'s with the branches exchanged, each a quick
-  /// method but `printString` and `hash`, as `True`'s are.
+  /// method but `printString`, `asString` and `hash`, as `True`'s are.
   public class False = Boolean () (
     /// Evaluates `falseBlock`; `trueBlock` is not evaluated.
     ///
@@ -3039,6 +3048,14 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @answers the String 'false'.
     public printString = (
+      ^'false'.
+    )
+
+    /// Names the receiver as its literal, as `printString` does.
+    ///
+    /// @answers the String 'false'.
+    /// @see `printString`.
+    public asString = (
       ^'false'.
     )
 
@@ -8178,6 +8195,28 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
+    /// As `value`, with the elements of `arguments` as the block's
+    /// arguments, in order, however many the block declares.
+    ///
+    /// The block is given the elements `arguments` holds when it is sent;
+    /// a change the block makes to `arguments` changes none of its
+    /// parameters. A collection that is no Array is copied into one first,
+    /// in its `do:` order.
+    ///
+    /// @param arguments an Array, or a Collection or anything `Array
+    /// withAll:` takes; its elements are the block's arguments.
+    /// @answers the block's value.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got …', when `arguments` does not hold
+    /// exactly as many elements as the block declares parameters.
+    /// @see `value`.
+    public valueWithArguments: arguments = (
+      ^vmMirror block: self valueWithArguments: arguments ifFail: [
+        arguments isKindOfArray ifTrue: [^super valueWithArguments: arguments].
+        ^self valueWithArguments: (Array withAll: arguments).
+      ].
+    )
+
     /// Counts the parameters the block declares, fixed when it was
     /// written.
     ///
@@ -8201,6 +8240,47 @@ class Kernel vmMirror: mirror = Value (
     /// @see `value:`.
     public cull: argument = (
       ^self numArgs = 0 ifTrue: [self value] ifFalse: [self value: argument].
+    )
+
+    /// Evaluates the block with as many of `first` and `second`, in that
+    /// order, as it declares parameters: none, `first`, or both.
+    ///
+    /// @param first any object; the block's first argument.
+    /// @param second any object; the block's second argument.
+    /// @answers the block's value.
+    /// @signals ArgumentError of `value:value:`, carrying the block, 'wrong
+    /// number of block arguments: block takes …, got 2', for a block of
+    /// three parameters or more.
+    /// @see `cull:`.
+    public cull: first cull: second = (
+      |
+        count = self numArgs.
+      |
+      count = 0 ifTrue: [^self value].
+      count = 1 ifTrue: [^self value: first].
+      ^self value: first value: second.
+    )
+
+    /// Evaluates the block with as many of `first`, `second` and `third`,
+    /// in that order, as it declares parameters: none, one, two or all
+    /// three.
+    ///
+    /// @param first any object; the block's first argument.
+    /// @param second any object; the block's second argument.
+    /// @param third any object; the block's third argument.
+    /// @answers the block's value.
+    /// @signals ArgumentError of `value:value:value:`, carrying the block,
+    /// 'wrong number of block arguments: block takes …, got 3', for a block
+    /// of four parameters or more.
+    /// @see `cull:`.
+    public cull: first cull: second cull: third = (
+      |
+        count = self numArgs.
+      |
+      count = 0 ifTrue: [^self value].
+      count = 1 ifTrue: [^self value: first].
+      count = 2 ifTrue: [^self value: first value: second].
+      ^self value: first value: second value: third.
     )
 
     /// Evaluates the receiver and, while it answers true, `body`, then
@@ -8239,6 +8319,47 @@ class Kernel vmMirror: mirror = Value (
     /// @see `whileTrue:`.
     public whileFalse: body = (
       ^[self value] whileFalse: [body value].
+    )
+
+    /// Evaluates the receiver again and again while it answers true.
+    ///
+    /// @answers nil, once the receiver answers false.
+    /// @signals NonBooleanReceiver carrying the answer, 'a loop's condition
+    /// answered …, which is no Boolean', when the receiver answers anything
+    /// but a Boolean.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters.
+    /// @see `whileTrue:`.
+    public whileTrue = (
+      ^[self value] whileTrue: [].
+    )
+
+    /// Evaluates the receiver again and again while it answers false.
+    ///
+    /// @answers nil, once the receiver answers true.
+    /// @signals NonBooleanReceiver carrying the answer, 'a loop's condition
+    /// answered …, which is no Boolean', when the receiver answers anything
+    /// but a Boolean.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters.
+    /// @see `whileFalse:`.
+    public whileFalse = (
+      ^[self value] whileFalse: [].
+    )
+
+    /// Evaluates the receiver again and again, without end: only a
+    /// non-local return out of it, an exception or the end of the program
+    /// ends the loop.
+    ///
+    /// @answers nothing: the send never answers.
+    /// @signals ArgumentError carrying the block, 'wrong number of block
+    /// arguments: block takes …, got 0', for a receiver that declares
+    /// parameters.
+    /// @see `whileTrue`.
+    public repeat = (
+      [true] whileTrue: [self value].
     )
 
     /// Evaluates the receiver. An exception signalled meanwhile whose
