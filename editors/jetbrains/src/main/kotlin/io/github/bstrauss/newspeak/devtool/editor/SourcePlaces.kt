@@ -4,6 +4,8 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.util.TextRange
 import io.github.bstrauss.newspeak.devtool.model.Body
 import io.github.bstrauss.newspeak.devtool.model.SourceRange
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
@@ -19,8 +21,23 @@ fun bodySourcePath(body: Body, libraryDirectory: Path?): Path? = try {
     null
 }
 
-/** Whether [first] and [second] name one file. */
-fun sameFile(first: Path, second: Path): Boolean = first.toAbsolutePath().normalize() == second.toAbsolutePath().normalize()
+/**
+ * Whether [first] and [second] name one file: by their normal forms, and
+ * where those differ by the file system, since a trace keeps the path its
+ * run was given and an editor the one the platform found -- through a link,
+ * or a Windows short name, the two are spelled apart. A path naming no file
+ * names no other.
+ */
+fun sameFile(first: Path, second: Path): Boolean {
+    val firstNormal = first.toAbsolutePath().normalize()
+    val secondNormal = second.toAbsolutePath().normalize()
+    if (firstNormal == secondNormal) return true
+    return try {
+        Files.isSameFile(firstNormal, secondNormal)
+    } catch (_: IOException) {
+        false
+    }
+}
 
 /** The offset of [line] and [column] in [document]; null where it lies outside the text. */
 fun documentOffset(document: Document, line: Int, column: Int): Int? {
