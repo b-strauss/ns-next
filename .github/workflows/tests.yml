@@ -1,9 +1,10 @@
 # Runs the commit gate (`cargo xtask gates commit`; CLAUDE.md, "The
 # gates") on Linux x64, Windows x64 and macOS on Apple silicon at every push
 # to master and every pull request -- the last the one place the AArch64
-# JIT runs natively rather than under QEMU. The end-of-batch gates (stress
-# modes, benchmarks, codegen) stay local: they run too long for these
-# runners, and a measurement on a shared runner says nothing.
+# JIT runs natively rather than under QEMU. The stress modes run nightly in
+# a workflow of their own (`stress.yml`); the other end-of-batch gates
+# (benchmarks, codegen) stay local: a measurement on a shared runner says
+# nothing.
 
 name: Tests
 
@@ -46,9 +47,11 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # Saved after a failing job too, so that a gate that finds something
-      # does not cost the next run its whole build.
+      # does not cost the next run its whole build. The stress workflow
+      # (`stress.yml`) restores the same build by its shared key.
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: debug-build
           cache-on-failure: true
 
       - uses: taiki-e/install-action@v2

@@ -491,10 +491,12 @@ enum Part {
     /// record checked against the list of unreached tests
     /// (`unreached.rs`).
     RecordedSuite,
-    /// The suite under every stress mode, and without the JIT, at once
-    /// (`stress_suite_runs`): each ends in a long tail of a few depth-limit
-    /// tests that leaves most cores idle, and the tails overlap.
-    StressSuites,
+    /// The suite under the stress modes named, and without the JIT if
+    /// `NO_JIT` is among them, at once (`stress_suite_runs`): each ends in
+    /// a long tail of a few depth-limit tests that leaves most cores idle,
+    /// and the tails overlap. One of them alone, as `--only stress <mode>`
+    /// narrows the group to, runs on every thread with its output shown.
+    StressSuites(Vec<String>),
     /// `cargo xtask shipped-code`, unless the artifact is current
     /// (`run_shipped_code`). The shipped code's fingerprint covers Rust
     /// sources, so it runs after the one step that rewrites them,
@@ -631,7 +633,8 @@ fn group(name: &str) -> Option<Vec<Part>> {
                 corpus(&format!("run-corpus under {mode}"))
                     .with_environment(&format!("NS_NEXT_STRESS_{mode}"), "1")
             }));
-            vec![Part::StressSuites, Part::Steps(runs)]
+            let modes = stress_suite_runs().into_iter().map(|(mode, _)| mode);
+            vec![Part::StressSuites(modes.collect()), Part::Steps(runs)]
         }
         // The size tests are `cfg(not(debug_assertions))`, so only a build
         // without debug assertions runs them; the profile skips the release
@@ -845,7 +848,7 @@ fn main() -> ExitCode {
                 .iter()
                 .try_for_each(|step| run(step, &root, &mut times)),
             Part::RecordedSuite => run_recorded_suite(&root, &mut times),
-            Part::StressSuites => run_stress_suites(&root, &mut times),
+            Part::StressSuites(modes) => run_stress_suites(&root, modes, &mut times),
             Part::Codegen => run_codegen(&root, &mut times),
             Part::Spec => run_spec(&root, &mut times),
         };
@@ -1064,15 +1067,19 @@ fn place_shipped_code(parts: &mut Vec<Part>) {
     }
 }
 
-/// The labels a part runs under, each the name `--only` takes for it.
-fn part_labels(part: &Part) -> Vec<&str> {
+/// The labels a part runs under, each the name `--only` takes for it: the
+/// stress runs all together as `stress suites`, and each alone as
+/// `stress <mode>`.
+fn part_labels(part: &Part) -> Vec<String> {
     match part {
-        Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
-        Part::RecordedSuite => vec!["suite"],
-        Part::StressSuites => vec!["stress suites"],
-        Part::ShippedCode => vec!["shipped code"],
-        Part::Codegen => vec!["codegen"],
-        Part::Spec => vec!["spec book"],
+        Part::Steps(steps) => steps.iter().map(|step| step.label.clone()).collect(),
+        Part::RecordedSuite => vec!["suite".to_string()],
+        Part::StressSuites(modes) => std::iter::once("stress suites".to_string())
+            .chain(modes.iter().map(|mode| format!("stress {mode}")))
+            .collect(),
+        Part::ShippedCode => vec!["shipped code".to_string()],
+        Part::Codegen => vec!["codegen".to_string()],
+        Part::Spec => vec!["spec book".to_string()],
     }
 }
 
@@ -1082,11 +1089,7 @@ fn part_labels(part: &Part) -> Vec<&str> {
 /// but for formatting, which builds nothing and runs before it in the
 /// group. Refused, naming the labels there are, when no part has it.
 fn only(parts: Vec<Part>, label: &str) -> Result<Vec<Part>, String> {
-    let labels: Vec<String> = parts
-        .iter()
-        .flat_map(part_labels)
-        .map(str::to_string)
-        .collect();
+    let labels: Vec<String> = parts.iter().flat_map(part_labels).collect();
     if !labels.iter().any(|known| known == label) {
         return Err(format!(
             "no step `{label}` in these groups; their steps are: {}",
@@ -1104,7 +1107,14 @@ fn only(parts: Vec<Part>, label: &str) -> Result<Vec<Part>, String> {
                     .collect();
                 (!kept.is_empty()).then_some(Part::Steps(kept))
             }
-            other => part_labels(&other).contains(&label).then_some(other),
+            Part::StressSuites(modes) if label != "stress suites" => modes
+                .into_iter()
+                .find(|mode| format!("stress {mode}") == label)
+                .map(|mode| Part::StressSuites(vec![mode])),
+            other => part_labels(&other)
+                .iter()
+                .any(|known| known == label)
+                .then_some(other),
         })
         .collect())
 }
@@ -1247,16 +1257,37 @@ fn run_spec(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), Stri
     outcome
 }
 
-/// The suite under each stress mode and without the JIT at once, each
-/// into its own log under `.temp/`; then each log's summary line.
-fn run_stress_suites(root: &Path, times: &mut Vec<(String, Duration)>) -> Result<(), String> {
-    let runs = stress_suite_runs();
+/// The suite under each of the stress runs `modes` names at once, each
+/// into its own log under `.temp/`; then each log's summary line. A run
+/// alone writes no log: it runs on every thread with its output shown, as
+/// a CI job reads it, every test run past a failure so that it reports
+/// them all.
+fn run_stress_suites(
+    root: &Path,
+    modes: &[String],
+    times: &mut Vec<(String, Duration)>,
+) -> Result<(), String> {
+    let runs: Vec<(String, String)> = stress_suite_runs()
+        .into_iter()
+        .filter(|(name, _)| modes.contains(name))
+        .collect();
     let names: Vec<&str> = runs.iter().map(|(name, _)| name.as_str()).collect();
     let config = unreached::write_generated_config(root)?;
+    let machine = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    if let [(mode, variable)] = runs.as_slice() {
+        let label = format!("stress {mode}");
+        let mut arguments = stress_suite_arguments(mode, &config, machine);
+        arguments.push("--no-fail-fast".to_string());
+        let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        return run(
+            &Step::cargo(&label, &arguments).with_environment(variable, "1"),
+            root,
+            times,
+        );
+    }
     println!("\n==> the suite under {}, at once", names.join(", "));
     let logs = root.join(".temp");
     std::fs::create_dir_all(&logs).map_err(|error| format!("create .temp/: {error}"))?;
-    let machine = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let shares = stress_threads(&names, machine);
     let listed: Vec<String> = names
         .iter()
@@ -1348,7 +1379,7 @@ mod tests {
             .filter_map(|part| match part {
                 Part::Steps(steps) => Some(steps.iter().map(|step| step.label.as_str())),
                 Part::RecordedSuite
-                | Part::StressSuites
+                | Part::StressSuites(_)
                 | Part::ShippedCode
                 | Part::Codegen
                 | Part::Spec => None,
@@ -1364,7 +1395,11 @@ mod tests {
                 "release checks"
             ]
         );
-        assert!(parts.contains(&Part::StressSuites));
+        assert!(
+            parts
+                .iter()
+                .any(|part| matches!(part, Part::StressSuites(modes) if modes.len() == STRESS_MODES.len() + 1))
+        );
         assert!(parts.contains(&Part::Codegen));
         assert_eq!(
             labels
@@ -1376,8 +1411,37 @@ mod tests {
     }
 
     /// The labels of `parts`' steps, `shipped code` for the task.
-    fn labels_of(parts: &[Part]) -> Vec<&str> {
+    fn labels_of(parts: &[Part]) -> Vec<String> {
         parts.iter().flat_map(part_labels).collect()
+    }
+
+    /// One stress run alone, as a CI job runs it: the suite under that
+    /// mode, or without the JIT, and the shipped code before it.
+    #[test]
+    fn only_one_stress_run_keeps_that_run_alone() {
+        let mut parts = group("stress").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts.clone(), "stress MOVES").expect("a stress run");
+        assert_eq!(
+            kept,
+            [
+                Part::ShippedCode,
+                Part::StressSuites(vec!["MOVES".to_string()])
+            ]
+        );
+        let kept = only(parts.clone(), "stress NO_JIT").expect("the run without the JIT");
+        assert_eq!(
+            kept,
+            [
+                Part::ShippedCode,
+                Part::StressSuites(vec!["NO_JIT".to_string()])
+            ]
+        );
+        let kept = only(parts.clone(), "run-corpus under MOVES").expect("a corpus run");
+        assert_eq!(labels_of(&kept), ["shipped code", "run-corpus under MOVES"]);
+        let kept = only(parts.clone(), "stress suites").expect("every stress run");
+        assert_eq!(kept.len(), 2);
+        assert!(only(parts, "stress UNKNOWN").is_err());
     }
 
     #[test]
@@ -1700,6 +1764,26 @@ mod tests {
         ] {
             assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
         }
+    }
+
+    /// The stress workflow's matrix (`.github/workflows/stress.yml`) runs
+    /// every one of the group's runs, and nothing else, one a job.
+    #[test]
+    fn the_stress_workflow_runs_every_stress_run() {
+        let workflow =
+            std::fs::read_to_string(repository_root().join(".github/workflows/stress.yml"))
+                .expect("the stress workflow");
+        let matrix: Vec<&str> = workflow
+            .lines()
+            .skip_while(|line| line.trim() != "run:")
+            .skip(1)
+            .map_while(|line| line.trim().strip_prefix("- "))
+            .collect();
+        let runs: Vec<String> = stress_suite_runs()
+            .into_iter()
+            .map(|(mode, _)| mode)
+            .collect();
+        assert_eq!(matrix, runs);
     }
 
     #[test]
