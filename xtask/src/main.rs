@@ -952,7 +952,16 @@ fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Resul
         }
     }
     let stale = unreached::stale(&listed, &record);
-    let dead = unreached::dead(&listed, &tests);
+    // The list is measured on Windows, and another platform builds other
+    // tests -- Windows' paths, x64's CPUID -- and names the corpus tests'
+    // byte ranges by files whose line ends Windows checks out as CRLF: there
+    // a listed test that did not run may never have existed, so only
+    // Windows tells it from one renamed or removed.
+    let dead = if cfg!(windows) {
+        unreached::dead(&listed, &tests)
+    } else {
+        Vec::new()
+    };
     if stale.is_empty() && dead.is_empty() {
         return Ok(());
     }
