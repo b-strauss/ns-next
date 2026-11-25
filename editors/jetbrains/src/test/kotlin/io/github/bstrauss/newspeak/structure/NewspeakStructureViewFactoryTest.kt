@@ -97,7 +97,15 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
             } catch (failure: Throwable) {
                 failure.stackTraceToString()
             }
-            val loaded = "$icon (${icon.javaClass.name}), its resource $resource, decoded by jsvg as $decoded"
+            @Suppress("DEPRECATION")
+            val image = try {
+                com.intellij.util.ImageLoader.loadFromResource("/icons/nodes/root_class.svg", NewspeakIcons::class.java)
+                    ?.let { loadedImage -> "${loadedImage.getWidth(null)}x${loadedImage.getHeight(null)}" }
+            } catch (failure: Throwable) {
+                failure.stackTraceToString()
+            }
+            val loaded = "$icon (${icon.javaClass.name}), its resource $resource, decoded by jsvg as $decoded, " +
+                "loaded by the platform's image loader as $image, headless ${java.awt.GraphicsEnvironment.isHeadless()}"
             assertEquals(loaded, AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
             assertEquals(loaded, AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }

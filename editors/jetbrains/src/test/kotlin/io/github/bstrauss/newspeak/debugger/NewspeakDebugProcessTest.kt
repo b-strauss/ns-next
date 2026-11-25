@@ -19,9 +19,9 @@ import com.intellij.ide.projectView.impl.nodes.SyntheticLibraryElementNode
 import com.intellij.ide.util.treeView.AbstractTreeNode
 import com.intellij.notification.Notification
 import com.intellij.notification.Notifications
-import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
@@ -29,7 +29,6 @@ import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.impl.DocumentMarkupModel
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.xdebugger.ui.DebuggerColors
 import com.intellij.openapi.roots.AdditionalLibraryRootsProvider
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.ui.TestDialogManager
@@ -41,13 +40,14 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiFileSystemItem
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.TestActionEvent
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.runInEdtAndGet
 import com.intellij.testFramework.runInEdtAndWait
-import com.intellij.util.ThreeState
 import com.intellij.ui.ColoredTextContainer
 import com.intellij.ui.SimpleTextAttributes
+import com.intellij.util.ThreeState
 import com.intellij.xdebugger.XDebugProcess
 import com.intellij.xdebugger.XDebugProcessStarter
 import com.intellij.xdebugger.XDebugSession
@@ -56,8 +56,8 @@ import com.intellij.xdebugger.XDebuggerManager
 import com.intellij.xdebugger.XDebuggerManagerListener
 import com.intellij.xdebugger.XDebuggerUtil
 import com.intellij.xdebugger.XSourcePosition
-import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.SuspendPolicy
+import com.intellij.xdebugger.breakpoints.XBreakpoint
 import com.intellij.xdebugger.breakpoints.XBreakpointListener
 import com.intellij.xdebugger.breakpoints.XLineBreakpoint
 import com.intellij.xdebugger.evaluation.EvaluationMode
@@ -75,6 +75,7 @@ import com.intellij.xdebugger.frame.XValueNode
 import com.intellij.xdebugger.frame.XValuePlace
 import com.intellij.xdebugger.frame.presentation.XValuePresentation
 import com.intellij.xdebugger.impl.settings.XDebuggerSettingManagerImpl
+import com.intellij.xdebugger.ui.DebuggerColors
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
@@ -136,6 +137,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
                 debugging.stopped.get(WAIT_SECONDS, TimeUnit.SECONDS)
             }
             runInEdtAndWait {
+                // A stop opens its file later, on the event queue: those already queued open before the close,
+                // or an editor a slow machine opened after it outlives the test.
+                PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
                 // The session's console and the editors its stops opened.
                 for (debugging in debugged) {
                     debugging.session.consoleView?.let(Disposer::dispose)
