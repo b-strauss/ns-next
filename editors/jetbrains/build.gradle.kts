@@ -2,6 +2,7 @@ import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.argumentProviders.IntelliJPlatformArgumentProvider
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import java.util.Properties
 
 plugins {
@@ -115,6 +116,15 @@ val DAP_SESSION_TEST = "io.github.bstrauss.newspeak.debugger.DapSessionTest"
 val DEBUG_PROCESS_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakDebugProcessTest"
 val BREAKPOINT_TYPES_TEST = "io.github.bstrauss.newspeak.debugger.NewspeakBreakpointTypesTest"
 val TRACED_RUN_END_TO_END_TEST = "io.github.bstrauss.newspeak.devtool.TracedRunEndToEndTest"
+
+// A failing test's whole exception, its message and stack, in the build's
+// output: a CI log is all a failure on another platform leaves.
+tasks.withType<Test>().configureEach {
+    testLogging {
+        events("failed")
+        exceptionFormat = TestExceptionFormat.FULL
+    }
+}
 
 tasks.test {
     description = "Runs the plugin's tests that start no workspace binary."
