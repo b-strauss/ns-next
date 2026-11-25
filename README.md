@@ -144,6 +144,9 @@ Newspeak modules, kept as a non-regression gate for the parser; the six on
 `cargo xtask` runs the repository's own tasks (`xtask/`). Each gate group is
 one call; several groups also run in one call, one after another, and the
 first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
+The commit gate also runs on GitHub Actions, on Linux x64, Windows x64 and
+macOS on Apple silicon, at every push to `master` and every pull request
+(`.github/workflows/tests.yml`).
 
 ```bash
 # every commit: cargo fmt --all, clippy warning-free, the suite with every
@@ -186,6 +189,9 @@ cargo xtask shipped-code
 cargo xtask shipped-code --check
 # the codegen budgets against another checkout, e.g. an exported older commit
 cargo xtask codegen .temp/stage2
+# one step of a group, by its label, as the CI runs each: format, lint,
+# suite, doctests, "spec book", "corpus parse", plugin, ...
+cargo xtask gates commit --only lint
 # check the specification's book -- rule identifiers, chapters, the tests'
 # references to rules, links -- and render it into
 # target/spec/html/index.html, which opens in a browser; needs mdBook 0.5.4

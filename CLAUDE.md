@@ -976,7 +976,9 @@ This table is the one place that says which gate runs when;
 `docs/design/README.md`, "Gates", follows it. Each row is a group of
 `cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the
 group runs; several groups run in one call, one after another, and the
-first that fails stops it. Every `cargo xtask gates` call runs the
+first that fails stops it, and `--only <step>` runs one step of them --
+its label, `lint` or `suite` -- after the shipped-code step, as the CI
+workflow runs the commit group step by step. Every `cargo xtask gates` call runs the
 shipped-code step once: it writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
 `docs/design/core-library.md`, "The embedded shipped code") through
@@ -996,7 +998,7 @@ share the machine's threads among them by their measured lengths
 
 | Group | Runs | When |
 |---|---|---|
-| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; the specification's book, `cargo xtask spec`, its rules, the tests' references to them and its links checked and the book rendered; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, six test tasks, each rerun by Gradle only when what it runs can change, never for a binary's bytes alone (`editors/jetbrains/build.gradle.kts`): `test`, the tests that start no binary, on the plugin and the `.ns` under `goldens/`, the core library and `benchmarks/`; `lexerComparisonTest`, on the plugin, the `.ns` under those and `corpus/modules`, the Rust sources `dump-tokens` runs and the workspace's build settings; and `dapSessionTest`, `debugProcessTest`, `breakpointTypesTest` and `traceFileTest`, which run the debug build of `ns-next`, on the plugin, the sources of `ns-cli`, `ns-runtime` (the core library included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and the build settings -- so a runtime change reruns those four and a change to the analyzer alone none of them -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
+| `commit` | `cargo fmt --all`; `cargo clippy --workspace --all-targets`, warning-free; `cargo nextest run --workspace`, the default profile, every golden under both lowerings, run with the reach record on (`NS_NEXT_RECORD_REACH`, `ns_memory::reach`) and failing, naming them, when a test `xtask/unreached-tests.txt` lists now reaches more than it says or, on Windows, where the list is measured, did not run, or when a golden of a program recorded no runtime (`cargo xtask unreached-tests` measures the list afresh; `xtask/src/unreached.rs`); `cargo test --workspace --doc`, since nextest runs no doctest; the specification's book, `cargo xtask spec`, its rules, the tests' references to them and its links checked and the book rendered; `parse-corpus corpus/modules`, "parsed 211, failed 0"; the plugin's `gradlew --no-daemon check`, six test tasks, each rerun by Gradle only when what it runs can change, never for a binary's bytes alone (`editors/jetbrains/build.gradle.kts`): `test`, the tests that start no binary, on the plugin and the `.ns` under `goldens/`, the core library and `benchmarks/`; `lexerComparisonTest`, on the plugin, the `.ns` under those and `corpus/modules`, the Rust sources `dump-tokens` runs and the workspace's build settings; and `dapSessionTest`, `debugProcessTest`, `breakpointTypesTest` and `traceFileTest`, which run the debug build of `ns-next`, on the plugin, the sources of `ns-cli`, `ns-runtime` (the core library included), `ns-tooling`, `ns-syntax`, `ns-memory` and `ns-assembler` and the build settings -- so a runtime change reruns those four and a change to the analyzer alone none of them -- up to date in a few seconds otherwise, most of them the start of Gradle's JVM, since no daemon outlives a gate run | every commit |
 | `analyzer` | the hints' behaviour oracle, profile `hints` | a commit touching `crates/ns-analyzer` |
 | `images` | every golden through `build` then `load`, profile `images` | a commit touching the image format (`crates/ns-runtime/src/image/`), the instruction encoding (`crates/ns-runtime/src/bytecode.rs`, `bytecode/`) or `ns-next build`/`load`; the end of a batch that changed the runtime |
 | `caches` | every golden with a two-entry global cache, profile `caches` | a commit touching the caches (`crates/ns-runtime/src/interpreter/inline_cache.rs`); the end of a batch that changed the runtime |
@@ -1013,6 +1015,11 @@ share the machine's threads among them by their measured lengths
 and `stress` together; the Docker groups `linux` and `aarch64` are not part
 of it (decided with the user 2026-11-15, while the focus is elsewhere) and
 run on demand; none runs at a commit, nor under a stress mode.
+The `commit` group also runs on GitHub Actions (`.github/workflows/tests.yml`)
+on Linux x64, Windows x64 and macOS on Apple silicon -- the one place the
+AArch64 JIT runs natively -- at every push to `master` and every pull
+request that changes more than Markdown; work reaches `master` through a
+pull request, merged with a merge commit once the user agrees.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since

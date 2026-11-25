@@ -46,6 +46,12 @@
 test-threads = 18
 default-filter = "not (binary(run_benchmarks) | binary(hinted_goldens) | binary(golden_round_trips) | test(/^golden_with_a_two_entry_global_cache::/))"
 
+# The default profile as the CI workflow runs it (`.github/workflows/tests.yml`,
+# through `NEXTEST_PROFILE`): every test run past a failure, so that a run
+# reports them all.
+[profile.ci]
+fail-fast = false
+
 [profile.benchmarks-verify]
 default-filter = "binary(run_benchmarks) | (binary(hinted_goldens) and test(/^hinted::[a-z]+::benchmarks\\//))"
 

@@ -9,6 +9,7 @@ import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.util.xmlb.XmlSerializer
 import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
@@ -39,6 +40,7 @@ class NewspeakStepFiltersTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         originalFetcher = DocumentSymbolCache.getInstance(project).fetcher
         directory = Files.createTempDirectory("ns-next-step-filters")
         VfsRootAccess.allowRootAccess(testRootDisposable, directory.toString())

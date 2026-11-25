@@ -30,7 +30,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
-usage: cargo xtask gates <group>...
+usage: cargo xtask gates <group>... [--only <step>]
        cargo xtask shipped-code [--check]
        cargo xtask codegen [<tree>]
        cargo xtask unreached-tests
@@ -804,6 +804,14 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
+    let (groups, only_label) = match groups {
+        [names @ .., flag, label] if flag == "--only" => (names, Some(label.as_str())),
+        names => (names, None),
+    };
+    if groups.is_empty() {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
     let mut parts = Vec::new();
     for name in groups {
         match group(name) {
@@ -815,6 +823,19 @@ fn main() -> ExitCode {
         }
     }
     place_shipped_code(&mut parts);
+    if let Some(label) = only_label {
+        match only(parts, label) {
+            Ok(kept) => parts = kept,
+            Err(refusal) => {
+                eprintln!(
+                    "{refusal}
+
+{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
     let root = repository_root();
     let mut times = Vec::new();
     for part in &parts {
@@ -905,6 +926,9 @@ fn default_tests(root: &Path) -> Result<Vec<unreached::TestId>, String> {
             "--workspace",
             "--message-format",
             "oneline",
+            // The names are parsed: no colour, whatever CARGO_TERM_COLOR asks.
+            "--color",
+            "never",
         ])
         .current_dir(root)
         .stderr(Stdio::inherit())
@@ -949,7 +973,16 @@ fn run_recorded_suite(root: &Path, times: &mut Vec<(String, Duration)>) -> Resul
         }
     }
     let stale = unreached::stale(&listed, &record);
-    let dead = unreached::dead(&listed, &tests);
+    // The list is measured on Windows, and another platform builds other
+    // tests -- Windows' paths, x64's CPUID -- and names the corpus tests'
+    // byte ranges by files whose line ends Windows checks out as CRLF: there
+    // a listed test that did not run may never have existed, so only
+    // Windows tells it from one renamed or removed.
+    let dead = if cfg!(windows) {
+        unreached::dead(&listed, &tests)
+    } else {
+        Vec::new()
+    };
     if stale.is_empty() && dead.is_empty() {
         return Ok(());
     }
@@ -1029,6 +1062,51 @@ fn place_shipped_code(parts: &mut Vec<Part>) {
     if !placed {
         parts.insert(0, Part::ShippedCode);
     }
+}
+
+/// The labels a part runs under, each the name `--only` takes for it.
+fn part_labels(part: &Part) -> Vec<&str> {
+    match part {
+        Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
+        Part::RecordedSuite => vec!["suite"],
+        Part::StressSuites => vec!["stress suites"],
+        Part::ShippedCode => vec!["shipped code"],
+        Part::Codegen => vec!["codegen"],
+        Part::Spec => vec!["spec book"],
+    }
+}
+
+/// `parts` narrowed to the step or part labelled `label`, with the
+/// shipped code, which every gate call runs first, so that one step of a
+/// group runs as it would in the whole group -- a CI job's step each --
+/// but for formatting, which builds nothing and runs before it in the
+/// group. Refused, naming the labels there are, when no part has it.
+fn only(parts: Vec<Part>, label: &str) -> Result<Vec<Part>, String> {
+    let labels: Vec<String> = parts
+        .iter()
+        .flat_map(part_labels)
+        .map(str::to_string)
+        .collect();
+    if !labels.iter().any(|known| known == label) {
+        return Err(format!(
+            "no step `{label}` in these groups; their steps are: {}",
+            labels.join(", ")
+        ));
+    }
+    Ok(parts
+        .into_iter()
+        .filter_map(|part| match part {
+            Part::ShippedCode => (label != "format").then_some(Part::ShippedCode),
+            Part::Steps(steps) => {
+                let kept: Vec<Step> = steps
+                    .into_iter()
+                    .filter(|step| step.label == label)
+                    .collect();
+                (!kept.is_empty()).then_some(Part::Steps(kept))
+            }
+            other => part_labels(&other).contains(&label).then_some(other),
+        })
+        .collect())
 }
 
 /// The shipped-code step of a gate call: nothing but the check when the
@@ -1299,17 +1377,51 @@ mod tests {
 
     /// The labels of `parts`' steps, `shipped code` for the task.
     fn labels_of(parts: &[Part]) -> Vec<&str> {
-        parts
-            .iter()
-            .flat_map(|part| match part {
-                Part::Steps(steps) => steps.iter().map(|step| step.label.as_str()).collect(),
-                Part::RecordedSuite => vec!["recorded suite"],
-                Part::StressSuites => vec!["stress suites"],
-                Part::ShippedCode => vec!["shipped code"],
-                Part::Codegen => vec!["codegen"],
-                Part::Spec => vec!["spec book"],
-            })
-            .collect()
+        parts.iter().flat_map(part_labels).collect()
+    }
+
+    #[test]
+    fn only_keeps_the_named_step_and_the_shipped_code() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts, "lint").expect("a step of the group");
+        assert_eq!(labels_of(&kept), ["shipped code", "lint"]);
+    }
+
+    #[test]
+    fn only_a_part_of_its_own_keeps_that_part() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts, "suite").expect("a part of the group");
+        assert_eq!(kept, [Part::ShippedCode, Part::RecordedSuite]);
+    }
+
+    #[test]
+    fn only_the_shipped_code_keeps_it_alone() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts, "shipped code").expect("a part of every call");
+        assert_eq!(kept, [Part::ShippedCode]);
+    }
+
+    #[test]
+    fn only_formatting_runs_without_the_shipped_code() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts, "format").expect("a step of the group");
+        assert_eq!(labels_of(&kept), ["format"]);
+    }
+
+    #[test]
+    fn only_a_step_the_groups_lack_is_refused_naming_theirs() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let refusal = only(parts, "codegen").expect_err("no step of the commit group");
+        assert!(refusal.contains("`codegen`"), "{refusal}");
+        assert!(
+            refusal.contains("lint") && refusal.contains("plugin"),
+            "{refusal}"
+        );
     }
 
     #[test]
@@ -1674,7 +1786,7 @@ mod tests {
     #[test]
     fn the_commit_group_checks_the_reach_record() {
         let labels = labels_of(&group("commit").expect("a group")).join(",");
-        assert!(labels.contains("lint,recorded suite,doctests"), "{labels}");
+        assert!(labels.contains("lint,suite,doctests"), "{labels}");
     }
 
     /// Every commit builds the specification's book, so that a broken rule,

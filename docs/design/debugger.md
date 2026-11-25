@@ -3912,9 +3912,14 @@ dropped at a run's end that carries no step (`evaluation::run_ended`,
 `a_failure_owed_at_a_run_s_end_is_named_by_the_stop_that_reports_its_exit`,
 `a_failure_owed_at_a_run_s_end_goes_with_a_terminate_between_runs`). A
 temporary breakpoint needs nothing of the agent or the VM: IntelliJ's
-debugger session removes a breakpoint marked to be removed once hit when
-it reports the stop, which the `stopped` event's `hitBreakpointIds` tell
-it.
+debugger session removes a breakpoint marked to be removed once hit,
+which the `stopped` event's `hitBreakpointIds` tell it -- once the session
+resumes, after the command that resumes it went out, so that a loop
+reached it again first. The plugin's debug process removes a temporary
+breakpoint the stop hit itself, ahead of the command that goes on
+(`NewspeakDebugProcess.goOn`), and the agent, taking requests in order,
+has it gone before the run goes on; the session's own removal follows
+and changes nothing.
 
 ### Step over in recursion and blocks
 

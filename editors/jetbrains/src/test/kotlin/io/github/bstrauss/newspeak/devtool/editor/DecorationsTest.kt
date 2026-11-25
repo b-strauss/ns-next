@@ -14,8 +14,9 @@ import io.github.bstrauss.newspeak.devtool.MethodName
 import io.github.bstrauss.newspeak.devtool.TraceFilters
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
-import io.github.bstrauss.newspeak.devtool.model.MethodState
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
+import io.github.bstrauss.newspeak.devtool.model.MethodState
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -31,6 +32,7 @@ class DecorationsTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         directory = Files.createTempDirectory("newspeak-decorations")
         // Runs and watches of the test's own, never the project's services, which outlive a test.
         tracedRuns = TracedRuns(project) { null }

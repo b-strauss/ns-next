@@ -1,0 +1,144 @@
+# Runs the commit gate (`cargo xtask gates commit`; CLAUDE.md, "The
+# gates") on Linux x64, Windows x64 and macOS on Apple silicon at every push
+# to master and every pull request -- the last the one place the AArch64
+# JIT runs natively rather than under QEMU. The end-of-batch gates (stress
+# modes, benchmarks, codegen) stay local: they run too long for these
+# runners, and a measurement on a shared runner says nothing.
+
+name: Tests
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request cancels the run before it.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-gate:
+    name: commit gate (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # The default profile pins 18 threads for the development machine;
+      # these runners have three or four cores.
+      NEXTEST_TEST_THREADS: num-cpus
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it here.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # Saved after a failing job too, so that a gate that finds something
+      # does not cost the next run its whole build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,mdbook@0.5.4
+
+      # The plugin's Gradle build asks for a JDK 21 toolchain.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The tests' scratch directory (CARGO_TARGET_TMPDIR) comes back from
+      # the cache pruned to half-written state -- a directory of shipped
+      # sources without its fingerprint file -- which a test must never
+      # inherit.
+      - name: Clear the tests' scratch directory
+        shell: bash
+        run: rm -rf target/tmp
+
+      # The embedded shipped code (gitignored), keyed by what its code
+      # fingerprint covers (`shipped_code/fingerprint.rs`). Restored before
+      # the first build, so that `build.rs` embeds it at once rather than in
+      # a second build of the runtime once the gate wrote it; one that does
+      # not match is written anew, as the gate checks its fingerprint.
+      - name: Restore the shipped code
+        id: shipped-code
+        uses: actions/cache/restore@v4
+        with:
+          path: crates/ns-runtime/core-library/shipped-code.bin
+          key: shipped-code-${{ runner.os }}-${{ hashFiles('crates/ns-runtime/core-library/Kernel.ns', 'crates/ns-runtime/core-library/PlatformFactory.ns', 'crates/ns-runtime/core-library/platform/**/*.ns', 'crates/ns-runtime/src/**/*.rs', 'crates/ns-syntax/src/**/*.rs', 'crates/ns-runtime/build.rs', 'crates/ns-runtime/Cargo.toml', 'crates/ns-syntax/Cargo.toml', 'rust-toolchain.toml') }}
+
+      # `cargo xtask` builds the tasks, and the runtime they depend on, with
+      # `--quiet`; built here first, that build shows its progress.
+      - name: Build the tasks
+        id: build
+        run: cargo build --package xtask
+
+      # The commit group one step at a time (`--only`), each a check of its
+      # own on the pull request; the group stays defined once, in xtask.
+      # Every call but formatting runs the shipped-code step first, at once
+      # when current.
+      # Each step runs however the ones before it ended, once the tasks are
+      # built, so that a run reports every check, not only the first failure.
+      - name: Format
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only format
+
+      # Formatting rewrites the sources in place; a diff means a commit
+      # that was not formatted.
+      - name: Sources are formatted
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: git diff --exit-code
+
+      - name: Shipped code
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "shipped code"
+
+      - name: Save the shipped code
+        if: ${{ !cancelled() && steps.shipped-code.outputs.cache-hit != 'true' && hashFiles('crates/ns-runtime/core-library/shipped-code.bin') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: crates/ns-runtime/core-library/shipped-code.bin
+          key: ${{ steps.shipped-code.outputs.cache-primary-key }}
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only lint
+
+      - name: Suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # The default profile, run past a failure (`.config/nextest.toml`).
+        env:
+          NEXTEST_PROFILE: ci
+        run: cargo xtask gates commit --only suite
+
+      - name: Doctests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only doctests
+
+      - name: Specification
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "spec book"
+
+      - name: Corpus parse
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "corpus parse"
+
+      - name: Plugin
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only plugin

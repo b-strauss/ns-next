@@ -6,6 +6,7 @@ import com.intellij.ide.structureView.TreeBasedStructureViewBuilder
 import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.IconLoader
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.RetrievableIcon
 import com.intellij.ui.icons.CompositeIcon
@@ -86,12 +87,19 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
     }
 
-    /** The plugin's own node icons load from its resources, at the size of a tree icon. */
+    /**
+     * The plugin's own node icons load from its resources, at the size of a
+     * tree icon. Icons are activated first: until a test activates them, the
+     * framework's icons are stand-ins one pixel square, and whether one ran
+     * before depends on the order the platform runs the classes in.
+     */
     fun testTheNodeIconsLoad() {
+        IconLoader.activate()
         for (icon in listOf(NewspeakIcons.ROOT_CLASS, NewspeakIcons.VALUE_CLASS)) {
             assertNotNull(icon)
-            assertEquals(16, icon.iconWidth)
-            assertEquals(16, icon.iconHeight)
+            // A tree icon's size as the platform scales its own, which a display or a font can make other than 16.
+            assertEquals(AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
+            assertEquals(AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }
     }
 

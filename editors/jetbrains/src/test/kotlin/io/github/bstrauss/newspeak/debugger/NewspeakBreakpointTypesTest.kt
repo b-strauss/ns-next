@@ -37,6 +37,7 @@ import com.intellij.xdebugger.impl.breakpoints.XBreakpointManagerImpl
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapClient
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
 import io.github.bstrauss.newspeak.run.NewspeakConfigurationType
@@ -78,7 +79,10 @@ class NewspeakBreakpointTypesTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
-        directory = Files.createTempDirectory("ns-next-breakpoint-types")
+        allowTheTemporaryDirectory(testRootDisposable)
+        // By its real path: macOS reaches the temporary directory through a link, and a file the platform knows
+        // by two paths has its editors opened by one and closed by the other.
+        directory = Files.createTempDirectory("ns-next-breakpoint-types").toRealPath()
         serverFetcher = cache.fetcher
     }
 

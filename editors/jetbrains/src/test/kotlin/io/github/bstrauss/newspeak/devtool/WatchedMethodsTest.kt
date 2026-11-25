@@ -13,6 +13,11 @@ import io.github.bstrauss.newspeak.run.nothingTracedNotice
 import java.nio.file.Files
 
 class WatchedMethodsTest : BasePlatformTestCase() {
+    override fun setUp() {
+        super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
+    }
+
     /** A list of its own, never the project's service, which outlives a test. */
     private fun watchedMethods() = WatchedMethods(project)
 

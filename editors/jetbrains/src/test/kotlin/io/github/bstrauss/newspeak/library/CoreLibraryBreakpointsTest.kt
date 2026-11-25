@@ -8,6 +8,7 @@ import com.intellij.xdebugger.XDebuggerManager
 import com.intellij.xdebugger.XDebuggerUtil
 import io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointProperties
 import io.github.bstrauss.newspeak.debugger.NewspeakLineBreakpointType
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -18,6 +19,7 @@ class CoreLibraryBreakpointsTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         root = Files.createTempDirectory("ns-next-core-library")
         store = CoreLibraryStore(root)
     }

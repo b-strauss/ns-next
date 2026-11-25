@@ -27,22 +27,23 @@ import com.intellij.util.ui.JBUI
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.TracedRuns
 import io.github.bstrauss.newspeak.devtool.WatchedMethods
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.devtool.editor.DecorationsService
 import io.github.bstrauss.newspeak.devtool.editor.DeveloperToolDecorationsSettings
 import io.github.bstrauss.newspeak.devtool.editor.LINKED_STATEMENT_COLORS
+import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.linkedColor
 import io.github.bstrauss.newspeak.devtool.editor.listingOf
-import io.github.bstrauss.newspeak.devtool.editor.bytecodeListing
 import io.github.bstrauss.newspeak.devtool.editor.sourceChecksum
 import io.github.bstrauss.newspeak.devtool.model.Bytecode
 import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
-import java.nio.file.Files
-import java.nio.file.Path
 import java.awt.Container
 import java.awt.Rectangle
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -63,6 +64,7 @@ class CodeTabTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         source = Files.createTempDirectory("newspeak-code-tab").resolve("Demo.ns")
         Files.writeString(source, DEMO)
         // Runs and decorations of the test's own, never the project's services, which outlive a test.

@@ -65,6 +65,7 @@ class TracedRunEndToEndTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         directory = Files.createTempDirectory("ns-next-traced-run")
         NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
     }

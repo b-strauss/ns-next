@@ -432,7 +432,9 @@ runs one by one from that `.toml`.
 These are non-regression gates, not suggestions. Each has caught a real
 regression. Which gate runs when -- every commit, a commit touching a given
 part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
-place it is kept; the suite there is every crate's, ns-analyzer's included,
+place it is kept, and the commit gate runs again on GitHub Actions on
+Linux, Windows and macOS on Apple silicon at every push and pull request
+(`.github/workflows/tests.yml`); the suite there is every crate's, ns-analyzer's included,
 whose `disasm` and `inspect` tests guard the compiler's output and the image
 format. The stress modes run the suite again, each with one of the
 runtime's own stress switches set, and the stress gate runs it once more

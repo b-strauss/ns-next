@@ -8,13 +8,19 @@ import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.devtool.DeveloperToolTab
 import io.github.bstrauss.newspeak.devtool.TRACE_CATEGORIES
 import io.github.bstrauss.newspeak.devtool.TraceFilters
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
+import org.junit.Assert
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import org.junit.Assert
 
 class NewspeakRunConfigurationTest : BasePlatformTestCase() {
+    override fun setUp() {
+        super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
+    }
+
     private fun configuration(): NewspeakRunConfiguration =
         NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
 

@@ -2741,19 +2741,42 @@ fn a_cancelled_member_of_a_batch_is_left_out() {
 }
 
 /// Calls `debug_wait` without waiting until the output the answers since
-/// `first` showed holds `text`; fails past `TIMEOUT`. The program's output
-/// reaches the server through a pipe, so a later answer may be the one to
-/// show it; an output an answer lost is never shown.
+/// `first` showed, joined, holds `text`; fails past `TIMEOUT`. The program's
+/// output reaches the server through a pipe, a write at a time, so one line
+/// may be shown by two answers and a later answer may be the one to show it;
+/// an output an answer lost is never shown.
 fn shown_eventually(server: &mut McpServer, first: &str, text: &str) {
     let started = Instant::now();
-    let mut shown = first.to_string();
+    let mut answers = first.to_string();
+    let mut shown = outputs_of(first);
     while !shown.contains(text) {
         assert!(
             started.elapsed() < TIMEOUT,
-            "no answer showed {text:?}: {shown}"
+            "no answer showed {text:?}, the output shown being {shown:?}: {answers}"
         );
-        shown.push_str(&server.succeed("debug_wait", json!({ "seconds": 0 })));
+        let answer = server.succeed("debug_wait", json!({ "seconds": 0 }));
+        shown.push_str(&outputs_of(&answer));
+        answers.push_str(&answer);
     }
+}
+
+/// The program output `answer` shows, each of its `output: "…"` lines'
+/// string read back, in order.
+fn outputs_of(answer: &str) -> String {
+    let mut outputs = String::new();
+    let mut rest = answer;
+    while let Some(start) = rest.find("output: \"") {
+        let quoted = &rest[start + "output: ".len()..];
+        let mut stream = serde_json::Deserializer::from_str(quoted).into_iter::<String>();
+        match stream.next() {
+            Some(Ok(output)) => {
+                outputs.push_str(&output);
+                rest = &quoted[stream.byte_offset()..];
+            }
+            _ => break,
+        }
+    }
+    outputs
 }
 
 /// An answer the cancelled set drops gives its output to the next answer,
@@ -2775,7 +2798,7 @@ fn output_a_dropped_answer_took_is_shown_by_the_next() {
         server.response(start, Duration::ZERO).is_none(),
         "the cancelled start was answered"
     );
-    shown_eventually(&mut server, &stopped, "output: \"start\\n");
+    shown_eventually(&mut server, &stopped, "start\n");
 }
 
 /// A cancelled start ends its wait at once and answers nothing, but keeps
@@ -2792,7 +2815,7 @@ fn a_cancelled_start_keeps_its_session() {
         server.response(start, Duration::ZERO).is_none(),
         "the cancelled start was answered"
     );
-    shown_eventually(&mut server, &waited, "output: \"spinning\\n");
+    shown_eventually(&mut server, &waited, "spinning\n");
 }
 
 /// A `debug_pause` made while a start waits for its program's first stop

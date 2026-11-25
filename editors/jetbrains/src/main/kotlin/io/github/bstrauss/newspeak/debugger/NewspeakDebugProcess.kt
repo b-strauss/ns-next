@@ -84,6 +84,10 @@ class NewspeakDebugProcess(
     private val work = AppExecutorUtil.createBoundedApplicationPoolExecutor("Newspeak debugger", 1)
     private val lineBreakpoints = NewspeakLineBreakpointHandler(session)
     private val methodBreakpoints = NewspeakMethodBreakpointHandler(session)
+
+    /** The temporary line breakpoints the last stop hit, which the next command removes before it goes on. */
+    @Volatile
+    private var hitTemporaries: List<NewspeakLineBreakpoint> = emptyList()
     private val exceptionBreakpoints = NewspeakExceptionBreakpointHandler(session)
 
     @Volatile
@@ -348,6 +352,7 @@ class NewspeakDebugProcess(
         val breakpoint = event.hitBreakpointIds.firstNotNullOfOrNull { id ->
             lineBreakpoints.breakpointOf(id) ?: methodBreakpoints.breakpointOf(id)
         }
+        hitTemporaries = event.hitBreakpointIds.mapNotNull(lineBreakpoints::breakpointOf).filter { hit -> hit.isTemporary }
         val failed = failedConditionMessage(event)
         if (failed != null) {
             // The runtime stops where a condition or log message failed, whatever the breakpoint's suspend
@@ -603,6 +608,11 @@ class NewspeakDebugProcess(
      */
     private fun goOn(command: String, line: Boolean = false, more: JsonObject.() -> Unit = {}) {
         val client = client ?: return
+        // The platform removes a temporary breakpoint hit at the stop once the session resumes, after
+        // this command went out: a loop would reach it again first. The agent takes requests in order,
+        // so the removal sent here, before the command, stands before the run goes on.
+        hitTemporaries.forEach { hit -> lineBreakpoints.unregisterBreakpoint(hit, true) }
+        hitTemporaries = emptyList()
         val arguments = JsonObject().apply {
             addProperty("threadId", THREAD_ID)
             if (line) addProperty("granularity", "line")

@@ -14,6 +14,7 @@ import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionWithDelegate
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.io.NioFiles
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
@@ -164,6 +165,8 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
     }
 
     fun testAConfigurationStoredWithBackslashesIsReusedAndRecognised() {
+        // Only Windows stores such a path; elsewhere a backslash is a file name's own character.
+        if (!SystemInfo.isWindows) return
         myFixture.configureByText("newspeak.json", projectJson)
         val file = myFixture.file.virtualFile
         val runManager = RunManager.getInstance(project)

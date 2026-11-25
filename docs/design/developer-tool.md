@@ -1855,7 +1855,10 @@ yet refreshed on a pooled thread and opened once found.
 
 **The editor** (`DecorationsService`, decisions 27, 28, 32 and 33)
 decorates every open editor of a body's file, a program's or the core
-library's, from the selected run's records: an icon at each method's
+library's -- the body's path and the editor's one file when their normal
+forms agree or the file system says so, since a link or a Windows short
+name spells one file two ways (`sameFile`) -- from the selected run's
+records: an icon at each method's
 header (`StateGutterRenderer`) -- its state, badged when the method is
 watched, its tooltip the counts, the last deoptimization's reason and,
 for a method shown as its baseline or twin tier because its optimized
