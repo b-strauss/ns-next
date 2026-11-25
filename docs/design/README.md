@@ -434,7 +434,8 @@ regression. Which gate runs when -- every commit, a commit touching a given
 part, the end of a batch -- is the table "The gates" in `CLAUDE.md`, the one
 place it is kept, and the commit gate runs again on GitHub Actions on
 Linux, Windows and macOS on Apple silicon at every push and pull request
-(`.github/workflows/tests.yml`); the suite there is every crate's, ns-analyzer's included,
+(`.github/workflows/tests.yml`), and the stress group's runs nightly on
+Linux and macOS, a job each (`.github/workflows/stress.yml`); the suite there is every crate's, ns-analyzer's included,
 whose `disasm` and `inspect` tests guard the compiler's output and the image
 format. The stress modes run the suite again, each with one of the
 runtime's own stress switches set, and the stress gate runs it once more
@@ -462,7 +463,8 @@ NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every bod
 # `cargo xtask gates stress` runs the sixteen suites at once, the machine's
 # threads shared among them by each suite's measured length (32 on 24
 # cores, one to four a suite: at 18 each, 288 test processes stalled tests
-# that wait on a process they start past their bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's, in the nextest profile `stress`
+# that wait on a process they start past their bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's
+# (`--only "stress <MODE>"` runs one alone, on every thread, its output shown), in the nextest profile `stress`
 # (`.config/nextest.toml`) without `ns-syntax`, `ns-assembler` and
 # `ns-memory`, which cannot reach the runtime, the tests that ended a measured
 # run alone started first, narrowed by a profile generated from it: every mode

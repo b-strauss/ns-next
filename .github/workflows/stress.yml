@@ -1,0 +1,123 @@
+# Runs the stress group's runs (`cargo xtask gates stress`; CLAUDE.md,
+# "The gates") on Linux x64 and macOS on Apple silicon -- the one place the
+# AArch64 JIT runs under the stress modes on its own hardware: every night
+# that master changed, and by hand. Never on a pull request: a mode's suite
+# takes as long here as the commit gate's, so each run is a job of its own,
+# the suite under one stress mode, or without the JIT, then run-corpus
+# under it. Windows runs them locally, at the end of every batch that
+# changed the runtime.
+
+name: Stress
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A night whose master the last successful run already tested runs
+  # nothing; a run by hand always runs.
+  changed:
+    name: master changed
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tested=$(gh run list --repo "${{ github.repository }}" --workflow stress.yml \
+            --branch master --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
+          if [ "$tested" = "${{ github.sha }}" ]; then
+            echo "master at $tested was tested already"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  stress:
+    name: ${{ matrix.run }} (${{ matrix.os }})
+    needs: changed
+    if: ${{ needs.changed.outputs.run == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # `xtask/src/main.rs`'s STRESS_MODES, and the run without the JIT.
+        run:
+          - MOVES
+          - CACHES
+          - COLLECT
+          - SCAVENGE
+          - WIDE
+          - SUSPEND
+          - JIT
+          - EXIT
+          - ZONE
+          - OPTIMIZE
+          - DEOPT
+          - INVALIDATE
+          - PAUSE
+          - BREAKPOINTS
+          - STEP
+          - NO_JIT
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # The commit gate's build (`tests.yml`), which these runs build
+      # alike: restored from its key and never saved here, so that thirty
+      # jobs do not evict it, nor each other, from the repository's cache.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: debug-build
+          save-if: false
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Clear the tests' scratch directory
+        shell: bash
+        run: rm -rf target/tmp
+
+      - name: Restore the shipped code
+        uses: actions/cache/restore@v4
+        with:
+          path: crates/ns-runtime/core-library/shipped-code.bin
+          key: shipped-code-${{ runner.os }}-${{ hashFiles('crates/ns-runtime/core-library/Kernel.ns', 'crates/ns-runtime/core-library/PlatformFactory.ns', 'crates/ns-runtime/core-library/platform/**/*.ns', 'crates/ns-runtime/src/**/*.rs', 'crates/ns-syntax/src/**/*.rs', 'crates/ns-runtime/build.rs', 'crates/ns-runtime/Cargo.toml', 'crates/ns-syntax/Cargo.toml', 'rust-toolchain.toml') }}
+
+      - name: Build the tasks
+        id: build
+        run: cargo build --package xtask
+
+      # On every thread, past a failure, its output shown
+      # (`run_stress_suites`).
+      - name: Suite under ${{ matrix.run }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates stress --only "stress ${{ matrix.run }}"
+
+      # The group runs the corpus plain and under each mode; the run
+      # without the JIT's job takes the plain one.
+      - name: ${{ matrix.run == 'NO_JIT' && 'Corpus' || format('Corpus under {0}', matrix.run) }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates stress --only "${{ matrix.run == 'NO_JIT' && 'run-corpus' || format('run-corpus under {0}', matrix.run) }}"

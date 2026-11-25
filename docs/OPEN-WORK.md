@@ -705,11 +705,14 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   - **Paths no gate runs** (2026-11-04): the gate groups `linux` and
     `aarch64` run the suite on Linux x64, with the benchmark programs,
     and, under QEMU, on Linux AArch64, at the end of a batch, but
-    neither runs `images`, `caches` or `stress` there, so those run on
-    Windows x64 alone, and AArch64 runs no benchmark program. The code zone's BSD and Apple AArch64
-    paths, and Apple's JIT, are checked by clippy alone (`memory`,
-    `release-checks`) and never ran; QEMU models no incoherent
-    instruction cache, so a missing flush would pass the `aarch64` group.
+    neither runs `images` or `caches` there, so those run on Windows x64
+    alone, and AArch64 runs no benchmark program; the stress modes run
+    on Linux x64 and macOS on Apple silicon only nightly
+    (`.github/workflows/stress.yml`), never on Linux AArch64. The code
+    zone's BSD paths are checked by clippy alone (`memory`) and never
+    ran; Apple's JIT runs on GitHub Actions' macOS runners, but QEMU
+    models no incoherent instruction cache, so a missing flush on Linux
+    AArch64 would pass the `aarch64` group.
   - **AArch64's speed is unmeasured** (2026-11-04). QEMU checks
     correctness only and times nothing, so whether the port's code is
     fast -- the 16-byte return-address slot, the `movz`/`movk`
@@ -3669,18 +3672,6 @@ program's subclass of `String` as an argument, the error of a
 
 ## Missing tests
 
-- The stress modes never run on GitHub Actions (decided with the user
-  2026-11-25, to come right after the CI workflow): the commit gate runs
-  on Linux x64, Windows x64 and macOS on Apple silicon
-  (`.github/workflows/tests.yml`), but the fifteen stress modes and the
-  run without the JIT run only locally, on Windows, and the AArch64 JIT
-  has never run under them on its own hardware. Planned as a workflow of
-  its own, `stress.yml`, run nightly and by hand, never on a pull
-  request: a matrix of mode by platform, Linux and macOS first, one
-  mode a job since a mode's suite takes as long as the commit gate's on
-  these runners, each followed by `run-corpus` under its mode, and one
-  cargo cache key per platform, so that the jobs do not evict each
-  other's builds from the repository's 10 GB.
 - **A frame's code under the stress modes** (noted 2026-11-20, with the
   developer tool's stage 2). The pause and step stress modes' readers
   never issue `Command::FrameCode`, so `jit::frame_code_listing`'s check

@@ -146,7 +146,8 @@ one call; several groups also run in one call, one after another, and the
 first that fails stops it. `CLAUDE.md`, "The gates", says when each runs.
 The commit gate also runs on GitHub Actions, on Linux x64, Windows x64 and
 macOS on Apple silicon, at every push to `master` and every pull request
-(`.github/workflows/tests.yml`).
+(`.github/workflows/tests.yml`), and the stress modes run nightly on Linux
+x64 and macOS, one job a mode (`.github/workflows/stress.yml`).
 
 ```bash
 # every commit: cargo fmt --all, clippy warning-free, the suite with every
@@ -192,6 +193,8 @@ cargo xtask codegen .temp/stage2
 # one step of a group, by its label, as the CI runs each: format, lint,
 # suite, doctests, "spec book", "corpus parse", plugin, ...
 cargo xtask gates commit --only lint
+# one stress mode alone, on every thread, as the nightly workflow runs each
+cargo xtask gates stress --only "stress MOVES"
 # check the specification's book -- rule identifiers, chapters, the tests'
 # references to rules, links -- and render it into
 # target/spec/html/index.html, which opens in a browser; needs mdBook 0.5.4

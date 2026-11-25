@@ -977,8 +977,10 @@ This table is the one place that says which gate runs when;
 `cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the
 group runs; several groups run in one call, one after another, and the
 first that fails stops it, and `--only <step>` runs one step of them --
-its label, `lint` or `suite` -- after the shipped-code step, as the CI
-workflow runs the commit group step by step. Every `cargo xtask gates` call runs the
+its label, `lint`, `suite` or `stress <mode>`, one stress run alone on
+every thread, its output shown and run past a failure -- after the
+shipped-code step, as the CI workflows run the commit group step by step
+and the stress group a run a job. Every `cargo xtask gates` call runs the
 shipped-code step once: it writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
 `docs/design/core-library.md`, "The embedded shipped code") through
@@ -1019,7 +1021,12 @@ The `commit` group also runs on GitHub Actions (`.github/workflows/tests.yml`)
 on Linux x64, Windows x64 and macOS on Apple silicon -- the one place the
 AArch64 JIT runs natively -- at every push to `master` and every pull
 request that changes more than Markdown; work reaches `master` through a
-pull request, merged with a merge commit once the user agrees.
+pull request, merged with a merge commit once the user agrees. The
+`stress` group's runs also run on GitHub Actions (`.github/workflows/stress.yml`),
+on Linux x64 and macOS on Apple silicon, nightly when `master` changed
+and by hand, never on a pull request: one job a stress mode, or the run
+without the JIT, each followed by `run-corpus` under its mode; the
+end-of-batch `stress` group stays a local gate all the same.
 "The runtime" is `crates/ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or
 `ns-memory`; a batch that changed only `crates/ns-analyzer`, the plugin or
 Markdown runs no stress mode, no `run-corpus` and no benchmark programs, since
