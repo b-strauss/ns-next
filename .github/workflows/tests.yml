@@ -45,7 +45,11 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      # Saved after a failing job too, so that a gate that finds something
+      # does not cost the next run its whole build.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: taiki-e/install-action@v2
         with:
