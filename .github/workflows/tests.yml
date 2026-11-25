@@ -59,6 +59,11 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # `cargo xtask` builds the tasks, and the runtime they depend on, with
+      # `--quiet`; built here first, that build shows its progress.
+      - name: Build the tasks
+        run: cargo build --package xtask
+
       - name: Commit gate
         run: cargo xtask gates commit
 
