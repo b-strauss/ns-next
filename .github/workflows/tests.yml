@@ -63,6 +63,14 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # The tests' scratch directory (CARGO_TARGET_TMPDIR) comes back from
+      # the cache pruned to half-written state -- a directory of shipped
+      # sources without its fingerprint file -- which a test must never
+      # inherit.
+      - name: Clear the tests' scratch directory
+        shell: bash
+        run: rm -rf target/tmp
+
       # `cargo xtask` builds the tasks, and the runtime they depend on, with
       # `--quiet`; built here first, that build shows its progress.
       - name: Build the tasks
