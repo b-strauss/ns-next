@@ -1,15 +1,16 @@
 package io.github.bstrauss.newspeak.devtool.ui
 
+import com.google.gson.JsonObject
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import com.google.gson.JsonObject
 import io.github.bstrauss.newspeak.NewspeakBundle
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.devtool.model.Event
+import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.KEPT_EVENTS
 import io.github.bstrauss.newspeak.devtool.model.MethodState
-import io.github.bstrauss.newspeak.devtool.model.IndexedTrace
 import io.github.bstrauss.newspeak.devtool.model.TraceRecord
 import io.github.bstrauss.newspeak.devtool.model.TraceRun
 import java.nio.file.Files
@@ -20,6 +21,11 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreePath
 
 class TabsTest : BasePlatformTestCase() {
+    override fun setUp() {
+        super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
+    }
+
     /** The file the records are written to, as the reader hands a run its listings and plans: as entries naming their places. */
     private val trace = IndexedTrace()
 

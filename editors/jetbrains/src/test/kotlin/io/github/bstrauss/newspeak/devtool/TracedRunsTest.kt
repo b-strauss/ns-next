@@ -34,6 +34,7 @@ class TracedRunsTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         contents = ContentFactory.getInstance().createContentManager(true, project)
         Disposer.register(testRootDisposable, contents)
         tracedRuns = TracedRuns(project) { contents }

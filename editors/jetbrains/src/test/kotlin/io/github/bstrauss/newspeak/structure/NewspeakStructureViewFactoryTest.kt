@@ -90,8 +90,9 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
     fun testTheNodeIconsLoad() {
         for (icon in listOf(NewspeakIcons.ROOT_CLASS, NewspeakIcons.VALUE_CLASS)) {
             assertNotNull(icon)
-            assertEquals(16, icon.iconWidth)
-            assertEquals(16, icon.iconHeight)
+            // A tree icon's size as the platform scales its own, which a display or a font can make other than 16.
+            assertEquals(AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
+            assertEquals(AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }
     }
 
