@@ -122,7 +122,9 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
-        directory = Files.createTempDirectory("ns-next-debug-process")
+        // By its real path: macOS reaches the temporary directory through a link, and a file the platform knows
+        // by two paths has its editors opened by one and closed by the other.
+        directory = Files.createTempDirectory("ns-next-debug-process").toRealPath()
         NewspeakSettings.getInstance().state.runtimePath = runtime.toString()
         NewspeakDebuggerSettings.getInstance().update(false)
         NewspeakSkippedClasses.getInstance(project).update(emptyList())

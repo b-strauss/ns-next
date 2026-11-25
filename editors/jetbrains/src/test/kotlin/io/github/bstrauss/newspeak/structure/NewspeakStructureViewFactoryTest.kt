@@ -105,7 +105,8 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
                 failure.stackTraceToString()
             }
             val loaded = "$icon (${icon.javaClass.name}), its resource $resource, decoded by jsvg as $decoded, " +
-                "loaded by the platform's image loader as $image, headless ${java.awt.GraphicsEnvironment.isHeadless()}"
+                "loaded by the platform's image loader as $image, headless ${java.awt.GraphicsEnvironment.isHeadless()}, " +
+                "scales ${com.intellij.ui.scale.JBUIScale.sysScale()} system, ${com.intellij.ui.scale.JBUIScale.scale(1f)} user"
             assertEquals(loaded, AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
             assertEquals(loaded, AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }
