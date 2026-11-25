@@ -79,6 +79,7 @@ import com.intellij.xdebugger.ui.DebuggerColors
 import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.debugger.dap.DapConnection
 import io.github.bstrauss.newspeak.debugger.dap.DapInstanceCount
+import io.github.bstrauss.newspeak.devtool.allowTheTemporaryDirectory
 import io.github.bstrauss.newspeak.devtool.editor.CodeListingFile
 import io.github.bstrauss.newspeak.library.CoreLibraryStore
 import io.github.bstrauss.newspeak.library.NewspeakCoreLibrary
@@ -122,6 +123,7 @@ class NewspeakDebugProcessTest : BasePlatformTestCase() {
 
     override fun setUp() {
         super.setUp()
+        allowTheTemporaryDirectory(testRootDisposable)
         // By its real path: macOS reaches the temporary directory through a link, and a file the platform knows
         // by two paths has its editors opened by one and closed by the other.
         directory = Files.createTempDirectory("ns-next-debug-process").toRealPath()

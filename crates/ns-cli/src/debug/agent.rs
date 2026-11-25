@@ -2462,17 +2462,21 @@ mod tests {
         let mut harness = harness(Mode::Connecting { secret: None });
         let mut peer = connect(&mut harness.agent);
         harness.agent.request(1, request(1, "attach", json!({})));
-        for index in 0..100_000 {
-            harness.agent.vm_event(logged(&format!("at {index}")));
+        // Logged until lines are dropped: how many a socket takes first is the
+        // platform's -- Linux grows a socket's buffers to megabytes.
+        let mut sent = 0_u64;
+        while sent < 100_000 || harness.agent.dropped_logs == 0 {
+            assert!(sent < 10_000_000, "nothing was dropped");
+            harness.agent.vm_event(logged(&format!("at {sent}")));
+            sent += 1;
         }
         assert!(harness.agent.client.is_some(), "the session ended");
-        assert!(harness.agent.dropped_logs > 0, "nothing was dropped");
         // Every line is either written or counted in a line that says so,
         // some of which the flood itself wrote as the client's queue
         // drained into the socket.
         let reader = std::thread::spawn(move || {
             let (mut kept, mut reported) = (0_u64, 0_u64);
-            while kept + reported < 100_000 {
+            while kept + reported < sent {
                 let output = next_output(&mut peer);
                 match output.strip_suffix(" log lines dropped\n") {
                     Some(count) => reported += count.parse::<u64>().expect("a count"),
@@ -2492,7 +2496,7 @@ mod tests {
         }
         let (kept, reported) = reader.join().expect("the reader");
         assert!(reported > 0 && kept > 0, "{kept} kept, {reported} dropped");
-        assert_eq!(kept + reported, 100_000);
+        assert_eq!(kept + reported, sent);
     }
 
     /// A logpoint's line past `LOG_TEXT_LIMIT` characters is cut there,
