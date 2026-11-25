@@ -71,6 +71,18 @@ jobs:
         shell: bash
         run: rm -rf target/tmp
 
+      # The embedded shipped code (gitignored), keyed by what its code
+      # fingerprint covers (`shipped_code/fingerprint.rs`). Restored before
+      # the first build, so that `build.rs` embeds it at once rather than in
+      # a second build of the runtime once the gate wrote it; one that does
+      # not match is written anew, as the gate checks its fingerprint.
+      - name: Restore the shipped code
+        id: shipped-code
+        uses: actions/cache/restore@v4
+        with:
+          path: crates/ns-runtime/core-library/shipped-code.bin
+          key: shipped-code-${{ runner.os }}-${{ hashFiles('crates/ns-runtime/core-library/Kernel.ns', 'crates/ns-runtime/core-library/PlatformFactory.ns', 'crates/ns-runtime/core-library/platform/**/*.ns', 'crates/ns-runtime/src/**/*.rs', 'crates/ns-syntax/src/**/*.rs', 'crates/ns-runtime/build.rs', 'crates/ns-runtime/Cargo.toml', 'crates/ns-syntax/Cargo.toml', 'rust-toolchain.toml') }}
+
       # `cargo xtask` builds the tasks, and the runtime they depend on, with
       # `--quiet`; built here first, that build shows its progress.
       - name: Build the tasks
@@ -79,7 +91,8 @@ jobs:
 
       # The commit group one step at a time (`--only`), each a check of its
       # own on the pull request; the group stays defined once, in xtask.
-      # Every call runs the shipped-code step first, at once when current.
+      # Every call but formatting runs the shipped-code step first, at once
+      # when current.
       # Each step runs however the ones before it ended, once the tasks are
       # built, so that a run reports every check, not only the first failure.
       - name: Format
@@ -95,6 +108,13 @@ jobs:
       - name: Shipped code
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo xtask gates commit --only "shipped code"
+
+      - name: Save the shipped code
+        if: ${{ !cancelled() && steps.shipped-code.outputs.cache-hit != 'true' && hashFiles('crates/ns-runtime/core-library/shipped-code.bin') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: crates/ns-runtime/core-library/shipped-code.bin
+          key: ${{ steps.shipped-code.outputs.cache-primary-key }}
 
       - name: Lint
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

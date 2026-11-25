@@ -1078,8 +1078,9 @@ fn part_labels(part: &Part) -> Vec<&str> {
 
 /// `parts` narrowed to the step or part labelled `label`, with the
 /// shipped code, which every gate call runs first, so that one step of a
-/// group runs as it would in the whole group -- a CI job's step each.
-/// Refused, naming the labels there are, when no part has it.
+/// group runs as it would in the whole group -- a CI job's step each --
+/// but for formatting, which builds nothing and runs before it in the
+/// group. Refused, naming the labels there are, when no part has it.
 fn only(parts: Vec<Part>, label: &str) -> Result<Vec<Part>, String> {
     let labels: Vec<String> = parts
         .iter()
@@ -1095,7 +1096,7 @@ fn only(parts: Vec<Part>, label: &str) -> Result<Vec<Part>, String> {
     Ok(parts
         .into_iter()
         .filter_map(|part| match part {
-            Part::ShippedCode => Some(Part::ShippedCode),
+            Part::ShippedCode => (label != "format").then_some(Part::ShippedCode),
             Part::Steps(steps) => {
                 let kept: Vec<Step> = steps
                     .into_iter()
@@ -1401,6 +1402,14 @@ mod tests {
         place_shipped_code(&mut parts);
         let kept = only(parts, "shipped code").expect("a part of every call");
         assert_eq!(kept, [Part::ShippedCode]);
+    }
+
+    #[test]
+    fn only_formatting_runs_without_the_shipped_code() {
+        let mut parts = group("commit").expect("a group");
+        place_shipped_code(&mut parts);
+        let kept = only(parts, "format").expect("a step of the group");
+        assert_eq!(labels_of(&kept), ["format"]);
     }
 
     #[test]
