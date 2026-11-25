@@ -91,8 +91,9 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         for (icon in listOf(NewspeakIcons.ROOT_CLASS, NewspeakIcons.VALUE_CLASS)) {
             assertNotNull(icon)
             // A tree icon's size as the platform scales its own, which a display or a font can make other than 16.
-            assertEquals(AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
-            assertEquals(AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
+            val loaded = "$icon (${icon.javaClass.name}), its resource ${NewspeakIcons::class.java.getResource("/icons/nodes/root_class.svg")}"
+            assertEquals(loaded, AllIcons.Nodes.Class.iconWidth, icon.iconWidth)
+            assertEquals(loaded, AllIcons.Nodes.Class.iconHeight, icon.iconHeight)
         }
     }
 

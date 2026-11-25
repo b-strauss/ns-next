@@ -91,10 +91,21 @@ class TracedRuns internal constructor(
         set(run) {
             if (field === run) return
             field = run
-            val content = traced.firstOrNull { entry -> entry.run === run }?.content
-            content?.manager?.let { manager -> if (manager.selectedContent !== content) manager.setSelectedContent(content) }
+            if (!followingTab) {
+                val content = traced.firstOrNull { entry -> entry.run === run }?.content
+                content?.manager?.let { manager -> if (manager.selectedContent !== content) manager.setSelectedContent(content) }
+            }
             changed()
         }
+
+    /**
+     * Whether [selected] is following a tab the manager selected: the
+     * selection is the manager's already, and handing it back while the
+     * manager changes it -- as a tab's removal does, on macOS before the
+     * tabbed pane has dropped the tab -- re-enters the pane at an index it
+     * no longer has.
+     */
+    private var followingTab = false
 
     /** [run]'s tab, null for a run without one: closed, or started while the project had no tool window. */
     fun panel(run: TraceRun): RunPanel? = traced.firstOrNull { entry -> entry.run === run }?.panel
@@ -291,7 +302,14 @@ class TracedRuns internal constructor(
 
                 override fun selectionChanged(event: ContentManagerEvent) {
                     if (event.operation != ContentManagerEvent.ContentOperation.add) return
-                    traced.firstOrNull { entry -> entry.content === event.content }?.let { entry -> selected = entry.run }
+                    traced.firstOrNull { entry -> entry.content === event.content }?.let { entry ->
+                        followingTab = true
+                        try {
+                            selected = entry.run
+                        } finally {
+                            followingTab = false
+                        }
+                    }
                 }
             },
         )
