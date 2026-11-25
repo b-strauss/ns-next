@@ -976,7 +976,9 @@ This table is the one place that says which gate runs when;
 `docs/design/README.md`, "Gates", follows it. Each row is a group of
 `cargo xtask gates <group>` (`xtask/src/main.rs`), which says what the
 group runs; several groups run in one call, one after another, and the
-first that fails stops it. Every `cargo xtask gates` call runs the
+first that fails stops it, and `--only <step>` runs one step of them --
+its label, `lint` or `suite` -- after the shipped-code step, as the CI
+workflow runs the commit group step by step. Every `cargo xtask gates` call runs the
 shipped-code step once: it writes the embedded shipped code
 (`crates/ns-runtime/core-library/shipped-code.bin`, gitignored;
 `docs/design/core-library.md`, "The embedded shipped code") through

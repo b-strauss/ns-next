@@ -189,6 +189,9 @@ cargo xtask shipped-code
 cargo xtask shipped-code --check
 # the codegen budgets against another checkout, e.g. an exported older commit
 cargo xtask codegen .temp/stage2
+# one step of a group, by its label, as the CI runs each: format, lint,
+# suite, doctests, "spec book", "corpus parse", plugin, ...
+cargo xtask gates commit --only lint
 # check the specification's book -- rule identifiers, chapters, the tests'
 # references to rules, links -- and render it into
 # target/spec/html/index.html, which opens in a browser; needs mdBook 0.5.4

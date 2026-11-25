@@ -74,12 +74,51 @@ jobs:
       # `cargo xtask` builds the tasks, and the runtime they depend on, with
       # `--quiet`; built here first, that build shows its progress.
       - name: Build the tasks
+        id: build
         run: cargo build --package xtask
 
-      - name: Commit gate
-        run: cargo xtask gates commit
+      # The commit group one step at a time (`--only`), each a check of its
+      # own on the pull request; the group stays defined once, in xtask.
+      # Every call runs the shipped-code step first, at once when current.
+      # Each step runs however the ones before it ended, once the tasks are
+      # built, so that a run reports every check, not only the first failure.
+      - name: Format
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only format
 
-      # The gate's first step formats the sources in place; a diff means a
-      # commit that was not formatted.
+      # Formatting rewrites the sources in place; a diff means a commit
+      # that was not formatted.
       - name: Sources are formatted
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: git diff --exit-code
+
+      - name: Shipped code
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "shipped code"
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only lint
+
+      - name: Suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # The default profile, run past a failure (`.config/nextest.toml`).
+        env:
+          NEXTEST_PROFILE: ci
+        run: cargo xtask gates commit --only suite
+
+      - name: Doctests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only doctests
+
+      - name: Specification
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "spec book"
+
+      - name: Corpus parse
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only "corpus parse"
+
+      - name: Plugin
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: cargo xtask gates commit --only plugin
