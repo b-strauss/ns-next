@@ -905,6 +905,9 @@ fn default_tests(root: &Path) -> Result<Vec<unreached::TestId>, String> {
             "--workspace",
             "--message-format",
             "oneline",
+            // The names are parsed: no colour, whatever CARGO_TERM_COLOR asks.
+            "--color",
+            "never",
         ])
         .current_dir(root)
         .stderr(Stdio::inherit())

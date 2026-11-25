@@ -9734,7 +9734,11 @@ ns_runtime::for_each_lowering! {
     /// which answers right; a read past the bound would fault on a page
     /// given back.
     fn a_machine_entry_row_past_the_lowered_bound_reads_as_none(lowering) {
-        let (mut interpreter, class) = load_with(&many_blocks(200), lowering);
+        // The rows are committed by the page, a row 32 bytes, and lowered
+        // to no less than one page: twice a page's rows keep the code ids
+        // past the lowered bound on 16 KiB pages as on 4 KiB ones.
+        let blocks = 200.max(ns_memory::Reservation::page_size() / 16);
+        let (mut interpreter, class) = load_with(&many_blocks(blocks), lowering);
         interpreter.set_shrink_pairs(ns_runtime::ShrinkPairs {
             machine_entries: ns_runtime::Shrink {
                 threshold: 0,
@@ -9754,7 +9758,10 @@ ns_runtime::for_each_lowering! {
         interpreter.collect_now();
         interpreter.collect_now();
         let lowered = interpreter.table_sizes().machine_entry_rows_committed;
-        assert_eq!(send_unary(&mut interpreter, &subject, "keepAll"), 200);
+        assert_eq!(
+            send_unary(&mut interpreter, &subject, "keepAll"),
+            i64::try_from(blocks).expect("a block count")
+        );
         let code_ids = interpreter.table_sizes().code_ids;
         for value in 10..14 {
             assert_eq!(send_number(&mut interpreter, &subject, "callBlock:", value), value + 1);
