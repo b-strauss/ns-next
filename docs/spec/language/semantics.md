@@ -226,14 +226,28 @@ loop's condition answered 4, which is no Boolean`.
 
 r[semantics.send.implicit-receiver]
 A send written with no receiver, `m`, is looked up first along the
-lexical scope: a parameter, temporary or local of the enclosing methods
-and blocks named `m` is read or written; otherwise, when a class
+lexical scope: a parameter or local of the enclosing methods and blocks
+named `m` is read, and a mutable local is written by its setter
+([`semantics.send.local-setter`](#r-semantics.send.local-setter));
+otherwise, when a class
 declaration that lexically encloses the send declares a member named by
 the selector, the innermost such declaration `N` decides, and the send is
 the outer send `outer N m`; otherwise the send is `self m` (Bracha §5.7).
 A declaration's members are the ones its own body declares: a member a
 lexically enclosing class only inherits is not in scope. The lexical
 scope is thus searched outwards before the receiver's superclasses are.
+
+r[semantics.send.local-setter]
+A send of one keyword written with no receiver, `x: e`, writes the
+innermost mutable local `x` of the enclosing methods and blocks, as the
+setter-send assignment `x:: e` does, and answers the value of `e` -- not
+the activation a local's setter would answer as a slot's does (see the
+appendix). A parameter and a local declared with `=` have no setter and
+are passed by for one further out, and when no mutable local of that
+name is in scope the send is looked up in the enclosing classes as any
+implicit-receiver send. `x: e` and `x:: e` differ in precedence alone: `x:
+a foo: b` is the one send `x:foo:`, where `x:: a foo: b` writes the value
+of `a foo: b`.
 
 r[semantics.send.self]
 A self send, `self m` or `(self) m`, is the outer send `outer C m` for

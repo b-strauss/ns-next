@@ -1,0 +1,9 @@
+rules = ["semantics.send.local-setter", "semantics.send.implicit-receiver", "runtime.implicit-receiver"]
+stdout = '''
+3
+7
+9
+the method count: got 5
+the method fixed: got 8
+1
+'''

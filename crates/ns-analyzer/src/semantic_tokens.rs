@@ -836,6 +836,9 @@ impl Classifier<'_> {
     }
 
     fn send_selector(&mut self, send: &ast::Send, chain: &[&SideMembers]) {
+        if self.local_setter_send(send) {
+            return;
+        }
         match self.bindings.get(&send.span).copied() {
             Some(Binding::LexicalSend { depth }) => {
                 let name = selector_name(&send.message.selector);
@@ -858,6 +861,31 @@ impl Classifier<'_> {
             ),
             _ => self.explicit_receiver_selector(&send.receiver, send.receiver.span, &send.message),
         }
+    }
+
+    /// Colours the keyword of an implicit-receiver send `name: e` that
+    /// writes a local -- whose target the resolver binds at the keyword's
+    /// name, as an assignment's (`ns_runtime::resolver::local_writes`) --
+    /// as that local, as `name::` is; whether it was one.
+    fn local_setter_send(&mut self, send: &ast::Send) -> bool {
+        let Some(target) = ns_runtime::resolver::local_writes::target(&send.message) else {
+            return false;
+        };
+        if !matches!(
+            self.bindings.get(&target.span),
+            Some(Binding::Local(_) | Binding::OuterLocal { .. })
+        ) {
+            return false;
+        }
+        let (category, readonly, declaration) = self.local(&target.name);
+        self.emit_to(
+            send.message.selector_spans[0],
+            category,
+            false,
+            readonly,
+            declaration,
+        );
+        true
     }
 
     /// Colours the selector of a message sent to an object -- a send with an
@@ -1105,6 +1133,37 @@ mod tests {
                 "`{setter}` is coloured as a whole"
             );
         }
+    }
+
+    /// `total: e` writes the local `total` as `total::` does, so its
+    /// keyword is coloured as the local, colon included; `count: e` sends
+    /// the slot's setter.
+    // spec: semantics.send.local-setter
+    #[test]
+    fn a_keyword_send_that_writes_a_local_colours_the_keyword_as_the_local() {
+        let module = indoc::indoc! {"
+            class Shapes = Object new (
+              | private count ::= 0. |
+            ) (
+              public grow = (
+                | total |
+                total: 1 + 2.
+                count: total.
+              )
+            ) : ()
+        "};
+        let analysis = crate::analysis::analyze(module);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let classified_at = |text: &str| {
+            let start = module.find(text).expect("the send") as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| (classified.category, classified.span.end - start))
+        };
+        assert_eq!(classified_at("total: 1"), Some((Variable, 6)));
+        assert_eq!(classified_at("count: total"), Some((Property, 6)));
     }
 
     #[test]

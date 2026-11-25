@@ -79,19 +79,25 @@ pub(super) fn hints(section: &Section<'_>, scope: &Scope<'_>, text: &str, hints:
     }
 }
 
-/// The target and value of a statement that is one assignment `x:: e`, not
-/// parenthesized and not a chain.
+/// The target and value of a statement that is one assignment, `x:: e` or
+/// the implicit-receiver send `x: e` -- which writes the section's mutable
+/// local `x` as `x::` does (`ns-runtime`'s `resolver/local_writes.rs`) --
+/// not parenthesized and not a chain.
 fn assignment(statement: &Statement) -> Option<(&str, &Expression)> {
     let StatementKind::Expression(expression) = &statement.kind else {
         return None;
     };
-    let ExpressionKind::Assign { target, value, .. } = &expression.kind else {
-        return None;
+    let (target, value) = match &expression.kind {
+        ExpressionKind::Assign { target, value, .. } => (target.name.as_str(), &**value),
+        _ => names::implicit_setter_send(expression)?,
     };
-    if !expression.parentheses.is_empty() || matches!(value.kind, ExpressionKind::Assign { .. }) {
+    if !expression.parentheses.is_empty()
+        || matches!(value.kind, ExpressionKind::Assign { .. })
+        || names::implicit_setter_send(value).is_some()
+    {
         return None;
     }
-    Some((target.name.as_str(), value))
+    Some((target, value))
 }
 
 /// The position of the bare slot `name` in `slots`.

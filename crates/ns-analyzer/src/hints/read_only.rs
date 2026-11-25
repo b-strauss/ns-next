@@ -1,8 +1,7 @@
 //! Hint B: a local declared with `::=` that nothing assigns again can be
-//! declared with `=`. Only `name::` writes a local -- an implicit-receiver
-//! send `name: value` is resolved through the classes, never the locals
-//! (`ns-runtime`'s `resolver/mod.rs`) -- so a local is read-only when no
-//! `name::` stands in its body.
+//! declared with `=`. `name:: value` and the implicit-receiver send
+//! `name: value` write a local (`ns-runtime`'s `resolver/local_writes.rs`),
+//! so a local is read-only when neither stands in its body.
 //!
 //! Nor may a closure see the local before its initializer has run: the
 //! optimized lowering copies a read-only local into a closure when the

@@ -688,15 +688,17 @@ class's instances are values is not in its declaration. A section with a
 simultaneous slot clause (`|| ||`) gets no hint.
 
 **Hint A.** A local `x` is a candidate when it is declared bare (`x`, no
-initializer) and a statement `x:: e.` of its own section assigns it. The
-statement qualifies when:
+initializer) and a statement `x:: e.` of its own section assigns it, or
+the implicit-receiver send `x: e.`, which writes the local alike
+([dispatch.md](dispatch.md), "Setter sends"). The statement qualifies
+when:
 
 - no comment stands in it, in the text a fix deletes or on the rest of its
   line, and no comment is attached to it -- an attached comment describes
   the statement it stands above, and deleting the statement would leave it
   describing the next;
-- it is not parenthesized and is not a chain (`x:: y:: e`), and `e` does
-  not mention `x`;
+- it is not parenthesized and is not a chain (`x:: y:: e`, `x: (y: e)`),
+  and `e` does not mention `x`;
 - it is not the last statement of a closure body: a closure answers its
   last statement's value, which an initializer does not have. A method
   answers `self` without `^`, so a method's last statement may move;
@@ -727,12 +729,12 @@ and one of these holds:
    earlier is unobservable.
 
 **Hint B.** A local `x` declared with `::=` is a candidate when nothing can
-assign it: no `x::` anywhere in its section, its initializers and nested
-closures included. Only `x::` writes a local: an implicit-receiver send
-`x: v` is resolved through the classes, never the locals
-(`ns-runtime`'s `resolver/mod.rs`). The test is by name and conservative:
-an `x::` that writes something else, a shadowing closure local, still
-counts, which costs a hint at worst, never correctness. Nor may a closure
+assign it: no `x::` and no implicit-receiver send `x: v` anywhere in its
+section, its initializers and nested closures included -- the two ways a
+local is written ([dispatch.md](dispatch.md), "Setter sends"). The test
+is by name and conservative: a write of something else, a shadowing
+closure local or a class's setter, still counts, which costs a hint at
+worst, never correctness. Nor may a closure
 read `x` before its initializer has run: no initializer of `x` itself or of
 a local declared before it in the section may mention `x`, nested closures
 included. The optimized lowering copies a read-only local into a closure

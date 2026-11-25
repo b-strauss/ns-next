@@ -1,0 +1,59 @@
+/// newspeak-spec.pdf 3.6 makes a local a slot of its activation and 5.7
+/// sends an implicit-receiver message to the current activation first, so
+/// `x: e` sends a mutable local's setter just as `x:: e` does (5.4.3): it
+/// writes the local, from the method and from a block alike, even where
+/// the class declares a method of that selector. Its value is `e`, as the
+/// canonical compiler makes it -- a local write
+/// (prior-art/newspeak/NewspeakCompilation.ns, processLocalWrite:) -- not
+/// the activation 6.3.2's setter would answer. A parameter and an immutable
+/// local declare no setter, so the send passes them by to the class.
+class Spec57AKeywordSendWritesAMutableLocal = Object new (
+  |
+    log ::= 'nothing'.
+  |
+) (
+  count: value = (
+    log:: 'the method count: got ' , value printString.
+    ^0.
+  )
+
+  passing: count = (
+    count: 5.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      count
+      answer
+      fixed = 1.
+    |
+    count: 1 + 2.
+    t
+        show: count printString;
+        newLine.
+    answer:: (count: count + 4).
+    t
+        show: answer printString;
+        newLine.
+    [:each | count: each] value: 9.
+    t
+        show: count printString;
+        newLine.
+    passing: 7.
+    t
+        show: log;
+        newLine.
+    fixed: 8.
+    t
+        show: log;
+        newLine.
+    t
+        show: fixed printString;
+        newLine.
+  )
+
+  fixed: value = (
+    log:: 'the method fixed: got ' , value printString.
+  )
+)

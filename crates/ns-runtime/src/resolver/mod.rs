@@ -2,6 +2,7 @@
 //! spec's Resolver section for the algorithm this transcribes.
 
 mod classes;
+pub mod local_writes;
 mod scope;
 pub(crate) mod sends;
 
@@ -10,7 +11,7 @@ pub(crate) use classes::own_member_names;
 pub use classes::root_class_is_value;
 pub(crate) use classes::{root_clause_defect, root_shape};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use ns_syntax::Span;
@@ -91,7 +92,7 @@ struct Evaluating<'a> {
 /// a `^` anywhere, nested blocks included -- the block has no home a return
 /// could leave for -- or any error a module's walk reports.
 pub(crate) fn resolve_evaluation(
-    expression: &ast::CodeBody,
+    expression: &mut ast::CodeBody,
     scope: &EvaluationScope,
 ) -> Result<Rc<HashMap<Span, Binding>>, String> {
     // A `FrameVariable` counts a variable in a `u16`; a table longer than
@@ -103,6 +104,7 @@ pub(crate) fn resolve_evaluation(
     let mut resolver = Resolver {
         bindings: HashMap::new(),
         errors: Vec::new(),
+        local_writes: HashSet::new(),
         kernel: false,
         evaluating: Some(Evaluating {
             variables: scope.variables,
@@ -120,7 +122,10 @@ pub(crate) fn resolve_evaluation(
     }
     match resolver.errors.into_iter().next() {
         Some(error) => Err(error.message),
-        None => Ok(Rc::new(resolver.bindings)),
+        None => {
+            local_writes::rewrite_body(expression, &resolver.local_writes);
+            Ok(Rc::new(resolver.bindings))
+        }
     }
 }
 
@@ -149,13 +154,14 @@ pub(crate) fn resolve_kernel(
 /// thing that differs, so a user module and the kernel can never be resolved
 /// by two drifting copies of the walk.
 fn resolve_with(
-    module: ast::Module,
+    mut module: ast::Module,
     source: Rc<str>,
     origin: SourceOrigin,
     kernel: bool,
 ) -> Result<ResolvedModule, Vec<ResolveError>> {
-    let (bindings, errors) = walk(&module, kernel);
+    let (bindings, errors, writes) = walk(&module, kernel);
     if errors.is_empty() {
+        local_writes::rewrite_module(&mut module, &writes);
         Ok(ResolvedModule {
             module: Rc::new(module),
             source,
@@ -175,8 +181,12 @@ fn resolve_with(
 /// cannot be used to reach the VM mirror (`docs/design/core-library.md`,
 /// "The VM mirror is the whole Rust boundary"), and `Kernel.ns` opened in an
 /// editor shows its `vmMirror` sends as the ordinary sends they are to it.
+///
+/// The module keeps the source's own shape: a send `id: e` that writes a
+/// local stays a send (`local_writes`), its target's binding keyed by the
+/// keyword's name, as an assignment's is.
 pub fn resolve_for_editor(module: ast::Module) -> EditorResolution {
-    let (bindings, errors) = walk(&module, false);
+    let (bindings, errors, _) = walk(&module, false);
     EditorResolution {
         module,
         bindings,
@@ -184,21 +194,29 @@ pub fn resolve_for_editor(module: ast::Module) -> EditorResolution {
     }
 }
 
-/// The walk every entry shares.
-fn walk(module: &ast::Module, kernel: bool) -> (HashMap<Span, Binding>, Vec<ResolveError>) {
+/// The walk every entry shares: the bindings, the errors, and the spans
+/// of the sends that write a local (`local_writes`).
+fn walk(
+    module: &ast::Module,
+    kernel: bool,
+) -> (HashMap<Span, Binding>, Vec<ResolveError>, HashSet<Span>) {
     let mut resolver = Resolver {
         bindings: HashMap::new(),
         errors: Vec::new(),
+        local_writes: HashSet::new(),
         kernel,
         evaluating: None,
     };
     resolver.resolve_class(&module.root_class, &[]);
-    (resolver.bindings, resolver.errors)
+    (resolver.bindings, resolver.errors, resolver.local_writes)
 }
 
 struct Resolver<'a> {
     bindings: HashMap<Span, Binding>,
     errors: Vec<ResolveError>,
+    /// The span of each implicit-receiver send `id: e` that writes a local
+    /// (`local_writes`), which the module's rewrite makes an assignment.
+    local_writes: HashSet<Span>,
     /// Whether this is shipped core-library source, whose sends to
     /// `vmMirror` are marked (`resolve_kernel`). `false` for every user
     /// module.
@@ -715,6 +733,18 @@ impl Resolver<'_> {
             return true;
         }
         if sends::is_synthesized_implicit_receiver(&send.receiver) {
+            // The name is looked up, never interned: every local's and
+            // frame variable's name is, so one that is not names none of
+            // them, and a send such as `show: x` leaves the symbol table as
+            // it found it.
+            if let Some(target) = local_writes::target(&send.message)
+                && let Some(name) = Symbol::lookup(&target.name)
+                && self.resolve_local_setter(name, target.span, scope)
+            {
+                self.local_writes.insert(send.span);
+                self.resolve_message_send(&send.message, scope, chain);
+                return true;
+            }
             let selector_name = member_name_of_message(&send.message);
             let depth = sends::depth_search(chain, selector_name);
             self.bindings
@@ -774,29 +804,37 @@ impl Resolver<'_> {
         chain: &[EnclosingClass],
     ) {
         let name = Symbol::intern(&target.name);
-        if let Some(binding) = scope.resolve_setter(name) {
-            self.bindings.insert(target.span, binding);
+        if self.resolve_local_setter(name, target.span, scope) {
             return;
-        }
-        match self.frame_variable_target(name) {
-            Some(Ok(index)) => {
-                self.bindings
-                    .insert(target.span, Binding::FrameVariable(index));
-                return;
-            }
-            Some(Err(message)) => {
-                self.errors.push(ResolveError {
-                    span: target.span,
-                    message,
-                });
-                return;
-            }
-            None => {}
         }
         let setter = Symbol::intern(&format!("{}:", target.name));
         let depth = sends::depth_search(chain, setter);
         self.bindings
             .insert(target.span, Binding::LexicalSend { depth });
+    }
+
+    /// Whether the setter `name:` an implicit-receiver send names is a
+    /// local's -- `id:: e`'s and `id: e`'s alike (`local_writes`) -- its
+    /// binding then recorded at `span`, the target's: the innermost local
+    /// that declares a setter, or in an evaluated expression the stopped
+    /// frame's variable, whose refusal is recorded as the error it is.
+    /// `false` hands the search on to the enclosing classes.
+    fn resolve_local_setter(&mut self, name: Symbol, span: Span, scope: &ScopeStack) -> bool {
+        if let Some(binding) = scope.resolve_setter(name) {
+            self.bindings.insert(span, binding);
+            return true;
+        }
+        match self.frame_variable_target(name) {
+            Some(Ok(index)) => {
+                self.bindings.insert(span, Binding::FrameVariable(index));
+                true
+            }
+            Some(Err(message)) => {
+                self.errors.push(ResolveError { span, message });
+                true
+            }
+            None => false,
+        }
     }
 
     /// Resolves a superclass clause's `receiver` (e.g. `Object` in
