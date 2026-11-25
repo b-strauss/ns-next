@@ -13,6 +13,8 @@ on:
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:
+  # Temporary: the workflow's first run, on its own pull request.
+  pull_request:
 
 permissions:
   contents: read
