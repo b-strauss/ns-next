@@ -463,6 +463,13 @@ impl<'a> Walker<'a> {
                 let number = self.next_loop;
                 self.next_loop += 1;
                 self.inlined_block(condition, false, Some(number));
+                if let Some(body) = body {
+                    self.inlined_block(body, false, Some(number));
+                }
+            }
+            InlineForm::Repeat { body } => {
+                let number = self.next_loop;
+                self.next_loop += 1;
                 self.inlined_block(body, false, Some(number));
             }
         }

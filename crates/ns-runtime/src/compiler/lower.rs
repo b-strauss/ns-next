@@ -1487,7 +1487,8 @@ impl<'a> Lowerer<'a> {
             // The receiver *is* the condition block: `lower_while` lowers no
             // receiver expression of its own.
             InlineForm::WhileTrue { condition, body }
-            | InlineForm::WhileFalse { condition, body } => (None, Some(condition), Some(body)),
+            | InlineForm::WhileFalse { condition, body } => (None, Some(condition), body),
+            InlineForm::Repeat { body } => (None, Some(body), None),
         };
         if let Some(receiver) = receiver
             && self.writes_register(receiver, register, inlined_depth)
@@ -2256,11 +2257,12 @@ impl<'a> Lowerer<'a> {
                 InlineForm::And(block) => self.lower_and_or(send, block, true, use_, into),
                 InlineForm::Or(block) => self.lower_and_or(send, block, false, use_, into),
                 InlineForm::WhileTrue { condition, body } => {
-                    self.lower_while(condition, body, true)
+                    self.lower_while(Some((condition, true)), body)
                 }
                 InlineForm::WhileFalse { condition, body } => {
-                    self.lower_while(condition, body, false)
+                    self.lower_while(Some((condition, false)), body)
                 }
+                InlineForm::Repeat { body } => self.lower_while(None, Some(body)),
             };
         }
         if let Some(operation) = control_flow::recognize_integer_binary(send) {
@@ -2756,42 +2758,54 @@ impl<'a> Lowerer<'a> {
     /// `NonBooleanReceiver`, which never reaches the loop's end; a normal exit
     /// leaves `nil` in `destination`. The guard reads the condition's value on
     /// every iteration, whatever reads the loop's; nothing reads the body's.
+    ///
+    /// `condition` is the condition block and whether the loop runs while
+    /// it answers true -- `None` for `repeat`, whose body is the receiver
+    /// and which has no exit but a return or a signal -- and `body` is
+    /// `None` for the unary `whileTrue` and `whileFalse`.
     fn lower_while(
         &mut self,
-        condition: &ast::BlockExpression,
-        body: &ast::BlockExpression,
-        while_true: bool,
+        condition: Option<(&ast::BlockExpression, bool)>,
+        body: Option<&ast::BlockExpression>,
     ) -> u16 {
         let destination = self.emit_nil();
         let loop_start = self.here();
         let mut blocks = Vec::new();
-        let guard_register =
-            self.lower_inline_block_measured(condition, ValueUse::Read, &mut blocks);
-        let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
-            register: guard_register,
-            target: 0,
+        let guard = condition.map(|(condition, while_true)| {
+            let guard_register =
+                self.lower_inline_block_measured(condition, ValueUse::Read, &mut blocks);
+            let not_boolean_jump = self.emit(Instruction::JumpIfNotBoolean {
+                register: guard_register,
+                target: 0,
+            });
+            let exit_jump = if while_true {
+                self.emit(Instruction::BranchIfFalse {
+                    register: guard_register,
+                    target: 0,
+                })
+            } else {
+                self.emit(Instruction::BranchIfTrue {
+                    register: guard_register,
+                    target: 0,
+                })
+            };
+            (guard_register, not_boolean_jump, exit_jump)
         });
-        let exit_jump = if while_true {
-            self.emit(Instruction::BranchIfFalse {
-                register: guard_register,
-                target: 0,
-            })
-        } else {
-            self.emit(Instruction::BranchIfTrue {
-                register: guard_register,
-                target: 0,
-            })
-        };
-        self.lower_inline_block_measured(body, ValueUse::Discarded, &mut blocks);
+        if let Some(body) = body {
+            self.lower_inline_block_measured(body, ValueUse::Discarded, &mut blocks);
+        }
         self.emit(Instruction::Jump { target: loop_start });
-        let fallback_label = self.here();
-        self.patch_target(not_boolean_jump, fallback_label);
-        // The signal ends its path, like a return: nothing writes
-        // `destination` after it, and the end label is reached only by the
-        // exit branch.
-        self.emit_signal_non_boolean(guard_register);
+        if let Some((guard_register, not_boolean_jump, exit_jump)) = guard {
+            let fallback_label = self.here();
+            self.patch_target(not_boolean_jump, fallback_label);
+            // The signal ends its path, like a return: nothing writes
+            // `destination` after it, and the end label is reached only by
+            // the exit branch.
+            self.emit_signal_non_boolean(guard_register);
+            let end_label = self.here();
+            self.patch_target(exit_jump, end_label);
+        }
         let end_label = self.here();
-        self.patch_target(exit_jump, end_label);
         self.record_block_send(blocks, end_label, true);
         destination
     }
@@ -5322,6 +5336,66 @@ mod tests {
         assert!(has(&code, |instruction| matches!(
             instruction,
             Instruction::BranchIfTrue { .. }
+        )));
+    }
+
+    /// The unary loops and `repeat` on a block literal compile as
+    /// `whileTrue:` does: a back edge, no closure and no send of the loop's
+    /// selector; `repeat` has no guard at all, and a `^` in its block is
+    /// the method's own return.
+    #[test]
+    fn the_unary_loops_and_repeat_compile_to_a_back_edge_and_no_closure() {
+        for (body, selector, guarded) in [
+            ("[x] whileTrue", "whileTrue", true),
+            ("[x] whileFalse", "whileFalse", true),
+            ("[x ifTrue: [^x]] repeat", "repeat", false),
+        ] {
+            let code = compile_foo(body);
+            assert!(
+                code.instructions()
+                    .iter()
+                    .enumerate()
+                    .any(|(index, instruction)| matches!(
+                        instruction,
+                        Instruction::Jump { target } if (*target as usize) < index
+                    )),
+                "{body}: a back edge, in {:#?}",
+                code.instructions()
+            );
+            assert!(
+                !has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::SendPublic { selector: sent, .. } if sent.as_str() == selector
+                )),
+                "{body}: the loop is not sent"
+            );
+            assert_eq!(
+                has(&code, |instruction| matches!(
+                    instruction,
+                    Instruction::SignalNonBoolean { .. }
+                )),
+                guarded,
+                "{body}: a guard on the condition alone"
+            );
+        }
+        let code = compile_foo("[x ifTrue: [^x]] repeat");
+        assert!(
+            has(&code, |instruction| matches!(
+                instruction,
+                Instruction::Return { .. }
+            )),
+            "the block's `^` is the method's return: {:#?}",
+            code.instructions()
+        );
+    }
+
+    /// A receiver that is no block literal of no parameter keeps the send.
+    #[test]
+    fn a_unary_loop_on_a_block_with_a_parameter_is_sent() {
+        let code = compile_foo("[:each | x] repeat");
+        assert!(has(&code, |instruction| matches!(
+            instruction,
+            Instruction::SendPublic { selector, .. } if selector.as_str() == "repeat"
         )));
     }
 

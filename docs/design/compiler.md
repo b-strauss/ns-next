@@ -561,7 +561,8 @@ Triggers only at **compile time**, on the syntactic shape of the send, never as 
 run-time heuristic. The gate: the send is an ordinary explicit-receiver send —
 never lexical or super, since an implicit receiver for `ifTrue:` is meaningless —
 its selector is one of the fixed special selectors, and every block-position
-argument, plus the receiver for `whileTrue:`/`whileFalse:`, is a syntactic block
+argument, plus the receiver for `whileTrue:`/`whileFalse:` and for the unary
+`whileTrue`, `whileFalse` and `repeat`, is a syntactic block
 literal directly at the call site, declaring **no parameters and no
 temporaries**. If any condition fails the compiler emits an ordinary send and
 does not try.
@@ -582,7 +583,15 @@ slower on the rare path.
 
 `whileTrue:`/`whileFalse:` inline as an actual back-edge jump — a real loop in the
 bytecode, not repeated closure invocation — with the guard re-checked each
-iteration, which is cheap because it is a tag check.
+iteration, which is cheap because it is a tag check. The unary `whileTrue` and
+`whileFalse` are the same loop without a body, and `repeat` the same loop
+without a condition, so without a guard: its receiver's body runs and jumps
+back, and only a `^` in it -- the method's own return once inlined -- or a
+signal leaves it. The canonical compiler inlines the same five
+(`prior-art/newspeak/NewspeakCompilation.ns`, `isInlineableLoop:`);
+`timesRepeat:`, `to:do:` and `to:by:do:`, which it inlines too, stay sends
+here ([core-library.md](core-library.md), "`to:do:` and `to:by:do:` are
+sent, where Primordial Soup inlines them").
 
 Their guard is different in kind. The receiver is a block literal by
 construction, so its class is always `Closure` and there is no receiver ambiguity to
@@ -1394,7 +1403,9 @@ against code nothing had checked.
     `lower.rs`. Every send carries `CallSite::UNCACHED`, and `family_size` is 0.
 11. A `whileTrue:` or `whileFalse:` that `control_flow::recognize` accepts --
     receiver and argument both block literals without parameters or
-    temporaries -- is a naive loop (`Body::while_loop`): both blocks real
+    temporaries -- and the unary `whileTrue`, `whileFalse` and `repeat` on
+    such a receiver, the first two without a body and `repeat` without a
+    condition or its guard, are a naive loop (`Body::while_loop`): both blocks real
     closures, made once before it; each turn a `SendInlinable` of `value` to
     the condition closure, a `JumpIfNotBoolean` to a `SignalNonBoolean`, a
     `BranchIfFalse` (`whileTrue:`) or `BranchIfTrue` (`whileFalse:`) to the

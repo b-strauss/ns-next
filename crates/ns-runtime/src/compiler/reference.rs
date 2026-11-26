@@ -1009,10 +1009,13 @@ impl<'a> Body<'a> {
             | None => {
                 match control_flow::recognize(send) {
                     Some(control_flow::InlineForm::WhileTrue { condition, body }) => {
-                        return self.while_loop(send, condition, body, true, into);
+                        return self.while_loop(send, Some((condition, true)), body, into);
                     }
                     Some(control_flow::InlineForm::WhileFalse { condition, body }) => {
-                        return self.while_loop(send, condition, body, false, into);
+                        return self.while_loop(send, Some((condition, false)), body, into);
+                    }
+                    Some(control_flow::InlineForm::Repeat { body }) => {
+                        return self.while_loop(send, None, Some(body), into);
                     }
                     _ => {}
                 }
@@ -1107,53 +1110,68 @@ impl<'a> Body<'a> {
     /// The `value` sends it synthesizes are sends of the debugger's metadata
     /// and name the source's `whileTrue:` send, `send`, the only one the
     /// source spells.
+    /// `condition` is the condition block and whether the loop runs while
+    /// it answers true -- `None` for `repeat`, whose body is the receiver
+    /// -- and `body` is `None` for the unary `whileTrue` and `whileFalse`.
     fn while_loop(
         &mut self,
         send: &ast::Send,
-        condition: &ast::BlockExpression,
-        body: &ast::BlockExpression,
-        while_true: bool,
+        condition: Option<(&ast::BlockExpression, bool)>,
+        body: Option<&ast::BlockExpression>,
         into: Option<u16>,
     ) -> u16 {
-        let condition_register = self.block(condition, None);
-        let body_register = self.block(body, None);
+        let condition_register = condition.map(|(condition, _)| self.block(condition, None));
+        let body_register = body.map(|body| self.block(body, None));
         let loop_start = self.code.len();
         let spans = SendSpans::of_send(&send.receiver, &send.message);
         let condition_send = self.code.len();
-        let condition_value = self.value_send(condition_register, spans);
-        let not_boolean_jump = self.code.len();
-        self.emit(Instruction::JumpIfNotBoolean {
-            register: condition_value,
-            target: 0,
-        });
-        let exit_branch = self.code.len();
-        self.emit(if while_true {
-            Instruction::BranchIfFalse {
-                register: condition_value,
-                target: 0,
-            }
-        } else {
-            Instruction::BranchIfTrue {
-                register: condition_value,
-                target: 0,
-            }
-        });
+        let guard = condition_register
+            .zip(condition)
+            .map(|(register, (_, while_true))| {
+                let condition_value = self.value_send(register, spans);
+                let not_boolean_jump = self.code.len();
+                self.emit(Instruction::JumpIfNotBoolean {
+                    register: condition_value,
+                    target: 0,
+                });
+                let exit_branch = self.code.len();
+                self.emit(if while_true {
+                    Instruction::BranchIfFalse {
+                        register: condition_value,
+                        target: 0,
+                    }
+                } else {
+                    Instruction::BranchIfTrue {
+                        register: condition_value,
+                        target: 0,
+                    }
+                });
+                (condition_value, not_boolean_jump, exit_branch)
+            });
         let body_send = self.code.len();
-        self.value_send(body_register, spans);
+        if let Some(body_register) = body_register {
+            self.value_send(body_register, spans);
+        }
         self.emit(Instruction::Jump {
             target: Self::target(loop_start),
         });
-        self.patch_target(not_boolean_jump, self.code.len());
-        self.emit(Instruction::SignalNonBoolean {
-            register: condition_value,
-        });
-        self.patch_target(exit_branch, self.code.len());
+        if let Some((condition_value, not_boolean_jump, exit_branch)) = guard {
+            self.patch_target(not_boolean_jump, self.code.len());
+            self.emit(Instruction::SignalNonBoolean {
+                register: condition_value,
+            });
+            self.patch_target(exit_branch, self.code.len());
+        }
         // A step out of either block leaves the whole loop, as it leaves
         // the optimized lowering's inline copy, never at the next `value`.
-        let blocks = [(condition, condition_send), (body, body_send)]
-            .into_iter()
-            .filter_map(|(block, send)| self.called_block(block.span, Self::target(send)))
-            .collect();
+        let blocks = [
+            condition.map(|(condition, _)| (condition, condition_send)),
+            body.map(|body| (body, body_send)),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|(block, send)| self.called_block(block.span, Self::target(send)))
+        .collect();
         let value = self.literal(BytecodeLiteral::Nil, into);
         self.record_block_send(blocks, self.code.len(), true);
         value

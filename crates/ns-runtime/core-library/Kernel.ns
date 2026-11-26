@@ -8323,6 +8323,10 @@ class Kernel vmMirror: mirror = Value (
 
     /// Evaluates the receiver again and again while it answers true.
     ///
+    /// The compiler inlines a send of this message whose receiver is a
+    /// block literal; this method serves every other send, and its own
+    /// loop is that inlined form.
+    ///
     /// @answers nil, once the receiver answers false.
     /// @signals NonBooleanReceiver carrying the answer, 'a loop's condition
     /// answered …, which is no Boolean', when the receiver answers anything
@@ -8332,10 +8336,14 @@ class Kernel vmMirror: mirror = Value (
     /// parameters.
     /// @see `whileTrue:`.
     public whileTrue = (
-      ^[self value] whileTrue: [].
+      ^[self value] whileTrue.
     )
 
     /// Evaluates the receiver again and again while it answers false.
+    ///
+    /// The compiler inlines a send of this message whose receiver is a
+    /// block literal; this method serves every other send, and its own
+    /// loop is that inlined form.
     ///
     /// @answers nil, once the receiver answers true.
     /// @signals NonBooleanReceiver carrying the answer, 'a loop's condition
@@ -8346,12 +8354,16 @@ class Kernel vmMirror: mirror = Value (
     /// parameters.
     /// @see `whileFalse:`.
     public whileFalse = (
-      ^[self value] whileFalse: [].
+      ^[self value] whileFalse.
     )
 
     /// Evaluates the receiver again and again, without end: only a
     /// non-local return out of it, an exception or the end of the program
     /// ends the loop.
+    ///
+    /// The compiler inlines a send of this message whose receiver is a
+    /// block literal, a `^` in it then the method's own return; this
+    /// method serves every other send.
     ///
     /// @answers nothing: the send never answers.
     /// @signals ArgumentError carrying the block, 'wrong number of block
@@ -8359,7 +8371,7 @@ class Kernel vmMirror: mirror = Value (
     /// parameters.
     /// @see `whileTrue`.
     public repeat = (
-      [true] whileTrue: [self value].
+      [self value] repeat.
     )
 
     /// Evaluates the receiver. An exception signalled meanwhile whose
