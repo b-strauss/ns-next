@@ -72,6 +72,9 @@ struct Grammar {
     variants: HashMap<(String, String), Vec<Item>>,
     /// Every row's name, which the samples must reach.
     rows: BTreeSet<String>,
+    /// Every repeated or optional item, as `<row> <field>`, which the
+    /// samples must read at least once.
+    optional_items: BTreeSet<String>,
     /// Every named tag of `image-tags`, by space and number.
     tags: HashMap<(String, u8), String>,
     /// The header flags' bits, by name.
@@ -103,6 +106,7 @@ impl Grammar {
             tagged: HashMap::new(),
             variants: HashMap::new(),
             rows: BTreeSet::new(),
+            optional_items: BTreeSet::new(),
             tags,
             flags,
         };
@@ -110,6 +114,13 @@ impl Grammar {
             let name = row[0].clone();
             let items: Vec<Item> = row[1..].iter().map(|cell| item(cell)).collect();
             assert!(grammar.rows.insert(name.clone()), "the row `{name}` twice");
+            for item in &items {
+                if !matches!(item.occurrence, Occurrence::Once) {
+                    grammar
+                        .optional_items
+                        .insert(format!("{name} {}", item.field));
+                }
+            }
             let parts: Vec<&str> = name.split('/').collect();
             match parts.as_slice() {
                 [structure] => {
@@ -216,7 +227,8 @@ struct Walker<'bytes, 'grammar> {
     fields: Vec<(String, Field)>,
     /// The same, by path.
     by_path: BTreeMap<String, Field>,
-    /// Every row the walk reached.
+    /// Every row the walk reached, and every repeated or optional item it
+    /// read at least once, as `<row> <field>`.
     reached: BTreeSet<String>,
     /// Each id's bound, once its section's count is read.
     counts: HashMap<&'static str, u64>,
@@ -324,7 +336,7 @@ impl<'bytes, 'grammar> Walker<'bytes, 'grammar> {
             self.reached.insert(format!("{name}/{space}"));
             self.reached.insert(format!("{name}/{space}/{tag_name}"));
             self.record(&format!("{path}.tag"), Field::Text(tag_name.clone()));
-            self.items(&items, path);
+            self.items(&format!("{name}/{space}/{tag_name}"), &items, path);
             if (space.as_str(), tag_name.as_str()) == ("value", "large-integer") {
                 self.check_large_integer(path);
             }
@@ -337,10 +349,10 @@ impl<'bytes, 'grammar> Walker<'bytes, 'grammar> {
             .unwrap_or_else(|| panic!("`{path}`: the table has no structure `{name}`"))
             .clone();
         self.reached.insert(name.to_string());
-        self.items(&items, path);
+        self.items(name, &items, path);
     }
 
-    fn items(&mut self, items: &[Item], path: &str) {
+    fn items(&mut self, row: &str, items: &[Item], path: &str) {
         for item in items {
             let field_path = if path.is_empty() {
                 item.field.clone()
@@ -357,17 +369,23 @@ impl<'bytes, 'grammar> Walker<'bytes, 'grammar> {
             match &item.occurrence {
                 Occurrence::Once => self.value(&item.kind, &field_path),
                 Occurrence::Repeated(count) => {
-                    for index in 0..earlier(self, count) {
+                    let count = earlier(self, count);
+                    if count > 0 {
+                        self.reached.insert(format!("{row} {}", item.field));
+                    }
+                    for index in 0..count {
                         self.value(&item.kind, &format!("{field_path}[{index}]"));
                     }
                 }
                 Occurrence::PresentWhen(field) => {
                     if earlier(self, field) != 0 {
+                        self.reached.insert(format!("{row} {}", item.field));
                         self.value(&item.kind, &field_path);
                     }
                 }
                 Occurrence::PresentWithFlag(flag) => {
                     if self.has_flag(flag) {
+                        self.reached.insert(format!("{row} {}", item.field));
                         self.value(&item.kind, &field_path);
                     }
                 }
@@ -478,6 +496,8 @@ impl<'bytes, 'grammar> Walker<'bytes, 'grammar> {
                         self.instruction(&format!("{field_path}[{index}]"), own_index);
                     }
                 }
+                // `wire-body` types its kind `u8`; the field's name, `kind`,
+                // is what says the byte is a tag of the space `code-kind`.
                 _ if item.field == "kind" => {
                     let tag = self.take(1)[0];
                     let kind = self
@@ -677,8 +697,9 @@ fn packaged_application(with_source: bool) -> Sample {
 /// that a program makes: closures over a method's, a block's and an
 /// initializer's activation, a string, a symbol, an array of the
 /// constants, integers in and past an `i64`, a fraction, an immediate and
-/// a boxed float, the instances of a body-less declaration and of a level
-/// a `<:` clause added, and every kind and access of slot and method.
+/// a boxed float, the instances of a body-less declaration and of levels
+/// `<:` clauses added, a closure that copied a value, and every kind and
+/// access of slot and method.
 const EVERYTHING: &str = indoc! {"
     class Everything usingPlatform: platform = Object new (|
       public held ::= nil.
@@ -695,6 +716,8 @@ const EVERYTHING: &str = indoc! {"
       public small = 1.5.
       public applied = Applied new.
       public both = Both new.
+      public again = Again new.
+      public added = adder: 4.
       public markerClass = Marker.
       protected guarded = 9.
       private hidden = 10.
@@ -706,9 +729,11 @@ const EVERYTHING: &str = indoc! {"
       public class Both = Object new <: Marker (| public own = [ 5 ]. |) (
         public answer = ( ^own value )
       )
+      public class Again = Object new <: Both () ()
       lazy public computed = 7.
       lazy public counter ::= 8.
       public makeClosure = ( ^[ 1 ] )
+      public adder: number = ( ^[ number + 1 ] )
       protected guardedMethod = ( ^1 )
       private hiddenMethod = ( ^2 )
     ) : (
@@ -723,15 +748,12 @@ fn returned_frame<'gc>(
     mutator: &mut Mutator<'gc>,
     header: ActivationHeader<'gc>,
 ) -> ObjectReference<'gc> {
-    let arguments = vec![Value::nil(); usize::from(header.code.argument_count)];
+    let nils = vec![Value::nil(); usize::from(header.code.argument_count)];
+    let arguments = nils.as_slice();
     let temporaries = header.code.registers_above_header();
     let heap = mutator.heap_mut();
     let activation = heap
-        .push_activation(
-            header,
-            Arguments::Values(&arguments.as_slice()),
-            temporaries,
-        )
+        .push_activation(header, Arguments::Values(&arguments), temporaries)
         .unwrap_or_else(|_| panic!("the stack holds the frame"));
     let frame = heap.reify(activation);
     heap.pop_activation(activation);
@@ -758,15 +780,17 @@ fn header<'gc>(
 }
 
 /// A frame of every kind and body the frame record spells that no program
-/// leaves reachable: an initializer's own part and its standalone body, a
-/// superclass clause's, a factory's, a shipped method's, and two top-level
-/// frames, the one the other's sender, holding the kernel's module
-/// instance in a register.
+/// leaves reachable: an initializer's own part and its standalone body,
+/// each at a level a `<:` clause added that applies the body's mixin, as
+/// the runtime enters them, a superclass clause's, a factory's, a shipped
+/// method's, and two top-level frames, the one the other's sender, holding
+/// the kernel's module instance in a register.
 fn every_frame<'gc>(
     mutator: &mut Mutator<'gc>,
     module: ClassReference<'gc>,
     marker: ClassReference<'gc>,
     both: ClassReference<'gc>,
+    again: ClassReference<'gc>,
 ) -> Vec<Value<'gc>> {
     use crate::interpreter::instantiate::{InitializerBody, factory_code};
     let mixin_of = |mutator: &Mutator<'gc>, class: ClassReference<'gc>| {
@@ -788,10 +812,26 @@ fn every_frame<'gc>(
         .own_initializer_code
         .clone()
         .expect("an own part");
-    let standalone = [&marker_mixin, &both_mixin]
-        .into_iter()
-        .find_map(|mixin| mixin.standalone_initializer_code.clone())
+    let standalone = both_mixin
+        .standalone_initializer_code
+        .clone()
         .expect("a standalone initializer");
+    // The level `Both`'s clause adds applies `Marker`, the one `Again`'s
+    // adds applies `Both`.
+    let level_of =
+        |mutator: &Mutator<'gc>, class: ClassReference<'gc>, mixin: &Rc<crate::mixin::Mixin>| {
+            let level = mutator
+                .heap()
+                .class_superclass(class)
+                .expect("a level below the class");
+            assert!(
+                Rc::ptr_eq(&mixin_of(mutator, level), mixin),
+                "the level applies the mixin"
+            );
+            level
+        };
+    let marker_level = level_of(mutator, both, &marker_mixin);
+    let both_level = level_of(mutator, again, &both_mixin);
     let clause = module_mixin
         .superclass_clause_code
         .clone()
@@ -815,15 +855,15 @@ fn every_frame<'gc>(
         ),
         header(
             Value::nil(),
-            Some(both),
-            initializer(both, InitializerBody::OwnPart),
+            Some(marker_level),
+            initializer(marker_level, InitializerBody::OwnPart),
             None,
             own_part,
         ),
         header(
             Value::nil(),
-            Some(both),
-            initializer(both, InitializerBody::Standalone),
+            Some(both_level),
+            initializer(both_level, InitializerBody::Standalone),
             None,
             standalone,
         ),
@@ -890,6 +930,10 @@ fn everything() -> Sample {
         interpreter.send(&instance, Symbol::intern("Both"), &[]),
         "Both",
     );
+    let again = expect_ok(
+        interpreter.send(&instance, Symbol::intern("Again"), &[]),
+        "Again",
+    );
     let closure = expect_ok(
         interpreter.send(&instance, Symbol::intern("makeClosure"), &[]),
         "makeClosure",
@@ -899,7 +943,8 @@ fn everything() -> Sample {
         let module = class_reference(mutator, &class);
         let marker = class_reference(mutator, &marker);
         let both = class_reference(mutator, &both);
-        let mut held = every_frame(mutator, module, marker, both);
+        let again = class_reference(mutator, &again);
+        let mut held = every_frame(mutator, module, marker, both, again);
         held.push(Value::object(mutator.new_byte_array(&[1, 2, 3])));
         let weak_class = mutator.builtin_class(BuiltinClass::WeakArray);
         let weak = mutator.heap_mut().allocate_weak_array(weak_class, 2);
@@ -910,7 +955,7 @@ fn everything() -> Sample {
         );
         held.push(Value::object(weak));
         let ephemeron_class = mutator.builtin_class(BuiltinClass::Ephemeron);
-        let ephemeron = mutator.heap_mut().allocate_ephemeron(ephemeron_class, 2);
+        let ephemeron = mutator.heap_mut().allocate_ephemeron(ephemeron_class, 3);
         assert!(
             mutator
                 .heap_mut()
@@ -1171,6 +1216,173 @@ fn check_sections(walker: &Walker, name: &str) {
     }
 }
 
+/// The body kind the code id at `path` names.
+fn body_kind(walker: &Walker, path: &str) -> String {
+    text_at(walker, &format!("code.body[{}].kind", walker.number(path)))
+}
+
+/// The body tag of the record the object id at `path` names.
+fn record_tag(walker: &Walker, path: &str) -> String {
+    text_at(
+        walker,
+        &format!("graph.object[{}].body.tag", walker.number(path)),
+    )
+}
+
+/// That the two fields of each range the mixin and text tables write as
+/// `start` and `end` come in that order, and that each id names what its
+/// field says: a method's body a `Method`, an initializer's an
+/// `Initializer`, a clause's a `SuperclassClause`, a closure's a `Block`,
+/// a closure's frame a frame record.
+fn check_ranges_and_references(walker: &Walker, name: &str) {
+    for (path, _) in &walker.fields {
+        if let Some(range) = path.strip_suffix(".start")
+            && (range.starts_with("mixins.") || range.starts_with("texts."))
+        {
+            assert!(
+                walker.number(path) <= walker.number(&format!("{range}.end")),
+                "{name}: `{range}` ends before it starts"
+            );
+        }
+    }
+    for row in 0..walker.number("mixins.count") {
+        let row = format!("mixins.row[{row}]");
+        for method in 0..walker.number(&format!("{row}.method_count")) {
+            assert_eq!(
+                body_kind(walker, &format!("{row}.method[{method}].code")),
+                "Method",
+                "{name}: `{row}`'s method {method}"
+            );
+        }
+        for (field, kind) in [
+            ("initializer", "Initializer"),
+            ("own_initializer", "Initializer"),
+            ("standalone_initializer", "Initializer"),
+            ("superclass_clause", "SuperclassClause"),
+        ] {
+            if walker.number(&format!("{row}.has_{field}")) != 0 {
+                assert_eq!(
+                    body_kind(walker, &format!("{row}.{field}")),
+                    kind,
+                    "{name}: `{row}.{field}`"
+                );
+            }
+        }
+    }
+    for object in 0..walker.number("graph.count") {
+        let body = format!("graph.object[{object}].body");
+        if text_at(walker, &format!("{body}.tag")) == "closure" {
+            assert_eq!(
+                body_kind(walker, &format!("{body}.code")),
+                "Block",
+                "{name}: `{body}`'s code"
+            );
+            assert_eq!(
+                record_tag(walker, &format!("{body}.frame")),
+                "frame",
+                "{name}: `{body}`'s frame"
+            );
+        }
+    }
+}
+
+/// That every frame record's references name what they say -- its sender
+/// and home frame records, a closure frame's closure a closure record --
+/// and that a frame has a home exactly when it runs a closure, as the
+/// runtime builds them; answers how many frames have a sender, each a
+/// top-level one, so that a sender and a home written in each other's
+/// place fail.
+fn check_frames(walker: &Walker, name: &str) -> usize {
+    let mut senders = 0;
+    for object in 0..walker.number("graph.count") {
+        let body = format!("graph.object[{object}].body");
+        if text_at(walker, &format!("{body}.tag")) != "frame" {
+            continue;
+        }
+        let frame = format!("{body}.frame");
+        let kind = text_at(walker, &format!("{frame}.kind.tag"));
+        let has = |field: &str| walker.number(&format!("{frame}.has_{field}")) != 0;
+        assert_eq!(
+            has("home"),
+            kind == "closure",
+            "{name}: `{frame}`, a {kind} frame, has a home exactly when it runs a closure"
+        );
+        if has("sender") {
+            assert_eq!(
+                kind, "top-level",
+                "{name}: only a staged frame has a sender"
+            );
+            assert_eq!(
+                record_tag(walker, &format!("{frame}.sender")),
+                "frame",
+                "{name}"
+            );
+            senders += 1;
+        }
+        if has("home") {
+            assert_eq!(
+                record_tag(walker, &format!("{frame}.home")),
+                "frame",
+                "{name}"
+            );
+        }
+        if kind == "closure" {
+            assert_eq!(
+                record_tag(walker, &format!("{frame}.kind.closure")),
+                "closure",
+                "{name}: `{frame}` runs a closure"
+            );
+        }
+    }
+    senders
+}
+
+/// The row of the declaration named `declaration`, if the image has one.
+fn row_named(walker: &Walker, declaration: &str) -> Option<String> {
+    (0..walker.number("mixins.count"))
+        .map(|row| format!("mixins.row[{row}]"))
+        .find(|row| {
+            text_at(
+                walker,
+                &format!("symbols.symbol[{}]", walker.number(&format!("{row}.name"))),
+            ) == declaration
+        })
+}
+
+/// The order of a row's three initializer bodies, held by `EVERYTHING`'s
+/// known rows: `Marker` has a full body and an own part and no standalone
+/// body, its full body the longer, since it runs the prologue before the
+/// own part; `Both`, which has `<:` clauses and a body, has a standalone
+/// body. Answers whether the image has both rows.
+fn check_initializer_order(walker: &Walker, name: &str) -> bool {
+    let (Some(marker), Some(both)) = (row_named(walker, "Marker"), row_named(walker, "Both"))
+    else {
+        return false;
+    };
+    let present = |row: &str, field: &str| walker.number(&format!("{row}.has_{field}")) != 0;
+    assert!(
+        present(&marker, "initializer")
+            && present(&marker, "own_initializer")
+            && !present(&marker, "standalone_initializer"),
+        "{name}: `Marker` has a full body and an own part, and no standalone body"
+    );
+    assert!(
+        present(&both, "standalone_initializer"),
+        "{name}: `Both` has a standalone body"
+    );
+    let instructions = |field: &str| {
+        walker.number(&format!(
+            "code.body[{}].instruction_count",
+            walker.number(&format!("{marker}.{field}"))
+        ))
+    };
+    assert!(
+        instructions("initializer") > instructions("own_initializer"),
+        "{name}: `Marker`'s full body is longer than its own part"
+    );
+    true
+}
+
 // spec: image.structure
 // spec: image.encoding
 // spec: image.sections
@@ -1196,6 +1408,8 @@ fn every_image_is_laid_out_as_the_book_gives() {
     ];
     let mut reached = BTreeSet::new();
     let mut floats = Vec::new();
+    let mut senders = 0;
+    let mut initializers_pinned = false;
     for sample in &samples {
         let walker = Walker::walk(&sample.bytes, &grammar, &body);
         let name = sample.name;
@@ -1254,32 +1468,28 @@ fn every_image_is_laid_out_as_the_book_gives() {
             walker.symbol_order, dense,
             "{name}: the symbols in the order first named"
         );
-        assert_eq!(walker.symbol_order.first(), Some(&0), "{name}");
-        // An access byte is 0, 1 or 2: public, protected, private.
-        for (path, field) in &walker.fields {
-            if path.ends_with(".access") {
-                assert!(
-                    matches!(field, Field::Number(access) if *access <= 2),
-                    "{name}: `{path}` is an access"
-                );
-            }
+        for (_, field) in &walker.fields {
             if let Field::Float(float) = field {
                 floats.push(*float);
             }
         }
         check_sections(&walker, name);
+        check_ranges_and_references(&walker, name);
+        senders += check_frames(&walker, name);
+        initializers_pinned |= check_initializer_order(&walker, name);
+        // The images the book is held to are images: each loads.
+        if let Err(error) = crate::image::load(&sample.bytes) {
+            panic!("{name} does not load: {error}");
+        }
         reached.extend(walker.reached);
     }
-    use crate::image::mixins::access_tag;
-    use ns_syntax::ast::AccessModifier;
-    assert_eq!(
-        [
-            access_tag(AccessModifier::Public),
-            access_tag(AccessModifier::Protected),
-            access_tag(AccessModifier::Private),
-        ],
-        [0, 1, 2],
-        "the access bytes"
+    assert!(
+        senders > 0,
+        "a sample's frame has a sender, which pins the sender's place beside the home"
+    );
+    assert!(
+        initializers_pinned,
+        "a sample pins the order of a row's initializer bodies"
     );
     assert!(
         floats.contains(&1.0e300) && floats.contains(&1.5),
@@ -1287,4 +1497,9 @@ fn every_image_is_laid_out_as_the_book_gives() {
     );
     let missed: Vec<&String> = grammar.rows.difference(&reached).collect();
     assert!(missed.is_empty(), "no sample reaches the rows {missed:?}");
+    let unread: Vec<&String> = grammar.optional_items.difference(&reached).collect();
+    assert!(
+        unread.is_empty(),
+        "no sample reads the repeated or optional items {unread:?}"
+    );
 }

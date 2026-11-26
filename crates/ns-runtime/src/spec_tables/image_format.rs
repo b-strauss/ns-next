@@ -1,9 +1,11 @@
 //! The specification's image-format chapter (`docs/spec/image-format.md`)
 //! held to the encoder: its tag table to `image/opcodes.rs`, the header
-//! flags of `image/encode.rs` and the shipped-name kinds of
-//! `image/shipped_names.rs`.
+//! flags of `image/encode.rs`, the shipped-name kinds of
+//! `image/shipped_names.rs` and the accessibilities of `image/mixins.rs`.
 
 use std::collections::BTreeSet;
+
+use ns_syntax::ast::AccessModifier;
 
 use super::image_table;
 use crate::image::encode::{FLAG_HAS_SOURCE, FLAG_START, RETIRED_HEADER_FLAGS};
@@ -34,6 +36,20 @@ const SPACES: [(&str, &str); 13] = [
     ("module-version", "MODULE_"),
     ("shipped-kind", "KIND_"),
 ];
+
+/// The tag space whose numbers no constant names: a member's
+/// accessibility, which `mixins::access_tag` writes.
+const ACCESS_SPACE: &str = "access";
+
+/// Every accessibility, with the name the table gives it. The match has no
+/// `_` arm, so that a new accessibility must be named here.
+fn access_name(access: AccessModifier) -> &'static str {
+    match access {
+        AccessModifier::Public => "public",
+        AccessModifier::Protected => "protected",
+        AccessModifier::Private => "private",
+    }
+}
 
 /// The prefixes of `opcodes.rs`'s tags that the bytecode chapter's table
 /// gives, not this one.
@@ -81,7 +97,12 @@ fn declared_tag_constants() -> BTreeSet<String> {
 // spec: image.tags
 #[test]
 fn the_books_image_tags_are_the_encoders() {
-    let spaces: BTreeSet<String> = SPACES.iter().map(|(space, _)| space.to_string()).collect();
+    let spaces: BTreeSet<String> = SPACES
+        .iter()
+        .map(|(space, _)| *space)
+        .chain([ACCESS_SPACE])
+        .map(str::to_string)
+        .collect();
     let mut named = BTreeSet::new();
     let mut retired = BTreeSet::new();
     for row in image_table("image-tags") {
@@ -167,6 +188,21 @@ fn the_books_image_tags_are_the_encoders() {
             KIND_LEVEL_METACLASS,
         ))
         .map(|(_, space, name, number)| (space, name, number))
+        .chain(
+            [
+                AccessModifier::Public,
+                AccessModifier::Protected,
+                AccessModifier::Private,
+            ]
+            .into_iter()
+            .map(|access| {
+                (
+                    ACCESS_SPACE.to_string(),
+                    access_name(access).to_string(),
+                    crate::image::mixins::access_tag(access),
+                )
+            }),
+        )
         .collect();
     assert_eq!(named, expected, "the named tags");
 

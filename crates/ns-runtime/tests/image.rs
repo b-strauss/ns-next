@@ -6580,6 +6580,7 @@ fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     );
 }
 
+// spec: image.graph.record
 #[test]
 fn a_top_level_frame_kind_decodes() {
     // Nothing that runs a program *builds* a `FrameKind::TopLevel` frame (see
@@ -10870,6 +10871,7 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
 /// in. Nothing leaves such a frame reachable from an image's roots -- a clause
 /// body contains no `MakeClosure`, so nothing can capture one -- so only a
 /// hand-written section reaches the decoder's tag-4 branch.
+// spec: image.graph.record
 #[test]
 fn the_superclass_clause_frame_kind_decodes() {
     let mut writer = one_frame_prefix();

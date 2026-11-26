@@ -81,10 +81,11 @@ its last section is refused.
 
 r[image.tags]
 A tag selects among the forms a record or a field can take. The tags of
-the thirteen spaces the image's sections use -- the header's flags,
+the fourteen spaces the image's sections use -- the header's flags,
 values, object bodies, mixin references, mixin sides, class references,
 frame kinds, frame bodies, tag-named hashes, slot kinds, module origins,
-module versions and the kinds of a shipped name -- are those of the
+module versions, the kinds of a shipped name and the accessibilities of
+a declaration, a slot or a method -- are those of the
 table, a header flag written as its bit's value. `retired` marks a number
 no longer assigned, which a load refuses as it refuses any number the
 table does not give, as for a body's tags
@@ -176,6 +177,9 @@ shipped-kind     class                    1
 shipped-kind     metaclass                2
 shipped-kind     level                    3
 shipped-kind     level-metaclass          4
+access           public                   0
+access           protected                1
+access           private                  2
 ```
 
 ## Structure
@@ -217,8 +221,7 @@ An item `<type>*<field>` is that many items of the type, `<field>` an
 earlier field of the same row; `<type>?<field>` is present only when
 that earlier field is not 0; and `<type>?flag:<name>` is present only
 when the header sets the flag `<name>`. A field named `has_…` is written
-1 for present and 0 for absent. An `access` field is a member's
-accessibility: 0 public, 1 protected, 2 private.
+1 for present and 0 for absent.
 
 r[image.structure]
 An image is laid out as the table `image-structures` gives it, every
@@ -280,8 +283,9 @@ of a row its nested declarations and then its class side; each tree is
 written in preorder, a row before its children, and the trees in module
 order.
 
-The methods of a row are in the order of their selectors' text. A slot's
-accessors are not listed: they follow from its name, kind and access.
+The methods of a row are in the order of their selectors' text. Every
+accessor of a slot follows from its name, kind and access and is not
+listed, except a lazy slot's getter, which is one of the row's methods.
 
 ### The module section
 
@@ -358,16 +362,20 @@ text-table                                 count:u32  text:declaration-text*coun
 declaration-text                           start:u32  end:u32  hole_count:u32  hole:hole*hole_count  text:text
 hole                                       start:u32  end:u32
 mixin-table                                count:u32  row:mixin-row*count
-mixin-row                                  name:symbol  access:u8  start:u32  end:u32  slot_count:u32  slot:slot*slot_count  has_factory:u8  factory:factory?has_factory  has_initializer_expressions:u8  has_superclass:u8  superclass:clause-message?has_superclass  application_count:u32  application:clause-message*application_count  has_body:u8  method_count:u32  method:method*method_count  nested_count:u32  nested:row-id*nested_count  has_class_side:u8  class_side:row-id?has_class_side  has_initializer:u8  initializer:code-id?has_initializer  has_own_initializer:u8  own_initializer:code-id?has_own_initializer  has_standalone_initializer:u8  standalone_initializer:code-id?has_standalone_initializer  has_superclass_clause:u8  superclass_clause:code-id?has_superclass_clause  text:text-index?flag:has-source
-slot                                       name:symbol  kind:slot-kind  access:u8
+mixin-row                                  name:symbol  access:access  start:u32  end:u32  slot_count:u32  slot:slot*slot_count  has_factory:u8  factory:factory?has_factory  has_initializer_expressions:u8  has_superclass:u8  superclass:clause-message?has_superclass  application_count:u32  application:clause-message*application_count  has_body:u8  method_count:u32  method:method*method_count  nested_count:u32  nested:row-id*nested_count  has_class_side:u8  class_side:row-id?has_class_side  has_initializer:u8  initializer:code-id?has_initializer  has_own_initializer:u8  own_initializer:code-id?has_own_initializer  has_standalone_initializer:u8  standalone_initializer:code-id?has_standalone_initializer  has_superclass_clause:u8  superclass_clause:code-id?has_superclass_clause  text:text-index?flag:has-source
+slot                                       name:symbol  kind:slot-kind  access:access
 slot-kind/slot-kind
 slot-kind/slot-kind/immutable
 slot-kind/slot-kind/mutable
 slot-kind/slot-kind/lazy-immutable
 slot-kind/slot-kind/lazy-mutable
+access/access
+access/access/public
+access/access/protected
+access/access/private
 factory                                    selector:symbol  arity:u16
 clause-message                             selector:symbol  has_arguments:u8
-method                                     selector:symbol  access:u8  arity:u16  code:code-id
+method                                     selector:symbol  access:access  arity:u16  code:code-id
 module-section                             count:u32  module:module*count
 module                                     origin:origin  id:text  version:module-version  root:object-id
 origin/origin
@@ -411,7 +419,7 @@ mixin-side/mixin-side/instance
 mixin-side/mixin-side/class
 frame                                      kind:frame-kind  body:frame-body  program_counter:u32  uncontinuable:u8  receiver:value  has_sender:u8  sender:object-id?has_sender  has_home:u8  home:object-id?has_home  has_current_class:u8  current_class:class-reference?has_current_class  register_count:u32  register:value*register_count
 frame-kind/frame-kind
-frame-kind/frame-kind/method               selector:symbol  access:u8
+frame-kind/frame-kind/method               selector:symbol  access:access
 frame-kind/frame-kind/closure              closure:object-id
 frame-kind/frame-kind/top-level
 frame-kind/frame-kind/initializer          class:class-reference
