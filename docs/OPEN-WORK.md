@@ -15,16 +15,19 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its fourth batch: the image format**
-(decided with the user on 2026-11-23, before the debugger's stage 6 goes
-on; [specification.md](design/specification.md), "The order of building
-it", item 4): the structure of an image, its sections and tags, its
-validation and its bounds, written into `docs/spec/image-format.md` with
-their rules named by the tests that check them; a body's own encoding and
-the rules the decoder checks on it are the bytecode chapter's already.
-The first three batches, the book with the syntax, the semantics with
-the run-time semantics, and the bytecode, are built. The batches after it are that document's "The order of
-building it"; the complete install resumes after the fifth.
+**The specification of ns-next, its fifth batch: the VM invariants, and
+the design documents pointing at the rules** (decided with the user on
+2026-11-23, before the debugger's stage 6 goes on;
+[specification.md](design/specification.md), decision 2 and "The order
+of building it", item 5): the internal rules no program sees whose
+breach is silent wrong output -- the write barrier, handles and the
+brand, what the collector traces, the rules of machine code -- each
+naming the rule of the language, the run-time semantics, the bytecode or
+the image format it protects, written into the book's last part; and
+the design documents and `CLAUDE.md` pointing at the rules by
+identifier. The first four batches, the book with the syntax, the
+semantics with the run-time semantics, the bytecode and the image
+format, are built. The complete install resumes after the fifth.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
@@ -260,6 +263,21 @@ benchmarks", describes.
   so a production and the parser can drift apart unnoticed. What a test
   would check against it -- the parser's productions, or a parser
   generated from it run over the corpus -- is undecided.
+- **A `libtest-mimic` trial cannot name a rule** (2026-11-26, with the
+  image format). `xtask/src/spec.rs` reads a `// spec:` line only above
+  a `#[test]`, and `crates/ns-runtime/tests/image_truncations.rs` is a
+  harness of its own (`harness = false`) whose trials are no `#[test]`s,
+  so the truncation of every image it checks names no rule;
+  `image.untrusted` is named by four tests of `tests/image.rs` instead.
+  Whether the checker learns the trials, or the harness names its rules
+  another way, is undecided.
+- **The resolver's limit of 1,024 `<:` clauses has no rule in the
+  language chapters** (2026-11-26, with the image format). The resolver
+  refuses a declaration of more (`resolver/classes.rs`'s
+  `clause_count_error`; [compiler.md](design/compiler.md), "Limits"),
+  and the image chapter's `image.limit.clauses` explains its own limit as
+  "the most a resolved declaration has", but no rule of
+  `docs/spec/language/` states it.
 
 ## The road to a high-performance VM
 
@@ -2531,6 +2549,21 @@ constructs not built yet, each a rule whose identifier holds the segment
 
 ## Open design questions
 
+- **A started write and a hashed shipped object of another module**
+  (2026-11-26, with the image format). `write_image` checks a started
+  image's shipped names after the tag-named hashes have added one for
+  every shipped object with an identity hash, so a host that hashed a
+  shipped object of another module before `main:args:` -- a
+  `CollectionsFactory` class, say -- has the write refused even where the
+  graph does not reach that object
+  (`a_started_write_refuses_a_hashed_shipped_class_of_another_module`,
+  `crates/ns-runtime/tests/image.rs`; `docs/spec/image-format.md`,
+  `image.write.started`). No program reaches such an object before
+  `main:args:`, so no `build` meets it. Whether a started write should
+  instead drop the hashes of shipped objects its graph does not reach is
+  undecided ([image-format.md](design/image-format.md), "What `build`
+  writes").
+
 - **A comparison in containers** (2026-11-10). The three-language
   comparison ran natively on Windows, ns-next, Java and CPython only. A
   second mode is open: ns-next, Java, CPython and PyPy each in a
@@ -3707,6 +3740,24 @@ program's subclass of `String` as an argument, the error of a
   rule; that is decision 1's to settle with the user.
 
 ## Missing tests
+
+- **What a rejected load allocates** (2026-11-26, with the image
+  format). The specification's `image.bound.linear` -- a rejected load
+  allocates at most a constant multiple of the image's length plus a
+  constant -- is named by no test; the factors are derived by hand
+  ([memory.md](design/memory.md), "The amplification bound of a rejected
+  load"). A test would load crafted images of growing size that are
+  refused only after the graph pass's placeholders exist, and hold the
+  object space's high-water mark to the derivation's line.
+  `image.bound.sizing`'s eight-word refusal is a guard no record format
+  reaches and has no test that isolates it.
+- **A debug session of a loaded image** (2026-11-26, with the image
+  format). `ns-next load --debug` names a loaded image's modules by their
+  identity (`ModuleName::of_identity` in
+  `crates/ns-cli/src/commands/load.rs`), and
+  `the_tools_name_a_loaded_module_by_its_identity` holds the names the
+  tools compute from a loaded module, but no test of
+  `crates/ns-cli/tests/debug_adapter.rs` drives `load` rather than `run`.
 
 - **A frame's code under the stress modes** (noted 2026-11-20, with the
   developer tool's stage 2). The pause and step stress modes' readers

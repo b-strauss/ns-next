@@ -14507,6 +14507,7 @@ fn snapshot_of_without_source(source: &str) -> Vec<u8> {
     })
 }
 
+// spec: image.encoding
 #[test]
 fn the_wire_format_matches_the_golden_fixture() {
     let bytes = snapshot_of_without_source(GOLDEN_SOURCE);

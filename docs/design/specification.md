@@ -4,7 +4,7 @@ ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
-decided and in which order it is built. The first three batches are
+decided and in which order it is built. The first four batches are
 built. The first: the book under `docs/spec/`, its title page and introduction followed by an
 informal overview of the language that states no rule
 (`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
@@ -27,8 +27,17 @@ and the eight-byte form, both normative (below, "The third batch's
 decision"), and the rules the image decoder checks on a body -- its four
 tables held to `bytecode.rs`'s matches, `image/opcodes.rs`, the encoder
 and `CompactInstruction` by tests, and the decoder refusing a statement
-map that leaves its body. The image format and the VM invariants say
-what they will cover and are not written yet.
+map that leaves its body. The fourth: the image format
+(`docs/spec/image-format.md`) -- its encodings, its header, its
+sections, the tags of its fourteen spaces and its structure, the tags
+held to `image/opcodes.rs` and `mixins::access_tag` and the structure
+walked over images the encoder writes by tests; the rules the decoder
+checks on an image, numbered; the bounds of a load; and the operations
+*LoadImage* and *WriteImage*, every refusal of the writer stated with its
+text -- all normative (below, "The fourth batch's decisions"), and the
+decoder refusing a send and a method record whose argument count is not
+their selector's. The VM invariants say what they will cover and are
+not written yet.
 
 ## Why
 
@@ -135,7 +144,9 @@ end-of-batch gates:
    deviations decided; the install as it is.
 3. **The bytecode**, built: the instruction pages and the register
    effects, both encodings, the decoder's rules.
-4. **The image format**: the structure, the tags, the validation rules.
+4. **The image format**, built: the structure, the tags, the validation
+   rules, the bounds of a load, and the load and the write as abstract
+   operations.
 5. **The VM invariants**, and the design documents and `CLAUDE.md`
    pointing at the rules by identifier.
 
@@ -174,6 +185,10 @@ Decided with the user on 2026-11-26:
    had none. No lowering emits such a send, and both lowerings now assert
    that they never do, so the refusal costs a compiled program nothing.
    With it, a decoded image's code runs as compiled code would. The
+   decision covers every message a run delivers by selector, so the
+   decoder also refuses a method record whose argument count is not its
+   selector's (`bytecode.verify.attachment`), whose body every send of
+   the selector would otherwise run over arguments it was not given. The
    alternatives weighed:
    - a run-time error in place of the leaves' assertion, which leaves a
      surplus argument a silent wrong answer and puts a check on the send

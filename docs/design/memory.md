@@ -1341,7 +1341,15 @@ checks it against; nothing inside an object is a Rust-side handle.
 
 A **failed** image decode holds its placeholders until the load returns, and
 that peak is what the collector's design and the image format's guarantee
-need, stated carefully because the careless version is wrong.
+need, stated carefully because the careless version is wrong. The rules
+are the specification's (`docs/spec/image-format.md`, "Bounds"): a load
+sizes every record before it allocates any and refuses past eight words
+a byte of the input left (`image.bound.sizing`), and what a rejected load
+allocates is bounded by a constant multiple of the image's length plus a
+constant (`image.bound.linear`), the bound normative as a property and
+its factors informative (decided with the user on 2026-11-26,
+[specification.md](specification.md), "The fourth batch's decisions").
+The factors are this section's derivation, and depend on the build.
 `decode_graph_section` allocates every record's object before it fills any,
 because a record must be addressable before the records that reference it
 are read. The decoder allocates them only after the load's one tenure,
@@ -1369,7 +1377,10 @@ goes; it sizes each record's object from the record's own bytes,
 refuses what the second pass would refuse about counts, ids, a symbol or a
 mixin named twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
-byte of the input left. Then each record's placeholder is allocated at the
+byte of the input left -- a guard no image reaches, since no record's
+object takes more than 8.9 times its record's bytes, about a word a byte
+(the table below), and a count claimed past the bytes is refused
+earlier. Then each record's placeholder is allocated at the
 size the first pass read, and the second pass fills each in place, every
 value stored as it is read and a string packed straight from the buffer, so
 no record is ever built beside its placeholder. Since every placeholder is

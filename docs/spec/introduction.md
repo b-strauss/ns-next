@@ -29,7 +29,7 @@ how it differs and why. A section of Bracha's document is cited as
 3. **The bytecode**: the instructions, their encoding and the rules the
    decoder checks.
 4. **The image format**: the structure of an image, its tags, its
-   validation and its bounds.
+   validation, its bounds, and the operations that load and write one.
 5. **The VM invariants**: the internal rules no program observes whose
    breach would make one of the first four parts false.
 

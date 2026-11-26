@@ -459,8 +459,11 @@ chapters: an informal overview, the language (its lexical structure,
 grammar and semantics), the run-time semantics as abstract operations,
 the bytecode -- each instruction's page, its register effects, its wire
 encoding and its eight-byte form, and the rules the image decoder checks
-on a body, the tables held to the code by tests -- the image format and
-the VM invariants (the last two not written yet), each normative rule preceded by an identifier line
+on a body, the tables held to the code by tests -- the image format --
+its encodings, header, sections, tags and structure, the tags and the
+structure held to the code by tests, the rules the decoder checks on an
+image, the bounds of a load and the operations that load and write one
+-- and the VM invariants (not written yet), each normative rule preceded by an identifier line
 `r[lex.comment.line]`, and an appendix of the differences from Bracha's
 Newspeak -- the ones adopted as ns-next's own rules and the gaps, the
 constructs not built yet, each a rule whose identifier holds `gap` --
@@ -1045,8 +1048,8 @@ debugger's `parse_code_body` is.
 A commit that changes observable behaviour, a format or an invariant
 changes the rule for it in the specification (`docs/spec/`) in the same
 commit, for every part the book already writes -- today the lexical
-structure, the grammar, the semantics, the run-time semantics and the
-bytecode. A new test names the rules it checks: a
+structure, the grammar, the semantics, the run-time semantics, the
+bytecode and the image format. A new test names the rules it checks: a
 golden in its `.toml`, `rules = ["syntax.outer.alone"]`, a Rust test in a
 comment line `// spec: syntax.outer.alone` directly above its `#[test]`;
 a reference to a rule the book does not declare, and a `// spec:` line
