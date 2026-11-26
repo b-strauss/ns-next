@@ -421,6 +421,7 @@ impl<'a> Body<'a> {
     /// Emits `instruction`, unless the body is too large already or the
     /// instruction would make it so (`super::emitting_passes_a_limit`).
     fn emit(&mut self, instruction: Instruction) {
+        super::debug_assert_send_arity(&instruction);
         if self.too_large.is_some() {
             return;
         }

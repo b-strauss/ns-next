@@ -1778,6 +1778,84 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     }
 }
 
+/// A send passes exactly as many arguments as its selector takes, so a
+/// crafted body that sends `==` with no argument -- which `Object`'s leaf
+/// would read past -- or `printString` with one, which its leaf would
+/// ignore, is refused at load, before any of its code runs. Every body a
+/// lowering compiles keeps the rule
+/// (`a_view_and_a_builder_round_trip_through_a_package` loads one of
+/// unary, binary and keyword sends).
+// spec: bytecode.verify.send-arity
+#[test]
+fn a_send_whose_argument_count_is_not_its_selectors_is_refused() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+        ) : ()
+    "};
+    let doctored_body = |selector: &str, argument_sources: Vec<u16>| {
+        Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::LoadSelf {
+                    destination: HEADER_REGISTERS,
+                },
+                Instruction::SendPublic {
+                    selector: Symbol::intern(selector),
+                    receiver_register: HEADER_REGISTERS,
+                    argument_base: HEADER_REGISTERS + 1,
+                    argument_sources,
+                    destination: HEADER_REGISTERS + 1,
+                    call_site: CallSite { number: 0 },
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS + 1,
+                },
+            ],
+            0,
+            HEADER_REGISTERS + 2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        ))
+    };
+    let cases = [
+        (
+            "==",
+            vec![],
+            "the send of `==` at instruction 1 passes 0 argument(s), but its selector takes 1",
+        ),
+        (
+            "printString",
+            vec![HEADER_REGISTERS],
+            "the send of `printString` at instruction 1 passes 1 argument(s), but its selector takes 0",
+        ),
+    ];
+    for (selector, argument_sources, expected) in cases {
+        let (mut interpreter, class) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let doctored = with_method_code(
+                mixin_of(mutator.heap(), class),
+                "run",
+                doctored_body(selector, argument_sources.clone()),
+            );
+            install_mixin(mutator, class, doctored);
+            let instance = mutator.fetch(&instance);
+            snapshot_one(mutator, false, "t.ns", class, &[instance]).expect("snapshot")
+        });
+        match image::load(&bytes) {
+            Ok(_) => panic!("expected the send of `{selector}` to be refused at load"),
+            Err(error) => assert!(
+                error.starts_with("code ") && error.ends_with(expected),
+                "{selector}: {error}"
+            ),
+        }
+    }
+}
+
 /// The image's error for `source`'s module: a snapshot of its class alone,
 /// which a program the format cannot carry refuses rather than aborts.
 fn snapshot_error(source: &str) -> String {
@@ -4110,6 +4188,7 @@ fn string_root(interpreter: &mut Interpreter, text: &str) -> Root {
 /// A view keeps the very `ByteArray` it was made over, and a builder its
 /// bytes and counts, as plain slots: a snapshot carries them as records of
 /// the shipped classes, and the loaded views still share their storage.
+// spec: bytecode.verify.send-arity
 #[test]
 fn a_view_and_a_builder_round_trip_through_a_package() {
     let (mut interpreter, class) = load(VIEWS_AND_A_BUILDER);

@@ -165,6 +165,21 @@ Decided with the user on 2026-11-26:
    load", as the implementation's derivation. The alternatives weighed:
    the factors as the rule, which depend on the build and which no test
    holds, and no memory bound at all.
+3. **A send passes as many arguments as its selector takes, and the
+   decoder refuses one that does not** (`bytecode.verify.send-arity`).
+   Writing the image chapter showed that a decoded image could make the
+   process panic. A crafted `==` with no argument reached `Object`'s
+   identity leaf, which reads its argument through a checked access that
+   panics. A crafted `printString` with one argument answered as if it
+   had none. No lowering emits such a send, and both lowerings now assert
+   that they never do, so the refusal costs a compiled program nothing.
+   With it, a decoded image's code runs as compiled code would. The
+   alternatives weighed:
+   - a run-time error in place of the leaves' assertion, which leaves a
+     surplus argument a silent wrong answer and puts a check on the send
+     path;
+   - writing today's abort down as the rule, which would break
+     `image.untrusted`'s promise for the code a load runs.
 
 ## The third batch's decision
 

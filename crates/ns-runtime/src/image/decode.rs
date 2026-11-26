@@ -525,6 +525,17 @@ pub enum DecodeError {
     VerificationPastTheBound {
         instruction: u32,
     },
+    /// A send passing another number of arguments than its selector takes.
+    /// The leaf a send reaches reads the arguments its selector takes, and
+    /// no lowering emits another count, so a mismatch would hand a leaf an
+    /// argument it was not given, or one it ignores.
+    SendArityMismatch {
+        body: usize,
+        instruction: usize,
+        selector: String,
+        argument_count: usize,
+        arity: usize,
+    },
     /// A `local_count` past its body's register file.
     LocalCountOutOfRange {
         local_count: u16,
@@ -1133,6 +1144,16 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "outer local r{index} at depth {depth} is a scratch register of the enclosing body, whose first is r{local_count}"
+            ),
+            DecodeError::SendArityMismatch {
+                body,
+                instruction,
+                selector,
+                argument_count,
+                arity,
+            } => write!(
+                f,
+                "code {body}: the send of `{selector}` at instruction {instruction} passes {argument_count} argument(s), but its selector takes {arity}"
             ),
             DecodeError::LeftoverRead {
                 instruction,
@@ -2043,7 +2064,50 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
     for (index, code) in table.codes.iter().enumerate() {
         let instructions = code.instructions();
         verify_body(code, &instructions)?;
+        verify_send_arities(index, &instructions)?;
         verify_outer_locals(table, &parents, index, &instructions)?;
+    }
+    Ok(())
+}
+
+/// Every send of body `body` passes as many arguments as its selector
+/// takes. The leaf a send reaches reads the arguments its selector takes
+/// without counting them, so a send of fewer would have it read past them,
+/// and a send of more would answer as though the surplus were not there.
+fn verify_send_arities(body: usize, instructions: &[Instruction]) -> Result<(), DecodeError> {
+    for (instruction, decoded) in instructions.iter().enumerate() {
+        let (selector, argument_sources) = match decoded {
+            Instruction::SendLexical {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendPublic {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendInlinable {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendSuper {
+                selector,
+                argument_sources,
+                ..
+            } => (selector, argument_sources),
+            _ => continue,
+        };
+        if argument_sources.len() != selector.arity() {
+            return Err(DecodeError::SendArityMismatch {
+                body,
+                instruction,
+                selector: selector.as_str().to_string(),
+                argument_count: argument_sources.len(),
+                arity: selector.arity(),
+            });
+        }
     }
     Ok(())
 }

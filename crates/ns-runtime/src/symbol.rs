@@ -180,6 +180,19 @@ impl Symbol {
         INTERNER.with_borrow(|interner| interner.hashes[self.0 as usize])
     }
 
+    /// How many arguments a message of this selector takes: none for a
+    /// unary selector, one for a binary one and one per colon for a
+    /// keyword one. A unary or keyword selector begins as an identifier
+    /// does, with a letter or `_`; every other selector is binary.
+    pub(crate) fn arity(self) -> usize {
+        let text = self.as_str();
+        match text.as_bytes().first() {
+            Some(byte) if *byte == b'_' || byte.is_ascii_alphabetic() => text.matches(':').count(),
+            Some(_) => 1,
+            None => 0,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }

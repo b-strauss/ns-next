@@ -133,6 +133,42 @@ fn emitting_passes_a_limit(emitted: usize, instruction: &Instruction) -> Option<
         .map(|_| BodyLimit::Arguments)
 }
 
+/// Holds a send both lowerings emit to the rule the image decoder holds
+/// every decoded send to (`image::decode`'s `verify_send_arities`): it
+/// passes as many arguments as its selector takes, so that the decoder
+/// refuses no body a lowering compiles.
+fn debug_assert_send_arity(instruction: &Instruction) {
+    if let Instruction::SendLexical {
+        selector,
+        argument_sources,
+        ..
+    }
+    | Instruction::SendPublic {
+        selector,
+        argument_sources,
+        ..
+    }
+    | Instruction::SendInlinable {
+        selector,
+        argument_sources,
+        ..
+    }
+    | Instruction::SendSuper {
+        selector,
+        argument_sources,
+        ..
+    } = instruction
+    {
+        debug_assert_eq!(
+            argument_sources.len(),
+            selector.arity(),
+            "internal: a send of `{selector}` passes {} argument(s), but its selector takes {}",
+            argument_sources.len(),
+            selector.arity()
+        );
+    }
+}
+
 /// How many steps up an initializer's superclass clause names the class it
 /// initializes: one per `<:` clause, `clause_count`, and one for the
 /// declaration's own level when it has a body, `own_level`. It fits a `u16`
