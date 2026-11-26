@@ -1130,6 +1130,7 @@ fn a_decoded_mixin_carries_the_bodies_its_row_names() {
     });
 }
 
+// spec: image.verify.ids
 #[test]
 fn a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_row_mixin_table(0, &[(0, 5)]);
@@ -2665,6 +2666,7 @@ fn a_backwards_source_span_is_a_decode_error_not_a_panic() {
     );
 }
 
+// spec: image.verify.counts
 #[test]
 fn a_huge_code_table_count_does_not_reserve_gigabytes() {
     // A count prefix is untrusted: reserving for it before reading would
@@ -4873,6 +4875,7 @@ fn a_frame_reference_naming_a_string_is_refused() {
     );
 }
 
+// spec: image.verify.counts
 #[test]
 fn a_huge_object_count_does_not_allocate_gigabytes() {
     let mut writer = encode::Writer::new();
@@ -4887,6 +4890,7 @@ fn a_huge_object_count_does_not_allocate_gigabytes() {
 /// A frame record carries its register count, and a count the bytes left
 /// cannot hold is refused by the first pass, before any record -- this one
 /// included -- is allocated.
+// spec: image.verify.counts
 #[test]
 fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before_allocating() {
     let mut writer = encode::Writer::new();
@@ -4919,6 +4923,7 @@ fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before
 /// every record before anything is allocated, so an image whose declared
 /// sizes exceed what its bytes can hold is refused with nothing allocated --
 /// not even the well-formed record ahead of the one that overclaims.
+// spec: image.verify.counts
 #[test]
 fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
     let mut writer = encode::Writer::new();
@@ -5276,6 +5281,7 @@ fn an_ephemeron_record_with_another_field_count_is_refused() {
 
 /// A count the bytes that follow cannot hold is refused before anything
 /// is allocated, as an `Array`'s is.
+// spec: image.verify.counts
 #[test]
 fn a_weak_array_count_past_its_bytes_is_refused_before_allocating() {
     for count in [1_000_000, u32::MAX] {
@@ -5417,6 +5423,7 @@ fn two_records_for_one_mixin_are_refused() {
     );
 }
 
+// spec: image.verify.ids
 #[test]
 fn a_mixin_record_past_the_table_is_refused() {
     for past in [2, u32::MAX] {
@@ -5462,6 +5469,7 @@ fn a_mixin_record_naming_a_class_side_row_is_refused() {
 
 /// Only a class's shipped name names a mixin: a module instance or a
 /// metaclass is no declaration of one.
+// spec: image.shipped.positions
 #[test]
 fn a_mixin_record_naming_a_shipped_module_instance_is_refused() {
     for (name, shown) in [
@@ -6024,6 +6032,7 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     });
 }
 
+// spec: image.verify.ids
 #[test]
 fn a_class_records_mixin_id_out_of_range_is_a_decode_error_not_a_panic() {
     assert_eq!(
@@ -6972,6 +6981,7 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
 /// -- no send could ever read it -- so the decoder refuses it. Patched into
 /// a real binary: the root row's one eager slot is turned lazy, and nothing
 /// else changes.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_lazy_slot_without_its_getter_is_refused() {
     let source = indoc! {"
@@ -7363,6 +7373,8 @@ fn module_error(module: u32, reason: &str) -> String {
 /// for them; a version semver's; and no two modules no request could pick
 /// between.
 // spec: image.modules
+// spec: image.verify.module-identity
+// spec: image.verify.modules
 #[test]
 fn a_module_record_is_held_to_the_project_rules() {
     let bytes = util_image(&util_identities(), false);
@@ -9151,6 +9163,7 @@ fn a_decoded_factory_entry_carries_the_synthesized_body() {
 /// a body of another arity would lay its registers out from the wrong
 /// count.
 // spec: bytecode.verify.attachment
+// spec: image.verify.initializers
 #[test]
 fn an_initializer_whose_arity_disagrees_with_the_factory_is_refused() {
     type Body = fn(&Mixin) -> Option<Rc<CompiledCode>>;
@@ -9208,6 +9221,7 @@ fn an_initializer_whose_arity_disagrees_with_the_factory_is_refused() {
 /// A row's `<:` clauses and its standalone initializer go together: a level
 /// of the mixin reached from outside runs the standalone body, which only a
 /// declaration with clauses has.
+// spec: image.verify.initializers
 #[test]
 fn a_mixin_with_clauses_but_no_standalone_initializer_is_refused() {
     let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
@@ -9246,6 +9260,7 @@ fn a_mixin_with_clauses_but_no_standalone_initializer_is_refused() {
 
 /// Every row's class runs its full initializer when it is instantiated, so
 /// a row naming none is refused whatever its slots.
+// spec: image.verify.initializers
 #[test]
 fn a_mixin_without_a_full_initializer_is_refused() {
     let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
@@ -9753,6 +9768,7 @@ const NEEDS_INITIALIZER: &str = indoc! {"
     ) : ()
 "};
 
+// spec: image.verify.initializers
 #[test]
 fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() {
     // `Mutator::initializer_body` panics -- "internal: class needs an instance
@@ -9787,6 +9803,7 @@ fn an_image_with_no_initializer_for_a_class_that_needs_one_is_refused_on_load() 
     });
 }
 
+// spec: image.verify.initializers
 #[test]
 fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // The same crafting one level up, through the real sections: a class
@@ -10153,6 +10170,7 @@ fn an_unknown_tag_named_hash_tag_is_refused() {
 }
 
 /// A shipped entry's index past the section is refused before it indexes.
+// spec: image.verify.ids
 #[test]
 fn a_tag_named_hash_past_the_shipped_names_is_refused() {
     let past = u32::try_from(FIXTURE_NAMES.len()).expect("a count fits a u32");
@@ -10193,6 +10211,7 @@ fn a_tag_named_hash_may_name_a_module_instance() {
     });
 }
 
+// spec: image.verify.counts
 #[test]
 fn a_tag_named_hash_count_past_the_remaining_bytes_is_refused() {
     let mut writer = encode::Writer::new();
@@ -10835,6 +10854,7 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
 /// it, would panic when the first nested-class access pushes the clause's
 /// activation (`nested::superclass_clause_code`). `verify_mixins` is the only
 /// place that sees both halves, so it refuses.
+// spec: image.verify.initializers
 #[test]
 fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
@@ -11158,6 +11178,7 @@ fn empty_module_with_an_array() -> Vec<u8> {
 
 /// A module's root is named by an id into the object table, which is
 /// checked against the decoded graph like every other id.
+// spec: image.verify.ids
 #[test]
 fn a_module_root_id_past_the_graph_is_refused() {
     let mut bytes = empty_module_with_an_array();
@@ -11171,6 +11192,7 @@ fn a_module_root_id_past_the_graph_is_refused() {
 
 /// The record a module section names must be a class of the module's own
 /// root declaration: an array is no class at all.
+// spec: image.verify.modules
 #[test]
 fn a_module_root_naming_an_array_is_refused() {
     let mut bytes = empty_module_with_an_array();
@@ -11192,6 +11214,7 @@ fn a_module_root_naming_an_array_is_refused() {
 /// A root class record over `Kernel Array` applies its module's root row,
 /// but the root rule builds no root over anything but `Object` or `Value`:
 /// refused, though `Kernel Array` may stand as a superclass elsewhere.
+// spec: image.verify.root-rule
 #[test]
 fn a_root_record_over_kernel_array_breaks_the_root_rule() {
     let mut bytes = empty_module_with_an_array();
@@ -11287,6 +11310,7 @@ fn a_root_class_with_a_declaring_class_is_not_written() {
     );
 }
 
+// spec: image.verify.mixin-tree
 #[test]
 fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -11303,6 +11327,7 @@ fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     );
 }
 
+// spec: image.verify.counts
 #[test]
 fn a_module_count_past_the_bytes_left_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -11338,6 +11363,7 @@ fn a_module_count_past_the_bytes_left_is_refused() {
 /// Each module's root record is held to its own module's root row: module
 /// 1's id naming module 0's root class record -- a class record that obeys
 /// the root rule, of another declaration -- is refused for module 1.
+// spec: image.verify.modules
 #[test]
 fn a_module_root_is_held_to_its_own_modules_row() {
     let (mut interpreter, first) = load(indoc! {"
@@ -11562,6 +11588,7 @@ fn an_out_of_range_symbol_id_is_an_error_not_a_panic() {
 /// end-to-end test above proves `load` as a whole refuses the image; this
 /// one proves it is specifically the mixin table's range check that catches
 /// it, not some unrelated failure earlier in the pipeline.
+// spec: image.verify.ids
 #[test]
 fn a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic() {
     let bytes = one_row_mixin_table(0, &[(5, 0)]);
@@ -11660,6 +11687,7 @@ fn a_decoded_lazy_slot_keeps_its_getter() {
 /// for that name, which serves only one of their fields and leaves the other
 /// dead: the row is refused as declaring that member twice, as two eager
 /// slots of one name are.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_row_declaring_one_lazy_slot_twice_is_refused() {
     let error = decode_one_row_with_method_shapes(
@@ -11681,6 +11709,7 @@ fn a_row_declaring_one_lazy_slot_twice_is_refused() {
 /// (`MixinMethod::lazy_slot_getter`). A method of the slot's name that
 /// differs in either is not its getter, and the row is refused rather than
 /// decoded into a slot without one.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_lazy_slot_whose_method_is_not_its_getter_is_refused() {
     let taking_an_argument = MethodShape {
@@ -11754,6 +11783,7 @@ fn a_decoded_slot_defines_its_accessors() {
 /// A row whose compiled method shares a selector with one of its slots'
 /// accessors: its method table could keep only one of the two, so the row
 /// is refused, as the resolver refuses the same declaration from source.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_row_whose_method_shares_a_slot_accessors_selector_is_refused() {
     // Symbol 1 is `x`, symbol 2 `x:`; the method is named by `method`.
@@ -11776,6 +11806,7 @@ fn a_row_whose_method_shares_a_slot_accessors_selector_is_refused() {
 
 /// §6.3.2: an immutable slot has "no setter method", so a method named by
 /// the slot's name with `:` appended is a member of its own.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_method_named_like_an_immutable_slots_setter_decodes() {
     let decoded = decode_one_row_with_slots(
@@ -11788,6 +11819,7 @@ fn a_method_named_like_an_immutable_slots_setter_decodes() {
     assert!(root.compiled_method(Symbol::intern("x:")).is_some());
 }
 
+// spec: image.verify.mixin-rows
 #[test]
 fn a_row_that_names_one_selector_twice_is_refused() {
     assert_eq!(
@@ -11799,6 +11831,7 @@ fn a_row_that_names_one_selector_twice_is_refused() {
 /// §6: a nested declaration "implicitly defines a method with the same
 /// name", so a row whose method shares a nested row's name declares that
 /// member twice.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_row_whose_method_shares_a_nested_declarations_name_is_refused() {
     let mut writer = encode::Writer::new();
@@ -11811,6 +11844,109 @@ fn a_row_whose_method_shares_a_nested_declarations_name_is_refused() {
     assert_eq!(
         mixins::decode(&mut reader, &table_with(&["X", "Inner"]), &codes).err(),
         Some(decode::DecodeError::DuplicateSelector("Inner".to_string()))
+    );
+}
+
+/// `write_mixin_row_with_method_shapes`' row of no slot and no nested
+/// declaration, naming row `class_side` as its class side.
+fn mixin_row_with_class_side(name_id: u32, methods: &[MethodShape], class_side: u32) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    write_mixin_row_with_method_shapes(&mut writer, name_id, &[], methods, &[]);
+    let mut row = writer.into_bytes();
+    // The row ends with the class side's presence and the four bodies'.
+    let presence = row.len() - 5;
+    assert_eq!(row[presence], 0, "the helper's row has no class side");
+    row[presence] = 1;
+    row.splice(presence + 1..presence + 1, class_side.to_le_bytes());
+    row
+}
+
+/// §6.3: a class side's mixin holds its declaration's factory, so a row
+/// that is a declaration's class side and declares a method of the
+/// factory's selector -- `new`, for a declaration that names none --
+/// declares that member twice. A method of another selector decodes.
+// spec: image.verify.mixin-rows
+#[test]
+fn a_class_side_method_named_like_the_factory_is_refused() {
+    let decoded = |selector: u32| {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(2);
+        writer.write_raw(&mixin_row_with_class_side(0, &[], 1));
+        write_mixin_row_with_method_shapes(
+            &mut writer,
+            1,
+            &[],
+            &[MethodShape {
+                selector,
+                access: AccessModifier::Public,
+                argument_count: 0,
+                code: 0,
+            }],
+            &[],
+        );
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let codes = [Rc::new(every_instruction_once())];
+        mixins::decode(
+            &mut reader,
+            &table_with(&["X", "X class", "new", "other"]),
+            &codes,
+        )
+    };
+    assert!(
+        decoded(3).is_ok(),
+        "a class side's method of another selector"
+    );
+    assert_eq!(
+        decoded(2).err(),
+        Some(decode::DecodeError::DuplicateSelector("new".to_string()))
+    );
+}
+
+/// The opening fields of a hand-crafted row: its name, symbol 0, its
+/// access, and its source range from `start` to `end`.
+fn row_opening(writer: &mut encode::Writer, start: u32, end: u32) {
+    writer.write_u32(1); // one row
+    writer.write_u32(0); // name
+    writer.write_u8(mixins::access_tag(AccessModifier::Protected));
+    writer.write_u32(start); // span.start
+    writer.write_u32(end); // span.end
+}
+
+/// A row's source range is a span like a body's, which ends no earlier
+/// than it starts.
+// spec: image.verify.mixin-rows
+#[test]
+fn a_mixin_row_whose_range_ends_before_it_starts_is_refused() {
+    let mut writer = encode::Writer::new();
+    row_opening(&mut writer, 9, 4);
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        mixins::decode(&mut reader, &table_with(&["X"]), &[]).err(),
+        Some(decode::DecodeError::InvalidSpan { start: 9, end: 4 })
+    );
+}
+
+/// A factory takes at most 255 parameters, as a method does: a row whose
+/// factory takes 256 is refused where the arity is read.
+// spec: image.verify.mixin-rows
+#[test]
+fn a_factory_of_256_parameters_is_refused() {
+    let mut writer = encode::Writer::new();
+    row_opening(&mut writer, 0, 0);
+    writer.write_u32(0); // no slots
+    writer.write_boolean(true); // a factory ...
+    writer.write_u32(1); // ... `with:` ...
+    writer.write_u16(256); // ... of 256 parameters
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        mixins::decode(&mut reader, &table_with(&["X", "with:"]), &[]).err(),
+        Some(decode::DecodeError::ArgumentCountTooLarge {
+            what: "factory",
+            count: 256
+        })
     );
 }
 
@@ -11966,6 +12102,7 @@ fn a_nested_mixin_round_trips_through_the_table() {
 /// since dropping a tree of `Rc<Mixin>` walks it recursively too. 100_000
 /// declared levels must produce an error, never an abort.
 // spec: image.untrusted
+// spec: image.verify.mixin-tree
 #[test]
 fn a_deeply_nested_mixin_tree_does_not_blow_the_stack() {
     let bytes = image_with_mixin_table(&["X"], &mixin_chain(100_000));
@@ -11981,6 +12118,7 @@ fn a_deeply_nested_mixin_tree_does_not_blow_the_stack() {
 /// The other side of the ceiling: a tree just inside it decodes, iteratively
 /// and completely. Without this, a decoder that refused *every* nested tree
 /// would pass the test above.
+// spec: image.verify.mixin-tree
 #[test]
 fn a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes() {
     let bytes = mixin_chain(128);
@@ -11999,6 +12137,8 @@ fn a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes() {
     assert_eq!(depth, 128, "every level is linked to its child");
 }
 
+// spec: image.verify.ids
+// spec: image.verify.mixin-tree
 #[test]
 fn a_mixin_id_pointing_past_the_table_is_an_error() {
     let mut writer = encode::Writer::new();
@@ -12019,6 +12159,7 @@ fn a_mixin_id_pointing_past_the_table_is_an_error() {
 /// itself as its own nested declaration -- is refused rather than paired up
 /// wrongly. Row position is the whole correspondence between a row and the
 /// declaration it describes.
+// spec: image.verify.mixin-tree
 #[test]
 fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
     let mut writer = encode::Writer::new();
@@ -12033,9 +12174,48 @@ fn a_mixin_table_that_is_not_a_declaration_tree_is_an_error() {
     );
 }
 
+/// A row's nested declarations lie in its own tree: a row of the second
+/// tree nesting the first tree's root would give that root a parent in
+/// another module.
+// spec: image.verify.mixin-tree
+#[test]
+fn a_row_nesting_a_row_of_an_earlier_tree_is_refused() {
+    let mut writer = encode::Writer::new();
+    writer.write_u32(2);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    write_mixin_row(&mut writer, 0, &[], &[0]); // row 1 nests the first tree's root
+    let bytes = writer.into_bytes();
+    let mut reader = decode::Reader::new(&bytes);
+    assert_eq!(
+        mixins::decode(&mut reader, &table_with(&["X"]), &[]).err(),
+        Some(decode::DecodeError::MixinTableNotATree { row: 0 })
+    );
+}
+
+/// The ceiling itself: a tree of 130 rows, one nesting the next, decodes,
+/// and one of 131 is refused.
+// spec: image.verify.mixin-tree
+#[test]
+fn a_mixin_tree_nested_131_rows_deep_is_refused() {
+    let decoded = |depth: u32| {
+        let bytes = mixin_chain(depth);
+        let mut reader = decode::Reader::new(&bytes);
+        mixins::decode(&mut reader, &table_with(&["X"]), &[])
+    };
+    assert!(decoded(130).is_ok(), "130 rows decode");
+    assert_eq!(
+        decoded(131).err(),
+        Some(decode::DecodeError::NestingTooDeep {
+            what: "mixin nesting",
+            limit: 130
+        })
+    );
+}
+
 /// A row no earlier row reaches starts a tree of its own: the table then
 /// describes two modules while the module section declares one, and `load` refuses
 /// the mismatch rather than dropping or misplacing the second tree.
+// spec: image.verify.mixin-tree
 #[test]
 fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     let mut writer = encode::Writer::new();
@@ -12964,6 +13144,7 @@ fn an_exception_returned_out_of_its_handler_round_trips() {
 /// A frame's code id past the code table is refused where it is read: the
 /// crafted bytes would otherwise decode the frame against a body it never
 /// ran, or index past the table.
+// spec: image.verify.ids
 #[test]
 fn a_frame_code_id_past_the_table_is_refused() {
     let (mut bytes, code_offset, _, table_length) = image_of_a_closure_over_a_method_frame();
@@ -13448,6 +13629,8 @@ fn with_u32_at(bytes: &[u8], offset: usize, value: u32) -> Vec<u8> {
 /// mixin holds it: holes out of order, a hole past the range, an empty
 /// hole, a length that does not add up, a text index past the table,
 /// another number of holes than nested rows.
+// spec: image.verify.ids
+// spec: image.verify.texts
 #[test]
 fn a_crafted_declaration_text_is_refused() {
     let bytes = nested_module_with_source();
@@ -13545,6 +13728,7 @@ const TWO_LEAVES_MODULE: &str = indoc! {"
 /// make the load build an arbitrarily large one: two instance-side rows
 /// naming one text, a class side naming another row's text and a text no
 /// row names are each refused, never loaded and never a panic.
+// spec: image.verify.texts
 #[test]
 fn a_text_not_owned_by_exactly_one_declaration_is_refused() {
     let (mut interpreter, class) = load(TWO_LEAVES_MODULE);
@@ -14419,6 +14603,7 @@ fn a_root_level_metaclass_round_trips_as_a_record() {
 /// reaches any of the eight; a graph built from Rust does. An activation
 /// *object* is no such reach: its header names `Kernel Activation`, which
 /// the loader accepts there alone (`an_activation_object_round_trips`).
+// spec: image.shipped.positions
 #[test]
 fn a_graph_reaching_an_unnameable_class_is_refused() {
     let source = indoc! {"
@@ -15123,6 +15308,7 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
 /// A clause index at or past the clause limit of 1,024, which no resolved
 /// declaration numbers, is refused before it is looked up, so it is never
 /// truncated into another clause.
+// spec: image.limit.clause-index
 #[test]
 fn an_applied_levels_clause_index_past_the_clause_limit_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15362,6 +15548,7 @@ fn a_body_less_class_records_scope_is_checked() {
 
 /// A body-less declaration declares nothing a body would, nested classes
 /// included: nothing could reach them, since no class applies its mixin.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_body_less_row_with_nested_declarations_is_refused() {
     let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
@@ -15380,12 +15567,33 @@ fn a_body_less_row_with_nested_declarations_is_refused() {
     );
 }
 
+/// A body-less declaration is the mixin application its clauses write, so
+/// a body-less row without a clause describes no declaration.
+// spec: image.verify.mixin-rows
+#[test]
+fn a_body_less_row_without_clauses_is_refused() {
+    let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
+    let applied = fixture.mixins[row_named(&fixture, "Applied") as usize].clone();
+    let decoded = |mixin: Mixin| mixins::Decoded {
+        mixins: vec![Rc::new(mixin)],
+        ..mixins::Decoded::empty()
+    };
+    assert_eq!(decode::verify_mixins(&decoded((*applied).clone())), Ok(()));
+    let mut without_clauses = (*applied).clone();
+    without_clauses.mixin_applications = Vec::new();
+    assert_eq!(
+        decode::verify_mixins(&decoded(without_clauses)),
+        Err(decode::DecodeError::BodyLessWithoutClauses)
+    );
+}
+
 /// A body-less declaration's full initializer is its declaration's own
 /// code, marked so when its row is built, and its lexical sends start from
 /// the declaration's scope: a row that names it as another body -- of
 /// another row, or another of its own -- would run it there from a frame
 /// that is no frame of the declaration, which a debug build aborts on.
 /// Refused before anything runs.
+// spec: image.verify.initializers
 #[test]
 fn a_body_less_declarations_initializer_named_as_another_body_is_refused() {
     let fixture = GraphFixture::with_source(BODY_LESS_MODULE);
@@ -15577,6 +15785,7 @@ fn a_shipped_levels_clause_is_checked_like_any_levels() {
 /// there, and so is anything but a class -- a metaclass, a module instance
 /// -- whose mixin no level applies. The VM mirror's class has no name at
 /// all, so no image can apply its mixin.
+// spec: image.shipped.positions
 #[test]
 fn a_level_applying_a_mixin_no_program_may_name_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15612,6 +15821,7 @@ fn a_level_applying_a_mixin_no_program_may_name_is_refused() {
 /// An object's class is a place an image names a class too: a module's
 /// root is no record's class -- its one instance is the module's, named as
 /// such -- and a module instance is no class at all.
+// spec: image.shipped.positions
 #[test]
 fn an_objects_class_naming_a_module_root_or_instance_is_refused() {
     let under = |name: u32| {
@@ -15714,6 +15924,7 @@ fn a_frame_record_under_another_class_is_refused() {
 /// The `Activation` header is accepted on a frame record only: on any other
 /// record it would make an ordinary object answer `Activation`'s methods,
 /// which read other frames and unwind the stack.
+// spec: image.shipped.positions
 #[test]
 fn an_activation_header_on_another_record_is_refused() {
     let bytes = class_records(1, |writer| {
@@ -15742,6 +15953,7 @@ fn shipped_class_value(name: u32) -> Vec<u8> {
 
 /// Everywhere but a frame record's header, `Activation` is refused like
 /// `Top`: it, and its metaclass, as a value.
+// spec: image.shipped.positions
 #[test]
 fn activation_named_anywhere_else_is_refused() {
     for (name, described) in [
@@ -15762,6 +15974,7 @@ fn activation_named_anywhere_else_is_refused() {
 /// Everywhere but a future record's header, `FutureImplementation` is
 /// refused like `Activation`: it, and its metaclass, as a value. Its class
 /// is kernel-private, and no program names it.
+// spec: image.shipped.positions
 #[test]
 fn a_graph_naming_the_future_implementation_as_a_class_is_refused() {
     for (name, described) in [
@@ -16260,6 +16473,8 @@ fn the_retired_class_record_tag_is_refused() {
 /// chain the rule does not build -- the level skipped, `Value` applied over
 /// `Value`, the level over a class but `Object`, the root itself standing
 /// as a level -- is refused.
+// spec: image.verify.modules
+// spec: image.verify.root-rule
 #[test]
 fn the_root_rule_holds_a_root_classs_superclass_chain() {
     let source = indoc! {"
@@ -16400,6 +16615,7 @@ fn verify_doctored_applied(edit: impl FnOnce(Mixin) -> Mixin) -> Result<(), deco
 /// `<:` follows a superclass clause in the grammar, and it is the superclass
 /// clause's body that evaluates every `<:` receiver; a row with clauses but
 /// no superclass clause describes a declaration no source has.
+// spec: image.verify.mixin-rows
 #[test]
 fn a_row_applying_mixins_without_a_superclass_clause_is_refused_at_load() {
     let error = verify_doctored_applied(|applied| Mixin {
@@ -17412,6 +17628,9 @@ type CraftedEntry = ((&'static str, &'static str, u8), Option<u32>);
 /// past the maximum or past the bytes left, an unknown module or
 /// declaration, an unknown kind byte, a level past its declaration's
 /// clauses, and a name given twice.
+// spec: image.verify.counts
+// spec: image.limit.shipped-names
+// spec: image.verify.shipped-names
 #[test]
 fn a_malformed_shipped_name_section_is_refused() {
     let bytes = snapshot_of(EMPTY);
@@ -17471,7 +17690,44 @@ fn a_malformed_shipped_name_section_is_refused() {
     }
 }
 
+/// A level's clause index is held to the clause limit where the section is
+/// read, before any shipped world is asked: `inspect`, which asks none,
+/// refuses index 1,024 as the load does.
+// spec: image.limit.clause-index
+#[test]
+fn a_shipped_level_past_the_clause_limit_is_refused() {
+    let bytes = snapshot_of(EMPTY);
+    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+        writer.write_u32(1);
+        write_shipped_entry(writer, intern, ("Kernel", "Array", 3), Some(1024));
+    });
+    let expected =
+        decode::DecodeError::UnknownShippedName("Kernel Array level 1024".to_string()).to_string();
+    assert_eq!(load_error(&crafted), expected);
+    match image::inspect::inspect(&crafted) {
+        Ok(_) => panic!("inspect read a level past the clause limit"),
+        Err(error) => assert_eq!(error, expected),
+    }
+}
+
+/// A module instance is named by its module's root, its declaration the
+/// module's own name: one named by another declaration names nothing.
+// spec: image.verify.shipped-names
+#[test]
+fn a_module_instance_named_by_another_declaration_is_refused() {
+    let bytes = snapshot_of(EMPTY);
+    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+        writer.write_u32(1);
+        write_shipped_entry(writer, intern, ("Kernel", "Array", 0), None);
+    });
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::UnknownShippedName("Kernel instance".to_string()).to_string()
+    );
+}
+
 /// A reference past the section is refused before it indexes anything.
+// spec: image.verify.ids
 #[test]
 fn an_index_past_the_shipped_name_section_is_refused() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, false, None);
@@ -17486,6 +17742,7 @@ fn an_index_past_the_shipped_name_section_is_refused() {
 /// `Kernel Activation` as a value, a module's root as a record's class, the
 /// kernel's instance as a slot's value, and a class standing where only a
 /// module instance may. A module instance in a frame's register decodes.
+// spec: image.shipped.positions
 #[test]
 fn a_shipped_name_in_a_forbidden_position_is_refused() {
     let not_allowed =
@@ -17559,6 +17816,7 @@ fn a_shipped_name_in_a_forbidden_position_is_refused() {
 
 /// No object is an instance of `Top`, so a record of it is refused as `Top`
 /// is refused as a value.
+// spec: image.shipped.positions
 #[test]
 fn a_record_of_top_is_refused() {
     let bytes = class_records(1, |writer| {
@@ -17739,6 +17997,7 @@ fn a_record_of_a_program_class_with_another_body_is_refused() {
 /// either. The kernel instance and its class are both reached here; the
 /// collections factory is the second such module, reached only because a
 /// host can walk a class's enclosing object, which no program can.
+// spec: image.shipped.positions
 #[test]
 fn a_module_instance_outside_a_frame_is_refused() {
     let (mut interpreter, class) = load(EMPTY);
@@ -17955,6 +18214,7 @@ fn package_refuses_an_application_that_reaches_the_platform() {
 /// `Array` loads, and the same image with its one name rewritten to
 /// `PlatformFactory Platform` -- which no encoder writes into a started
 /// image -- is refused before its graph is read.
+// spec: image.verify.started-image-names
 #[test]
 fn a_started_image_naming_another_module_is_refused() {
     let (mut interpreter, class) = load(indoc! {"
@@ -18001,6 +18261,7 @@ fn a_started_image_naming_another_module_is_refused() {
 /// image with its section rewritten to name `Kernel instance` -- which no
 /// encoder writes into a started image -- is refused before its graph is
 /// read.
+// spec: image.verify.started-image-names
 #[test]
 fn a_started_image_names_no_module_instance() {
     let bytes = packaged_application();
@@ -18065,6 +18326,7 @@ fn a_caught_non_boolean_receiver_round_trips_through_a_package() {
 /// crafted image naming it as a value is refused on load, and the encoder
 /// refuses a graph holding it as one rather than write an image nothing
 /// loads.
+// spec: image.shipped.positions
 #[test]
 fn non_boolean_receiver_as_a_value_is_refused() {
     assert_eq!(
@@ -18104,6 +18366,7 @@ fn non_boolean_receiver_as_a_value_is_refused() {
 /// superclass or as the mixin a level applies is refused on load, and the
 /// encoder refuses a graph holding it as a value rather than write an image
 /// nothing loads.
+// spec: image.shipped.positions
 #[test]
 fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
     let not_allowed = |position: &'static str| decode::DecodeError::ShippedNameNotAllowed {
@@ -18229,6 +18492,7 @@ fn shipped_name(module: &str, declaration: &str, kind: ShippedKind) -> ShippedNa
 /// the error the loader gives, and refuses before it builds
 /// anything: the shipped world names as many objects afterwards as before,
 /// even when a name the builder would build comes first.
+// spec: image.verify.shipped-names
 #[test]
 fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
     let list = shipped_name("CollectionsFactory", "List", ShippedKind::Class);
@@ -18510,6 +18774,7 @@ fn a_body_less_declarations_own_scope_survives_build_and_load() {
 /// root; 3.3 makes a module definition's enclosing object nil, so its
 /// declaration's scope is empty. The image carries it as that level, and
 /// the loader holds it to the root rule as such.
+// spec: image.verify.root-rule
 #[test]
 fn a_body_less_root_survives_build_and_load() {
     let (mut interpreter, class) = load("class BodyLessRoot = Object <: Value.");
@@ -18670,6 +18935,7 @@ fn an_image_with_a_body_past_the_instruction_limit_is_refused() {
 /// method record of 256 parameters in the mixin table: no compiled program
 /// has either.
 // spec: bytecode.verify.body-fields
+// spec: image.verify.mixin-rows
 #[test]
 fn an_image_with_a_method_of_256_parameters_is_refused() {
     let error = code_table_error(|writer| {
@@ -18754,6 +19020,7 @@ fn an_image_with_a_send_of_256_arguments_is_refused() {
 
 /// A mixin-table row of 1,025 `<:` clauses is refused where the count is
 /// read, before a clause is reserved for.
+// spec: image.limit.clauses
 #[test]
 fn an_image_applying_1025_mixins_is_refused() {
     let mut writer = encode::Writer::new();

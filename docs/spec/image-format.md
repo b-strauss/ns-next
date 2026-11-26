@@ -449,3 +449,164 @@ hash-table                                 count:u32  entry:hashed*count
 hashed/hashed
 hashed/hashed/shipped                      name:shipped-index  hash:u32
 ```
+
+## The rules the decoder checks
+
+A load refuses an image unless every rule below holds, and every rule the
+bytecode chapter holds each of its bodies to
+([The rules the decoder checks](bytecode.md#the-rules-the-decoder-checks)).
+It checks them before any code of the image runs, and no byte sequence
+makes it fail otherwise than by refusing
+([`image.untrusted`](#r-image.untrusted)).
+
+r[image.verify.counts]
+1. Every count is held to the bytes that follow it: a load reserves room
+   for no more of a count's items than the bytes left could hold, and
+   refuses a count of more items than the bytes left hold, before it
+   reads past them.
+
+r[image.verify.ids]
+2. Every id names an entry of the section it indexes, as
+   [`image.structure`](#r-image.structure) types it -- a symbol, a body of
+   the code table, a text of the text table, a row of the mixin table, a
+   shipped name, a record of the object table -- and an id past its
+   section is refused before it indexes anything.
+
+r[image.limit.shipped-names]
+3. The shipped names number at most 65,536; a count past it is refused
+   where it is read.
+
+r[image.limit.clause-index]
+4. A clause index -- a level's, in a class record, and a level's or a
+   level's metaclass's, in a shipped name -- is below 1,024, the most
+   `<:` clauses a declaration has
+   ([`image.limit.clauses`](#r-image.limit.clauses)); one at or past it
+   is refused where it is read, before it is looked up, so that a reader
+   of the shipped names that asks no shipped world refuses it too.
+
+r[image.limit.clauses]
+5. A mixin row has at most 1,024 `<:` clauses, the most a resolved
+   declaration has; a count past it is refused where it is read, before
+   anything is reserved for the clauses.
+
+r[image.verify.texts]
+6. Each text holds to itself: its range does not end before it starts;
+   its holes lie within the range, in order, none empty and no two
+   overlapping; its text is as long as the range less its holes; and every
+   piece of it between two holes begins and ends on a character boundary.
+   And each text holds to the rows ([`image.texts`](#r-image.texts)): a
+   row's text index names a text of the table; every text is named by
+   exactly one row that is no row's class side, and a class side's row
+   names its declaration's text; and a text has as many holes as its
+   declaration's row has nested declarations.
+
+r[image.verify.mixin-rows]
+7. A mixin row holds to the declaration it describes: its source range
+   does not end before it starts; its factory and each of its methods
+   take at most 255 parameters
+   ([`bytecode.limit.arguments`](bytecode.md#r-bytecode.limit.arguments));
+   no two of its members share a name -- its methods, its eager slots'
+   getters, its mutable slots' setters, its nested declarations and, on a
+   row that is a declaration's class side, that declaration's factory, two
+   lazy slots of one name declaring one getter twice; every lazy slot has
+   its getter among the row's methods, a method of the slot's name and
+   access that takes no argument; a row with `<:` clauses has a superclass
+   clause; and a row that writes no body has `<:` clauses and declares
+   nothing -- no slot, no initializer expression, no method, no nested
+   declaration and no class side.
+
+r[image.verify.mixin-tree]
+8. The rows form the forest [`image.mixins`](#r-image.mixins) gives: every
+   row a row names as a nested declaration or a class side is a row of the
+   table; walking each tree in preorder from its first row reaches every
+   row once and in table order, so that no row is its own ancestor, none
+   has two parents and none is a child of a row of another tree; no tree
+   nests more than 130 rows deep, its root counted, the 128 nested classes
+   the parser takes under a root and the innermost one's class side; and
+   the table holds as many trees as the module section holds records.
+
+r[image.verify.initializers]
+9. A row's bodies hold to its declaration, each of the kind and the
+   arity [`bytecode.verify.attachment`](bytecode.md#r-bytecode.verify.attachment)
+   gives it: every row has a full initializer; a row with a slot or an
+   initializer expression has its initializer's own part; a row has a
+   standalone initializer exactly when it has `<:` clauses and writes a
+   body; a row with a superclass clause has that clause's body; and a
+   body-less row's full initializer, its declaration's own code, is named
+   as no other body, of another row or of its own.
+
+r[image.verify.module-identity]
+10. Each module record names its module as a project names it
+    ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)):
+    a `project` record's path is relative to the project -- separated by
+    `/`, without a root, a drive or a `\`, without an empty or a `.`
+    segment, a `..` only leading, ending in `.ns` and naming more than
+    `.ns` -- and its id lies outside the namespace `newspeak.`; a `core`
+    record's file is a name ending in `.ns` and holding no `/`, `\` or
+    `:`, and the record is the manifest's alone, `newspeak.core.Manifest`
+    at `core:Manifest.ns` without a version; every id is identifiers
+    separated by dots, the last the name of its module's root
+    declaration, the first row of the module's tree; every version is a
+    semantic version without build metadata; and no path, id or version
+    holds a control character or a format character (Unicode's general
+    categories Cc and Cf).
+
+r[image.verify.modules]
+11. No two module records are of one id and one version, nor of one id
+    where either has no version. Each record's root names a record of the
+    graph that is its own module's root class: a class record applying
+    the root row of its module's tree as the outermost level -- no
+    metaclass, no level a clause added, no class of another row -- with
+    neither an enclosing object nor a declaring class; for a root that
+    writes no body, the body-less class record of that row, its
+    declaration's enclosing object and declaring class absent.
+
+r[image.verify.root-rule]
+12. Each module's root class has a superclass chain the root rule builds
+    ([`semantics.module.root-rule`](language/semantics.md#r-semantics.module.root-rule)):
+    a root row with no `<:` clause has `Kernel Object` or `Kernel Value`
+    as its superclass; a root row with one `<:` clause has the level that
+    clause added, its clause index 0, applying `Kernel Value`'s mixin over
+    `Kernel Object`; a root row with more is refused. A root that writes
+    no body has one `<:` clause and is the level it adds, applying
+    `Kernel Value`'s mixin over `Kernel Object` and naming `Kernel Value`
+    as its clause's class.
+
+r[image.verify.shipped-names]
+13. Every shipped name is one of the loading binary's: its module one of
+    the binary's shipped modules; its declaration that module's root --
+    the module's own name -- or a class the root declares, a module
+    instance's always the root; and a level's or a level's metaclass's
+    clause one of that declaration's `<:` clauses. No name is listed
+    twice. A load checks every name before it builds any part of the
+    shipped world the names select
+    ([`image.shipped-names`](#r-image.shipped-names)), so that an image
+    it refuses builds nothing of it.
+
+r[image.verify.started-image-names]
+14. In a started image every shipped name is of the module `Kernel`, and
+    none is a module instance, the kernel's included: before `main:args:`
+    a program reaches nothing of the other shipped modules, and no
+    program reaches a module's instance.
+
+r[image.shipped.positions]
+15. A shipped name stands only where what it names may stand. The places
+    a record names a shipped object are six positions, and each allows
+    what the table below gives; a load refuses a name anywhere else, and
+    a writer refuses to write one. A module instance is no class and
+    stands nowhere a class does. The VM mirror's class has no
+    declaration, so no shipped name names it.
+
+    | Position | Where it stands | What may stand there |
+    |---|---|---|
+    | a value | a slot, an element, a copied value, a root, a frame's register, an enclosing object, and every class written as a value (`class-tag`) | a shipped class that is public, or that a public class accessor of its module answers, and that class's metaclass -- but `Kernel IndexedCollection`, public only for another shipped module |
+    | a superclass | a class record's superclass, the class a `<:` clause named, the shipped mixin a level applies | a class that may be a value, never its metaclass, and never `Behavior`, `Class` or `Metaclass` |
+    | a record's class | an object record's class, a metaclass record's class | any shipped class but `Top` and a module's root, never a metaclass or a level; `Activation` only on a frame record, and `FutureImplementation` only on an unresolved future's instance record |
+    | a frame's class | a frame's current class, the class its kind names, a class record's declaring class | any shipped class, metaclass or level, a module's root, its metaclass and its levels included |
+    | a frame's register | a `shipped-module` value, a frame record's receiver or register | a module's instance, and only there |
+    | a reified mixin's mixin | the shipped mixin a `mixin` record names | any shipped class, whatever its accessibility, a module's root included; never a metaclass, a level or a module instance |
+
+    So `Top`, `Activation`, `FutureImplementation`, the module roots and
+    the module instances are no value, and a private class without a
+    public accessor, `NonBooleanReceiver` among them, stands only as a
+    record's class, a frame's class or a reified mixin's mixin.
