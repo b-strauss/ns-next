@@ -98,7 +98,7 @@ Each decided with the user on 2026-11-23.
 5. **Markdown, rendered by mdBook, each rule named as the Rust Reference
    names its rules.** The source is Markdown under `docs/spec/`, a chapter
    per part and the appendix, readable on GitHub as it is. Every normative
-   rule is preceded by an identifier line, `r[runtime.lookup.public]`, as
+   rule is preceded by an identifier line, `r[runtime.lookup]`, as
    the Rust Reference's `mdbook-spec` has it
    ([its dev guide](https://rust-lang.github.io/reference/dev-guide/tooling/mdbook-spec.html)).
    A preprocessor of `xtask`'s own, in Rust, checks the identifiers --
@@ -270,7 +270,7 @@ Decided with the user on 2026-11-26:
    the factors as the rule, which depend on the build and which no test
    holds, and no memory bound at all.
 3. **A send passes as many arguments as its selector takes, and the
-   decoder refuses one that does not** (`bytecode.verify.send-arity`).
+   decoder refuses one that does not** (`r[bytecode.verify.send-arity]`).
    Writing the image chapter showed that a decoded image could make the
    process panic. A crafted `==` with no argument reached `Object`'s
    identity leaf, which reads its argument through a checked access that
@@ -280,14 +280,14 @@ Decided with the user on 2026-11-26:
    With it, a decoded image's code runs as compiled code would. The
    decision covers every message a run delivers by selector, so the
    decoder also refuses a method record whose argument count is not its
-   selector's (`bytecode.verify.attachment`), whose body every send of
+   selector's (`r[bytecode.verify.attachment]`), whose body every send of
    the selector would otherwise run over arguments it was not given. The
    alternatives weighed:
    - a run-time error in place of the leaves' assertion, which leaves a
      surplus argument a silent wrong answer and puts a check on the send
      path;
    - writing today's abort down as the rule, which would break
-     `image.untrusted`'s promise for the code a load runs.
+     `r[image.untrusted]`'s promise for the code a load runs.
 
 ## The third batch's decision
 

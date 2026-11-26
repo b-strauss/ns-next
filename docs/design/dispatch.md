@@ -113,7 +113,7 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    (`classes::root_clause_defect`; [object-model.md](object-model.md), "The
    root rule"). The specification leaves such a clause to fail when it is
    evaluated; refusing it statically is a rule of the specification of
-   ns-next, `semantics.module.root-rule`, which its appendix lists.
+   ns-next, `r[semantics.module.root-rule]`, which its appendix lists.
 
    The member set also holds the declaration's **primary factory selector** —
    the one its own message pattern spells out, or `new` when it writes none.
@@ -349,7 +349,7 @@ The parser normalizes several forms, and the resolver keys off those shapes:
 - **`outer N`** with no message after it is the object `outer N m` would send
   to, as in canonical Newspeak; §5.9 defines `outer N` only as a receiver
   (decided with the user on 2026-09-27; the specification's
-  `syntax.outer.alone`). The resolver records
+  `r[syntax.outer.alone]`). The resolver records
   `Binding::EnclosingObject { depth }` on it, both lowerings emit
   `LoadEnclosingObject`, and the VM answers `dispatch::kth_enclosing_object`
   through `interpreter::sends::enclosing_object` -- a load, no send, so no

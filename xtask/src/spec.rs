@@ -482,6 +482,112 @@ pub fn check_references(rules: &[Rule], references: &[Reference]) -> Result<(), 
     }
 }
 
+/// A design document's pointer at a rule of the book: `r[<identifier>]` in
+/// a code span, which the documents write so that a renamed rule breaks the
+/// check instead of leaving a stale name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pointer {
+    pub identifier: String,
+    pub document: PathBuf,
+    pub line: usize,
+}
+
+/// Every pointer `CLAUDE.md` and the design documents directly below
+/// `docs/design/` make to a rule. Only a span that is a backtick, `r[`, the
+/// identifier, `]` and a backtick is one, so that `` `ns-next-analyzer[.exe]` ``
+/// is not; a fenced block holds samples and is skipped. A pointer is no
+/// test's reference, so the rendered book lists it nowhere.
+pub fn pointers_in(root: &Path) -> Result<Vec<Pointer>, String> {
+    let mut documents = vec![root.join("CLAUDE.md")];
+    let design = root.join("docs/design");
+    if design.is_dir() {
+        let mut found = Vec::new();
+        let entries = std::fs::read_dir(&design)
+            .map_err(|error| format!("{}: cannot be read: {error}", display(&design)))?;
+        for entry in entries {
+            let path = entry
+                .map_err(|error| format!("{}: cannot be read: {error}", display(&design)))?
+                .path();
+            if path.extension().is_some_and(|extension| extension == "md") {
+                found.push(path);
+            }
+        }
+        found.sort();
+        documents.extend(found);
+    }
+    let mut pointers = Vec::new();
+    let mut refusals = Vec::new();
+    for path in documents {
+        if !path.is_file() {
+            continue;
+        }
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let text = read(&path)?;
+        walk_markdown(&text, |line, content, outside| {
+            if !outside {
+                return;
+            }
+            let mut rest = content;
+            while let Some(start) = rest.find("`r[") {
+                let after = &rest[start + 3..];
+                let Some(end) = after.find("]`") else {
+                    break;
+                };
+                let identifier = &after[..end];
+                if is_identifier(identifier) {
+                    pointers.push(Pointer {
+                        identifier: identifier.to_string(),
+                        document: relative.clone(),
+                        line,
+                    });
+                } else {
+                    refusals.push(format!(
+                        "{}:{line}: `r[{identifier}]` is no rule identifier",
+                        display(&relative)
+                    ));
+                }
+                rest = &after[end + 2..];
+            }
+        });
+    }
+    if refusals.is_empty() {
+        Ok(pointers)
+    } else {
+        Err(refusals.join(
+            "
+",
+        ))
+    }
+}
+
+/// Checks that every pointer names one of `rules`.
+pub fn check_pointers(rules: &[Rule], pointers: &[Pointer]) -> Result<(), String> {
+    let refusals: Vec<String> = pointers
+        .iter()
+        .filter(|pointer| {
+            !rules
+                .iter()
+                .any(|rule| rule.identifier == pointer.identifier)
+        })
+        .map(|pointer| {
+            format!(
+                "{}:{}: `r[{}]` names no rule of the specification",
+                display(&pointer.document),
+                pointer.line,
+                pointer.identifier
+            )
+        })
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals.join(
+            "
+",
+        ))
+    }
+}
+
 /// `text` with the characters HTML gives a meaning escaped.
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -628,6 +734,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     let rules = book_rules(&book)?;
     let references = references_in(root)?;
     check_references(&rules, &references)?;
+    check_pointers(&rules, &pointers_in(root)?)?;
     check_links(&book)?;
     check_mdbook()?;
     let chapters = book_chapters(&book)?;
@@ -1046,5 +1153,105 @@ mod tests {
         let rules = book_rules(&root.join("docs/spec")).expect("the book's rules");
         let references = references_in(&root).expect("the tests' references");
         check_references(&rules, &references).expect("every reference names a rule");
+    }
+
+    /// A scratch repository with a one-rule book and `contents` as the
+    /// design document `docs/design/a.md`.
+    fn pointer_scratch(name: &str, document: &str, contents: &str) -> Scratch {
+        let scratch = Scratch::new(name);
+        scratch.write(
+            "docs/spec/SUMMARY.md",
+            "# Summary
+
+- [A](a.md)
+",
+        );
+        scratch.write(
+            "docs/spec/a.md",
+            "r[vm.sample]
+A rule.
+",
+        );
+        scratch.write(document, contents);
+        scratch
+    }
+
+    #[test]
+    fn a_pointer_to_a_rule_of_the_book_is_accepted() {
+        let scratch = pointer_scratch(
+            "pointer-ok",
+            "docs/design/a.md",
+            "see `r[vm.sample]`
+",
+        );
+        let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        assert_eq!(pointers.len(), 1);
+        assert_eq!(pointers[0].identifier, "vm.sample");
+        assert_eq!(pointers[0].line, 1);
+        check_pointers(&rules, &pointers).expect("a rule of the book");
+    }
+
+    #[test]
+    fn a_pointer_to_no_rule_is_refused() {
+        let scratch = pointer_scratch(
+            "pointer-none",
+            "docs/design/a.md",
+            "one
+two
+`r[vm.none]`
+",
+        );
+        let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        let refusal = check_pointers(&rules, &pointers).expect_err("no such rule");
+        assert_eq!(
+            refusal,
+            "docs/design/a.md:3: `r[vm.none]` names no rule of the specification"
+        );
+    }
+
+    #[test]
+    fn a_pointer_in_a_fenced_block_is_a_sample() {
+        let scratch = pointer_scratch(
+            "pointer-fence",
+            "docs/design/a.md",
+            "```
+`r[vm.none]`
+```
+",
+        );
+        assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
+    }
+
+    #[test]
+    fn a_bare_identifier_is_no_pointer() {
+        let scratch = pointer_scratch(
+            "pointer-bare",
+            "docs/design/a.md",
+            "`vm.rs` and `image.bound.sizing` and `ns-next-analyzer[.exe]`
+",
+        );
+        assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
+    }
+
+    #[test]
+    fn a_malformed_pointer_is_refused() {
+        let scratch = pointer_scratch(
+            "pointer-bad",
+            "CLAUDE.md",
+            "`r[Vm.X]`
+",
+        );
+        let refusal = pointers_in(&scratch.0).expect_err("malformed");
+        assert_eq!(refusal, "CLAUDE.md:1: `r[Vm.X]` is no rule identifier");
+    }
+
+    #[test]
+    fn every_pointer_names_a_rule_of_the_book() {
+        let root = repository_root();
+        let rules = book_rules(&root.join("docs/spec")).expect("the book's rules");
+        let pointers = pointers_in(&root).expect("the documents' pointers");
+        check_pointers(&rules, &pointers).expect("every pointer names a rule");
     }
 }

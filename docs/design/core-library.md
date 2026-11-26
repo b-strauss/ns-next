@@ -1446,7 +1446,7 @@ in `THIRD-PARTY-NOTICES.md`.
 `FixedPointNumber`" — an exact decimal type, chosen there so that "financial
 applications in particular" get "accurate decimal numbers" and users are not
 exposed to floating point's "counterintuitive ways". ns-next's rule differs
-(`semantics.literal.float`, which the specification's appendix lists;
+(`r[semantics.literal.float]`, which the specification's appendix lists;
 decided with the user on 2026-11-23, [specification.md](specification.md),
 "The second batch's deviations", decision 1): `2.5` here is an `f64`
 (`compiler/lower.rs` parses the literal's text straight into one), so the
@@ -1464,7 +1464,7 @@ class `Fraction`. This is a bug"), and it names the open design question —
 whether a user chooses the numeric implementation — rather than settling it.
 ns-next settles it with a class of its own for exact decimals, `Decimal`,
 and a literal of its own, `2.50s`, both a gap until a batch builds them
-(`semantics.gap.decimal`; [OPEN-WORK.md](../OPEN-WORK.md)).
+(`r[semantics.gap.decimal]`; [OPEN-WORK.md](../OPEN-WORK.md)).
 
 ## A NaN equals a NaN
 
@@ -5235,7 +5235,7 @@ on its own (decided with the user on 2026-10-06):
   `hash`, since `==` on a value is `=`.
 
 Not taken up here: tuple literals stay mutable `Array`s until
-`ImmutableArray` is built (the gap `semantics.gap.immutable-array`), a
+`ImmutableArray` is built (the gap `r[semantics.gap.immutable-array]`), a
 non-integral literal stays a `Float` (§5.1.1, "A non-integral literal is a
 binary float" above), and there is no `Character` (§5.1.4); the
 specification of ns-next's appendix lists all three.
@@ -5344,7 +5344,7 @@ specification of ns-next's appendix lists all three.
   first user: it maps old objects to new ones and must not run a program's
   `=`. `NotFound` stays in the collections module, under `Error`. No
   immutable variants yet: no `ImmutableArray` (§5.1.7's tuple, the gap
-  `semantics.gap.immutable-array`) and no value collections; their
+  `r[semantics.gap.immutable-array]`) and no value collections; their
   hierarchy, decided with the user on 2026-11-24, turns `Collection` into
   a mixin applied to `Object` and to `Value`
   ([specification.md](specification.md), "The second batch's

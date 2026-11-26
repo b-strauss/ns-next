@@ -1344,9 +1344,9 @@ that peak is what the collector's design and the image format's guarantee
 need, stated carefully because the careless version is wrong. The rules
 are the specification's (`docs/spec/image-format.md`, "Bounds"): a load
 sizes every record before it allocates any and refuses past eight words
-a byte of the input left (`image.bound.sizing`), and what a rejected load
+a byte of the input left (`r[image.bound.sizing]`), and what a rejected load
 allocates is bounded by a constant multiple of the image's length plus a
-constant (`image.bound.linear`), the bound normative as a property and
+constant (`r[image.bound.linear]`), the bound normative as a property and
 its factors informative (decided with the user on 2026-11-26,
 [specification.md](specification.md), "The fourth batch's decisions").
 The factors are this section's derivation, and depend on the build.

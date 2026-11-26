@@ -89,7 +89,7 @@ in a release build too, and a crafted `printString` with one would answer
 as though it had none. So whatever a decoded image's code does wrong, it
 does as a run of its source would: a Newspeak error or a wrong answer,
 never an abort of the process (`docs/spec/image-format.md`,
-`image.untrusted`, `image.run`).
+`r[image.untrusted]`, `r[image.run]`).
 
 ## The artifact
 
@@ -1088,7 +1088,7 @@ more than eight words a byte of the input left, the load is refused
 guard no image reaches: every record format sizes its object at about a
 word a byte, and a count claimed past the bytes is refused
 earlier with the same error, so no test can isolate it
-(`docs/spec/image-format.md`, `image.bound.sizing`); a symbol's text is not
+(`docs/spec/image-format.md`, `r[image.bound.sizing]`); a symbol's text is not
 counted against that, since it is bounded once per entry by the symbol
 section. Then every record's placeholder is allocated at exactly its size —
 an instance of the builtin `Object` with nil fields, or for a frame record a
@@ -1298,7 +1298,7 @@ the reads run out: the symbol table, the code table, the mixin table and
 each row's slots, clauses, methods and nested ids, a code record's
 statement map and the other lists a record carries, and the roots. Either
 way nothing is reserved past the input, and a count past it is refused
-(`docs/spec/image-format.md`, `image.verify.counts`).
+(`docs/spec/image-format.md`, `r[image.verify.counts]`).
 
 Two structural passes run before anything the image describes can execute:
 `verify_code_table` over the decoded code table, and `verify_graph` holding
@@ -1404,7 +1404,7 @@ read (`mixins::read_row`, `MethodArityMismatch`), since every send of
 the selector passes its arity and the body is held to the record's
 count (`a_send_whose_argument_count_is_not_its_selectors_is_refused`,
 `a_method_record_whose_argument_count_is_not_its_selectors_is_refused`;
-`bytecode.verify.send-arity`, `bytecode.verify.attachment`). `inspect`
+`r[bytecode.verify.send-arity]`, `r[bytecode.verify.attachment]`). `inspect`
 runs no `verify_code_table`, so it shows such a send.
 
 **A program class's instances hold to its layout.** Every object of a
@@ -1421,7 +1421,7 @@ holds every record of a shipped class that is no builtin to the same
 count as well, which the first pass has already checked ("A record of a
 shipped class carries exactly that class's layout" below); the
 specification states the two as separate rules
-(`image.verify.program-instances`, `image.verify.shipped-instances`). It is what a customized copy's own-slot reads rest
+(`r[image.verify.program-instances]`, `r[image.verify.shipped-instances]`). It is what a customized copy's own-slot reads rest
 on: they load fixed fields with no check, which would read past the end
 of an object with fewer, or an array or a string as what it is not
 ([execution.md](execution.md), "Speculation", "Own slots at fixed
@@ -2382,7 +2382,7 @@ gives the same error, so a golden whose assembly fails round-trips as that
 failure.
 
 **Every refusal of the writer is stated with its text** in the
-specification (`image.write.refusals`, `image.write.limits`), and every
+specification (`r[image.write.refusals]`, `r[image.write.limits]`), and every
 reachable one has a test but one. Four refusals no host reaches today
 and stand as guards, by reasoning rather than by a test: a body-less
 declaration's class object without its scope (`encode.rs`'s
@@ -2521,8 +2521,8 @@ the resolution), `interpreter/shipped_world.rs` (the world, its names and
 what may stand where), `image/fingerprint.rs`. The rules -- the section,
 what a name may name, the six positions and what may stand in each, the
 fingerprint -- are the specification's (`docs/spec/image-format.md`,
-`image.shipped-names`, `image.shipped.positions`,
-`image.verify.shipped-names`, `image.header.fingerprint`); this section
+`r[image.shipped-names]`, `r[image.shipped.positions]`,
+`r[image.verify.shipped-names]`, `r[image.header.fingerprint]`); this section
 keeps the mechanism and the reasons.
 
 **Why one mechanism.** The VM mirror is never in an image; every shipped

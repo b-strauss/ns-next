@@ -57,7 +57,7 @@ expressions), the instance side, and — after `) : (` — the class side.
 A module may open with §8.1's language id (`Newspeak3`) and its class
 category (`'App'`), in that order, and may leave out either or both. The
 specification requires the language id; ns-next does not, which the
-specification of ns-next adopts as its rule `syntax.language-id`. The id names the language a compilation unit is written
+specification of ns-next adopts as its rule `r[syntax.language-id]`. The id names the language a compilation unit is written
 in, for a later version to announce itself, but nothing reads it: the
 canonical parser discards it (`NewspeakParsing.ns`, `compilationUnit`'s
 `wrapper: [:lid :u :e | u]`), and here it reaches `Module::language_id` and no
@@ -195,7 +195,7 @@ The productions, and what the parser does with each:
   or tuple, or keywords each with an optional value -- `_`, a literal,
   `?name` or a nested pattern (`<x: <y: 1>>`, whose closing `>>` the parser
   splits). Parsed in full and kept as its text; evaluating it signals the gap
-  `semantics.gap.pattern` ("What is kept but ignored, and what a reprint
+  `r[semantics.gap.pattern]` ("What is kept but ignored, and what a reprint
   drops").
 - `super` is followed by a message (§5.10) and `outer` by a class's name
   (§5.9), both at the parser. `outer N` with no message after it is the
@@ -223,7 +223,7 @@ lexing `Kernel.ns` from 0.30 to 0.18 ms and the corpus from 8.2 to 7.9 ms.
 
 **A string literal is `'...'` or `"..."`** (§5.1.5), and there are no
 character literals (decided with the user on 2026-09-25; the
-specification's `lex.string.double-quoted` and `lex.string.one-character`): §5.1.4 announces
+specification's `r[lex.string.double-quoted]` and `r[lex.string.one-character]`): §5.1.4 announces
 "doing away with character literals, and having people use string literals
 instead", so `"a"` is a one-character string and the `Character` class is
 gone. A single-quoted string doubles an embedded `'` (`'it''s'`). A
@@ -239,7 +239,7 @@ therefore reads as `"""` followed by the start of another string, and appears
 in the corpus only inside comments.
 
 **A string literal is not normalized to NFC**, a rule of the specification
-of ns-next, `semantics.literal.string`, which its appendix lists as a
+of ns-next, `r[semantics.literal.string]`, which its appendix lists as a
 difference from §5.1.5, whose literal is "the encoding of the string in
 Unicode normal form C": the lexer keeps the code points the source text
 holds, so a decomposed `é` stays two code points and differs from a
@@ -306,7 +306,7 @@ whitespace, so no token stands for one and the parser never sees one.
   `<///>` and every other run containing `///`; a comment wherever it
   stands is what a reader expects, and a selector containing `///`, which
   can now be neither declared nor sent, is the price, accepted; the
-  specification of ns-next adopts it as its rule `lex.comment.line`
+  specification of ns-next adopts it as its rule `r[lex.comment.line]`
   (`docs/spec/`, its appendix "Differences from Bracha's Newspeak").
 - **The two forms do not see each other.** Inside `(* ... *)`, `///` is
   text; inside a `///` comment, `(*` opens nothing. Inside `'...'` and
@@ -628,12 +628,12 @@ provides one, a clean `doesNotUnderstand: #Pattern` instead of the gap's
 error. This needs a pattern AST in place of today's source text, which
 `parse_pattern_literal` already walks; the library side has prior art in the
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
-Closing it closes the gap `semantics.gap.pattern`.
+Closing it closes the gap `r[semantics.gap.pattern]`.
 
 The asynchronous send and the pattern literal each fail loudly where they
 run. Each is a gap of
-the specification of ns-next, `semantics.gap.actors` and
-`semantics.gap.pattern` (`docs/spec/language/semantics.md`).
+the specification of ns-next, `r[semantics.gap.actors]` and
+`r[semantics.gap.pattern]` (`docs/spec/language/semantics.md`).
 
 A code body's temporary list has the full slot-declaration form
 (`corpus/reference/NewspeakGrammar.ns:148-150`, `temporaries = slotDecls`), so
@@ -711,7 +711,7 @@ alternatives the first that matches in full wins. So:
 `| public= 1. |` would declare a slot named `public` beside a refused
 `| public = 1. |`. With a lexer the two are the same tokens and are treated
 alike, both refused. The specification of ns-next adopts it as its rule
-`syntax.whitespace-free`, and its appendix records the difference.
+`r[syntax.whitespace-free]`, and its appendix records the difference.
 
 `parser::declaration`'s `unreserved_word_tests` pin every position, the
 refused forms included; `goldens/language/syntax/spec_4_1_the_unreserved_words_*` and
