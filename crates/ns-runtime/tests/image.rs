@@ -1003,6 +1003,7 @@ fn call_site_and_call_site_mut_agree_on_every_instruction_variant() {
     );
 }
 
+// spec: image.code-table
 #[test]
 fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents() {
     let (mut interpreter, class) = load(RICH);
@@ -1408,6 +1409,7 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
 /// A `LargeInteger` in a slot survives a snapshot as a value, including one
 /// that fits `i64` and so travels as an `i64`: `-2^63` and `2^60` are beyond
 /// a `SmallInteger`'s 61 bits, and the round trip keeps them `LargeInteger`s.
+// spec: image.graph.value
 #[test]
 fn a_large_integer_value_round_trips() {
     let source = indoc! {"
@@ -1849,6 +1851,7 @@ fn a_register_list_longer_than_the_format_counts_is_refused_not_a_panic() {
 /// value, as a `LargeInteger` does: a boxed Float has no identity (§3.1.1),
 /// so the image carries its bits wherever it is referenced and writes no
 /// object record for it.
+// spec: image.graph.value
 #[test]
 fn a_boxed_float_value_round_trips_without_a_record() {
     let source = indoc! {"
@@ -2209,6 +2212,7 @@ fn fractions_image() -> Vec<u8> {
 
 /// A `Fraction` survives a snapshot as a value: each loads with equal
 /// parts, each part the integer class it was.
+// spec: image.graph.value
 #[test]
 fn a_fraction_value_round_trips() {
     let mut loaded = image::load(&fractions_image()).expect("load");
@@ -2436,6 +2440,8 @@ fn a_fraction_record_with_fields_is_refused() {
 /// wire's one encoding for every integer in `i64`, wherever a `SmallInteger`
 /// ends; the decoder makes it a `LargeInteger` again because it lies beyond
 /// 61 bits.
+// spec: image.graph.value
+// spec: image.encoding
 #[test]
 fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
     let source = indoc! {"
@@ -3090,6 +3096,7 @@ fn byte_array_contents(size: usize) -> Vec<u8> {
     Vec::from_fn(size, |index| (index * 7 + 3) as u8)
 }
 
+// spec: image.graph.record
 #[test]
 fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
     let sizes = [0, 5, 4_000];
@@ -3340,6 +3347,7 @@ fn same_value_object<'gc>(value: Value<'gc>, other: Value<'gc>) -> bool {
 /// reaches is written `nil`, and the integer, which no collection clears,
 /// stays. `WeakArray withoutSlots`, an ordinary instance of the class,
 /// travels as one.
+// spec: image.graph.record
 #[test]
 fn a_weak_array_round_trips_its_strongly_reached_elements() {
     weak_holder_round_trip("fillWeak:", |mutator, holder| {
@@ -3388,6 +3396,7 @@ fn a_weak_array_walked_before_the_strong_path_to_its_element_keeps_it() {
 
 /// A `nil` key is never collected, so an ephemeron keyed by it holds its
 /// value and finalizer as any slot does, and is written with them.
+// spec: image.graph.record
 #[test]
 fn an_ephemeron_with_a_nil_key_round_trips_with_its_value() {
     weak_holder_round_trip("fillNilKey:", |mutator, holder| {
@@ -3404,6 +3413,7 @@ fn an_ephemeron_with_a_nil_key_round_trips_with_its_value() {
     });
 }
 
+// spec: image.graph.record
 #[test]
 fn an_ephemeron_round_trips_with_its_value_while_its_key_is_reached() {
     weak_holder_round_trip("fillReached:", |mutator, holder| {
@@ -3620,6 +3630,7 @@ fn assert_reifies<'gc>(mutator: &mut Mutator<'gc>, value: Value<'gc>, expected: 
 /// the loaded module's own: its class, its synthesized class side and a
 /// nested class's declared class side, each the one object the loaded heap
 /// answers for its mixin.
+// spec: image.graph.record
 #[test]
 fn a_reified_mixin_round_trips_onto_the_same_mixin() {
     let bytes = reified_holder_snapshot(|mutator, class, _list| {
@@ -3660,6 +3671,7 @@ fn a_reified_mixin_round_trips_onto_the_same_mixin() {
 
 /// A shipped mixin is named by its class's declaration, so it loads onto
 /// the loading binary's own mixin, a class side as much as a class.
+// spec: image.graph.record
 #[test]
 fn a_reified_shipped_mixin_round_trips_by_name() {
     let bytes = reified_holder_snapshot(|mutator, _class, list| {
@@ -4315,6 +4327,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
     });
 }
 
+// spec: image.graph.record
 #[test]
 fn a_closure_and_its_paused_home_frame_round_trip() {
     let source = indoc! {"
@@ -6271,6 +6284,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     });
 }
 
+// spec: image.graph.record
 #[test]
 fn a_closure_capturing_a_block_activation_round_trips() {
     // `[:x | [ x ] ] value: 5` runs the outer block, so the inner closure's
@@ -7160,6 +7174,7 @@ fn util_identities() -> [ModuleIdentity; 3] {
 /// An image names its modules as the program did: each its path relative
 /// to the project, its id and its version, a module of the binary's by its
 /// `core:` path; and every loaded root mixin carries its module's.
+// spec: image.modules
 #[test]
 fn an_image_names_its_modules_as_the_program_did() {
     let identities = util_identities();
@@ -7190,6 +7205,7 @@ fn an_image_names_its_modules_as_the_program_did() {
 /// A module record holds the path relative to the project: the directory
 /// the building machine read the module from is in no byte of the image,
 /// with its source or without.
+// spec: image.modules
 #[test]
 fn the_building_machine_s_paths_are_not_written() {
     let directory = std::env::temp_dir().join("ns-next-the-building-machine-s-paths");
@@ -7345,6 +7361,7 @@ fn module_error(module: u32, reason: &str) -> String {
 /// namespace `newspeak.` for the binary's modules alone, and nothing else
 /// for them; a version semver's; and no two modules no request could pick
 /// between.
+// spec: image.modules
 #[test]
 fn a_module_record_is_held_to_the_project_rules() {
     let bytes = util_image(&util_identities(), false);
@@ -7588,6 +7605,7 @@ fn a_module_record_is_held_to_the_project_rules() {
 /// origins -- the building machine's file and an embedded source -- an
 /// origin past the last, and a version tag past the last are each an
 /// unknown tag, and inspect refuses them as load does.
+// spec: image.modules
 #[test]
 fn a_module_record_s_unknown_tags_are_refused() {
     let bytes = util_image(&util_identities(), false);
@@ -9062,6 +9080,7 @@ fn decoded_mixin<'decoded>(decoded: &'decoded mixins::Decoded, name: &str) -> &'
         .unwrap_or_else(|| panic!("a row named {name}"))
 }
 
+// spec: image.mixins
 #[test]
 fn all_three_initializer_bodies_survive_a_round_trip() {
     let (mut interpreter, class) = load(TWO_APPLIED_CLAUSES);
@@ -9866,6 +9885,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
 /// An object nothing asked for its hash is written as 0 and decoded as 0 --
 /// still unassigned -- and the first request after the load draws a number
 /// past every hash the image carried, so it cannot collide with one.
+// spec: image.graph
 #[test]
 fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() {
     let source = indoc! {"
@@ -9994,6 +10014,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 /// A shipped level is named, not carried, like a builtin class: the hash the
 /// level `Array`'s `<:` clause adds was given, and its metaclass's, travel in
 /// the closing table and land on the loading world's own level.
+// spec: image.hashes
 #[test]
 fn the_hash_of_a_shipped_level_survives_a_snapshot() {
     let source = indoc! {"
@@ -10902,6 +10923,7 @@ fn snapshot_of(source: &str) -> Vec<u8> {
 
 /// A module's root class is a record of the graph like any class: the
 /// module section names it by object id, and a load answers that record.
+// spec: image.modules
 #[test]
 fn a_modules_root_class_is_a_record_the_module_section_names() {
     let (mut interpreter, class) = load(EMPTY);
@@ -11799,6 +11821,7 @@ fn an_empty_symbol_tables_get_is_an_error_not_a_panic() {
     assert_eq!(table.get(0), Err(decode::DecodeError::BadSymbolId(0)));
 }
 
+// spec: image.symbols
 #[test]
 fn a_symbol_written_at_many_call_sites_still_resolves_to_the_same_symbol_everywhere() {
     // The dedup property from the caller's side: every occurrence of
@@ -11882,6 +11905,7 @@ fn image_with_mixin_table(strings: &[&str], mixin_table: &[u8]) -> Vec<u8> {
     writer.into_bytes()
 }
 
+// spec: image.mixins
 #[test]
 fn a_nested_mixin_round_trips_through_the_table() {
     let bytes = snapshot_of(TABLE_NESTED_SOURCE);
@@ -12732,6 +12756,7 @@ fn an_image_with_source_still_carries_it() {
 /// The table carries the module's text once, split among its declarations:
 /// per text its range, its hole count, its holes and its length-prefixed
 /// text with the holes cut out.
+// spec: image.texts
 #[test]
 fn the_two_variants_differ_only_by_the_text_table() {
     let with = snapshot_module(SOURCE_FREE_MODULE, true, None);
@@ -13045,6 +13070,7 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
 /// below it, and a returned one has none. So only a hand-built frame can
 /// carry one into the encoder, and this is the test that keeps that half of
 /// the frame record from rotting unnoticed.
+// spec: image.graph.record
 #[test]
 fn a_frames_sender_survives_a_round_trip() {
     let (mut interpreter, _class, _original, decoded, _max) =
@@ -17265,6 +17291,7 @@ fn outer_and_inner(loaded: &mut image::LoadedImage) -> (Rc<Mixin>, Rc<Mixin>) {
 /// declaration's text, cut from the module's -- the root's the whole
 /// module with `Inner` cut out, `Inner`'s its own -- and each nested
 /// mixin its enclosing one.
+// spec: image.texts
 #[test]
 fn a_mixin_decoded_from_an_image_with_source_carries_its_text_and_links() {
     let bytes = snapshot_module(TWO_CLASS_MODULE, true, None);

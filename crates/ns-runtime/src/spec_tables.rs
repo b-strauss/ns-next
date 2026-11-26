@@ -7,6 +7,7 @@
 use crate::bytecode::Instruction;
 
 mod image_format;
+mod image_structure;
 
 /// How many kinds of instruction there are: the arms of
 /// `instruction_name`. A new instruction adds an arm there, which the
