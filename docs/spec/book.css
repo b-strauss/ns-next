@@ -140,3 +140,35 @@
   color: var(--icons);
   font-style: italic;
 }
+
+/* The chapters' arrows at the page's sides are gone at every width; the
+   buttons beneath a chapter, which mdBook shows only on narrow screens,
+   take their place everywhere, laid out as a row rather than floated. The
+   arrow keys still turn the page. */
+.nav-wide-wrapper {
+  display: none !important;
+}
+
+.nav-wrapper {
+  display: flex !important;
+  justify-content: space-between;
+}
+
+.nav-wrapper .next {
+  margin-left: auto;
+}
+
+/* Turning from one chapter to another cross-fades, by the browser's own
+   view transition between two pages of one origin; none for a reader who
+   asks for less motion. */
+@view-transition {
+  navigation: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none;
+  }
+}
