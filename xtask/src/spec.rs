@@ -652,6 +652,8 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     )?;
     let configuration = output_configuration(&read(&book.join("book.toml"))?)?;
     write(&output.join("book.toml"), &configuration)?;
+    // `additional-css` is relative to the book's root, which the copy moves.
+    write(&output.join("book.css"), &read(&book.join("book.css"))?)?;
     let status = std::process::Command::new("mdbook")
         .arg("build")
         .arg(output)

@@ -1,0 +1,4 @@
+/* The rules' tables and test lists are wide; mdBook's 750px column cuts them. */
+:root {
+  --content-max-width: 1280px;
+}
