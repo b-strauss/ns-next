@@ -31,7 +31,10 @@ map that leaves its body. The fourth: the image format
 (`docs/spec/image-format.md`) -- its encodings, its header, its
 sections, the tags of its fourteen spaces and its structure, the tags
 held to `image/opcodes.rs` and `mixins::access_tag` and the structure
-walked over images the encoder writes by tests; the rules the decoder
+walked over images the encoder writes by tests (`ns-runtime`'s
+test-only `spec_tables/`: `image_format.rs`, the tag table's test, and
+`image_structure.rs`, the walker, beside `spec_tables.rs`, the reader of
+the chapters' `spec-table` blocks); the rules the decoder
 checks on an image, numbered; the bounds of a load; and the operations
 *LoadImage* and *WriteImage*, every refusal of the writer stated with its
 text -- all normative (below, "The fourth batch's decisions"), and the
