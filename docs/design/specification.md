@@ -143,6 +143,29 @@ The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
 "Planned: the complete install") resumes after the fifth, and changes the
 specification as it changes the runtime.
 
+## The fourth batch's decisions
+
+Decided with the user on 2026-11-26:
+
+1. **The format, the load and the write are normative.** The image
+   chapter gives the structure, the tags and the validation, and beside
+   them the abstract operations *LoadImage* and *WriteImage*, each in
+   numbered steps, so that everything a program observes after `build`
+   and `load` is a rule. The alternatives weighed: the format alone, and
+   the format with the load, each of which would have left
+   program-observable behaviour -- what a weak slot holds after a load,
+   the packaging point -- without a rule.
+2. **The bound of a rejected load is normative as a property, its
+   factors informative.** The decoder refuses before it allocates any
+   object of the graph when the sized objects would take more than eight
+   words a byte of the input left, and what a rejected load allocates is
+   bounded by a constant multiple of the image's length plus a constant.
+   The factors -- 10.7x of the graph bytes and the rest -- stay in
+   [memory.md](memory.md), "The amplification bound of a rejected
+   load", as the implementation's derivation. The alternatives weighed:
+   the factors as the rule, which depend on the build and which no test
+   holds, and no memory bound at all.
+
 ## The third batch's decision
 
 Decided with the user on 2026-11-24: **both encodings of an instruction

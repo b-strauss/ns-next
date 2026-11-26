@@ -263,6 +263,7 @@ fn retired_instruction_tags_are_never_reused() {
 /// object table, so tag 9's id would otherwise name some other record; and
 /// the frame record gained its body's code id, so tag 10's kind payload
 /// would otherwise run into the bytes that follow it.
+// spec: image.tags
 #[test]
 fn retired_object_body_tags_are_refused() {
     assert_eq!(RETIRED_OBJECT_BODIES, [4, 5, 9, 10]);
@@ -300,6 +301,7 @@ fn retired_object_body_tags_are_refused() {
 /// loader's decoder, and `inspect`'s structural walk -- and a renumbering
 /// would make the viewer quietly disagree with the loader about what a file
 /// says.
+// spec: image.tags
 #[test]
 fn graph_section_tags_are_fixed() {
     assert_eq!(VALUE_NIL, 0);
@@ -398,6 +400,7 @@ const LIVE_HASHED_TAGS: [u8; 1] = [HASHED_SHIPPED];
 /// records, and the builtin, platform and platform path tags each named a
 /// shipped object before a shipped name did. A stale image's reference must
 /// meet an unknown tag rather than name whatever took the number.
+// spec: image.tags
 #[test]
 fn retired_class_and_hashed_tags_are_never_reused() {
     for retired in RETIRED_VALUE_TAGS {
@@ -457,6 +460,7 @@ fn retired_class_and_hashed_tags_are_never_reused() {
 
 /// Within each family a number means one thing. Nothing but a copy-paste
 /// stops two constants sharing one, and the compiler would not object.
+// spec: image.tags
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
     let families: [&[u8]; 7] = [
@@ -503,6 +507,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
 /// declares. The two eager kinds are the mutability tags the record carried
 /// before lazy slots, unchanged, so an older image's slots still read as
 /// what they were.
+// spec: image.tags
 #[test]
 fn slot_kind_tags_are_fixed() {
     assert_eq!(SLOT_IMMUTABLE, 0);
@@ -514,6 +519,7 @@ fn slot_kind_tags_are_fixed() {
 /// A reified mixin record's side byte: which side of the named mixin the
 /// object reflects. Pinned like every tag, so a stale record's side never
 /// reads as the other one.
+// spec: image.tags
 #[test]
 fn mixin_side_tags_are_fixed() {
     assert_eq!(MIXIN_SIDE_INSTANCE, 0);
@@ -524,6 +530,7 @@ fn mixin_side_tags_are_fixed() {
 /// A module record's origin and version tags. The origins 0 and 1 named
 /// the building machine's file and an embedded source; they are retired,
 /// so that a stale image's module record meets an unknown tag.
+// spec: image.tags
 #[test]
 fn module_record_tags_are_fixed() {
     assert_eq!(RETIRED_ORIGIN_TAGS, [0, 1]);
@@ -536,6 +543,7 @@ fn module_record_tags_are_fixed() {
     assert_eq!(MODULE_VERSIONED, 1);
 }
 
+// spec: image.tags
 #[test]
 fn header_flags_are_fixed() {
     use ns_runtime::image::encode;

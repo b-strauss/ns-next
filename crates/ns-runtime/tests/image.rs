@@ -31,6 +31,7 @@ use ns_runtime::{
 use ns_syntax::Span;
 use ns_syntax::ast::AccessModifier;
 
+// spec: image.header
 #[test]
 fn header_round_trips() {
     for (flags, has_source) in [(0u8, false), (encode::FLAG_HAS_SOURCE, true)] {
@@ -45,6 +46,7 @@ fn header_round_trips() {
 
 /// An unknown flag bit governs a section this build cannot see, so
 /// continuing would read every later field out of the wrong offset.
+// spec: image.header.flags
 #[test]
 fn an_unknown_header_flag_is_rejected_not_ignored() {
     let mut writer = encode::Writer::new();
@@ -57,6 +59,7 @@ fn an_unknown_header_flag_is_rejected_not_ignored() {
     );
 }
 
+// spec: image.header
 #[test]
 fn a_bad_magic_is_rejected() {
     let bytes = vec![b'X', b'X', b'X', b'X', 1, 0, 0, 0];
@@ -67,6 +70,7 @@ fn a_bad_magic_is_rejected() {
     );
 }
 
+// spec: image.header
 #[test]
 fn a_version_mismatch_is_rejected_not_migrated() {
     let mut writer = encode::Writer::new();
@@ -83,6 +87,7 @@ fn a_version_mismatch_is_rejected_not_migrated() {
     );
 }
 
+// spec: image.untrusted
 #[test]
 fn a_truncated_image_is_an_error_not_a_panic() {
     let bytes = vec![b'N', b'S'];
@@ -258,6 +263,7 @@ fn invalid_utf8_bytes_are_a_decode_error_not_a_panic() {
     assert_eq!(reader.read_str(), Err(decode::DecodeError::InvalidUtf8));
 }
 
+// spec: image.untrusted
 #[test]
 fn a_length_prefix_past_the_end_is_an_error_not_a_panic() {
     let mut writer = encode::Writer::new();
@@ -271,6 +277,7 @@ fn a_length_prefix_past_the_end_is_an_error_not_a_panic() {
     );
 }
 
+// spec: image.untrusted
 #[test]
 fn a_huge_length_prefix_does_not_overflow_or_panic() {
     let mut writer = encode::Writer::new();
@@ -6992,6 +6999,7 @@ fn a_lazy_slot_without_its_getter_is_refused() {
     );
 }
 
+// spec: image.trailing-bytes
 #[test]
 fn bytes_after_the_last_section_are_refused_not_ignored() {
     let source = indoc! {"
@@ -7014,6 +7022,7 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
     );
 }
 
+// spec: image.header
 #[test]
 fn load_refuses_a_version_mismatch() {
     let source = indoc! {"
@@ -7033,6 +7042,7 @@ fn load_refuses_a_version_mismatch() {
 
 /// An image another binary wrote is refused before anything past the
 /// header is read: its shipped names would resolve against another world.
+// spec: image.header.fingerprint
 #[test]
 fn an_image_of_another_shipped_world_is_refused() {
     let mut bytes = snapshot_of(EMPTY);
@@ -7046,6 +7056,7 @@ fn an_image_of_another_shipped_world_is_refused() {
 }
 
 /// The fingerprint is a function of the binary alone.
+// spec: image.header
 #[test]
 fn the_shipped_world_fingerprint_is_stable_within_a_binary() {
     assert_eq!(
@@ -11928,6 +11939,7 @@ fn a_nested_mixin_round_trips_through_the_table() {
 /// proportionally to it -- and neither must anything the decode hands back,
 /// since dropping a tree of `Rc<Mixin>` walks it recursively too. 100_000
 /// declared levels must produce an error, never an abort.
+// spec: image.untrusted
 #[test]
 fn a_deeply_nested_mixin_tree_does_not_blow_the_stack() {
     let bytes = image_with_mixin_table(&["X"], &mixin_chain(100_000));
@@ -13647,6 +13659,7 @@ fn a_header_flag_this_build_does_not_assign_is_rejected() {
 /// Bit 0 was the source variant that carried one text per module in the
 /// module section. An image of that layout is refused as an unknown flag
 /// rather than read as one whose texts sit in the text table.
+// spec: image.header.flags
 #[test]
 fn a_header_flag_of_the_retired_module_text_layout_is_rejected() {
     use ns_runtime::image::decode::{DecodeError, Reader, read_header};
@@ -18119,6 +18132,7 @@ fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
     });
 }
 
+// spec: image.header.flags
 #[test]
 fn a_retired_stateless_flag_is_refused_as_unknown() {
     use ns_runtime::image::decode::{DecodeError, Reader, read_header};
