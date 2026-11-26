@@ -158,6 +158,95 @@ The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
 "Planned: the complete install") resumes after the fifth, and changes the
 specification as it changes the runtime.
 
+## The fifth batch's decisions
+
+Decided with the user on 2026-11-26:
+
+1. **Every invariant, found by reading the design documents section by
+   section.** The chapter "VM invariants" holds every internal rule whose
+   breach makes a rule of the first four parts false without a program
+   seeing why -- not only the ones `CLAUDE.md` lists because each has
+   already produced a defect. [memory.md](memory.md),
+   [execution.md](execution.md), [compiler.md](compiler.md),
+   [dispatch.md](dispatch.md), [object-model.md](object-model.md),
+   [image-format.md](image-format.md) and the rest are read section by
+   section for them. The alternatives weighed: `CLAUDE.md`'s internal
+   invariants alone, which leaves the collector's safepoints, the tracing
+   of weak objects and an optimized copy's dependencies without a rule,
+   though their breach is as silent; and those plus what the design
+   documents state as a rule in so many words, a boundary no reader can
+   draw.
+2. **An abstract machine, no Rust names.** The chapter opens with the
+   terms it states its rules in -- the object space, an object and its
+   words, a handle, the activation stack, an activation and a frame
+   object, the nursery and the old space, the remembered set, a
+   safepoint, a cache entry, a body and its copies, the code zone, a
+   cell, an entry table -- as WebAssembly's specification defines its
+   store and its frames, and names no Rust type, function or file, as
+   the other four parts name none. Where a rule is enforced in the code
+   is the design documents' to say, which point at it. The alternatives
+   weighed: the Rust names in the rules, as `CLAUDE.md` gives them, which
+   a rename makes false unseen; and the abstract rule with an informative
+   line naming the code, a second copy of what the design documents say
+   that no test holds.
+3. **A rule says what it protects, and the check holds it.** Every
+   `vm.*` rule has a line `Protects:` linking the rules it protects;
+   `cargo xtask spec` refuses a `vm.*` rule without one, and one whose
+   links, followed through other `vm.*` rules, reach no rule of the
+   first four parts. The chapter's sections follow the subsystems: the
+   model, the heap and the collector, handles and the brand, activations
+   and frames, the compiler, dispatch and the caches, machine code. Each
+   rule's reasoning and the defects it has produced stay in the design
+   documents. The alternatives weighed: the same line as a convention no
+   check holds, and judgements over the store and the frames as
+   WebAssembly's appendix "Soundness" writes them, which would need a
+   formal model of the interpreter the book has nowhere.
+4. **What finds a breach is named, and every rule has something or says
+   it has nothing.** The stress modes and the debug build's checks are
+   what finds most breaches, and no `#[test]` names them, so the chapter
+   holds a table of detectors -- each stress mode, each check of a debug
+   build and each check the Rust compiler makes, with the `vm.*` rules
+   whose breach it finds -- whose stress modes a test holds to the
+   modes the stress gate runs; the book lists a rule's detectors beside
+   its tests. Every `vm.*` rule is named by a test or a detector; where
+   neither is possible the rule says so in a line `Undetected:` with the
+   reason, and `cargo xtask spec` refuses a rule with none of the three.
+   The alternatives weighed: Rust tests alone, which would list nearly
+   every `vm.*` rule as untested though the stress gate checks it; and
+   the table without the obligation, which leaves a rule nothing checks
+   unmarked.
+5. **`CLAUDE.md` keeps each invariant short, with its identifiers and
+   where the code enforces it.** Each entry of "Invariants that are easy
+   to break" keeps its rule in one to three sentences, the identifiers of
+   the book's rules, the Rust names of the places that enforce it and the
+   section of the design document with its mechanism and history; what
+   the book states in full leaves it. The entries that are rules of the
+   repository's work rather than of the VM -- the goldens pinned, no
+   `{:?}` of a `Value`, a chain walked link by link -- stay as they are.
+   The alternatives weighed: a list of identifiers with a line each,
+   which takes the rule and its place in the code out of every session's
+   context, and today's text with identifiers added, which keeps every
+   rule twice.
+6. **The design documents point at every rule they state, and say it no
+   more.** Wherever a design document states a rule of the book -- of
+   any part -- it points at the rule by identifier, and its own
+   statement of the rule shrinks to a sentence beside the pointer; the
+   reasoning, the alternatives, the prior art, the measurements and the
+   mechanism stay whole. The alternatives weighed: pointers added beside
+   the prose as it is, which keeps every rule twice, and a block of
+   pointers at each section's head, which loses which sentence is which
+   rule.
+7. **A pointer is the rule's line in backticks, and the check holds it.**
+   A design document and `CLAUDE.md` name a rule as `` `r[image.bound.sizing]` ``,
+   the form the book declares it in, and `cargo xtask spec` refuses one
+   that names no rule of the book. The bare identifiers in backticks the
+   design documents used are rewritten so. The alternatives weighed: a
+   link into the published book, clickable but showing `master`'s state
+   and too long for `CLAUDE.md`, and the bare identifier, which a check
+   cannot tell from a file name -- `vm.rs` is a well-formed identifier.
+   A relative link to the chapter's Markdown lands at the chapter's head,
+   since the anchor exists only in the rendered book.
+
 ## The fourth batch's decisions
 
 Decided with the user on 2026-11-26:
