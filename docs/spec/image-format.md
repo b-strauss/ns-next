@@ -539,11 +539,12 @@ r[image.verify.module-identity]
 10. Each module record names its module as a project names it
     ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)):
     a `project` record's path is relative to the project -- separated by
-    `/`, without a root, a drive or a `\`, without an empty or a `.`
-    segment, a `..` only leading, ending in `.ns` and naming more than
-    `.ns` -- and its id lies outside the namespace `newspeak.`; a `core`
-    record's file is a name ending in `.ns` and holding no `/`, `\` or
-    `:`, and the record is the manifest's alone, `newspeak.core.Manifest`
+    `/`, without a root or a `\`, holding no `:` anywhere, so neither a
+    drive nor a `core:` path, without an empty or a `.` segment, a `..`
+    only leading, ending in `.ns` and naming more than `.ns` -- and its id
+    lies outside the namespace `newspeak.`; a `core` record's file is a
+    name ending in `.ns`, naming more than `.ns` and holding no `/`, `\`
+    or `:`, and the record is the manifest's alone, `newspeak.core.Manifest`
     at `core:Manifest.ns` without a version; every id is identifiers
     separated by dots, the last the name of its module's root
     declaration, the first row of the module's tree; every version is a
@@ -610,3 +611,8 @@ r[image.shipped.positions]
     the module instances are no value, and a private class without a
     public accessor, `NonBooleanReceiver` among them, stands only as a
     record's class, a frame's class or a reified mixin's mixin.
+
+    A frame's receiver and registers take both kinds of name: a class
+    written there as a value is held to the value position, and a module
+    instance written there (`shipped-module`) to the frame's-register
+    position.

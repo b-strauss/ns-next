@@ -7451,6 +7451,14 @@ fn a_module_record_is_held_to_the_project_rules() {
             ),
         ),
         (
+            "a `:` inside a project's path",
+            [
+                project("a/b:c.ns", "Util", Some("1.0.0")),
+                project("b/Util.ns", "Util", Some("2.0.0")),
+            ],
+            module_error(0, "`a/b:c.ns` has a root or a drive; it must be relative"),
+        ),
+        (
             "a reserved id of the project's",
             [
                 project("a/Util.ns", "newspeak.core.Util", None),
@@ -11853,9 +11861,14 @@ fn mixin_row_with_class_side(name_id: u32, methods: &[MethodShape], class_side: 
     let mut writer = encode::Writer::new();
     write_mixin_row_with_method_shapes(&mut writer, name_id, &[], methods, &[]);
     let mut row = writer.into_bytes();
-    // The row ends with the class side's presence and the four bodies'.
+    // The row ends with the class side's presence and the four bodies',
+    // all absent.
     let presence = row.len() - 5;
-    assert_eq!(row[presence], 0, "the helper's row has no class side");
+    assert_eq!(
+        row[presence..],
+        [0; 5],
+        "the helper's row has no class side and no body"
+    );
     row[presence] = 1;
     row.splice(presence + 1..presence + 1, class_side.to_le_bytes());
     row
@@ -17692,21 +17705,26 @@ fn a_malformed_shipped_name_section_is_refused() {
 
 /// A level's clause index is held to the clause limit where the section is
 /// read, before any shipped world is asked: `inspect`, which asks none,
-/// refuses index 1,024 as the load does.
+/// refuses index 1,024 as the load does, of a level and of a level's
+/// metaclass alike.
 // spec: image.limit.clause-index
 #[test]
 fn a_shipped_level_past_the_clause_limit_is_refused() {
     let bytes = snapshot_of(EMPTY);
-    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
-        writer.write_u32(1);
-        write_shipped_entry(writer, intern, ("Kernel", "Array", 3), Some(1024));
-    });
-    let expected =
-        decode::DecodeError::UnknownShippedName("Kernel Array level 1024".to_string()).to_string();
-    assert_eq!(load_error(&crafted), expected);
-    match image::inspect::inspect(&crafted) {
-        Ok(_) => panic!("inspect read a level past the clause limit"),
-        Err(error) => assert_eq!(error, expected),
+    for (kind, described) in [
+        (3, "Kernel Array level 1024"),
+        (4, "Kernel Array level 1024 class"),
+    ] {
+        let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+            writer.write_u32(1);
+            write_shipped_entry(writer, intern, ("Kernel", "Array", kind), Some(1024));
+        });
+        let expected = decode::DecodeError::UnknownShippedName(described.to_string()).to_string();
+        assert_eq!(load_error(&crafted), expected);
+        match image::inspect::inspect(&crafted) {
+            Ok(_) => panic!("inspect read {described}"),
+            Err(error) => assert_eq!(error, expected),
+        }
     }
 }
 
