@@ -506,25 +506,35 @@ fn tests_of(identifier: &str, references: &[Reference]) -> Vec<String> {
     tests
 }
 
+/// A rule's tests as its anchor shows them: a list folded shut by default,
+/// since a rule may name dozens of tests and the prose around it is what a
+/// reader reads first, or `none yet`. The HTML stays on one line, so that
+/// Markdown takes it as one HTML block.
+fn listed_tests(tests: &[String]) -> String {
+    if tests.is_empty() {
+        return "<span class=\"rule-tests\">tests: none yet</span>".to_string();
+    }
+    let noun = if tests.len() == 1 { "test" } else { "tests" };
+    let items: String = tests
+        .iter()
+        .map(|test| format!("<li><code>{}</code></li>", escape(test)))
+        .collect();
+    format!(
+        "<details class=\"rule-tests\"><summary>{} {noun}</summary><ul>{items}</ul></details>",
+        tests.len()
+    )
+}
+
 /// A chapter with each rule line made an anchor that lists the rule's tests.
 fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
     let mut processed = String::new();
     let _ = walk_markdown(markdown, |_, line, outside| {
         match rule_line(line).filter(|_| outside) {
             Some(identifier) => {
-                let tests = tests_of(identifier, references);
-                let listed = if tests.is_empty() {
-                    "none yet".to_string()
-                } else {
-                    tests
-                        .iter()
-                        .map(|test| format!("<code>{}</code>", escape(test)))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
                 processed.push_str(&format!(
                     "<div class=\"rule\" id=\"r-{identifier}\"><a href=\"#r-{identifier}\">[{identifier}]</a> \
-                     <span class=\"rule-tests\">tests: {listed}</span></div>\n\n"
+                     {}</div>\n\n",
+                    listed_tests(&tests_of(identifier, references))
                 ));
             }
             None => {
@@ -967,6 +977,38 @@ mod tests {
         scratch.write("crates/a/src/lib.rs", "// spec: lex.a\nfn helper() {}\n");
         let refusal = references_in(&scratch.0).expect_err("no test below");
         assert!(refusal.contains("lib.rs:1"), "{refusal}");
+    }
+
+    #[test]
+    fn a_rules_tests_are_a_list_folded_shut() {
+        let reference = |identifier: &str, name: &str| Reference {
+            identifier: identifier.to_string(),
+            test: PathBuf::from("crates/a/tests/b.rs"),
+            name: name.to_string(),
+            line: 1,
+        };
+        let references = [
+            reference("lex.a", "first"),
+            reference("lex.a", "second<T>"),
+            reference("lex.b", "only"),
+        ];
+        let processed = processed_chapter("r[lex.a]\nr[lex.b]\nr[lex.c]\n", &references);
+        let lines: Vec<&str> = processed.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            [
+                "<div class=\"rule\" id=\"r-lex.a\"><a href=\"#r-lex.a\">[lex.a]</a> \
+                 <details class=\"rule-tests\"><summary>2 tests</summary><ul>\
+                 <li><code>crates/a/tests/b.rs (first)</code></li>\
+                 <li><code>crates/a/tests/b.rs (second&lt;T&gt;)</code></li>\
+                 </ul></details></div>",
+                "<div class=\"rule\" id=\"r-lex.b\"><a href=\"#r-lex.b\">[lex.b]</a> \
+                 <details class=\"rule-tests\"><summary>1 test</summary><ul>\
+                 <li><code>crates/a/tests/b.rs (only)</code></li></ul></details></div>",
+                "<div class=\"rule\" id=\"r-lex.c\"><a href=\"#r-lex.c\">[lex.c]</a> \
+                 <span class=\"rule-tests\">tests: none yet</span></div>",
+            ]
+        );
     }
 
     #[test]

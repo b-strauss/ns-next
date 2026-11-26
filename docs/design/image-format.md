@@ -1086,7 +1086,7 @@ wire, so no size depends on another record. If the objects would take
 more than eight words a byte of the input left, the load is refused
 (`UnexpectedEndOfFile`) before anything is allocated. That refusal is a
 guard no image reaches: every record format sizes its object at about a
-word a byte or less, and a count claimed past the bytes is refused
+word a byte, and a count claimed past the bytes is refused
 earlier with the same error, so no test can isolate it
 (`docs/spec/image-format.md`, `image.bound.sizing`); a symbol's text is not
 counted against that, since it is bounded once per entry by the symbol

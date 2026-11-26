@@ -102,8 +102,9 @@ Each decided with the user on 2026-11-23.
    unique, well formed -- turns them into anchors and links, and collects
    the tests that name a rule: a golden in a line of its `.toml`, a Rust
    test in a comment, as a test of `rust-lang/rust` names its rule in a
-   `//@ reference:` header. The book shows each rule's tests, and an
-   appendix the rules no test names yet. The grammar, the instruction
+   `//@ reference:` header. The book shows each rule's tests, as a
+   list folded shut beneath the rule's anchor, and an appendix the rules
+   no test names yet. The grammar, the instruction
    table and the tag table stand in marked, machine-readable blocks that
    Rust tests hold to the code -- `opcodes.rs` to the tag table among
    them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
