@@ -11888,6 +11888,7 @@ fn a_module_root_is_held_to_its_own_modules_row() {
     );
 }
 
+// spec: image.write.refusals
 #[test]
 fn a_graph_reaching_a_module_the_image_does_not_carry_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -11905,18 +11906,220 @@ fn a_graph_reaching_a_module_the_image_does_not_carry_is_refused() {
             &[mutator.fetch(&instance)],
         )
     });
-    match result {
-        Ok(_) => panic!("a graph reaching a module the image does not carry must be refused"),
-        Err(error) => {
-            assert!(error.contains("`Second`"), "unexpected error: {error}");
-            assert!(
-                error.contains("not part of any module the image carries"),
-                "unexpected error: {error}"
-            );
-        }
+    assert_eq!(
+        result.err().as_deref(),
+        Some(
+            "image encoding cannot serialize a class object applying mixin `Second`, which is \
+             not part of any module the image carries"
+        )
+    );
+}
+
+/// A level a `<:` clause of a module the image does not carry added is
+/// refused as its class is: the level applies `Value`'s shipped mixin, and
+/// the declaration whose clause added it is no row of the image.
+// spec: image.write.refusals
+#[test]
+fn a_level_of_a_module_the_image_does_not_carry_is_refused() {
+    let (mut interpreter, first) = load(FIRST_MODULE);
+    let third = load_another(
+        &mut interpreter,
+        indoc! {"
+            class Third = Object new <: Value () () : ()
+        "},
+        "Third.ns",
+    );
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &first);
+        let level = mutator
+            .heap()
+            .class_superclass(class_reference(mutator, &third))
+            .expect("Third's superclass is the level its clause added");
+        snapshot_one(mutator, false, "First.ns", class, &[Value::object(level)])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some(
+            "image encoding cannot serialize a level added by class `Third`, which is not part \
+             of any module the image carries"
+        )
+    );
+}
+
+/// A reified mixin of a module the image does not carry names no row.
+// spec: image.write.refusals
+#[test]
+fn a_reified_mixin_of_a_module_the_image_does_not_carry_is_refused() {
+    let (mut interpreter, first, second, _instance) = two_module_world();
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &first);
+        let mixin = root_mixin_of(mutator.heap(), class_reference(mutator, &second));
+        let reified = mutator.reified_mixin(&mixin);
+        snapshot_one(mutator, false, "First.ns", class, &[Value::object(reified)])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some(
+            "image encoding cannot serialize the reified mixin Second, which is not part of any \
+             module the image carries"
+        )
+    );
+}
+
+/// A frame running a body of a module the image does not carry is
+/// refused: the frame `Second>>maker` ran, which its block captured, is
+/// the graph's first record.
+// spec: image.write.refusals
+#[test]
+fn a_frame_running_code_no_module_carries_is_refused() {
+    let (mut interpreter, first, second, _instance) = two_module_world();
+    let maker = expect_ok(interpreter.instantiate(&second, &[]), "Second new");
+    let block = expect_ok(
+        interpreter.send(&maker, Symbol::intern("maker"), &[]),
+        "maker",
+    );
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &first);
+        let heap = mutator.heap();
+        let frame = heap
+            .closure_captured_frame(object(mutator.fetch(&block)))
+            .expect("the block captured its frame");
+        let frame = Value::object(heap.frame_object(frame));
+        snapshot_one(mutator, false, "First.ns", class, &[frame])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some(
+            "image encoding cannot serialize a frame running code that no module the image \
+             carries compiled"
+        )
+    );
+}
+
+/// A weak slot is walked as a strong one is for what it refuses: the VM
+/// mirror and its class held only weakly refuse the write as they do
+/// held strongly, though neither would be written.
+// spec: image.write.weak
+// spec: image.write.refusals
+#[test]
+fn a_weak_slot_holding_the_mirror_or_its_class_is_refused() {
+    let (mut interpreter, class) = load(indoc! {"
+        class Holder = Object new (
+          | public weak |
+        ) (
+          public fill: platform = ( weak:: platform kernel WeakArray new: 1 )
+        ) : ()
+    "});
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(&holder, Symbol::intern("fill:"), &[platform]),
+        "fill:",
+    );
+    for (held_class, expected) in [
+        (
+            false,
+            "image encoding refuses the VM mirror: it is a capability the bootstrap hands to \
+             the core library alone, and an artifact that carried it would hand it to whatever \
+             loaded it",
+        ),
+        (
+            true,
+            "image encoding refuses the VM mirror's class: it has no declaration, so no shipped \
+             name names it",
+        ),
+    ] {
+        let result = interpreter.enter(|mutator| {
+            let mirror_class = mutator.builtin_class(BuiltinClass::VmMirror);
+            let object_class = mutator.builtin_class(BuiltinClass::Object);
+            let heap = mutator.heap();
+            let kernel = heap
+                .class_enclosing(object_class)
+                .expect("the kernel instance encloses Object");
+            let mirror = (0..heap.instance_field_count(kernel).unwrap_or(0))
+                .filter_map(|index| heap.instance_field(kernel, index))
+                .find(|field| {
+                    field
+                        .as_object()
+                        .is_some_and(|field| heap.object_class(field).same(mirror_class))
+                })
+                .expect("the kernel holds the mirror");
+            let held = if held_class {
+                Value::object(mirror_class)
+            } else {
+                mirror
+            };
+            let holder_object = object(mutator.fetch(&holder));
+            let weak = object(holder_field(mutator, holder_object, 0));
+            mutator.heap_mut().weak_array_set_element(weak, 0, held);
+            let class = class_reference(mutator, &class);
+            snapshot_one(mutator, false, "t.ns", class, &[mutator.fetch(&holder)])
+        });
+        assert_eq!(result.err().as_deref(), Some(expected));
     }
 }
 
+/// A shipped class is a shipped name, never a record, so it cannot be a
+/// module's root: the kernel's own root class handed as one is refused.
+// spec: image.write.refusals
+#[test]
+fn a_shipped_class_as_a_module_root_is_refused() {
+    let mut interpreter = Interpreter::bootstrap();
+    let identity = ModuleIdentity::undeclared("Kernel.ns", "Kernel");
+    let result = interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let heap = mutator.heap();
+        let kernel = heap
+            .class_enclosing(object_class)
+            .expect("the kernel instance encloses Object");
+        let modules = [image::ModuleSource {
+            class: heap.object_class(kernel),
+            identity: &identity,
+            with_source: false,
+        }];
+        image::snapshot(mutator, &modules, &[])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some("image encoding cannot serialize Kernel as a module's root class: it is shipped")
+    );
+}
+
+/// A module built without source cannot be written with it: a module an
+/// image without source loaded holds no text, so writing it again with
+/// source is refused, and without source it is written.
+// spec: image.write.source
+// spec: image.write.refusals
+#[test]
+fn a_module_built_without_source_is_not_written_with_it() {
+    let bytes = snapshot_of_without_source(GOLDEN_SOURCE);
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let class = loaded.modules[0].class.clone();
+    let identity = (*loaded.modules[0].identity).clone();
+    for (with_source, expected) in [
+        (
+            true,
+            Some(
+                "image encoding cannot carry the source of module `Golden`, which was built \
+                 without it",
+            ),
+        ),
+        (false, None),
+    ] {
+        let result = loaded.interpreter.enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                identity: &identity,
+                with_source,
+            }];
+            image::snapshot(mutator, &modules, &[])
+        });
+        assert_eq!(result.err().as_deref(), expected);
+    }
+}
+
+// spec: image.write.edited
+// spec: image.write.refusals
 #[test]
 fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -11939,14 +12142,12 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
             &[mutator.fetch(&instance)],
         )
     });
-    match result {
-        Ok(_) => panic!("a closure over code no carried module compiled must be refused"),
-        Err(error) => assert!(
-            error.contains("module the image carries"),
-            "unexpected error: {error}"
-        ),
-    }
+    assert_eq!(result.err().as_deref(), Some(CLOSURE_OVER_UNCARRIED_CODE));
 }
+
+/// The refusal of a closure over a body no carried module compiled.
+const CLOSURE_OVER_UNCARRIED_CODE: &str =
+    "image encoding cannot serialize a closure over code that no module the image carries compiled";
 
 /// A level a module root's `<:` clause added is a record, so its own
 /// identity hash travels in its record's header, as its root's and both
@@ -13029,6 +13230,7 @@ fn deep_mixin_chain(levels: usize) -> Rc<Mixin> {
 /// An image nested past the decoder's ceiling must be refused when it is
 /// *written*. Writing one cleanly and discovering it is unloadable turns a
 /// local mistake into a failure on whatever machine tries to open it.
+// spec: image.write.refusals
 #[test]
 fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     let mut interpreter = Interpreter::bootstrap();
@@ -13053,9 +13255,13 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
         };
         error
     });
-    assert!(
-        error.contains("nested") && error.contains("130"),
-        "the refusal must name the ceiling it enforces, got: {error}"
+    assert_eq!(
+        error,
+        format!(
+            "image encoding refuses a class tree nested {} levels deep: the mixin table's \
+             ceiling is 130 levels, and an image past it could never be loaded",
+            deepest_parseable_nesting() + 4
+        )
     );
 }
 
@@ -14387,13 +14593,9 @@ fn the_code_table_encoding_is_deterministic() {
     assert_eq!(first, second);
 }
 
-/// One world writes one byte sequence: the whole image, with its source
-/// and without, written twice in one entry and again in a later one --
-/// after a full collection and a move of every object, in a debug build,
-/// which has them -- is the same bytes each time.
-// spec: image.write.deterministic
-#[test]
-fn writing_one_world_twice_gives_one_byte_sequence() {
+/// `GOLDEN_SOURCE`'s world: the module's class and two roots, an instance
+/// and an instance of its nested class.
+fn golden_world() -> (Interpreter, Root, [Root; 2]) {
     let (mut interpreter, class) = load(GOLDEN_SOURCE);
     let platform = interpreter.platform();
     let instance = expect_ok(
@@ -14409,27 +14611,55 @@ fn writing_one_world_twice_gives_one_byte_sequence() {
         interpreter.send(&inner, Symbol::intern("withSeed:"), &[seed]),
         "Inner withSeed:",
     );
-    let write = |interpreter: &mut Interpreter, with_source: bool| {
-        interpreter.enter(|mutator| {
-            let class = class_reference(mutator, &class);
-            let roots = [mutator.fetch(&instance), mutator.fetch(&nested)];
-            let first = snapshot_one(mutator, with_source, "golden.ns", class, &roots)
-                .unwrap_or_else(|error| panic!("{error}"));
-            let second = snapshot_one(mutator, with_source, "golden.ns", class, &roots)
-                .unwrap_or_else(|error| panic!("{error}"));
-            assert_eq!(first, second, "written twice in one entry");
-            first
-        })
-    };
+    (interpreter, class, [instance, nested])
+}
+
+/// The image of `golden_world`'s world, written twice in one entry, which
+/// must give one byte sequence.
+fn golden_image(
+    interpreter: &mut Interpreter,
+    class: &Root,
+    roots: &[Root; 2],
+    with_source: bool,
+) -> Vec<u8> {
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, class);
+        let roots = roots.each_ref().map(|root| mutator.fetch(root));
+        let first = snapshot_one(mutator, with_source, "golden.ns", class, &roots)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second = snapshot_one(mutator, with_source, "golden.ns", class, &roots)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(first, second, "written twice in one entry");
+        first
+    })
+}
+
+/// One world writes one byte sequence: the whole image, with its source
+/// and without, written twice in one entry and again in a later one --
+/// after a full collection and a move of every object, in a debug build,
+/// which has them -- is the same bytes each time; and a second world built
+/// alike from the same source writes the same bytes as the first.
+// spec: image.write.deterministic
+#[test]
+fn writing_one_world_twice_gives_one_byte_sequence() {
+    let (mut interpreter, class, roots) = golden_world();
+    let (mut other_interpreter, other_class, other_roots) = golden_world();
     for with_source in [false, true] {
-        let earlier = write(&mut interpreter, with_source);
+        let earlier = golden_image(&mut interpreter, &class, &roots, with_source);
         #[cfg(debug_assertions)]
         {
             interpreter.collect_now();
             interpreter.move_now();
         }
-        let later = write(&mut interpreter, with_source);
+        let later = golden_image(&mut interpreter, &class, &roots, with_source);
         assert_eq!(earlier, later, "written again in a later entry");
+        let other = golden_image(
+            &mut other_interpreter,
+            &other_class,
+            &other_roots,
+            with_source,
+        );
+        assert_eq!(earlier, other, "written by a second world built alike");
         assert!(image::load(&later).is_ok());
     }
 }
