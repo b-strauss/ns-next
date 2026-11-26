@@ -761,9 +761,12 @@ r[image.verify.mirror]
       only as a frame's class and as a reified mixin's mixin, which
       carries no authority
       ([`image.shipped.positions`](#r-image.shipped.positions));
-    - a writer refuses a graph that reaches the mirror, and one that
-      reaches the mirror's class, `Top` or their metaclasses as a value,
-      and writes no image of it.
+    - a writer refuses a graph that reaches the mirror; one that reaches
+      the mirror's class or its metaclass, wherever either stands; one
+      that holds a reified mixin of the mirror's class, of either side;
+      and one that puts `Top` or its metaclass where
+      [`image.shipped.positions`](#r-image.shipped.positions) does not let
+      it stand. It writes no image of any of them.
 
 r[image.verify.not-checked]
 A load checks no more of an image than these rules and the bytecode
@@ -827,3 +830,174 @@ the exposure of running its program from source:
 - Its blocks nest no deeper than a source's
   ([`bytecode.verify.blocks`](bytecode.md#r-bytecode.verify.blocks)), so
   the activations it stacks are bounded as a source program's are.
+
+## Loading an image
+
+### LoadImage(bytes)
+
+r[image.load]
+Decodes *bytes* into a world of its own and hands the host what it holds.
+A step that refuses ends the load with an error, and the host receives
+nothing of the world: what the load built, the shipped modules step 6
+built included, is dropped with it
+([`image.bound.linear`](#r-image.bound.linear)).
+
+1. Read the header ([`image.header`](#r-image.header)). Refuse *bytes*
+   unless its magic, its version and its flags are the format's
+   ([`image.header.flags`](#r-image.header.flags)) and its fingerprint is
+   the loading binary's
+   ([`image.header.fingerprint`](#r-image.header.fingerprint)); a header
+   that fails reads nothing past itself.
+2. Let *world* be a new world, booted as the loading binary boots every
+   run: the kernel and the platform's module built and the platform
+   made. The image is decoded into *world*, never into a world a host
+   already runs.
+3. Read the symbol table ([`image.symbols`](#r-image.symbols)) and the
+   code table ([`image.code-table`](#r-image.code-table)), holding every
+   body to the bytecode chapter's rules
+   ([The rules the decoder checks](bytecode.md#the-rules-the-decoder-checks)).
+4. If the header sets `has-source`, read the text table
+   ([`image.texts`](#r-image.texts)). Read the mixin table
+   ([`image.mixins`](#r-image.mixins)) and the module section
+   ([`image.modules`](#r-image.modules)), and hold them and the texts to
+   rules 5 to 10 ([`image.limit.clauses`](#r-image.limit.clauses) to
+   [`image.verify.module-identity`](#r-image.verify.module-identity)) and
+   to the first half of rule 11, no two records of one module
+   ([`image.verify.modules`](#r-image.verify.modules)). Every count and
+   every id, here and in every later step, is held to rules 1 and 2
+   ([`image.verify.counts`](#r-image.verify.counts),
+   [`image.verify.ids`](#r-image.verify.ids)).
+5. Read the shipped names
+   ([`image.shipped-names`](#r-image.shipped-names),
+   [`image.limit.shipped-names`](#r-image.limit.shipped-names),
+   [`image.limit.clause-index`](#r-image.limit.clause-index)), and check
+   every one of them against the loading binary
+   ([`image.verify.shipped-names`](#r-image.verify.shipped-names),
+   [`image.verify.started-image-names`](#r-image.verify.started-image-names))
+   before step 6 builds any part of the shipped world: an unknown name, a
+   name given twice and, in a started image, a name of any module but the
+   kernel or of a module's instance refuse *bytes* with nothing built.
+6. Build in *world*, by the loading binary's own code, every shipped
+   module and class the names name that *world* has not built yet: a
+   module as a program's first demand for it builds it, a class as its
+   accessor answers it. Each is built once. This runs the binary's code
+   alone, none of the image's ([`image.run`](#r-image.run)).
+7. Resolve each shipped name to *world*'s own object of that name.
+8. Decode the graph ([`image.graph`](#r-image.graph)): every record of
+   the object table sized from its own bytes before any is made
+   ([`image.bound.sizing`](#r-image.bound.sizing)), then each made as a
+   new object of *world* ([`image.graph.record`](#r-image.graph.record)),
+   each value as [`image.graph.value`](#r-image.graph.value) gives it,
+   and the roots. Hold each module record's root to its module, the
+   second half of rule 11 and rule 12
+   ([`image.verify.modules`](#r-image.verify.modules),
+   [`image.verify.root-rule`](#r-image.verify.root-rule)); read the
+   tag-named hashes ([`image.hashes`](#r-image.hashes)); and hold the
+   graph to rules 15 to 29
+   ([`image.shipped.positions`](#r-image.shipped.positions) to
+   [`image.verify.mirror`](#r-image.verify.mirror)), each a record shows
+   alone as it is read and the rest once every record exists. Refuse a
+   byte past the hashes ([`image.trailing-bytes`](#r-image.trailing-bytes)).
+9. Answer to the host *world*; each module, in module order, the
+   application's first, with its root class -- the record its module
+   record names -- its root declaration, its identity and, when the
+   header sets `has-source`, its source text; the roots, in their order;
+   and whether the header sets `start`.
+10. A host that starts the image -- `ns-next load` does -- refuses it
+    unless the header sets `start` and the image has one root, with
+    ``error: <path> is not a started image: `build` writes one, with the application as its only root``,
+    running nothing. Otherwise it answers
+    [Send](runtime.md#r-runtime.send)(the root, `main:args:`, *world*'s
+    platform and an `Array` of the program's arguments as `String`s), as
+    a run from source sends it
+    ([`semantics.program.main`](language/semantics.md#r-semantics.program.main)).
+
+No step before step 10 runs the image's code. The `images` profile of
+the suite runs every golden through `build` and then `load` and holds it
+to the outcome recorded for its run from source: the check of a round
+trip as a whole.
+
+### What a program observes after a load
+
+r[image.load.shipped-world]
+Every shipped object an image names is the loading world's own: a name
+resolves to the very object the loading binary's world holds under it --
+a class answers `==` to what its accessor answers there -- built by the
+binary's own code if the world had not built it yet, and never built
+twice. The image chooses which of the binary's modules and classes a load
+builds, never what they are: their code and their layout are the
+binary's.
+
+r[image.load.identity]
+Two references to one record load as references to one object, and that
+object is new: no object of the world that wrote the image is the object
+a load of it makes, in the same process or in another. A value written by
+value -- `nil`, `true`, `false`, an integer, a float and a fraction --
+loads as an equal value of the same class
+([`semantics.value.identity`](language/semantics.md#r-semantics.value.identity)).
+
+r[image.load.hashes]
+A record's object answers the identity hash the record was written with
+([`runtime.memory.identity-hash`](runtime.md#r-runtime.memory.identity-hash)),
+and an object never asked for one before the write is still unasked after
+the load. A shipped object a tag-named hash names answers that hash; one
+none names is as the loading world's boot left it. A hash given after the
+load is past every hash the image holds, so it collides with none of them
+until the 22-bit hashes wrap.
+
+r[image.load.symbols]
+A symbol record loads as the loading world's canonical symbol of its
+text: `==` to every symbol of that text the loaded code makes, a literal
+`#foo` included ([`image.verify.symbols`](#r-image.verify.symbols)).
+
+r[image.load.applications]
+A class's behaviour is rebuilt from its mixin and its superclass, as
+[ApplyMixin](runtime.md#r-runtime.apply-mixin) builds it, so two class
+objects that shared one application before the write share one after it.
+Nothing about an application is read from the bytes, and whether a class
+meets the value conditions is decided again
+([`image.verify.value-classes`](#r-image.verify.value-classes)).
+
+r[image.load.caches]
+An image carries no cache and no machine code: after a load every cache
+holds only what the loading world's boot left in it, and the first send
+at each site of the image's code decides afresh, as in a world that
+never ran that code.
+
+r[image.load.weak]
+A weak array's slots and an ephemeron's fields hold what their records
+wrote: a load clears nothing, not even an element or a key nothing else
+in the graph reaches. The next collection treats them as
+[`runtime.memory.weak`](runtime.md#r-runtime.memory.weak) and
+[`runtime.memory.ephemeron`](runtime.md#r-runtime.memory.ephemeron)
+say.
+
+r[image.load.modules]
+Each module keeps the identity its record gives -- its path relative to
+its project, its id and its version ([`image.modules`](#r-image.modules)):
+the host receives it, the module's root declaration carries it, and the
+tools name the module and its methods by it
+(`<id>[@<version>][/<Inner>(.<Inner>)*][ class]>><selector>`), never by a directory of the
+machine that wrote the image or of the one that loads it.
+
+r[image.load.start]
+The platform a started image's application receives in `main:args:` is
+the first it ever sees: a started image holds no platform and names
+nothing of the shipped world but the kernel
+([`image.verify.started-image-names`](#r-image.verify.started-image-names)),
+and a writer refuses an application that holds one, with `image encoding
+refuses PlatformFactory Platform in a started application: nothing
+before main:args: reaches it`. A load runs no factory and no initializer
+again: the application holds what its factory and its initializers left
+in it when it was written.
+
+r[image.load.snapshot]
+An image without `start` is decoded under the same rules but those a
+started image alone is held to
+([`image.verify.started-image-names`](#r-image.verify.started-image-names),
+[`image.verify.started-image-roots`](#r-image.verify.started-image-roots)).
+Its frames may hold the kernel, a module's instance or an `Activation` in
+their registers, as frames of shipped code do in a running world, and a
+crafted frame could hand one to the program's code. So a host loads such
+an image only when it decides to trust it, and the load still never
+panics (`docs/OPEN-WORK.md`, "A running world's image is trusted").

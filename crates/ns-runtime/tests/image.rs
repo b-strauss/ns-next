@@ -98,6 +98,7 @@ fn a_truncated_image_is_an_error_not_a_panic() {
     );
 }
 
+// spec: image.load.identity
 #[test]
 fn every_scalar_value_variant_round_trips() {
     // A float is made by the mutator, so the values are built inside an entry.
@@ -1411,6 +1412,7 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
 /// that fits `i64` and so travels as an `i64`: `-2^63` and `2^60` are beyond
 /// a `SmallInteger`'s 61 bits, and the round trip keeps them `LargeInteger`s.
 // spec: image.graph.value
+// spec: image.load.identity
 #[test]
 fn a_large_integer_value_round_trips() {
     let source = indoc! {"
@@ -1962,6 +1964,7 @@ fn a_register_list_longer_than_the_format_counts_is_refused_not_a_panic() {
 /// so the image carries its bits wherever it is referenced and writes no
 /// object record for it.
 // spec: image.graph.value
+// spec: image.load.identity
 #[test]
 fn a_boxed_float_value_round_trips_without_a_record() {
     let source = indoc! {"
@@ -2324,6 +2327,7 @@ fn fractions_image() -> Vec<u8> {
 /// A `Fraction` survives a snapshot as a value: each loads with equal
 /// parts, each part the integer class it was.
 // spec: image.graph.value
+// spec: image.load.identity
 #[test]
 fn a_fraction_value_round_trips() {
     let mut loaded = image::load(&fractions_image()).expect("load");
@@ -3170,6 +3174,7 @@ fn object<'gc>(value: Value<'gc>) -> ObjectReference<'gc> {
     handle
 }
 
+// spec: image.load.identity
 #[test]
 fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
     let (mut interpreter, _class, original, decoded, _max) =
@@ -3462,6 +3467,7 @@ fn same_value_object<'gc>(value: Value<'gc>, other: Value<'gc>) -> bool {
 /// stays. `WeakArray withoutSlots`, an ordinary instance of the class,
 /// travels as one.
 // spec: image.graph.record
+// spec: image.load.weak
 #[test]
 fn a_weak_array_round_trips_its_strongly_reached_elements() {
     weak_holder_round_trip("fillWeak:", |mutator, holder| {
@@ -3528,6 +3534,7 @@ fn an_ephemeron_with_a_nil_key_round_trips_with_its_value() {
 }
 
 // spec: image.graph.record
+// spec: image.load.weak
 #[test]
 fn an_ephemeron_round_trips_with_its_value_while_its_key_is_reached() {
     weak_holder_round_trip("fillReached:", |mutator, holder| {
@@ -4330,6 +4337,7 @@ fn a_view_and_a_builder_round_trip_through_a_package() {
     assert_eq!(printed(interpreter, &builder, "size", &[]), "9");
 }
 
+// spec: image.load.hashes
 #[test]
 fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // Two objects, the higher hash first: the object table is walked in
@@ -5230,6 +5238,7 @@ fn refused_in(
     );
 }
 
+// spec: image.load.weak
 #[test]
 fn a_crafted_weak_array_and_ephemeron_decode_to_their_values() {
     let bytes = class_records(2, |writer| {
@@ -6176,6 +6185,7 @@ fn a_well_formed_class_record_decodes_into_a_live_class_object() {
     );
 }
 
+// spec: image.load.applications
 #[test]
 fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() {
     // The decoder's own half of the round-trip sharing property: nothing in
@@ -7405,6 +7415,7 @@ fn util_identities() -> [ModuleIdentity; 3] {
 /// to the project, its id and its version, a module of the binary's by its
 /// `core:` path; and every loaded root mixin carries its module's.
 // spec: image.modules
+// spec: image.load.modules
 #[test]
 fn an_image_names_its_modules_as_the_program_did() {
     let identities = util_identities();
@@ -9888,6 +9899,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
     });
 }
 
+// spec: image.load.symbols
 #[test]
 fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
     // A loaded world's code literals reach `#foo` through `Mutator::new_symbol`
@@ -10094,6 +10106,7 @@ fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counte
     );
 }
 
+// spec: image.load.hashes
 #[test]
 fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     // The widest legal hash leaves the counter at the ceiling, where the
@@ -10139,6 +10152,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
 /// still unassigned -- and the first request after the load draws a number
 /// past every hash the image carried, so it cannot collide with one.
 // spec: image.graph
+// spec: image.load.hashes
 #[test]
 fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() {
     let source = indoc! {"
@@ -10198,6 +10212,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
 /// "Identity hashes are preserved verbatim"). One that nothing asked stays
 /// unassigned. The root class and the platform are records, so their
 /// hashes travel in their records' headers.
+// spec: image.load.hashes
 #[test]
 fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let source = indoc! {"
@@ -10268,6 +10283,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 /// level `Array`'s `<:` clause adds was given, and its metaclass's, travel in
 /// the closing table and land on the loading world's own level.
 // spec: image.hashes
+// spec: image.load.hashes
 #[test]
 fn the_hash_of_a_shipped_level_survives_a_snapshot() {
     let source = indoc! {"
@@ -10881,6 +10897,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     });
 }
 
+// spec: image.load.applications
 #[test]
 fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     // Two enclosing instances, one shared application before the snapshot.
@@ -11279,6 +11296,7 @@ fn module_section_start(bytes: &[u8]) -> usize {
         .start
 }
 
+// spec: image.load
 #[test]
 fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
     // First's instance holds Second's class and an instance of it; after a
@@ -11702,6 +11720,7 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
 /// metaclasses' do. The kernel gives a program no `superclass` accessor,
 /// so the hash is drawn from Rust, where a later reflective reach would
 /// draw it.
+// spec: image.load.hashes
 #[test]
 fn a_module_levels_own_hash_survives_an_image() {
     let source = indoc! {"
@@ -11964,9 +11983,11 @@ fn a_row_declaring_one_lazy_slot_twice_is_refused() {
 }
 
 /// A lazy slot's getter takes no argument and has the slot's accessibility
-/// (`MixinMethod::lazy_slot_getter`). A method of the slot's name that
-/// differs in either is not its getter, and the row is refused rather than
-/// decoded into a slot without one.
+/// (`MixinMethod::lazy_slot_getter`). A method of the slot's name of
+/// another access is not its getter, and the row is refused rather than
+/// decoded into a slot without one. One that takes an argument never
+/// reaches that check: its record is refused first, since the slot's
+/// unary selector takes none.
 // spec: image.verify.mixin-rows
 #[test]
 fn a_lazy_slot_whose_method_is_not_its_getter_is_refused() {
@@ -14183,6 +14204,7 @@ const ENTRY_SOURCE: &str = indoc! {"
 /// slice. The image loads with no roots and is not started, so `ns-next load`
 /// refuses it rather than instantiating an unrelated instance in place of the
 /// one this image deliberately carries none of.
+// spec: image.load
 #[test]
 fn a_snapshot_with_empty_roots_loads_with_no_roots_and_is_not_started() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
@@ -14254,6 +14276,7 @@ fn the_graph_walk_consumes_the_section_exactly() {
 /// A snapshot taken with the caches full loads with them empty -- no cache
 /// state and no base is serialized -- and a decoded closure is given a fresh
 /// range of its family's size when it is first activated.
+// spec: image.load.caches
 #[test]
 fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     let source = indoc! {"
@@ -17459,6 +17482,7 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
 /// held in slots, decode to the loading boot's own (a level is never a
 /// value; `shipped_names.rs`'s tests check that one). No program reaches
 /// a builtin's metaclass, so the host stores `Integer`'s.
+// spec: image.load.shipped-world
 #[test]
 fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
     let source = indoc! {"
@@ -17584,6 +17608,7 @@ fn a_second_platform_is_a_record_of_its_shipped_class() {
 /// of `CollectionsFactory List`, with its `size_` and its `data` array, and
 /// it answers as before after a load -- the class and its code are the
 /// loading binary's.
+// spec: image.load.shipped-world
 #[test]
 fn a_list_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
@@ -18047,6 +18072,7 @@ fn an_index_past_the_shipped_name_section_is_refused() {
 /// kernel's instance as a slot's value, and a class standing where only a
 /// module instance may. A module instance in a frame's register decodes.
 // spec: image.shipped.positions
+// spec: image.load.snapshot
 #[test]
 fn a_shipped_name_in_a_forbidden_position_is_refused() {
     let not_allowed =
@@ -18455,6 +18481,7 @@ fn an_object_reached_twice_is_listed_once() {
     });
 }
 
+// spec: image.load
 #[test]
 fn a_packaged_application_loads_as_a_started_image_with_one_root() {
     let bytes = packaged_application();
@@ -18488,6 +18515,7 @@ fn packaged_application() -> Vec<u8> {
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
+// spec: image.load.start
 #[test]
 fn package_refuses_an_application_that_reaches_the_platform() {
     let (mut interpreter, class) = load(indoc! {"
@@ -18583,6 +18611,42 @@ fn a_started_image_names_no_module_instance() {
         load_error(&crafted),
         decode::DecodeError::ShippedNameInStartedImage("Kernel instance".to_string()).to_string()
     );
+}
+
+/// An image without `start` is held to every rule but a started image's
+/// own: it may name the kernel's instance, which a frame of shipped code
+/// holds in a running world, and the name resolves to the loading world's
+/// instance; the same name in a started image is refused.
+// spec: image.load.snapshot
+#[test]
+fn a_snapshot_may_name_a_module_instance_a_started_image_may_not() {
+    let names = [shipped_name(
+        "Kernel",
+        "Kernel",
+        ShippedKind::ModuleInstance,
+    )];
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        match shipped_names::resolve_in(mutator, &names, false) {
+            Ok(resolved) => {
+                let heap = mutator.heap();
+                assert_eq!(resolved.len(), 1);
+                assert_eq!(
+                    heap.class_display_name(heap.object_class(resolved[0].object)),
+                    "Kernel",
+                    "the name resolves to the kernel's instance"
+                );
+            }
+            Err(error) => panic!("a snapshot may name the kernel's instance: {error}"),
+        }
+        match shipped_names::resolve_in(mutator, &names, true) {
+            Ok(_) => panic!("a started image named the kernel's instance"),
+            Err(error) => assert_eq!(
+                error,
+                decode::DecodeError::ShippedNameInStartedImage("Kernel instance".to_string())
+            ),
+        }
+    });
 }
 
 /// A program that catches the error a non-Boolean loop condition signals
@@ -18753,6 +18817,7 @@ fn a_retired_stateless_flag_is_refused_as_unknown() {
     );
 }
 
+// spec: image.load.snapshot
 #[test]
 fn a_snapshot_is_not_started() {
     let bytes = snapshot_of(indoc! {"
@@ -18803,6 +18868,7 @@ fn shipped_name(module: &str, declaration: &str, kind: ShippedKind) -> ShippedNa
 /// anything: the shipped world names as many objects afterwards as before,
 /// even when a name the builder would build comes first.
 // spec: image.verify.shipped-names
+// spec: image.load.shipped-world
 #[test]
 fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
     let list = shipped_name("CollectionsFactory", "List", ShippedKind::Class);
@@ -18859,6 +18925,7 @@ fn building_the_shipped_names_refuses_a_name_before_it_builds_anything() {
 /// builds nothing: each module and class is built at most once. The boot
 /// builds neither module named here, so the first build of the names builds
 /// them, and the second finds them built.
+// spec: image.load.shipped-world
 #[test]
 fn building_the_shipped_names_of_a_built_world_builds_nothing() {
     let names = [
