@@ -143,6 +143,7 @@ ns_runtime::for_each_lowering! {
 /// loaded application sees the slots it filled, and `load` runs no
 /// initializer again.
 // spec: image.load.start
+// spec: image.write.started
 #[test]
 fn a_loaded_application_does_not_rerun_its_initializers() {
     let (ok, out, error) = assert_build_load_matches_run(

@@ -1004,3 +1004,242 @@ their registers, as frames of shipped code do in a running world, and a
 crafted frame could hand one to the program's code. So a host loads such
 an image only when it decides to trust it, and the load still never
 panics (`docs/OPEN-WORK.md`, "A running world's image is trusted").
+
+## Writing an image
+
+### WriteImage(modules, roots, start)
+
+r[image.write]
+Writes an image of a world at rest and answers its bytes. *modules* is a
+list of modules, each given by its root class, its identity -- its path
+relative to its project, its id and its version
+([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity))
+-- and whether the image carries its source; *roots* is a list of values;
+*start* says whether the image is a started one. A step that refuses ends
+the write with an error, and nothing is written. A write runs no code, the
+program's or the binary's, and changes nothing of the world it reads.
+
+1. Refuse if an activation is running or suspended, with
+   ``image encoding cannot snapshot a world mid-execution: a snapshot is taken only between sends, when no activation is running or suspended``:
+   an image holds a frame only as one that can no longer continue
+   ([`image.verify.frames`](#r-image.verify.frames)).
+2. Refuse the modules wherever a load would refuse their records
+   ([`image.write.refusals`](#r-image.write.refusals)): a root declaration
+   the root rule forbids, an identity the project's rules refuse, two
+   modules no request could tell apart, and source asked for some of the
+   modules but not for all.
+3. Let the declarations be each module's root declaration and every
+   declaration it nests, each as it now is
+   ([`image.write.edited`](#r-image.write.edited)), one tree per module in
+   the order of *modules*: the rows of the mixin table
+   ([`image.mixins`](#r-image.mixins)).
+4. Walk the graph: every object *roots* reach, in their order, and then
+   every object each module's root class reaches, in the order of
+   *modules*, so that a module the roots never reach -- one carried only
+   for its code -- still has its root class's record. An object of the
+   shipped world is not entered: it is written as its shipped name
+   ([`image.write.not-written`](#r-image.write.not-written)). A value
+   written by value takes no record
+   ([`image.graph.value`](#r-image.graph.value)). A weak array's slots
+   and an ephemeron's fields are followed as
+   [`image.write.weak`](#r-image.write.weak) gives. Refuse a module's root
+   class that is not its module's record or breaks the root rule, and a
+   graph that reaches the VM mirror, its class or a shipped class no
+   shipped name names ([`image.write.refusals`](#r-image.write.refusals)).
+5. Write the code table ([`image.code-table`](#r-image.code-table)): every
+   body the declarations carry, the blocks nested in them, and every body
+   a closure or a frame of the graph runs that an older version of one of
+   the declarations compiled
+   ([`image.write.edited`](#r-image.write.edited)). Refuse a closure or a
+   frame that runs any other body.
+6. If the modules carry source, write the text table
+   ([`image.texts`](#r-image.texts),
+   [`image.write.source`](#r-image.write.source)). Write the mixin table
+   and the module section, a record for each module in the order of
+   *modules*, naming its root class's record
+   ([`image.modules`](#r-image.modules)).
+7. Write the object table, a record for each object the walk entered, and
+   the roots, in their order ([`image.graph`](#r-image.graph)), refusing a
+   shipped name where [`image.shipped.positions`](#r-image.shipped.positions)
+   does not let it stand. Then write the tag-named hashes: the identity
+   hash of every object of the shipped world that has been given one,
+   whether or not the graph reaches it ([`image.hashes`](#r-image.hashes)).
+8. If *start*, refuse an image whose shipped names -- those of the graph
+   and those of the tag-named hashes -- name anything but the kernel's
+   classes, their metaclasses and their levels
+   ([`image.write.started`](#r-image.write.started)).
+9. Answer the header ([`image.header`](#r-image.header)) -- the writing
+   binary's fingerprint, `start` set if *start*, and `has-source` set if
+   the modules carry source -- followed by the sections in the order
+   [`image.sections`](#r-image.sections) gives: the symbol table, holding
+   every symbol the other sections name, the code table, the text table,
+   the mixin table, the module section, the shipped names the graph and
+   the hashes name, each once, the graph and the hashes.
+
+A host writes a snapshot as *WriteImage*(*modules*, *roots*, false), from
+whatever roots it names. `ns-next build` writes a started image
+([`image.write.started`](#r-image.write.started)): its *modules* are the
+program's in module order -- the application module first, a source file
+or a project's `main`, then the project file's `modules` in the order
+written, then, for a project, the embedded manifest
+([`semantics.module.manifest`](language/semantics.md#r-semantics.module.manifest))
+-- each with source unless `--strip-source` is given. A load rebuilds the
+modules in that order ([`image.load`](#r-image.load), step 9), which
+keeps the identity hashes the boot draws the same across `run`, `build`
+and `load`.
+
+### What a write writes
+
+r[image.write.started]
+`build` assembles the application exactly as `run` does -- the root
+class's factory and every initializer run, with no platform in existence
+-- and writes it just before `main:args:` would be sent, as
+*WriteImage*(the program's modules, « the application », true): an image
+whose header sets `start` and whose graph has the application as its one
+root ([`image.verify.started-image-roots`](#r-image.verify.started-image-roots)).
+An error raised while assembling fails the build, with the status and the
+report `run` gives the same error. The image holds no platform: nothing
+before `main:args:` hands a program one, and a started image names
+nothing of the shipped world but the kernel's classes, their metaclasses
+and their levels ([`image.verify.started-image-names`](#r-image.verify.started-image-names)).
+A writer refuses a started image that would name anything else, with
+`image encoding refuses <name> in a started application: nothing before main:args: reaches it`
+-- for an application that holds the platform,
+`image encoding refuses PlatformFactory Platform in a started application: nothing before main:args: reaches it`.
+The names it checks include those of the tag-named hashes, so a shipped
+object of another module that a host has given an identity hash refuses
+the write even where the graph does not reach it; no program reaches such
+an object before `main:args:`.
+
+r[image.write.not-written]
+An image carries nothing of the shipped world: every object of it the
+graph reaches -- a shipped module's instance, a class its root declares,
+the builtins among them, their metaclasses and the levels their `<:`
+clauses add -- is written as its shipped name
+([`image.shipped-names`](#r-image.shipped-names)), never its code, its
+layout or its state, and a load resolves the name to its own object
+([`image.load.shipped-world`](#r-image.load.shipped-world)). `nil`, `true`
+and `false` are written as their value tags
+([`image.graph.value`](#r-image.graph.value)). No mixin application, no
+cache entry, no dispatch id and no binding of a name to what it resolved
+to is written: a load rebuilds the applications from the mixins
+([`image.load.applications`](#r-image.load.applications)) and starts with
+empty caches ([`image.load.caches`](#r-image.load.caches)), and the
+compiled code names no binding.
+
+r[image.write.weak]
+A writer writes what a collection would keep
+([`runtime.memory.weak`](runtime.md#r-runtime.memory.weak),
+[`runtime.memory.ephemeron`](runtime.md#r-runtime.memory.ephemeron)). A
+weak array's slot names its object only if the graph reaches that object
+strongly otherwise, wherever in the walk that strong path lies, and is
+written `nil` if not. An ephemeron's value and finalizer are walked only
+once its key is reached -- through another ephemeron's value too, however
+long the chain -- and an ephemeron whose key the graph never reaches is
+written with every field `nil`. A weak slot holding what takes no record
+-- an immediate, a shipped name, or a value written by value -- is
+written as it is, whether or not anything else reaches it: a
+collection's timing is unspecified, and keeping what a collection might
+clear is never wrong.
+
+r[image.write.lazy-slots]
+A lazy slot ([`semantics.slot.lazy`](language/semantics.md#r-semantics.slot.lazy))
+is written with its value, as any slot is: a slot filled before the write
+answers that value after a load without running its initializer again,
+and an empty one runs its initializer at its first read after it. §6.3.3
+intends that a lazy slot need never be persisted; whether an image should
+carry its value is open (`docs/OPEN-WORK.md`, "Whether an image carries a
+lazy slot's value").
+
+r[image.write.source]
+An image with source carries every declaration's text as the world now
+holds it -- each declaration's text once, never the file a module was
+read from, and no text an older version of a declaration held -- and an
+image without source carries no program text at all. Source is carried
+for every module or for none, since the header has one flag for all of
+them ([`image.header.flags`](#r-image.header.flags)); a write asked for
+the source of some modules only is refused with
+`image encoding carries source for every module or for none: one module has none`.
+
+r[image.write.edited]
+A program a MirrorBuilder edited
+([Install](runtime.md#r-runtime.install)) is written as it now is: each
+edited declaration is the row of the declaration it replaced, with its
+code, its slots and its text as they now are, and every class object and
+reified mixin built over any version of a declaration names that
+declaration's one row. The code table also carries every body an older
+version of a carried declaration compiled that a closure or a frame of
+the graph still runs, so that a closure of a removed or a replaced method
+runs its old code after a load. A body no version of a carried
+declaration compiled is refused: a closure over one with
+`image encoding cannot serialize a closure over code that no module the image carries compiled`.
+
+r[image.write.deterministic]
+One world writes one byte sequence: *WriteImage* with the same modules,
+roots and *start* answers the same bytes each time, whatever order the
+writer's own tables are kept in, and before and after a collection that
+moved every object. Two worlds a program built alike from the same
+sources write the same bytes too.
+
+r[image.write.refusals]
+A writer refuses to write what a load would refuse, so that no image it
+writes fails to load for its structure. Each refusal names what it
+refuses:
+
+- **A module root the root rule forbids**
+  ([`image.verify.root-rule`](#r-image.verify.root-rule),
+  [`image.verify.modules`](#r-image.verify.modules)): a root declaration
+  whose superclass clause the root rule does not allow, with
+  `image encoding cannot serialize <name>: <what the root rule says of it>`,
+  among them
+  `image encoding cannot serialize Root: a module's root class may inherit only Object or Value, or write Object <: Value, and its superclass clause names Array`;
+  a root class whose superclass chain the root rule does not build, with
+  `image encoding cannot serialize <class> as a module's root class: it does not inherit what the root rule allows, Object or Value, or Value applied over Object`;
+  and a root class that is no record of its module's root, with
+  `image encoding cannot serialize <class> as a module's root class: it is a metaclass, a level, a class applying another declaration's mixin, or a class with an enclosing object or a declaring class, such as a nested class`.
+- **The VM mirror, its class, `Top` and their metaclasses, anywhere in the
+  graph** ([`image.verify.mirror`](#r-image.verify.mirror)): the mirror,
+  checked before every other refusal of what the graph reaches, with
+  `image encoding refuses the VM mirror: it is a capability the bootstrap hands to the core library alone, and an artifact that carried it would hand it to whatever loaded it`;
+  the mirror's class and its metaclass, with
+  `image encoding refuses the VM mirror's class: it has no declaration, so no shipped name names it`
+  and
+  `image encoding refuses the VM mirror's class class: it has no declaration, so no shipped name names it`;
+  a reified mixin of the mirror's class, of either side, with
+  `image encoding refuses the mixin of the VM mirror's class: it has no declaration, so no shipped name names it`
+  and
+  `image encoding refuses the mixin of the VM mirror's class class: it has no declaration, so no shipped name names it`;
+  and `Top` and its metaclass wherever
+  [`image.shipped.positions`](#r-image.shipped.positions) does not let
+  them stand, as every shipped name (below).
+- **A shipped object where [`image.shipped.positions`](#r-image.shipped.positions)
+  does not let it stand**: a shipped name, with
+  `image encoding refuses <name> as <position>: no program may name it there, and the loader refuses an image that does`
+  -- `image encoding refuses Kernel Top as a value: no program may name it there, and the loader refuses an image that does`
+  among them -- and a module's instance outside a frame's registers, with
+  `image encoding refuses the module instance <module> outside a frame: it holds the core library's state`.
+- **A module identity the project's rules refuse**
+  ([`image.verify.module-identity`](#r-image.verify.module-identity),
+  [`image.verify.modules`](#r-image.verify.modules)): one module's, with
+  `image encoding cannot name module <index> so: <the rule's refusal>`,
+  such as
+  ``image encoding cannot name module 0 so: `Other` does not end in the class's name `Util` ``;
+  and two modules no request could tell apart, with
+  `image encoding cannot name its modules so: <the rule's refusal>`.
+- **Source for some modules only**
+  ([`image.header.flags`](#r-image.header.flags),
+  [`image.verify.texts`](#r-image.verify.texts)), with the refusal
+  [`image.write.source`](#r-image.write.source) gives.
+
+r[image.write.limits]
+Every count and every id an image holds is a `u32`, so an image holds
+fewer than 2^32 objects; a writer handed a graph of more aborts today,
+where it should refuse (`docs/OPEN-WORK.md`, "Writing an image of more
+than about four billion objects aborts instead of refusing"). A length a
+running program decides that does not fit its field is refused instead,
+such as a register list of more than 65,535 registers, with
+`image encoding cannot write a register list of 65536: it does not fit the image format's 16-bit field`;
+and a body past the argument limit
+([`bytecode.limit.arguments`](bytecode.md#r-bytecode.limit.arguments)),
+which the decoder refuses, is refused with
+`image encoding cannot write a body arity of 256: it is past the limit of 255 arguments`.
