@@ -138,27 +138,7 @@ fn emitting_passes_a_limit(emitted: usize, instruction: &Instruction) -> Option<
 /// passes as many arguments as its selector takes, so that the decoder
 /// refuses no body a lowering compiles.
 fn debug_assert_send_arity(instruction: &Instruction) {
-    if let Instruction::SendLexical {
-        selector,
-        argument_sources,
-        ..
-    }
-    | Instruction::SendPublic {
-        selector,
-        argument_sources,
-        ..
-    }
-    | Instruction::SendInlinable {
-        selector,
-        argument_sources,
-        ..
-    }
-    | Instruction::SendSuper {
-        selector,
-        argument_sources,
-        ..
-    } = instruction
-    {
+    if let Some((selector, argument_sources)) = instruction.sent_message() {
         debug_assert_eq!(
             argument_sources.len(),
             selector.arity(),

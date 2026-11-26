@@ -180,22 +180,39 @@ impl Symbol {
         INTERNER.with_borrow(|interner| interner.hashes[self.0 as usize])
     }
 
-    /// How many arguments a message of this selector takes: none for a
-    /// unary selector, one for a binary one and one per colon for a
-    /// keyword one. A unary or keyword selector begins as an identifier
-    /// does, with a letter or `_`; every other selector is binary.
+    /// How many arguments a message of this selector takes
+    /// (`selector_arity`).
     pub(crate) fn arity(self) -> usize {
-        let text = self.as_str();
-        match text.as_bytes().first() {
-            Some(byte) if *byte == b'_' || byte.is_ascii_alphabetic() => text.matches(':').count(),
-            Some(_) => 1,
-            None => 0,
-        }
+        selector_arity(self.as_str())
     }
 
     pub fn as_str(self) -> &'static str {
         INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }
+}
+
+/// How many arguments a message of `selector` takes: none for a unary
+/// selector, one for a binary one and one per colon for a keyword one. A
+/// unary or keyword selector begins as the lexer's identifiers do, with an
+/// ASCII letter or `_`; every other selector is binary. A byte scan, so
+/// that the VM mirror's table can run it at compile time.
+pub(crate) const fn selector_arity(selector: &str) -> usize {
+    let bytes = selector.as_bytes();
+    if bytes.is_empty() {
+        return 0;
+    }
+    if bytes[0] != b'_' && !bytes[0].is_ascii_alphabetic() {
+        return 1;
+    }
+    let mut colons = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b':' {
+            colons += 1;
+        }
+        index += 1;
+    }
+    colons
 }
 
 impl fmt::Display for Symbol {

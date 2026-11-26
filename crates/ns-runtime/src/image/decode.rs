@@ -536,6 +536,14 @@ pub enum DecodeError {
         argument_count: usize,
         arity: usize,
     },
+    /// A mixin-table row's method record whose argument count is not its
+    /// selector's arity: every send of the selector passes the arity, and
+    /// the body is held to the record's count.
+    MethodArityMismatch {
+        selector: String,
+        argument_count: usize,
+        arity: usize,
+    },
     /// A `local_count` past its body's register file.
     LocalCountOutOfRange {
         local_count: u16,
@@ -1144,6 +1152,14 @@ impl std::fmt::Display for DecodeError {
             } => write!(
                 f,
                 "outer local r{index} at depth {depth} is a scratch register of the enclosing body, whose first is r{local_count}"
+            ),
+            DecodeError::MethodArityMismatch {
+                selector,
+                argument_count,
+                arity,
+            } => write!(
+                f,
+                "method `{selector}` of a mixin-table row takes {argument_count} argument(s), but its selector takes {arity}"
             ),
             DecodeError::SendArityMismatch {
                 body,
@@ -2076,28 +2092,8 @@ pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
 /// and a send of more would answer as though the surplus were not there.
 fn verify_send_arities(body: usize, instructions: &[Instruction]) -> Result<(), DecodeError> {
     for (instruction, decoded) in instructions.iter().enumerate() {
-        let (selector, argument_sources) = match decoded {
-            Instruction::SendLexical {
-                selector,
-                argument_sources,
-                ..
-            }
-            | Instruction::SendPublic {
-                selector,
-                argument_sources,
-                ..
-            }
-            | Instruction::SendInlinable {
-                selector,
-                argument_sources,
-                ..
-            }
-            | Instruction::SendSuper {
-                selector,
-                argument_sources,
-                ..
-            } => (selector, argument_sources),
-            _ => continue,
+        let Some((selector, argument_sources)) = decoded.sent_message() else {
+            continue;
         };
         if argument_sources.len() != selector.arity() {
             return Err(DecodeError::SendArityMismatch {

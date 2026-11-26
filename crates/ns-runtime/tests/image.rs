@@ -4223,6 +4223,10 @@ fn string_root(interpreter: &mut Interpreter, text: &str) -> Root {
 /// A view keeps the very `ByteArray` it was made over, and a builder its
 /// bytes and counts, as plain slots: a snapshot carries them as records of
 /// the shipped classes, and the loaded views still share their storage.
+/// It is also the positive half of `bytecode.verify.send-arity`: its
+/// compiled unary, binary and keyword sends load; the `images` profile,
+/// which builds and loads every golden, is the rule's full positive
+/// evidence.
 // spec: bytecode.verify.send-arity
 #[test]
 fn a_view_and_a_builder_round_trip_through_a_package() {
@@ -6011,6 +6015,40 @@ fn a_symbol_recorded_twice_is_refused() {
         decode::DecodeError::DuplicateSymbol("foo".to_string())
     );
     assert_eq!(error.to_string(), "symbol #foo is recorded twice");
+}
+
+/// A symbol is the one object of its text in the loading world too: a
+/// record of a text the world already holds a `Symbol` of is refused, as a
+/// second record of one text is, rather than made a second object of it.
+// spec: image.verify.symbols
+#[test]
+fn a_symbol_record_of_a_text_the_loading_world_holds_is_refused() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1);
+    writer.write_shipped(SYMBOL_NAME);
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_SYMBOL);
+    writer.write_u32(0); // symbol-table id 0
+    writer.write_u32(0); // no roots
+    let text = "a_symbol_the_loading_world_holds";
+    let bytes = writer.into_bytes();
+    let mut fresh = GraphFixture::new();
+    fresh.symbols = table_with(&[text]);
+    fresh.decoded(
+        &bytes,
+        "a symbol of a text the world does not hold",
+        |_, _| {},
+    );
+    let mut fixture = GraphFixture::new();
+    fixture.symbols = table_with(&[text]);
+    fixture.interpreter.enter(|mutator| {
+        mutator.new_symbol(Symbol::intern(text));
+    });
+    let error = fixture.decode_error(&bytes);
+    assert_eq!(
+        error,
+        decode::DecodeError::DuplicateSymbol(text.to_string())
+    );
 }
 
 // spec: image.verify.symbols
@@ -11815,13 +11853,33 @@ fn decode_one_row_with_slots(
     slots: &[(u32, u8, u8)],
     methods: &[(u32, u32)],
 ) -> Result<mixins::Decoded, decode::DecodeError> {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    write_mixin_row_with_slots(&mut writer, 0, slots, methods, &[]);
-    let bytes = writer.into_bytes();
-    let mut reader = decode::Reader::new(&bytes);
-    let codes = [Rc::new(every_instruction_once())];
-    mixins::decode(&mut reader, &table_with(names), &codes)
+    // Each method takes as many arguments as its selector, as a method
+    // record must.
+    let methods: Vec<MethodShape> = methods
+        .iter()
+        .map(|&(selector, code)| MethodShape {
+            selector,
+            access: AccessModifier::Protected,
+            argument_count: selector_arity(names[selector as usize]),
+            code,
+        })
+        .collect();
+    decode_one_row_with_method_shapes(names, slots, &methods)
+}
+
+/// How many arguments a message of `selector` takes: one per colon for a
+/// unary or keyword selector, which begins with a letter or `_`, and one
+/// for a binary selector.
+fn selector_arity(selector: &str) -> u16 {
+    let keyword_or_unary = selector
+        .chars()
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic());
+    if keyword_or_unary {
+        u16::try_from(selector.matches(':').count()).expect("a selector of few colons")
+    } else {
+        1
+    }
 }
 
 /// `decode_one_row_with_slots` with every field of each method chosen.
@@ -11912,24 +11970,35 @@ fn a_row_declaring_one_lazy_slot_twice_is_refused() {
 // spec: image.verify.mixin-rows
 #[test]
 fn a_lazy_slot_whose_method_is_not_its_getter_is_refused() {
+    let decode_with = |method| {
+        decode_one_row_with_method_shapes(
+            &["X", "later"],
+            &[lazy_slot_record(1, AccessModifier::Public)],
+            &[method],
+        )
+        .err()
+    };
+    // A method of the slot's name that takes an argument is refused as a
+    // method record first: its unary selector takes none.
     let taking_an_argument = MethodShape {
         argument_count: 1,
         ..getter_shape(1, AccessModifier::Public)
     };
+    assert_eq!(
+        decode_with(taking_an_argument),
+        Some(decode::DecodeError::MethodArityMismatch {
+            selector: "later".to_string(),
+            argument_count: 1,
+            arity: 0,
+        })
+    );
     let of_another_access = getter_shape(1, AccessModifier::Private);
-    for method in [taking_an_argument, of_another_access] {
-        assert_eq!(
-            decode_one_row_with_method_shapes(
-                &["X", "later"],
-                &[lazy_slot_record(1, AccessModifier::Public)],
-                &[method],
-            )
-            .err(),
-            Some(decode::DecodeError::LazySlotWithoutGetter(
-                "later".to_string()
-            ))
-        );
-    }
+    assert_eq!(
+        decode_with(of_another_access),
+        Some(decode::DecodeError::LazySlotWithoutGetter(
+            "later".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -19220,6 +19289,56 @@ fn an_image_with_a_method_of_256_parameters_is_refused() {
             }
         ),
         Ok(_) => panic!("expected the method of 256 parameters to be refused"),
+    }
+}
+
+/// A method record takes as many arguments as its selector does: a send of
+/// that selector passes that many (`bytecode.verify.send-arity`), and the
+/// body is held to the record's count, so a record of another count would
+/// run its body over arguments it was not given. Refused where the record
+/// is read, before its body is looked up.
+// spec: bytecode.verify.attachment
+#[test]
+fn a_method_record_whose_argument_count_is_not_its_selectors_is_refused() {
+    let symbols = table_with(&["foo:", "foo", "+"]);
+    let cases = [
+        (
+            0,
+            0,
+            "method `foo:` of a mixin-table row takes 0 argument(s), but its selector takes 1",
+        ),
+        (
+            1,
+            1,
+            "method `foo` of a mixin-table row takes 1 argument(s), but its selector takes 0",
+        ),
+        (
+            2,
+            2,
+            "method `+` of a mixin-table row takes 2 argument(s), but its selector takes 1",
+        ),
+    ];
+    for (selector, argument_count, expected) in cases {
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1);
+        write_mixin_row_with_method_shapes(
+            &mut writer,
+            1,
+            &[],
+            &[MethodShape {
+                selector,
+                access: AccessModifier::Public,
+                argument_count,
+                code: 0,
+            }],
+            &[],
+        );
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        match mixins::decode(&mut reader, &symbols, &[]) {
+            Err(error) => assert_eq!(error.to_string(), expected),
+            Ok(_) => panic!("expected the method record to be refused: {expected}"),
+        }
     }
 }
 
