@@ -586,7 +586,9 @@ a poison word no value can be into dead registers and refuses an
 instruction's read of it. A new instruction declares its register
 effects in `bytecode.rs`'s exhaustive matches (`registers_read`,
 `register_written`, `jump_target`, `falls_through`, `successors`, and
-`Instruction::argument_slots` for a send), or the analysis misjudges
+`Instruction::argument_slots` for a send, and `Instruction::sent_message`,
+the selector and arguments a send delivers, which the decoder's arity
+check and both lowerings' assertion read), or the analysis misjudges
 it. A miss is a stale handle traced -- an object since moved or
 reclaimed -- or an object nothing reaches kept alive, which a
 `WeakArray` shows (`compiler.md`, "What a callee leaves"; `memory.md`,

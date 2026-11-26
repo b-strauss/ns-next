@@ -505,7 +505,9 @@ r[image.verify.mixin-rows]
 7. A mixin row holds to the declaration it describes: its source range
    does not end before it starts; its factory and each of its methods
    take at most 255 parameters
-   ([`bytecode.limit.arguments`](bytecode.md#r-bytecode.limit.arguments));
+   ([`bytecode.limit.arguments`](bytecode.md#r-bytecode.limit.arguments)),
+   each method record's argument count being its selector's arity
+   ([`bytecode.verify.attachment`](bytecode.md#r-bytecode.verify.attachment));
    no two of its members share a name -- its methods, its eager slots'
    getters, its mutable slots' setters, its nested declarations and, on a
    row that is a declaration's class side, that declaration's factory, two
@@ -855,7 +857,10 @@ built included, is dropped with it
 3. Read the symbol table ([`image.symbols`](#r-image.symbols)) and the
    code table ([`image.code-table`](#r-image.code-table)), holding every
    body to the bytecode chapter's rules
-   ([The rules the decoder checks](bytecode.md#the-rules-the-decoder-checks)).
+   ([The rules the decoder checks](bytecode.md#the-rules-the-decoder-checks))
+   but the attachment rule
+   ([`bytecode.verify.attachment`](bytecode.md#r-bytecode.verify.attachment)),
+   which step 4 checks as it reads the mixin table.
 4. If the header sets `has-source`, read the text table
    ([`image.texts`](#r-image.texts)). Read the mixin table
    ([`image.mixins`](#r-image.mixins)) and the module section
