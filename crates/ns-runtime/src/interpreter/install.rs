@@ -626,6 +626,7 @@ mod tests {
 
     /// An edited nested class is written and loads edited: its added
     /// method answers on an instance made before the edit.
+    // spec: image.write.edited
     #[test]
     fn an_edited_program_loads_edited() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
@@ -643,6 +644,7 @@ mod tests {
 
     /// A slot added through the header is in the image's layout: an old
     /// instance migrated to `nil`, a new one initialized.
+    // spec: image.write.edited
     #[test]
     fn a_header_edit_loads_with_its_layout() {
         let (mut interpreter, outer, inner_class, old, inner_id) = module_and_inner(OUTER);
@@ -666,6 +668,7 @@ mod tests {
     /// After a growing edit of `Inner`, the loaded `Outer` still slices
     /// its method from its own text, and the loaded module's text holds
     /// the edit.
+    // spec: image.write.source
     #[test]
     fn an_enclosing_method_keeps_its_source_through_an_image() {
         let (mut interpreter, outer, inner_class, _, inner_id) = module_and_inner(NESTED_AND_AFTER);
@@ -701,6 +704,8 @@ mod tests {
 
     /// An image of an edited program holds each declaration's text once:
     /// the removed method's text is nowhere in it.
+    // spec: image.write.source
+    // spec: image.write.edited
     #[test]
     fn an_image_of_an_edited_program_holds_no_old_text() {
         let (mut interpreter, outer, inner_class, _, inner_id) = module_and_inner(NESTED_AND_AFTER);
@@ -740,6 +745,7 @@ mod tests {
     /// row once written, and loads as the reified mixin of the edited
     /// version: the one the loaded module's class applies, with the method
     /// the edit added.
+    // spec: image.write.edited
     #[test]
     fn a_reified_mixin_of_an_edited_declaration_loads_as_its_current_version() {
         let (mut interpreter, outer, _, _, inner_id) = module_and_inner(OUTER);
@@ -788,6 +794,7 @@ mod tests {
     /// A closure made by a method an edit removed keeps its block across
     /// an image: the block and its home frame's body, the removed method's,
     /// enter the code table.
+    // spec: image.write.edited
     #[test]
     fn a_closure_of_a_removed_method_runs_after_a_load() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
@@ -828,6 +835,7 @@ mod tests {
 
     /// A replaced method's closure keeps the old block's answer after a
     /// load, while the method answers the new one.
+    // spec: image.write.edited
     #[test]
     fn a_closure_of_a_replaced_method_keeps_its_old_code_after_a_load() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);
@@ -1786,6 +1794,7 @@ mod tests {
 
     /// Edited before an image and again after its load, written again and
     /// loaded again: the second image holds both edits.
+    // spec: image.write.edited
     #[test]
     fn a_loaded_program_edited_and_written_again_loads_with_both_edits() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);

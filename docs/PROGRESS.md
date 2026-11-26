@@ -79,6 +79,7 @@ first.
 | An implicit-receiver send of one keyword, `x: e`, writes the innermost mutable local `x` as `x:: e` does and answers `e`, as the canonical compiler's local write does, a parameter and an immutable local passed by (`resolver/local_writes.rs`, which makes each such send the assignment it is before anything compiles the module; the spec's `semantics.send.local-setter`, and the appendix's difference from §6.3.2); the language server colours its keyword as the local and the hints count it as a write; `Som.ns` sends `self hash: key` where its local `hash` would take the write | Complete | 2026-11-25 | -- |
 | The rest of Primordial Soup's core API, by a second inventory of every public selector: `Closure`'s `repeat`, `whileTrue`, `whileFalse`, `cull:cull:`, `cull:cull:cull:` and `valueWithArguments:`, a mirror row whose step activates the block with an Array's elements, and `True`'s and `False`'s `asString` | Complete | 2026-11-26 | -- |
 | The unary `whileTrue` and `whileFalse` and `repeat` on a block literal inlined by both lowerings as `whileTrue:` is (`control_flow::recognize`, `lower_while`, `Body::while_loop`), `repeat` a loop without a condition, so that a `^` in its block is the method's own return, as the canonical compiler's `isInlineableLoop:` inlines them | Complete | 2026-11-26 | -- |
+| The specification's image format -- the encodings, the header, the sections, the tags of fourteen spaces and the structure, the rules the decoder checks on an image, the bounds of a load and the operations *LoadImage* and *WriteImage*, all normative, written into `docs/spec/image-format.md`, the tags and the structure held to the code by tests and every refusal of the writer stated with its text; the decoder refuses a send and a method record whose argument count is not their selector's | Complete | 2026-11-26 | [specification-image-format](superpowers/plans/2026-11-26-1643-specification-image-format.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8913,3 +8914,49 @@ body, which it read unchecked.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
 specification's fourth batch, the image format.
+
+## The specification's image format (2026-11-26)
+
+[specification.md](design/specification.md), "The fourth batch's
+decisions". The book's fourth batch, `docs/spec/image-format.md`: the
+encodings, the header and its fingerprint, the sections in their order,
+the tags of fourteen spaces -- the header's flags, the graph's families,
+the slot kinds, the module origins and versions, the shipped names'
+kinds and the accessibilities -- and the structure of every section and
+record; the rules the decoder checks on an image, numbered, among them
+the module records' identities, the shipped names and the positions they
+may stand in, the class, metaclass and frame records and the mirror;
+the bounds of a load; and, normative as the user decided, the
+operations *LoadImage* and *WriteImage* in numbered steps, what a
+program observes after a load, and every refusal of the writer with its
+text. Two tables are held to the code by tests: the tags to
+`image/opcodes.rs` and `mixins::access_tag`, and the structure, walked
+over images the encoder writes until every optional field has been
+read. The bound of a rejected load is normative as a property, its
+factors informative ([memory.md](design/memory.md), "The amplification
+bound of a rejected load"). Writing the chapter showed that a decoded
+image could make the process panic: a crafted `==` with no argument
+reached `Object`'s identity leaf. As the user decided, the decoder now
+refuses a send whose argument count is not its selector's
+(`bytecode.verify.send-arity`), and a method record whose argument count
+is not its selector's (`bytecode.verify.attachment`), both read off one
+exhaustive `Instruction::sent_message` that both lowerings assert
+against.
+
+- `170295bd` -- the plan.
+- `208bfe10` -- the header and the tags.
+- `3650e5c5`, `8d74409f` -- the structure, and the `access` space.
+- `ce80ac74`, `0597a2b0` -- the rules for the sections and the shipped
+  names.
+- `6be11e7c` -- the decoder refuses a send whose argument count is not
+  its selector's.
+- `89a82bc2`, `e1009d3b`, `dae3e998` -- the rules for the graph and the
+  bounds, and the refusal of a method record whose argument count is not
+  its selector's.
+- `f09441eb`, `d0098111` -- *LoadImage*.
+- `5108cdab`, `a9638c35`, `90a5be3c`, `4c1cdd85` -- *WriteImage* and
+  every refusal of the writer.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+specification's fifth batch, the VM invariants and the design documents
+pointing at the rules.

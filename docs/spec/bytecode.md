@@ -1245,6 +1245,15 @@ r[bytecode.verify.attachment]
     a method's with its selector's arity, an initializer's with its
     factory's, a superclass clause's with none.
 
+r[bytecode.verify.send-arity]
+12. Every `SendLexical`, `SendPublic`, `SendInlinable` and `SendSuper`
+    passes as many arguments as its selector takes: none for a unary
+    selector, one for a binary selector and one for each colon of a
+    keyword selector. The method a send reaches reads the arguments its
+    selector takes, so a send of fewer would hand it an argument it was
+    not given and a send of more one it never reads; no lowering emits
+    either.
+
 r[bytecode.verify.not-checked]
 The decoder checks no more of a body than these rules. In particular it
 leaves these to the run, where they are checked or cannot go wrong:
@@ -1255,7 +1264,10 @@ leaves these to the run, where they are checked or cannot go wrong:
 - a vector's index and size, which `LoadVector` and `StoreVector` check
   as they run;
 - a `LoadEnclosingObject`'s and a `SendLexical`'s depth: one past the
-  chain of enclosing objects the walk out finds answers `nil`.
+  chain of enclosing objects the walk out finds answers `nil`;
+- an `InitializeSuperclass`'s argument count, which is checked when it
+  runs, against the factory of the class it initializes, before anything
+  is entered.
 
 The shipped core library's code, which the binary embeds, is not decoded
 by these rules: it is the binary's own, and the binary that built it

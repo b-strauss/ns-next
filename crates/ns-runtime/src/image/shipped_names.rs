@@ -40,11 +40,11 @@ pub const MAX_SHIPPED_NAMES: usize = 65_536;
 pub const MIN_SHIPPED_NAME_BYTES: usize = 9;
 
 /// A section entry's kind byte.
-const KIND_MODULE_INSTANCE: u8 = 0;
-const KIND_CLASS: u8 = 1;
-const KIND_METACLASS: u8 = 2;
-const KIND_LEVEL: u8 = 3;
-const KIND_LEVEL_METACLASS: u8 = 4;
+pub(crate) const KIND_MODULE_INSTANCE: u8 = 0;
+pub(crate) const KIND_CLASS: u8 = 1;
+pub(crate) const KIND_METACLASS: u8 = 2;
+pub(crate) const KIND_LEVEL: u8 = 3;
+pub(crate) const KIND_LEVEL_METACLASS: u8 = 4;
 
 /// Where a reference in the graph stands, which decides what it may name
 /// (`Positions`; the rule of `docs/design/image-format.md`, "Shipped

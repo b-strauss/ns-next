@@ -8,3 +8,4 @@ create-missing = false
 
 [output.html]
 no-section-label = false
+additional-css = ["book.css"]

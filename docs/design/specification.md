@@ -4,7 +4,7 @@ ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
-decided and in which order it is built. The first three batches are
+decided and in which order it is built. The first four batches are
 built. The first: the book under `docs/spec/`, its title page and introduction followed by an
 informal overview of the language that states no rule
 (`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
@@ -27,8 +27,20 @@ and the eight-byte form, both normative (below, "The third batch's
 decision"), and the rules the image decoder checks on a body -- its four
 tables held to `bytecode.rs`'s matches, `image/opcodes.rs`, the encoder
 and `CompactInstruction` by tests, and the decoder refusing a statement
-map that leaves its body. The image format and the VM invariants say
-what they will cover and are not written yet.
+map that leaves its body. The fourth: the image format
+(`docs/spec/image-format.md`) -- its encodings, its header, its
+sections, the tags of its fourteen spaces and its structure, the tags
+held to `image/opcodes.rs` and `mixins::access_tag` and the structure
+walked over images the encoder writes by tests (`ns-runtime`'s
+test-only `spec_tables/`: `image_format.rs`, the tag table's test, and
+`image_structure.rs`, the walker, beside `spec_tables.rs`, the reader of
+the chapters' `spec-table` blocks); the rules the decoder
+checks on an image, numbered; the bounds of a load; and the operations
+*LoadImage* and *WriteImage*, every refusal of the writer stated with its
+text -- all normative (below, "The fourth batch's decisions"), and the
+decoder refusing a send and a method record whose argument count is not
+their selector's. The VM invariants say what they will cover and are
+not written yet.
 
 ## Why
 
@@ -93,8 +105,9 @@ Each decided with the user on 2026-11-23.
    unique, well formed -- turns them into anchors and links, and collects
    the tests that name a rule: a golden in a line of its `.toml`, a Rust
    test in a comment, as a test of `rust-lang/rust` names its rule in a
-   `//@ reference:` header. The book shows each rule's tests, and an
-   appendix the rules no test names yet. The grammar, the instruction
+   `//@ reference:` header. The book shows each rule's tests, as a
+   list folded shut beneath the rule's anchor, and an appendix the rules
+   no test names yet. The grammar, the instruction
    table and the tag table stand in marked, machine-readable blocks that
    Rust tests hold to the code -- `opcodes.rs` to the tag table among
    them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
@@ -135,13 +148,57 @@ end-of-batch gates:
    deviations decided; the install as it is.
 3. **The bytecode**, built: the instruction pages and the register
    effects, both encodings, the decoder's rules.
-4. **The image format**: the structure, the tags, the validation rules.
+4. **The image format**, built: the structure, the tags, the validation
+   rules, the bounds of a load, and the load and the write as abstract
+   operations.
 5. **The VM invariants**, and the design documents and `CLAUDE.md`
    pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
 "Planned: the complete install") resumes after the fifth, and changes the
 specification as it changes the runtime.
+
+## The fourth batch's decisions
+
+Decided with the user on 2026-11-26:
+
+1. **The format, the load and the write are normative.** The image
+   chapter gives the structure, the tags and the validation, and beside
+   them the abstract operations *LoadImage* and *WriteImage*, each in
+   numbered steps, so that everything a program observes after `build`
+   and `load` is a rule. The alternatives weighed: the format alone, and
+   the format with the load, each of which would have left
+   program-observable behaviour -- what a weak slot holds after a load,
+   the packaging point -- without a rule.
+2. **The bound of a rejected load is normative as a property, its
+   factors informative.** The decoder refuses before it allocates any
+   object of the graph when the sized objects would take more than eight
+   words a byte of the input left, and what a rejected load allocates is
+   bounded by a constant multiple of the image's length plus a constant.
+   The factors -- 10.7x of the graph bytes and the rest -- stay in
+   [memory.md](memory.md), "The amplification bound of a rejected
+   load", as the implementation's derivation. The alternatives weighed:
+   the factors as the rule, which depend on the build and which no test
+   holds, and no memory bound at all.
+3. **A send passes as many arguments as its selector takes, and the
+   decoder refuses one that does not** (`bytecode.verify.send-arity`).
+   Writing the image chapter showed that a decoded image could make the
+   process panic. A crafted `==` with no argument reached `Object`'s
+   identity leaf, which reads its argument through a checked access that
+   panics. A crafted `printString` with one argument answered as if it
+   had none. No lowering emits such a send, and both lowerings now assert
+   that they never do, so the refusal costs a compiled program nothing.
+   With it, a decoded image's code runs as compiled code would. The
+   decision covers every message a run delivers by selector, so the
+   decoder also refuses a method record whose argument count is not its
+   selector's (`bytecode.verify.attachment`), whose body every send of
+   the selector would otherwise run over arguments it was not given. The
+   alternatives weighed:
+   - a run-time error in place of the leaves' assertion, which leaves a
+     surplus argument a silent wrong answer and puts a check on the send
+     path;
+   - writing today's abort down as the rule, which would break
+     `image.untrusted`'s promise for the code a load runs.
 
 ## The third batch's decision
 

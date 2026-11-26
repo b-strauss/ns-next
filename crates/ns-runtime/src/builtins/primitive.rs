@@ -1100,25 +1100,6 @@ impl MirrorEntry {
     }
 }
 
-/// `MirrorEntry::leaf_arity`'s count, as a byte scan so the table can run it
-/// at compile time. Every reported selector is ASCII, so a byte that is not
-/// an ASCII letter opens a binary selector.
-const fn selector_arity(selector: &str) -> usize {
-    let bytes = selector.as_bytes();
-    if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
-        return 1;
-    }
-    let mut colons = 0;
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b':' {
-            colons += 1;
-        }
-        index += 1;
-    }
-    colons
-}
-
 const fn mirror(
     selector: &'static str,
     reported: &'static str,
@@ -1128,7 +1109,7 @@ const fn mirror(
         selector,
         reported,
         primitive,
-        leaf_arity: selector_arity(reported),
+        leaf_arity: crate::symbol::selector_arity(reported),
         machine_call: MachineCall::Exit,
     }
 }

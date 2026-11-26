@@ -50,6 +50,7 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
     assert!(listing.contains("graph"), "{listing}");
 }
 
+// spec: image.load
 #[test]
 fn a_built_image_runs_exactly_as_its_source_does() {
     let (ok, out, error) =
@@ -141,6 +142,8 @@ ns_runtime::for_each_lowering! {
 /// instance_init.ns writes through its initializer, which `build` runs; the
 /// loaded application sees the slots it filled, and `load` runs no
 /// initializer again.
+// spec: image.load.start
+// spec: image.write.started
 #[test]
 fn a_loaded_application_does_not_rerun_its_initializers() {
     let (ok, out, error) = assert_build_load_matches_run(
@@ -157,6 +160,7 @@ fn a_loaded_application_does_not_rerun_its_initializers() {
 /// The initializer draws an identity hash while `build` assembles the
 /// application. A loader that re-ran it would draw a fresh one past the
 /// hashes the image records, so `stamp` would differ from what `run` prints.
+// spec: image.load.start
 #[test]
 fn an_initializer_is_not_rerun_by_load_and_draws_the_same_hash() {
     let directory = ScratchDirectory::new("instance-init");
@@ -318,6 +322,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 /// which forgot the recorded hashes would draw different numbers rather than
 /// the same first three by coincidence (image-format.md, "Identity hashes
 /// are preserved verbatim").
+// spec: image.load.hashes
 #[test]
 fn a_hash_given_to_a_tag_named_object_survives_build_and_load() {
     let directory = ScratchDirectory::new("tag-named-hashes");
@@ -455,6 +460,7 @@ fn build_warns_of_a_request_that_matched_several_versions() {
 /// project, its id -- after an `as` -- and its version, the manifest by
 /// its `core:` path and its `newspeak.core` id, and never by a directory
 /// of the machine that built it, even without its source.
+// spec: image.load.modules
 #[test]
 fn load_names_modules_by_their_identity() {
     let directory = ScratchDirectory::new("build-identity");
@@ -560,6 +566,7 @@ fn a_project_builds_and_loads_as_it_runs() {
 /// `image::snapshot` is a host's image, not an application `build`
 /// packaged: it carries no start, so there is nothing for `load` to send
 /// `main:args:` to.
+// spec: image.load
 #[test]
 fn load_refuses_an_image_that_is_not_started() {
     use ns_runtime::{Interpreter, SourceOrigin};

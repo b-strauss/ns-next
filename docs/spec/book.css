@@ -1,0 +1,142 @@
+/* The rules' tables and test lists are wide; mdBook's 750px column cuts them. */
+:root {
+  --content-max-width: 1280px;
+}
+
+/* A rule's anchor: a slim bar above the rule's text, its identifier on the
+   left and its tests, folded, on the right. Every colour is one of the
+   theme's own variables, so that each of mdBook's themes keeps its look. */
+.rule {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 1em;
+  margin: 1.8em 0 0.5em;
+  /* The right padding keeps the identifier clear of the toggle. */
+  padding: 0.55em 9.4em 0.55em 0.8em;
+  border-left: 3px solid var(--links);
+  border-radius: 0 6px 6px 0;
+  background: var(--quote-bg);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.rule > a {
+  font-family: var(--mono-font);
+  font-weight: 600;
+  color: var(--links);
+  text-decoration: none;
+}
+
+.rule > a:hover {
+  text-decoration: underline;
+}
+
+/* Opened, the list takes the whole width beneath the identifier. The toggle
+   is pinned to the bar's top right corner, out of the flow, so opening or
+   closing moves nothing: it stands exactly where the identifier's line is,
+   as tall as that line. */
+.rule > details[open] {
+  /* Out across the bar's right padding, to the toggle's right edge. */
+  flex-basis: calc(100% + 8.6em);
+  margin-right: -8.6em;
+}
+
+.rule summary {
+  position: absolute;
+  top: 0.3em;
+  right: 0.8em;
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  box-sizing: border-box;
+  height: 2em;
+  padding: 0 0.95em 0 0.8em;
+  border: 1px solid var(--fg);
+  border-radius: 999px;
+  color: var(--fg);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.rule summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The arrow turns inside a box of its own width, so turning it changes no
+   size. */
+.rule summary::before {
+  content: "\25B8";
+  display: inline-block;
+  width: 1em;
+  font-size: 1.25em;
+  line-height: 1;
+  text-align: center;
+  transition: transform 0.15s ease;
+}
+
+.rule details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.rule summary:hover {
+  color: var(--fg);
+  background: var(--theme-hover);
+}
+
+/* Opened: the tests one beneath another, each a row of its name and, at the
+   row's end, its file. */
+.rule details ul {
+  margin: 0.5em 0 0.2em;
+  padding: 0.4em 0 0 0;
+  border-top: 1px solid var(--quote-border);
+  list-style: none;
+}
+
+.rule details li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 1.5em;
+  padding: 0.15em 0;
+}
+
+.rule details li + li {
+  border-top: 1px dotted var(--quote-border);
+}
+
+.rule details li code {
+  padding: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
+}
+
+/* A Rust test's file, after its name: quieter, since the name is what a
+   reader scans for. */
+.rule details li .test-file {
+  color: var(--icons);
+  font-size: 0.95em;
+  overflow-wrap: anywhere;
+}
+
+/* A rule no test names yet: said quietly, in the warning's colour. */
+.rule > span.rule-tests {
+  position: absolute;
+  top: 0.3em;
+  right: 0.8em;
+  box-sizing: border-box;
+  height: 2em;
+  padding: 0 0.95em;
+  line-height: calc(2em - 2px);
+  white-space: nowrap;
+  border: 1px dashed var(--warning-border);
+  border-radius: 999px;
+  color: var(--icons);
+  font-style: italic;
+}

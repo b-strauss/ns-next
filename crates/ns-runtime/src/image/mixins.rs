@@ -600,6 +600,17 @@ fn read_row(
         let access = access_from_tag(reader.read_u8()?)?;
         let argument_count = reader.read_u16()? as usize;
         check_argument_count("method", argument_count)?;
+        // A send of the selector passes as many arguments as it takes
+        // (`bytecode.verify.send-arity`), and the body is held to this
+        // count, so a record of another count would run its body over
+        // arguments no send gave it.
+        if argument_count != selector.arity() {
+            return Err(DecodeError::MethodArityMismatch {
+                selector: selector.as_str().to_string(),
+                argument_count,
+                arity: selector.arity(),
+            });
+        }
         let code = read_code_id(reader, codes)?;
         methods.push((selector, access, argument_count, code));
     }

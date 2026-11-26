@@ -624,6 +624,7 @@ impl<'a> Lowerer<'a> {
     /// the index answered names no instruction, which `patch_target`
     /// leaves alone and `finish` never keeps.
     fn emit(&mut self, instruction: Instruction) -> usize {
+        super::debug_assert_send_arity(&instruction);
         if self.too_large.is_none() {
             match super::emitting_passes_a_limit(self.code.len(), &instruction) {
                 Some(limit) => self.pass_a_limit(limit),

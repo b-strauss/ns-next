@@ -1188,6 +1188,83 @@ impl Instruction {
         }
     }
 
+    /// The selector and the argument sources of a send whose selector
+    /// decides how many arguments it passes -- a lexical, public, inlinable
+    /// or super send -- which the decoder and both lowerings hold to the
+    /// selector's arity (`bytecode.verify.send-arity`); `None` for every
+    /// other instruction. No `_` arm, so that a new instruction must
+    /// decide.
+    pub(crate) fn sent_message(&self) -> Option<(Symbol, &[u16])> {
+        match self {
+            Instruction::SendLexical {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendPublic {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendInlinable {
+                selector,
+                argument_sources,
+                ..
+            }
+            | Instruction::SendSuper {
+                selector,
+                argument_sources,
+                ..
+            } => Some((*selector, argument_sources)),
+            // Sends that name no selector the count is held to:
+            // `SendMirror` names a row of the VM mirror's table and has no
+            // wire tag, so only the kernel's own code holds one;
+            // `InitializeSuperclass`'s arguments are checked when it runs,
+            // against the factory of the class it initializes, before
+            // anything is entered (`instantiate::check_arity`);
+            // `InitializeAppliedLevel` passes the applying declaration's
+            // factory arguments to a level's initializer, checked as it
+            // runs against that body; and `CheckAppliedClause` passes no
+            // argument at all.
+            Instruction::SendMirror { .. }
+            | Instruction::InitializeSuperclass { .. }
+            | Instruction::InitializeAppliedLevel { .. }
+            | Instruction::CheckAppliedClause { .. } => None,
+            // Every other instruction delivers no message. `IntegerBinary`
+            // computes its operation inline and jumps to the ordinary send
+            // that follows it, which is checked as a send.
+            Instruction::LoadLiteral { .. }
+            | Instruction::LoadSelf { .. }
+            | Instruction::LoadEnclosingObject { .. }
+            | Instruction::Move { .. }
+            | Instruction::StoreLocal { .. }
+            | Instruction::LoadOuterLocal { .. }
+            | Instruction::StoreOuterLocal { .. }
+            | Instruction::MakeClosure { .. }
+            | Instruction::MakeArray { .. }
+            | Instruction::MakeVector { .. }
+            | Instruction::LoadVector { .. }
+            | Instruction::StoreVector { .. }
+            | Instruction::InitializeSlot { .. }
+            | Instruction::ReturnSlotIfFilled { .. }
+            | Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. }
+            | Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
+            | Instruction::Jump { .. }
+            | Instruction::JumpIfNotBoolean { .. }
+            | Instruction::BranchIfFalse { .. }
+            | Instruction::BranchIfTrue { .. }
+            | Instruction::IntegerBinary { .. }
+            | Instruction::AllocateInstance { .. }
+            | Instruction::InitializeInstance { .. } => None,
+        }
+    }
+
     /// The argument base and the argument sources of a send or an
     /// initializer invocation that names its argument slots; `None` for
     /// every other instruction, `InitializeInstance` among them, whose

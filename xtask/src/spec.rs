@@ -489,21 +489,48 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The tests that name `identifier`, each once, in order: a golden's file,
-/// or a Rust test's file and its name.
-fn tests_of(identifier: &str, references: &[Reference]) -> Vec<String> {
-    let mut tests: Vec<String> = Vec::new();
+/// The tests that name `identifier`, each once, in order, as their file and
+/// their name: a Rust test's function, or nothing for a golden, whose file
+/// is the test.
+fn tests_of(identifier: &str, references: &[Reference]) -> Vec<(String, String)> {
+    let mut tests: Vec<(String, String)> = Vec::new();
     for reference in references {
-        let test = if reference.name.is_empty() {
-            display(&reference.test)
-        } else {
-            format!("{} ({})", display(&reference.test), reference.name)
-        };
+        let test = (display(&reference.test), reference.name.clone());
         if reference.identifier == identifier && !tests.contains(&test) {
             tests.push(test);
         }
     }
     tests
+}
+
+/// A rule's tests as its anchor shows them: a list folded shut by default,
+/// since a rule may name dozens of tests and the prose around it is what a
+/// reader reads first, or `none yet`. A Rust test shows its name and, beneath
+/// it, its file; a golden its file alone. The HTML stays on one line, so that
+/// Markdown takes it as one HTML block.
+fn listed_tests(tests: &[(String, String)]) -> String {
+    if tests.is_empty() {
+        return "<span class=\"rule-tests\">tests: none yet</span>".to_string();
+    }
+    let noun = if tests.len() == 1 { "test" } else { "tests" };
+    let items: String = tests
+        .iter()
+        .map(|(file, name)| {
+            if name.is_empty() {
+                format!("<li><code>{}</code></li>", escape(file))
+            } else {
+                format!(
+                    "<li><code>{}</code><span class=\"test-file\">{}</span></li>",
+                    escape(name),
+                    escape(file)
+                )
+            }
+        })
+        .collect();
+    format!(
+        "<details class=\"rule-tests\"><summary>{} {noun}</summary><ul>{items}</ul></details>",
+        tests.len()
+    )
 }
 
 /// A chapter with each rule line made an anchor that lists the rule's tests.
@@ -512,19 +539,10 @@ fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
     let _ = walk_markdown(markdown, |_, line, outside| {
         match rule_line(line).filter(|_| outside) {
             Some(identifier) => {
-                let tests = tests_of(identifier, references);
-                let listed = if tests.is_empty() {
-                    "none yet".to_string()
-                } else {
-                    tests
-                        .iter()
-                        .map(|test| format!("<code>{}</code>", escape(test)))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
                 processed.push_str(&format!(
                     "<div class=\"rule\" id=\"r-{identifier}\"><a href=\"#r-{identifier}\">[{identifier}]</a> \
-                     <span class=\"rule-tests\">tests: {listed}</span></div>\n\n"
+                     {}</div>\n\n",
+                    listed_tests(&tests_of(identifier, references))
                 ));
             }
             None => {
@@ -642,6 +660,8 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     )?;
     let configuration = output_configuration(&read(&book.join("book.toml"))?)?;
     write(&output.join("book.toml"), &configuration)?;
+    // `additional-css` is relative to the book's root, which the copy moves.
+    write(&output.join("book.css"), &read(&book.join("book.css"))?)?;
     let status = std::process::Command::new("mdbook")
         .arg("build")
         .arg(output)
@@ -967,6 +987,38 @@ mod tests {
         scratch.write("crates/a/src/lib.rs", "// spec: lex.a\nfn helper() {}\n");
         let refusal = references_in(&scratch.0).expect_err("no test below");
         assert!(refusal.contains("lib.rs:1"), "{refusal}");
+    }
+
+    #[test]
+    fn a_rules_tests_are_a_list_folded_shut() {
+        let reference = |identifier: &str, name: &str| Reference {
+            identifier: identifier.to_string(),
+            test: PathBuf::from("crates/a/tests/b.rs"),
+            name: name.to_string(),
+            line: 1,
+        };
+        let references = [
+            reference("lex.a", "first"),
+            reference("lex.a", "second<T>"),
+            reference("lex.b", ""),
+        ];
+        let processed = processed_chapter("r[lex.a]\nr[lex.b]\nr[lex.c]\n", &references);
+        let lines: Vec<&str> = processed.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            [
+                "<div class=\"rule\" id=\"r-lex.a\"><a href=\"#r-lex.a\">[lex.a]</a> \
+                 <details class=\"rule-tests\"><summary>2 tests</summary><ul>\
+                 <li><code>first</code><span class=\"test-file\">crates/a/tests/b.rs</span></li>\
+                 <li><code>second&lt;T&gt;</code><span class=\"test-file\">crates/a/tests/b.rs</span></li>\
+                 </ul></details></div>",
+                "<div class=\"rule\" id=\"r-lex.b\"><a href=\"#r-lex.b\">[lex.b]</a> \
+                 <details class=\"rule-tests\"><summary>1 test</summary><ul>\
+                 <li><code>crates/a/tests/b.rs</code></li></ul></details></div>",
+                "<div class=\"rule\" id=\"r-lex.c\"><a href=\"#r-lex.c\">[lex.c]</a> \
+                 <span class=\"rule-tests\">tests: none yet</span></div>",
+            ]
+        );
     }
 
     #[test]

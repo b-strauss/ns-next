@@ -71,8 +71,10 @@ ns-analyzer hints::tests::a_comment_beside_a_reordered_declaration_or_on_the_sta
 ns-analyzer hints::tests::a_comment_in_or_beside_the_statement_keeps_it_where_it_is
 ns-analyzer hints::tests::a_comment_spelling_the_operator_is_left_alone
 ns-analyzer hints::tests::a_continued_value_keeps_its_place_under_the_declaration
+ns-analyzer hints::tests::a_first_keyword_send_of_the_setter_moves_into_the_declaration
 ns-analyzer hints::tests::a_guard_that_mentions_the_slot_keeps_its_assignment
 ns-analyzer hints::tests::a_header_slot_gets_no_hint
+ns-analyzer hints::tests::a_keyword_send_of_the_setter_keeps_a_local_mutable
 ns-analyzer hints::tests::a_local_a_later_initializer_captures_can_be_read_only
 ns-analyzer hints::tests::a_local_an_earlier_initializer_captures_stays_mutable
 ns-analyzer hints::tests::a_local_declared_before_an_initialized_one_moves_after_it
@@ -119,6 +121,7 @@ ns-analyzer module_metadata::tests::another_tag_is_not_checked
 ns-analyzer module_metadata::tests::the_binary_s_own_text_is_not_refused
 ns-analyzer module_metadata::tests::two_declarations_are_refused_at_the_second
 ns-analyzer semantic_tokens::tests::a_bare_outer_receiver_with_no_further_message_is_not_classified
+ns-analyzer semantic_tokens::tests::a_keyword_send_that_writes_a_local_colours_the_keyword_as_the_local
 ns-analyzer semantic_tokens::tests::a_message_to_an_object_colours_its_selector_as_a_method
 ns-analyzer semantic_tokens::tests::a_module_roots_clause_is_not_classified
 ns-analyzer semantic_tokens::tests::a_name_on_both_sides_is_coloured_by_the_side_the_send_reaches
@@ -213,6 +216,7 @@ ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runt
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_344064_348160
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_348160_352256
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_352256_356352
+ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_356352_360448
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_36864_40960
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_40960_45056
 ns-analyzer::corpus every_symbol_selection_lies_inside_its_range::crates/ns-runtime/core-library/Kernel.ns::bytes_4096_8192
@@ -363,6 +367,7 @@ ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtim
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_344064_348160
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_348160_352256
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_352256_356352
+ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_356352_360448
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_36864_40960
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_40960_45056
 ns-analyzer::corpus no_truncated_module_declares_an_empty_name::crates/ns-runtime/core-library/Kernel.ns::bytes_4096_8192
@@ -512,6 +517,7 @@ ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-ru
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_344064_348160
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_348160_352256
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_352256_356352
+ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_356352_360448
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_36864_40960
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_40960_45056
 ns-analyzer::corpus no_truncated_module_produces_an_internal_error::crates/ns-runtime/core-library/Kernel.ns::bytes_4096_8192
@@ -984,6 +990,7 @@ ns-runtime builtins::numbers::tower::tests::the_rounding_divisions_agree_with_th
 ns-runtime builtins::primitive::tests::integer_addition_is_its_own_mirror_primitive
 ns-runtime builtins::primitive::tests::the_mirror_table_may_pass_256_rows
 ns-runtime builtins::primitive::tests::the_transcript_rows_leave_machine_code_through_an_exit
+ns-runtime bytecode::compact::forms_tests::every_eight_byte_form_is_the_books
 ns-runtime bytecode::compact::tests::a_compact_instruction_is_eight_bytes
 ns-runtime bytecode::compact::tests::a_literal_takes_the_form_its_value_needs
 ns-runtime bytecode::compact::tests::a_patched_target_round_trips_narrow_and_wide
@@ -1157,6 +1164,7 @@ ns-runtime heap::value::tests::the_kind_of_the_zero_word_panics
 ns-runtime heap::value::tests::the_small_float_range_is_spurs
 ns-runtime heap::value::tests::the_words_are_spurs
 ns-runtime heap::value::tests::the_zero_word_names_no_object
+ns-runtime image::encode::wire_tests::the_books_wire_tags_are_the_encoders
 ns-runtime image::shipped_names::tests::a_clause_index_no_class_can_number_is_refused
 ns-runtime image::shipped_names::tests::a_count_past_the_bytes_left_is_refused
 ns-runtime image::shipped_names::tests::a_count_past_the_maximum_is_refused
@@ -1273,6 +1281,8 @@ ns-runtime numeric::rational::tests::to_f64_rounds_correctly_and_ties_to_even
 ns-runtime numeric::rational::tests::to_f64_rounds_up_from_a_subnormal_to_a_normal
 ns-runtime numeric::rational::tests::to_f64_underflows_a_negative_value_to_negative_zero
 ns-runtime resolver::classes::tests::a_superclass_clause_of_more_than_1024_clauses_is_refused
+ns-runtime resolver::local_writes::tests::a_write_becomes_the_assignment_its_target_named_by_the_keyword
+ns-runtime resolver::local_writes::tests::only_a_send_of_one_keyword_names_a_target
 ns-runtime resolver::scope::tests::a_parameter_resolves_but_declares_no_setter
 ns-runtime resolver::scope::tests::a_shadowing_parameter_passes_the_setter_send_to_the_outer_mutable_local
 ns-runtime resolver::scope::tests::enclosing_scope_resolves_to_outer_local
@@ -1293,6 +1303,7 @@ ns-runtime shipped_code::tests::generating_without_primitive_methods_is_refused
 ns-runtime shipped_code::tests::only_the_optimized_lowering_with_primitive_methods_uses_the_artifact
 ns-runtime shipped_code::tests::the_fingerprints_the_gates_compute_are_the_binarys
 ns-runtime shipped_code::tests::the_two_fingerprints_differ
+ns-runtime spec_tables::image_format::the_books_image_tags_are_the_encoders
 ns-runtime symbol::tests::a_lookup_finds_what_was_interned_and_inserts_nothing
 ns-runtime symbol::tests::as_str_round_trips
 ns-runtime symbol::tests::different_strings_intern_to_different_symbols
@@ -1337,17 +1348,22 @@ ns-runtime::element_access an_element_access_answers_what_it_was_made_of
 ns-runtime::image a_backwards_source_span_is_a_decode_error_not_a_panic
 ns-runtime::image a_bad_magic_is_rejected
 ns-runtime::image a_copied_count_that_does_not_fit_the_register_file_is_a_decode_error
+ns-runtime::image a_factory_of_256_parameters_is_refused
 ns-runtime::image a_header_flag_of_the_retired_module_text_layout_is_rejected
 ns-runtime::image a_header_flag_this_build_does_not_assign_is_rejected
 ns-runtime::image a_huge_code_table_count_does_not_reserve_gigabytes
 ns-runtime::image a_huge_length_prefix_does_not_overflow_or_panic
 ns-runtime::image a_length_prefix_past_the_end_is_an_error_not_a_panic
+ns-runtime::image a_method_record_whose_argument_count_is_not_its_selectors_is_refused
+ns-runtime::image a_mixin_row_whose_range_ends_before_it_starts_is_refused
 ns-runtime::image a_mixin_table_that_is_not_a_declaration_tree_is_an_error
 ns-runtime::image a_mixin_tree_just_inside_the_nesting_ceiling_still_decodes
+ns-runtime::image a_mixin_tree_nested_131_rows_deep_is_refused
 ns-runtime::image a_retired_code_kind_tag_is_refused
 ns-runtime::image a_retired_stateless_flag_is_refused_as_unknown
 ns-runtime::image a_root_list_code_id_out_of_range_is_a_decode_error_not_a_panic
 ns-runtime::image a_root_lists_selector_id_out_of_range_is_a_decode_error_not_a_panic
+ns-runtime::image a_row_nesting_a_row_of_an_earlier_tree_is_refused
 ns-runtime::image a_truncated_image_is_an_error_not_a_panic
 ns-runtime::image a_version_mismatch_is_rejected_not_migrated
 ns-runtime::image an_empty_symbol_tables_get_is_an_error_not_a_panic
@@ -1393,6 +1409,8 @@ ns-runtime::resolver a_class_side_may_not_declare_a_keyword_factory_selector
 ns-runtime::resolver a_class_side_may_not_declare_the_default_factory_selector
 ns-runtime::resolver a_class_side_may_not_declare_the_factory_selector
 ns-runtime::resolver a_class_side_method_under_another_selector_resolves
+ns-runtime::resolver a_keyword_send_passes_an_immutable_local_by
+ns-runtime::resolver a_keyword_send_to_a_mutable_local_is_its_assignment
 ns-runtime::resolver a_lazy_slot_initializer_does_not_see_the_factory_parameters
 ns-runtime::resolver a_lowercase_outer_class_name_is_an_outer_send
 ns-runtime::resolver a_mixin_clause_receiver_binds_exactly_as_a_superclass_receiver_does
@@ -1414,6 +1432,7 @@ ns-runtime::resolver method_temporary_resolves_as_local
 ns-runtime::resolver outer_named_send_resolves_to_the_exact_depth
 ns-runtime::resolver self_send_resolves_to_depth_zero
 ns-runtime::resolver super_send_resolves_to_super_send_binding
+ns-runtime::resolver the_editor_keeps_a_local_write_a_send_and_binds_its_target
 ns-runtime::resolver the_root_rule_leaves_the_primary_factory_free
 ns-runtime::resolver undeclared_outer_class_name_is_a_resolve_error
 ns-runtime::shipped_source_files a_shipped_module_source_is_the_text_of_its_file
@@ -1928,9 +1947,9 @@ xtask::bin/xtask codegen::tests::the_listing_gives_each_function_its_size
 xtask::bin/xtask mcp::tests::a_copy_already_there_stays
 xtask::bin/xtask mcp::tests::a_stale_partial_copy_is_removed_and_a_fresh_one_stays
 xtask::bin/xtask mcp::tests::the_build_is_copied_when_no_copy_is_there
+xtask::bin/xtask mcp::tests::without_a_build_the_task_refuses
 xtask::bin/xtask references::tests::every_paper_is_ignored_and_listed_with_its_checksum
 xtask::bin/xtask references::tests::the_hash_is_fips_180s
-xtask::bin/xtask mcp::tests::without_a_build_the_task_refuses
 xtask::bin/xtask spec::tests::a_book_toml_that_cannot_be_pointed_at_the_copy_is_refused
 xtask::bin/xtask spec::tests::a_chapter_missing_from_the_summary_is_refused
 xtask::bin/xtask spec::tests::a_duplicate_identifier_is_refused
@@ -1958,7 +1977,13 @@ xtask::bin/xtask tests::a_stress_run_of_the_corpus_sets_its_switch
 xtask::bin/xtask tests::a_volume_is_named_after_its_checkout
 xtask::bin/xtask tests::every_stress_run_leaves_out_the_tests_it_cannot_reach_and_only_wide_checks_the_metadata
 xtask::bin/xtask tests::no_step_rebuilds_the_running_xtask
+xtask::bin/xtask tests::only_a_part_of_its_own_keeps_that_part
+xtask::bin/xtask tests::only_a_step_the_groups_lack_is_refused_naming_theirs
+xtask::bin/xtask tests::only_formatting_runs_without_the_shipped_code
+xtask::bin/xtask tests::only_keeps_the_named_step_and_the_shipped_code
 xtask::bin/xtask tests::only_linux_runs_the_benchmark_programs
+xtask::bin/xtask tests::only_one_stress_run_keeps_that_run_alone
+xtask::bin/xtask tests::only_the_shipped_code_keeps_it_alone
 xtask::bin/xtask tests::the_aarch64_suite_runs_for_its_target
 xtask::bin/xtask tests::the_codegen_group_runs_the_budgets
 xtask::bin/xtask tests::the_commit_group_builds_the_specification
@@ -1972,6 +1997,7 @@ xtask::bin/xtask tests::the_shipped_code_runs_once_right_after_formatting
 xtask::bin/xtask tests::the_stress_group_also_runs_the_suite_without_the_jit
 xtask::bin/xtask tests::the_stress_group_runs_fifteen_modes
 xtask::bin/xtask tests::the_stress_suites_share_the_threads_by_their_lengths
+xtask::bin/xtask tests::the_stress_workflow_runs_every_stress_run
 xtask::bin/xtask tests::the_usage_names_every_group
 xtask::bin/xtask tests::without_formatting_the_shipped_code_runs_first
 xtask::bin/xtask unreached::tests::a_generated_profile_narrows_its_parents_filter
@@ -1994,6 +2020,7 @@ ns-runtime bytecode::compact::tests::the_family_size_and_outer_reach_read_off_th
 ns-runtime bytecode::compact::tests::the_visit_stops_at_the_first_error_and_answers_it
 ns-runtime bytecode::leftovers::tests::the_deepest_nesting_stays_within_the_bound
 ns-runtime bytecode::leftovers::tests::the_flat_worst_case_stays_within_the_bound
+ns-runtime bytecode::register_effects_tests::every_instruction_has_the_register_effects_the_book_gives
 ns-runtime bytecode::tests::a_body_built_narrow_equals_the_same_body_built_wide
 ns-runtime bytecode::tests::a_body_with_an_own_slot_instruction_addresses_its_own_slots
 ns-runtime bytecode::tests::a_body_without_one_does_not
@@ -2016,6 +2043,8 @@ ns-runtime compiler::evaluation::tests::a_block_in_the_expression_reaches_the_fr
 ns-runtime compiler::evaluation::tests::a_caret_in_a_nested_block_is_refused
 ns-runtime compiler::evaluation::tests::a_caret_is_refused
 ns-runtime compiler::evaluation::tests::a_frame_variable_reads_through_the_outer_frame
+ns-runtime compiler::evaluation::tests::a_keyword_send_to_a_parameter_is_refused_as_its_assignment_is
+ns-runtime compiler::evaluation::tests::a_keyword_send_writes_the_frame_variable_as_its_assignment_does
 ns-runtime compiler::evaluation::tests::a_label_is_a_parameter
 ns-runtime compiler::evaluation::tests::a_label_is_not_assignable
 ns-runtime compiler::evaluation::tests::a_parameter_is_not_assignable
@@ -2069,6 +2098,7 @@ ns-runtime compiler::lower::tests::a_slot_initializer_that_assigns_a_parameter_c
 ns-runtime compiler::lower::tests::a_slot_initializer_that_assigns_a_slot_copies_its_value_out_of_the_local
 ns-runtime compiler::lower::tests::a_super_send_names_contiguous_argument_slots
 ns-runtime compiler::lower::tests::a_super_send_of_an_inlinable_selector_is_not_inlined
+ns-runtime compiler::lower::tests::a_unary_loop_on_a_block_with_a_parameter_is_sent
 ns-runtime compiler::lower::tests::an_assignment_two_inlined_levels_deep_in_a_block_copies_the_operand
 ns-runtime compiler::lower::tests::an_assignment_two_inlined_levels_deep_in_a_method_copies_the_operand
 ns-runtime compiler::lower::tests::an_empty_block_returns_nil_and_a_multi_statement_block_returns_its_last_value
@@ -2100,6 +2130,7 @@ ns-runtime compiler::lower::tests::scratch_registers_reset_between_statements
 ns-runtime compiler::lower::tests::the_fallback_closure_of_an_inlined_conditional_stays_by_reference
 ns-runtime compiler::lower::tests::the_inlined_fast_path_keeps_the_ordinary_send_as_its_fallback
 ns-runtime compiler::lower::tests::the_inlined_fast_paths_fallback_reuses_the_registers_the_guard_read
+ns-runtime compiler::lower::tests::the_unary_loops_and_repeat_compile_to_a_back_edge_and_no_closure
 ns-runtime compiler::lower::tests::while_true_compiles_to_a_back_edge_jump_and_a_non_boolean_signal
 ns-runtime compiler::reference::tests::a_block_past_the_register_ceiling_raises_on_its_own
 ns-runtime compiler::reference::tests::a_block_with_more_parameters_than_registers_takes_as_many_as_it_can_count
@@ -2150,6 +2181,8 @@ ns-runtime debugger::metadata::tests::every_statement_start_is_recorded_with_its
 ns-runtime debugger::metadata::tests::may_have_run_follows_the_back_edge
 ns-runtime debugger::metadata::tests::may_have_run_is_false_before_the_capture
 ns-runtime debugger::metadata::tests::the_innermost_of_a_shadowed_name_comes_first
+ns-runtime image::encode::wire_tests::a_body_is_written_as_the_book_lays_it_out
+ns-runtime image::encode::wire_tests::each_instruction_is_written_as_the_book_lays_it_out
 ns-runtime jit::baseline::tests::a_forward_diamond_without_a_loop_is_no_reason_to_enter
 ns-runtime jit::baseline::tests::a_loop_reachable_only_past_an_exit_is_no_reason_to_enter
 ns-runtime jit::baseline::tests::a_return_is_a_reason_to_enter
@@ -2206,6 +2239,7 @@ ns-runtime::image a_body_that_ends_in_a_non_boolean_signal_is_terminated
 ns-runtime::image a_body_that_runs_past_its_last_instruction_is_refused
 ns-runtime::image a_body_the_code_table_does_not_hold_has_no_id
 ns-runtime::image a_body_with_an_instantiation_instruction_is_accepted
+ns-runtime::image a_class_side_method_named_like_the_factory_is_refused
 ns-runtime::image a_decoded_lazy_slot_keeps_its_getter
 ns-runtime::image a_decoded_slot_defines_its_accessors
 ns-runtime::image a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow
@@ -2232,6 +2266,7 @@ ns-runtime::image a_row_whose_method_shares_a_slot_accessors_selector_is_refused
 ns-runtime::image a_send_whose_argument_slots_leave_the_body_is_refused
 ns-runtime::image a_send_whose_slots_start_below_the_scratch_is_refused
 ns-runtime::image a_send_whose_source_is_another_of_its_slots_is_refused
+ns-runtime::image a_statement_map_leaving_its_body_is_refused
 ns-runtime::image a_store_to_an_outer_local_is_checked_like_a_load
 ns-runtime::image a_write_to_an_argument_register_is_refused
 ns-runtime::image an_image_past_the_verification_bound_is_refused
@@ -2244,6 +2279,7 @@ ns-runtime::image an_invalid_slot_kind_tag_is_a_decode_error_not_a_panic
 ns-runtime::image an_outer_local_at_depth_zero_is_bounded_by_its_own_register_file
 ns-runtime::image an_outer_local_deeper_than_the_lexical_nesting_is_bounded_by_the_outermost_body
 ns-runtime::image an_outer_local_in_the_enclosing_frames_scratch_is_refused
+ns-runtime::image an_outer_local_naming_its_outer_bodys_header_is_refused
 ns-runtime::image an_outer_local_past_its_lexical_parents_register_file_is_refused
 ns-runtime::image an_outer_local_within_its_lexical_parents_register_file_verifies
 ns-runtime::image call_site_and_call_site_mut_agree_on_every_instruction_variant
