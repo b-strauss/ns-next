@@ -103,11 +103,24 @@ the re-entries moved", has the full measurement protocol and its history.
    `0xC03C03` (in PowerShell `Start-Process` and then
    `$process.ProcessorAffinity = 0xC03C03`, or `cmd /c start /affinity
    C03C03 /wait …`), on both sides, and say so in the report.
-8. **Never time with `--jit-statistics`.** The flag switches the JIT's
+8. **Never redirect a timed process's output with PowerShell's
+   `Start-Process -RedirectStandardOutput`.** Everything a program prints
+   during `main:args:` lies in the timed span, each `show:` a write and a
+   flush, and into that redirection's file it cost about 1.7 ms a run:
+   every program under 5 ms measured 1.8 to 2.4 ms, `bench_loop.ns` 25
+   times its time -- in a folder the virus scanner excludes too, while
+   `cmd`'s `>` into a fresh file measured right. Start the process through
+   `System.Diagnostics.Process` with `RedirectStandardOutput` and
+   `RedirectStandardError` set, read stdout with `ReadToEndAsync()` and
+   stderr with `ReadToEnd()`, then set the affinity of point 7 on the
+   started process; or `cmd /c start /affinity C03C03 /b /wait … > <file>`
+   (`execution.md`, "A timed process's output never goes through
+   PowerShell's `Start-Process -RedirectStandardOutput`").
+9. **Never time with `--jit-statistics`.** The flag switches the JIT's
    counting on, which compiles other machine code -- counted stubs and
    counted dispatching tails -- so a timed run with it measures that code.
    Take the statistics in runs of their own, beside the timed ones.
-9. **Report** the per-build numbers, the pooled result and the spread, and
+10. **Report** the per-build numbers, the pooled result and the spread, and
    name what the measurement did not cover before drawing a design
    conclusion from it.
 
@@ -127,5 +140,8 @@ the re-entries moved", has the full measurement protocol and its history.
 - Timing without the affinity to the performance cores, so the scheduler's
   move to an efficiency core shows up as a regression.
 - Timing a run with `--jit-statistics`, whose counting changes the code.
+- Redirecting a timed process's output with `Start-Process
+  -RedirectStandardOutput`, whose file makes every write of the timed
+  span slow.
 - Timing a send-path change without the `dumpbin` check, so an outlined
   `run_stretch` shows up as the change's cost.
