@@ -1264,7 +1264,10 @@ leaves these to the run, where they are checked or cannot go wrong:
 - a vector's index and size, which `LoadVector` and `StoreVector` check
   as they run;
 - a `LoadEnclosingObject`'s and a `SendLexical`'s depth: one past the
-  chain of enclosing objects the walk out finds answers `nil`.
+  chain of enclosing objects the walk out finds answers `nil`;
+- an `InitializeSuperclass`'s argument count, which is checked when it
+  runs, against the factory of the class it initializes, before anything
+  is entered.
 
 The shipped core library's code, which the binary embeds, is not decoded
 by these rules: it is the binary's own, and the binary that built it

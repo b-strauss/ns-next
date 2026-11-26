@@ -752,13 +752,18 @@ r[image.verify.started-image-roots]
 28. A started image has exactly one root, the application `load` starts.
 
 r[image.verify.mirror]
-29. No image holds the VM mirror, its class or `Top`
+29. No image holds the VM mirror, nor an instance of its class or of
+    `Top`, and neither class stands where a program could reach it
     ([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)):
-    - the mirror's class has no declaration, so no shipped name names it;
-    - `Top` stands only as a frame's class
+    - the mirror's class has no declaration, so no shipped name names it
+      or its metaclass;
+    - `Top` is never a value, a superclass or a record's class. It stands
+      only as a frame's class and as a reified mixin's mixin, which
+      carries no authority
       ([`image.shipped.positions`](#r-image.shipped.positions));
-    - a writer refuses a graph that reaches the mirror, its class, `Top`
-      or their metaclasses, and writes no image of it.
+    - a writer refuses a graph that reaches the mirror, and one that
+      reaches the mirror's class, `Top` or their metaclasses as a value,
+      and writes no image of it.
 
 r[image.verify.not-checked]
 A load checks no more of an image than these rules and the bytecode
@@ -769,18 +774,19 @@ checked or cannot go wrong:
   instance of a value class is rebuilt from its record, and its slots
   are not initialized again. A crafted image can therefore hand back a
   value whose slot holds a mutable object. That is a wrong answer, never
-  a crash: every slot access is bounded by its object.
+  a crash: every slot access is bounded by its object. (`docs/OPEN-WORK.md`,
+  "Known defects and gaps".)
 - **A second class record applying a module's root row**, beside the one
   the module section names. It builds a class of that declaration, as a
   run could, and the module's root stays the record the section names.
+  (`docs/OPEN-WORK.md`, "Planned: images, liveness and reflection".)
 - **That a level sits directly above a class of its applying row.** The
   initializer instructions check every level they reach as they run, and
-  signal an error rather than reach past it.
+  signal an error rather than reach past it. (`docs/OPEN-WORK.md`,
+  "Known defects and gaps".)
 
 What a body leaves to the run is given by
 [`bytecode.verify.not-checked`](bytecode.md#r-bytecode.verify.not-checked).
-Each of these is an item of `docs/OPEN-WORK.md`, "Known defects and
-gaps".
 
 ## Bounds
 
