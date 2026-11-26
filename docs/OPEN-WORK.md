@@ -3316,11 +3316,6 @@ program's subclass of `String` as an argument, the error of a
   error. Pinned by `tests/trampoline.rs`'s
   `a_return_into_a_running_initializer_escapes_the_run`.
   [execution.md](design/execution.md), "Activations".
-- **The identity leaves index `arguments[0]` unchecked**
-  (`builtins/object_class.rs`, `==` and `Object`'s `=`), and the decoder does
-  not check a send's argument count against its selector, so a crafted
-  artifact can panic while executing — not a decoder defect, but a check
-  away from none.
 - **A ready-made instance decoded from an image is not re-checked** against
   §3.1.1's value conditions (a decoded class is). Also unchecked: a value class
   nothing instantiates, agreement of `=` and `hash`, and global uniqueness of

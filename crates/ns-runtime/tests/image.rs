@@ -1675,6 +1675,7 @@ fn each_unbuilt_literal_decodes_to_its_construct() {
 /// name an applied level a class without one, each with an ordinary error
 /// rather than a panic, and the superclass initialization of a class whose
 /// superclass runs no code answers the receiver.
+// spec: image.run
 #[test]
 fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     let source = indoc! {"
@@ -1786,6 +1787,7 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
 /// (`a_view_and_a_builder_round_trip_through_a_package` loads one of
 /// unary, binary and keyword sends).
 // spec: bytecode.verify.send-arity
+// spec: image.run
 #[test]
 fn a_send_whose_argument_count_is_not_its_selectors_is_refused() {
     let source = indoc! {"
@@ -1854,6 +1856,35 @@ fn a_send_whose_argument_count_is_not_its_selectors_is_refused() {
             ),
         }
     }
+}
+
+/// A loaded image's code recurses as its source would: its recursion ends
+/// at the depth limit with the Newspeak error a run from source signals,
+/// never in a native stack overflow.
+// spec: image.run
+#[test]
+fn a_loaded_images_recursion_ends_at_the_depth_limit() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public recurse = ( ^self recurse )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(mutator, false, "t.ns", class, &[instance]).expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let result = loaded
+        .interpreter
+        .send(&loaded.roots[0], Symbol::intern("recurse"), &[]);
+    assert_eq!(
+        expect_error(result, "recurse"),
+        "stack overflow: recursion too deep"
+    );
 }
 
 /// The image's error for `source`'s module: a snapshot of its class alone,
@@ -2163,6 +2194,7 @@ fn non_canonical_large_integer_payloads() -> Vec<(&'static str, Vec<u8>, decode:
 }
 
 // spec: bytecode.verify.large-integer
+// spec: image.verify.numbers
 #[test]
 fn a_non_canonical_large_integer_is_refused() {
     for (case, payload, expected) in non_canonical_large_integer_payloads() {
@@ -2361,6 +2393,7 @@ fn a_fraction_is_a_value_not_a_record() {
 /// A `VALUE_FRACTION` the decoder must refuse, each with the error it
 /// answers: a pair outside the normal form -- a denominator of 0, of 1 or
 /// below 0, or a factor both parts share -- and a part that is no integer.
+// spec: image.verify.numbers
 #[test]
 fn a_fraction_outside_its_normal_form_is_refused() {
     let small = |writer: &mut encode::Writer, integer: i64| {
@@ -2474,6 +2507,7 @@ fn fraction_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
 /// field: a record of fields under it would be a fraction whose normal
 /// form nothing checked, and the first pass refuses it before anything is
 /// allocated.
+// spec: image.verify.shipped-instances
 #[test]
 fn a_fraction_record_with_fields_is_refused() {
     let two_fields = fraction_record(|writer| {
@@ -4027,6 +4061,7 @@ fn a_program_holding_mirrors_loads_back_holding_them() {
 
 /// The VM mirror's class has no declaration and so no name; its mixin, and
 /// that mixin's class side, are refused as the class is (lock (5)).
+// spec: image.verify.mirror
 #[test]
 fn the_mirror_class_mixin_is_never_written() {
     for class_side in [false, true] {
@@ -4926,6 +4961,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
 /// A frame reference whose id is in range but names a record that is not a
 /// frame record is refused where it is read: every frame record's
 /// placeholder is a frame object from the start, so the decoder knows.
+// spec: image.verify.frames
 #[test]
 fn a_frame_reference_naming_a_string_is_refused() {
     let mut writer = encode::Writer::new();
@@ -4970,6 +5006,7 @@ fn a_huge_object_count_does_not_allocate_gigabytes() {
 /// cannot hold is refused by the first pass, before any record -- this one
 /// included -- is allocated.
 // spec: image.verify.counts
+// spec: image.bound.sizing
 #[test]
 fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before_allocating() {
     let mut writer = encode::Writer::new();
@@ -5003,6 +5040,7 @@ fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before
 /// sizes exceed what its bytes can hold is refused with nothing allocated --
 /// not even the well-formed record ahead of the one that overclaims.
 // spec: image.verify.counts
+// spec: image.bound.sizing
 #[test]
 fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
     let mut writer = encode::Writer::new();
@@ -5046,6 +5084,7 @@ fn one_byte_array_record(length: u32, written: usize) -> Vec<u8> {
     })
 }
 
+// spec: image.bound.sizing
 #[test]
 fn a_truncated_byte_array_record_is_refused_before_allocating() {
     let bytes = one_byte_array_record(1_000_000, 8); // a million bytes, eight written
@@ -5062,6 +5101,7 @@ fn a_truncated_byte_array_record_is_refused_before_allocating() {
     );
 }
 
+// spec: image.bound.sizing
 #[test]
 fn an_overlong_byte_array_length_is_refused() {
     let bytes = one_byte_array_record(u32::MAX, 16);
@@ -5094,6 +5134,7 @@ fn a_crafted_byte_array_record_decodes_to_its_bytes() {
 /// methods read fields it does not have, and a record of another body
 /// under `ByteArray`'s header one whose leaves find no bytes. Both are
 /// refused by the first pass, before anything is allocated.
+// spec: image.verify.byte-arrays
 #[test]
 fn a_byte_array_record_and_the_byte_array_class_go_together() {
     let byte_array_under = |header: u32| {
@@ -5224,6 +5265,7 @@ fn a_crafted_weak_array_and_ephemeron_decode_to_their_values() {
 
 /// A weak-array record under any class but `WeakArray` would be an object
 /// of that class holding weakly what its methods take for strong slots.
+// spec: image.verify.weak-records
 #[test]
 fn a_weak_array_record_on_another_class_is_refused() {
     for header in [ARRAY_NAME, OBJECT_NAME, EPHEMERON_NAME] {
@@ -5243,6 +5285,7 @@ fn a_weak_array_record_on_another_class_is_refused() {
 /// refused as soon as its body is read -- a byte-array body by the
 /// byte-array check, which comes first -- so the bytes after it are never
 /// looked at.
+// spec: image.verify.weak-records
 #[test]
 fn another_body_under_the_weak_array_class_is_refused() {
     for body in [
@@ -5277,6 +5320,7 @@ fn another_body_under_the_weak_array_class_is_refused() {
 /// slots, none: one of more fields is refused before anything is
 /// allocated, and one of none decodes to the instance `withoutSlots`
 /// makes.
+// spec: image.verify.weak-records
 #[test]
 fn an_instance_record_under_the_weak_array_class_has_no_fields() {
     for count in [1, 2] {
@@ -5309,6 +5353,7 @@ fn an_instance_record_under_the_weak_array_class_has_no_fields() {
 /// strongly, which no program makes. Under `WeakArray`'s header the
 /// weak-array check refuses it first
 /// (`another_body_under_the_weak_array_class_is_refused`).
+// spec: image.verify.weak-records
 #[test]
 fn an_ephemeron_record_on_another_class_is_refused() {
     for header in [OBJECT_NAME, ARRAY_NAME] {
@@ -5344,6 +5389,7 @@ fn an_ephemeron_record_on_another_class_is_refused() {
 
 /// An `Ephemeron` has exactly its class's three fields, the key first; a
 /// record of any other count is refused before its values are read.
+// spec: image.verify.weak-records
 #[test]
 fn an_ephemeron_record_with_another_field_count_is_refused() {
     for count in [0, 1, 2, 4] {
@@ -5468,6 +5514,7 @@ fn a_crafted_mixin_record_decodes_to_the_canonical_object() {
 /// A reified mixin is canonical, as a symbol is: a second record for one
 /// mixin, or one for a mixin the heap has reified already, would give it
 /// two identities.
+// spec: image.verify.mixin-records
 #[test]
 fn two_records_for_one_mixin_are_refused() {
     for side in [MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS] {
@@ -5515,6 +5562,7 @@ fn a_mixin_record_past_the_table_is_refused() {
     }
 }
 
+// spec: image.verify.mixin-records
 #[test]
 fn a_mixin_record_with_side_two_is_refused() {
     for side in [2, u8::MAX] {
@@ -5533,6 +5581,7 @@ fn a_mixin_record_with_side_two_is_refused() {
 /// A class side is named through its instance side, with side 1, so that
 /// each mixin has one spelling: a class side's own row is refused at
 /// either side.
+// spec: image.verify.mixin-records
 #[test]
 fn a_mixin_record_naming_a_class_side_row_is_refused() {
     for side in [MIXIN_SIDE_INSTANCE, MIXIN_SIDE_CLASS] {
@@ -5549,6 +5598,7 @@ fn a_mixin_record_naming_a_class_side_row_is_refused() {
 /// Only a class's shipped name names a mixin: a module instance or a
 /// metaclass is no declaration of one.
 // spec: image.shipped.positions
+// spec: image.verify.mixin-records
 #[test]
 fn a_mixin_record_naming_a_shipped_module_instance_is_refused() {
     for (name, shown) in [
@@ -5567,6 +5617,7 @@ fn a_mixin_record_naming_a_shipped_module_instance_is_refused() {
 /// A mixin record under any class but `Mixin` would make an object of that
 /// class stand for a mixin. Under `WeakArray`'s header the weak-array check
 /// refuses it first.
+// spec: image.verify.mixin-records
 #[test]
 fn a_mixin_record_on_another_class_is_refused() {
     for header in [OBJECT_NAME, ARRAY_NAME, WEAK_ARRAY_NAME] {
@@ -5594,6 +5645,7 @@ fn a_mixin_record_on_another_class_is_refused() {
 /// `Mixin`'s header carries a mixin record and nothing else: an instance
 /// record of it, its one field an id, would stand for whatever mixin the
 /// id named, outside the canonical table.
+// spec: image.verify.mixin-records
 #[test]
 fn an_instance_record_of_the_mixin_class_is_refused() {
     for body in [OBJECT_INSTANCE, OBJECT_ARRAY] {
@@ -5936,6 +5988,7 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     }
 }
 
+// spec: image.verify.symbols
 #[test]
 fn a_symbol_recorded_twice_is_refused() {
     // A canonical heap never encodes two records of one symbol, so a graph
@@ -5960,6 +6013,7 @@ fn a_symbol_recorded_twice_is_refused() {
     assert_eq!(error.to_string(), "symbol #foo is recorded twice");
 }
 
+// spec: image.verify.symbols
 #[test]
 fn a_string_recorded_with_the_class_symbol_is_refused() {
     // A Symbol is a String whose class is `Symbol`, one object per text;
@@ -5980,6 +6034,7 @@ fn a_string_recorded_with_the_class_symbol_is_refused() {
     );
 }
 
+// spec: image.verify.symbols
 #[test]
 fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
     // `decode_graph_section` enters every `OBJECT_SYMBOL` record into the
@@ -6150,6 +6205,7 @@ fn a_class_records_enclosing_id_out_of_range_is_a_decode_error_not_a_panic() {
     );
 }
 
+// spec: image.verify.class-records
 #[test]
 fn a_class_records_enclosing_scalar_is_a_decode_error_not_a_silent_nil() {
     let bytes = one_class_object(0, |writer| {
@@ -6180,6 +6236,7 @@ fn a_class_records_declaring_class_id_out_of_range_is_a_decode_error_not_a_panic
     );
 }
 
+// spec: image.verify.class-records
 #[test]
 fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     // An in-range id is not enough: nothing in the stream forces a tag-2
@@ -6207,6 +6264,7 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     );
 }
 
+// spec: image.verify.class-records
 #[test]
 fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
     // An application is derived from the superclass's, so a cycle has no
@@ -6637,6 +6695,7 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
 /// A closure frame's object id is in range but names a string: refused once
 /// every record is read, like a class reference that names an ordinary
 /// object, since only then is it known what the record was.
+// spec: image.verify.frames
 #[test]
 fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     let mut writer = encode::Writer::new();
@@ -6684,6 +6743,49 @@ fn a_top_level_frame_kind_decodes() {
         assert!(decoded.roots.is_empty());
         assert_eq!(decoded.max_identity_hash, 0);
     });
+}
+
+/// A frame names its body as its kind spells it: a top-level frame names
+/// none, a factory frame names its body by declaration -- the factory its
+/// class derives -- and every other kind names one. A spelling its kind
+/// does not take is refused, as a body of the wrong kind is.
+// spec: image.verify.frames
+#[test]
+fn a_frame_body_its_kind_does_not_spell_is_refused() {
+    let cases = [
+        (
+            "a top-level frame naming a body",
+            FRAME_TOP_LEVEL,
+            FRAME_BODY_CODE,
+        ),
+        (
+            "a factory frame naming a body",
+            FRAME_FACTORY,
+            FRAME_BODY_CODE,
+        ),
+        (
+            "a factory frame naming none",
+            FRAME_FACTORY,
+            FRAME_BODY_NONE,
+        ),
+    ];
+    for (what, kind, body) in cases {
+        let mut writer = one_frame_prefix();
+        writer.write_u8(kind);
+        if kind == FRAME_FACTORY {
+            shipped(&mut writer, OBJECT_NAME); // the class the factory runs on
+        }
+        writer.write_u8(body);
+        if body == FRAME_BODY_CODE {
+            writer.write_u32(0); // the fixture's one body
+        }
+        frame_tail(&mut writer, 0, 0);
+        writer.write_u32(0); // no roots
+        let mut fixture = GraphFixture::new();
+        fixture.codes = vec![block_code(0, 0)];
+        let error = fixture.decode_error(&writer.into_bytes());
+        assert_eq!(error, decode::DecodeError::FrameCodeMismatch, "{what}");
+    }
 }
 
 /// A block `CompiledCode` taking `argument_count` arguments and
@@ -9490,6 +9592,7 @@ fn foo_frame_at_program_counter(
 /// An image is written only when no activation runs, so a frame it carries
 /// has returned and is marked so. One that is not could be resumed from the
 /// registers and program counter its author wrote.
+// spec: image.verify.frames
 #[test]
 fn a_frame_not_marked_uncontinuable_is_refused() {
     let mut writer = one_frame_prefix();
@@ -9506,6 +9609,7 @@ fn a_frame_not_marked_uncontinuable_is_refused() {
 
 /// Only a closure's activation has a home, the activation its `^` returns
 /// from; a method frame that names one is not something a run produces.
+// spec: image.verify.frames
 #[test]
 fn a_method_frame_with_a_home_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -9526,6 +9630,7 @@ fn a_method_frame_with_a_home_is_refused() {
 
 /// The record can leave a closure frame's home out, and a `^` in its body
 /// would then have nowhere to return to.
+// spec: image.verify.frames
 #[test]
 fn a_closure_frame_without_a_home_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -9562,6 +9667,7 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
 /// writes all of it, so a frame with none for a body that has some is not
 /// something a run produces: refused like any other register file that
 /// disagrees with its body.
+// spec: image.verify.frames
 #[test]
 fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -9583,6 +9689,7 @@ fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
     );
 }
 
+// spec: image.verify.frames
 #[test]
 fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // `foo`'s body has two registers above its header; this activation has
@@ -9613,6 +9720,7 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
 /// as frame objects were laid out before they left them out, holds 13
 /// registers too many for its body: refused rather than read with its
 /// registers above the header shifted by 13.
+// spec: image.verify.frames
 #[test]
 fn a_frame_with_fields_for_the_header_numbers_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -9681,6 +9789,7 @@ fn a_frame_of_a_body_whose_arguments_fill_the_register_ceiling_verifies() {
     });
 }
 
+// spec: image.verify.frames
 #[test]
 fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused() {
     // The frame is well-formed on its own; what is crafted is the *link*.
@@ -9924,6 +10033,7 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     );
 }
 
+// spec: image.verify.hashes
 #[test]
 fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter() {
     // The header word holds 22 bits of identity hash: a wider one would
@@ -10192,6 +10302,7 @@ fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
     })
 }
 
+// spec: image.verify.hashes
 #[test]
 fn a_tag_named_hash_of_zero_is_refused() {
     // 0 means unassigned, which the encoder expresses by leaving the entry
@@ -10207,6 +10318,7 @@ fn a_tag_named_hash_of_zero_is_refused() {
     );
 }
 
+// spec: image.verify.hashes
 #[test]
 fn a_tag_named_object_recorded_twice_is_refused() {
     let mut writer = encode::Writer::new();
@@ -10223,6 +10335,7 @@ fn a_tag_named_object_recorded_twice_is_refused() {
     );
 }
 
+// spec: image.verify.hashes
 #[test]
 fn a_tag_named_hash_at_the_ceiling_is_refused() {
     let mut writer = encode::Writer::new();
@@ -12841,6 +12954,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_
     drop(loaded);
 }
 
+// spec: image.verify.metaclass-records
 #[test]
 fn a_class_object_whose_own_class_is_another_class_record_is_refused() {
     // A class record's header names its metaclass, so a header naming an
@@ -13056,6 +13170,7 @@ fn the_two_variants_differ_only_by_the_text_table() {
 /// A `program_counter` past the end of the body that runs in the frame. Nothing
 /// re-activates a decoded frame today, but `program_counter` is an index and
 /// this bound is what keeps it from becoming one that is never checked.
+// spec: image.verify.frames
 #[test]
 fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -13112,6 +13227,7 @@ fn image_of_a_closure_over_a_method_frame() -> (Vec<u8>, usize, u32, usize) {
 /// A method frame whose code id names the block it created rather than
 /// the method that ran in it is refused: the crafted bytes would
 /// otherwise decode the frame against a body it never ran.
+// spec: image.verify.frames
 #[test]
 fn a_frame_whose_code_disagrees_with_its_kind_is_refused() {
     let (mut bytes, code_offset, block_code, _) = image_of_a_closure_over_a_method_frame();
@@ -13129,6 +13245,7 @@ fn a_frame_whose_code_disagrees_with_its_kind_is_refused() {
 /// code id is refused: only a shipped body is named so, and the crafted
 /// bytes would otherwise decode the frame against whatever the class's
 /// current version carries, which after an edit is a body it never ran.
+// spec: image.verify.frames
 #[test]
 fn a_declared_body_on_a_program_frame_is_refused() {
     let (mut bytes, code_offset, _, _) = image_of_a_closure_over_a_method_frame();
@@ -13148,6 +13265,7 @@ fn a_declared_body_on_a_program_frame_is_refused() {
 /// never ran. The describing sections come from a real snapshot, the
 /// graph section is hand-written and spliced in where the snapshot's own
 /// graph began.
+// spec: image.verify.frames
 #[test]
 fn a_declared_body_on_a_top_level_frame_is_refused() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
@@ -13457,6 +13575,7 @@ fn an_activation_object_round_trips() {
 /// A decoded frame never ran in the loading world, so no `^` can return into
 /// it, and a file that calls its home continuable would have it resumed
 /// from registers the file chose: the loader refuses it outright.
+// spec: image.verify.frames
 #[test]
 fn a_real_image_with_a_home_called_continuable_is_refused() {
     let source = indoc! {"
@@ -14696,6 +14815,7 @@ fn a_root_level_metaclass_round_trips_as_a_record() {
 /// *object* is no such reach: its header names `Kernel Activation`, which
 /// the loader accepts there alone (`an_activation_object_round_trips`).
 // spec: image.shipped.positions
+// spec: image.verify.mirror
 #[test]
 fn a_graph_reaching_an_unnameable_class_is_refused() {
     let source = indoc! {"
@@ -14762,6 +14882,7 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
 
 /// A graph reaching the VM mirror reaches its class too, and the refusal
 /// names the capability: the mirror is checked first.
+// spec: image.verify.mirror
 #[test]
 fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
     let source = indoc! {"
@@ -14801,6 +14922,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
 
 /// Two class records swap their metaclasses: each header names the other
 /// class's metaclass record. Unswapped, the same records decode and pair.
+// spec: image.verify.metaclass-records
 #[test]
 fn a_class_record_naming_another_classs_metaclass_is_refused() {
     let two_classes = |first_metaclass: u32, second_metaclass: u32| {
@@ -14832,6 +14954,7 @@ fn a_class_record_naming_another_classs_metaclass_is_refused() {
 
 /// A metaclass record no class record's header names is a second metaclass
 /// beside the one its class answers.
+// spec: image.verify.metaclass-records
 #[test]
 fn a_metaclass_record_named_by_no_class_record_is_refused() {
     let mut writer = encode::Writer::new();
@@ -14848,6 +14971,7 @@ fn a_metaclass_record_named_by_no_class_record_is_refused() {
 
 /// A metaclass record's reference back must name a class record; here it
 /// names an instance.
+// spec: image.verify.metaclass-records
 #[test]
 fn a_metaclass_record_naming_a_non_class_is_refused() {
     let mut writer = encode::Writer::new();
@@ -14867,6 +14991,7 @@ fn a_metaclass_record_naming_a_non_class_is_refused() {
 
 /// A metaclass record is an instance of `Metaclass`; a header naming
 /// anything else would give one metaclass two encodings.
+// spec: image.verify.metaclass-records
 #[test]
 fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     let mut writer = encode::Writer::new();
@@ -14886,6 +15011,7 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
 
 /// No source can make an instance of `Metaclass`, `Class` or a metaclass,
 /// so an image recording one is refused.
+// spec: image.verify.class-records
 #[test]
 fn an_instance_of_metaclass_is_refused() {
     let instance_of = |class: &dyn Fn(&mut encode::Writer)| {
@@ -14946,6 +15072,7 @@ fn an_instance_of_metaclass_is_refused() {
 
 /// A class side is applied only by a metaclass record; a class record
 /// applying one would be a second, unpaired metaclass.
+// spec: image.verify.class-records
 #[test]
 fn a_class_record_applying_a_class_side_is_refused() {
     let mut fixture = GraphFixture::with_source(METACLASS_MODULE);
@@ -15372,6 +15499,7 @@ fn an_applied_levels_applying_row_out_of_range_is_a_decode_error_not_a_panic() {
 /// A level's clause is where its selector and message come from, so a
 /// position past the applying row's clauses -- or any position in a row that
 /// declares none -- names nothing to initialize it by.
+// spec: image.verify.class-records
 #[test]
 fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15432,6 +15560,7 @@ fn an_applied_levels_clause_index_past_the_clause_limit_is_refused() {
 /// superclass links close on themselves -- directly, or through another
 /// level -- have no order in which they could be rebuilt. The rebuild refuses
 /// them rather than walking the cycle forever.
+// spec: image.verify.class-records
 #[test]
 fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15458,6 +15587,7 @@ fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
 /// Each level's metaclass is rebuilt from the class its clause named, so
 /// levels that name each other name no class side at all: the rebuild
 /// refuses them rather than walking the cycle forever.
+// spec: image.verify.class-records
 #[test]
 fn applied_levels_naming_each_other_in_a_cycle_are_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15490,6 +15620,7 @@ fn applied_levels_naming_each_other_in_a_cycle_are_refused() {
 /// A body-less declaration's class object applies its last clause's mixin
 /// (`object-model.md`, "Mixin application"), so a class record applying a
 /// body-less row's own mixin describes a class no live world has.
+// spec: image.verify.class-records
 #[test]
 fn a_class_record_applying_a_body_less_rows_mixin_is_refused() {
     let mut fixture = GraphFixture::with_source(indoc! {"
@@ -15556,6 +15687,7 @@ fn body_less_class_section(
 /// enclosing object that is no object and a declaring class that is no
 /// class are refused, never followed. The tag must agree with the clause
 /// both ways.
+// spec: image.verify.class-records
 #[test]
 fn a_body_less_class_records_scope_is_checked() {
     let mut fixture = GraphFixture::with_source(BODY_LESS_MODULE);
@@ -15776,6 +15908,7 @@ fn a_block_from_a_body_less_clause_survives_build_and_load() {
 /// initializer, which runs the same kind of body: a frame that runs the
 /// declaration's own code anywhere but as its full initializer is refused,
 /// since the code, not the frame, decides where its sends start.
+// spec: image.verify.frames
 #[test]
 fn a_frame_running_a_body_less_declarations_code_elsewhere_is_refused() {
     let mut bytes = body_less_clause_block_snapshot();
@@ -15855,6 +15988,7 @@ fn a_level_applying_a_shipped_mixin_decodes() {
 
 /// The clause of a level applying a shipped class is checked like any other
 /// level's: its applying row and its position there.
+// spec: image.verify.class-records
 #[test]
 fn a_shipped_levels_clause_is_checked_like_any_levels() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -15997,6 +16131,7 @@ fn a_record_under_the_retired_activation_tag_is_refused() {
 
 /// A frame record under any class but `Activation` would be an activation
 /// answering that class's methods; no live world has one.
+// spec: image.verify.frames
 #[test]
 fn a_frame_record_under_another_class_is_refused() {
     let bytes = record_under(
@@ -16104,6 +16239,7 @@ fn future_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
 /// left for `future_state` to meet. The computation may be any value, the
 /// record itself included: forcing that one is the divergent-evaluation
 /// error, as a program's own would be.
+// spec: image.verify.shipped-instances
 #[test]
 fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     let array = future_record(|writer| {
@@ -16153,6 +16289,7 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
 /// two fields, so the first pass refuses any other count before anything is
 /// allocated: neither the record's placeholder nor a copy of its fields ever
 /// exists, however many fields it claims and carries.
+// spec: image.verify.shipped-instances
 #[test]
 fn a_future_record_with_another_field_count_is_refused_before_allocating() {
     let bytes = future_record(|writer| {
@@ -16894,6 +17031,7 @@ fn a_level_applying_a_shipped_class_that_is_no_builtin_round_trips() {
 /// exactly the case that has to survive the round trip in the right order,
 /// superclass first, for `Stamped`'s recomputed verdict to name `Counter`
 /// rather than trusting it blindly.
+// spec: image.verify.value-classes
 #[test]
 fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
     let source = indoc! {"
@@ -17914,6 +18052,7 @@ fn a_shipped_name_in_a_forbidden_position_is_refused() {
 /// No object is an instance of `Top`, so a record of it is refused as `Top`
 /// is refused as a value.
 // spec: image.shipped.positions
+// spec: image.verify.mirror
 #[test]
 fn a_record_of_top_is_refused() {
     let bytes = class_records(1, |writer| {
@@ -17934,6 +18073,7 @@ fn a_record_of_top_is_refused() {
 /// A shipped class that is no builtin has instance records only: an array,
 /// a string or a frame record under `TimeFactory Stopwatch` is refused
 /// before anything is allocated.
+// spec: image.verify.shipped-instances
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {
     for body in [
@@ -17967,6 +18107,7 @@ fn a_record_of_a_shipped_class_with_another_body_is_refused() {
 /// A record of a shipped class that is no builtin carries exactly the
 /// fields the loading binary lays the class out with: `Stopwatch` declares
 /// two slots.
+// spec: image.verify.shipped-instances
 #[test]
 fn a_record_of_a_shipped_class_carries_exactly_its_layout() {
     let stopwatch_with = |fields: u32| {
@@ -18035,6 +18176,7 @@ fn instance_body(fields: u32) -> impl FnOnce(&mut encode::Writer) {
 /// An instance of a program class carries exactly its application's
 /// slots, as every one is allocated: a customized copy reads them at
 /// fixed fields with no check, past the end of an object with fewer.
+// spec: image.verify.program-instances
 #[test]
 fn a_record_of_a_program_class_carries_exactly_its_layout() {
     let mut fixture = GraphFixture::with_source(TWO_SLOTS);
@@ -18064,6 +18206,7 @@ fn a_record_of_a_program_class_carries_exactly_its_layout() {
 
 /// An object of a program class is an instance record: an array or a
 /// string record under `Holder`'s header is refused.
+// spec: image.verify.program-instances
 #[test]
 fn a_record_of_a_program_class_with_another_body_is_refused() {
     let array = |writer: &mut encode::Writer| {
@@ -18550,6 +18693,7 @@ fn a_snapshot_is_not_started() {
     assert!(!loaded.start);
 }
 
+// spec: image.verify.started-image-roots
 #[test]
 fn a_start_image_with_other_than_one_root_is_refused() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
@@ -18920,6 +19064,7 @@ fn check_body_less_root<'gc>(mutator: &Mutator<'gc>, class: ClassReference<'gc>)
 /// again when an image rebuilds it: `Valued`'s level is enclosed by the
 /// value module, its declaration by a mutable `Holder`, so it is refused
 /// before the snapshot and after the load alike.
+// spec: image.verify.value-classes
 #[test]
 fn a_body_less_value_class_is_refused_alike_after_build_and_load() {
     let source = indoc! {"

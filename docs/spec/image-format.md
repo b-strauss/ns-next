@@ -40,7 +40,8 @@ an error.
 
 The guarantee covers decoding. What a decoded image's code does once it
 runs is the program's, with the exposure of running the same program from
-its source; "Running a decoded image" states what bounds it.
+its source; [Running a decoded image](#r-image.run) states what bounds
+it.
 
 ## The header
 
@@ -616,3 +617,207 @@ r[image.shipped.positions]
     written there as a value is held to the value position, and a module
     instance written there (`shipped-module`) to the frame's-register
     position.
+
+r[image.verify.class-records]
+16. A class record holds to the declaration it applies:
+    - The row it applies is no row's class side, since a metaclass is a
+      record of its own.
+    - The row writes a body, since no class applies a body-less
+      declaration's mixin.
+    - A level a `<:` clause added names the applying row, a clause that
+      row declares and the class that clause named. A level over a
+      shipped mixin is always such a level.
+    - The body-less class record is written exactly for the level that a
+      body-less declaration's last clause adds. Every other class is
+      written as a class record.
+    - No class's superclass chain closes on itself, and neither do the
+      classes the levels' clauses named.
+    - An enclosing object -- a class's, or a body-less declaration's -- is
+      an object, never a scalar.
+    - Every field the format types as a class reference names a class
+      object: a record's class, a superclass, a declaring class, the class
+      a clause named, a frame's current class and the class its kind
+      names.
+    - An object that is no class object is no instance of `Class`,
+      `Metaclass` or a metaclass.
+
+r[image.verify.metaclass-records]
+17. Class records and metaclass records pair one to one:
+    - a class record's class is a metaclass record whose class is that
+      class record;
+    - a metaclass record's class is a class record;
+    - every metaclass record is the class of exactly one class record;
+    - a metaclass record's own class is `Kernel Metaclass`.
+
+r[image.verify.frames]
+18. A frame record holds to the body it ran:
+    - Every field the format types as a frame -- a frame's sender and
+      home, a closure's captured frame -- names a frame record.
+    - A frame record's class is `Kernel Activation`.
+    - Every frame record is marked as one that can no longer continue,
+      since an image is written only when no activation runs.
+    - A closure frame's kind names a closure record, and a frame has a
+      home exactly when its kind is a closure's.
+    - A frame writes its body as its kind allows:
+      - a top-level frame names none;
+      - a factory frame names its body by declaration, the factory its
+        class derives;
+      - a closure frame names a body of the code table;
+      - every other kind names a body of the code table, or names it by
+        declaration when it is a shipped declaration's body.
+    - Its body is one its kind runs: a method frame's is a method body of
+      its method's argument count, a closure frame's is its closure's own
+      body, an initializer frame's is an initializer, a superclass clause
+      frame's is a superclass clause, and a factory frame's is a method
+      body.
+    - A body-less declaration's own code runs in a frame exactly when the
+      frame runs it at that declaration's class object.
+    - Its program counter is an instruction index of its body.
+    - Its registers are as many as its body's arguments and its registers
+      above the header, together
+      ([`bytecode.register.layout`](bytecode.md#r-bytecode.register.layout)).
+    - A closure's captured frame runs the body that creates the closure's
+      body.
+
+r[image.verify.byte-arrays]
+19. A byte-array record is written only under `Kernel ByteArray`, and
+    `Kernel ByteArray` is the class of no other record.
+
+r[image.verify.weak-records]
+20. A weak-array record is written only under `Kernel WeakArray`. The
+    only other record of that class is an instance record of its slot
+    count, none, as the instance `withoutSlots` makes. An ephemeron record
+    is written only under `Kernel Ephemeron`, and `Kernel Ephemeron` is
+    the class of no other record. An ephemeron record holds exactly as
+    many values as its class has slots, the key first.
+
+r[image.verify.mixin-records]
+21. A mixin record is written only under `Kernel Mixin`, and `Kernel
+    Mixin` is the class of no other record.
+    - It names the instance side of a class's mixin: a row that is no
+      row's class side, or a shipped name of a class -- never of a module
+      instance, a metaclass or a level.
+    - It names the side it stands for.
+    - No two records stand for one mixin, and none stands for a mixin
+      whose object the loading world already holds.
+
+r[image.verify.symbols]
+22. A symbol is the one object of its text (§5.1.6), so:
+    - a symbol record is written only under `Kernel Symbol`, and a string
+      record never is;
+    - no two symbol records name one symbol's text;
+    - no symbol record names a text the loading world already holds a
+      `Symbol` of.
+
+r[image.verify.program-instances]
+23. Every object of a class the image's modules declare is an instance
+    record of exactly its class's slot count, as every such instance is
+    made and as an edit migrates it. A class object is the exception: it
+    is written as a class record.
+
+r[image.verify.shipped-instances]
+24. Every object of a shipped class whose layout the loading binary
+    declares is an instance record of exactly that class's slot count.
+    That is every shipped class but those whose objects are written as
+    records of their own: arrays, strings, symbols, closures, classes,
+    metaclasses, byte arrays, weak arrays, ephemerons, mixins and frames.
+    Two classes are held further:
+    - an instance record under `Kernel FutureImplementation` is an
+      unresolved future's: two values, the second the state 0;
+    - an instance record under `Kernel Fraction` holds no value, as
+      `Fraction new` makes it, since a fraction is written as a value.
+
+r[image.verify.value-classes]
+25. A load does not trust the image about whether a class meets the
+    value-class conditions (§3.1.1). It decides them again for every
+    class the image carries, as building the class from its source
+    decides them. So a value class whose enclosing objects are not all
+    values refuses to be instantiated after a load, as it did before.
+
+r[image.verify.numbers]
+26. A number is written in its one canonical form:
+    - A `LargeInteger` holds to
+      [`bytecode.verify.large-integer`](bytecode.md#r-bytecode.verify.large-integer):
+      its sign byte is 0 or 1, its value does not fit an `i64`, its most
+      significant digit is not 0, and it is not a negative zero.
+    - A fraction's numerator and denominator are each an integer value,
+      its denominator is greater than 1, and the two share no factor.
+
+r[image.verify.hashes]
+27. Every identity hash fits the 22 bits an object's header holds: it is
+    below 4,194,304. A tag-named hash is never 0, and each shipped name
+    has at most one.
+
+r[image.verify.started-image-roots]
+28. A started image has exactly one root, the application `load` starts.
+
+r[image.verify.mirror]
+29. No image holds the VM mirror, its class or `Top`
+    ([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)):
+    - the mirror's class has no declaration, so no shipped name names it;
+    - `Top` stands only as a frame's class
+      ([`image.shipped.positions`](#r-image.shipped.positions));
+    - a writer refuses a graph that reaches the mirror, its class, `Top`
+      or their metaclasses, and writes no image of it.
+
+r[image.verify.not-checked]
+A load checks no more of an image than these rules and the bytecode
+chapter's. In particular it leaves these to the run, where they are
+checked or cannot go wrong:
+
+- **A ready-made instance's slots against §3.1.1's value conditions.** An
+  instance of a value class is rebuilt from its record, and its slots
+  are not initialized again. A crafted image can therefore hand back a
+  value whose slot holds a mutable object. That is a wrong answer, never
+  a crash: every slot access is bounded by its object.
+- **A second class record applying a module's root row**, beside the one
+  the module section names. It builds a class of that declaration, as a
+  run could, and the module's root stays the record the section names.
+- **That a level sits directly above a class of its applying row.** The
+  initializer instructions check every level they reach as they run, and
+  signal an error rather than reach past it.
+
+What a body leaves to the run is given by
+[`bytecode.verify.not-checked`](bytecode.md#r-bytecode.verify.not-checked).
+Each of these is an item of `docs/OPEN-WORK.md`, "Known defects and
+gaps".
+
+## Bounds
+
+r[image.bound.sizing]
+Before it allocates any object of the graph, a load sizes every record of
+the object table from the record's own bytes. It refuses the image, with
+nothing of the graph allocated, when a record claims more than its bytes
+hold, or when the objects the records describe would take more than eight
+words a byte of the input left from the object table's start. Every
+record's object is bounded by its own record's bytes, at about a word a
+byte, so the format's records never reach the eight-word limit: that
+refusal is a guard.
+
+r[image.bound.linear]
+What a load that refuses an image allocates is bounded by a constant
+multiple of the image's length plus a constant, and nothing of it
+outlives the load.
+
+The factors depend on the build and are the implementation's:
+`docs/design/memory.md`, "The amplification bound of a rejected load".
+
+## Running a decoded image
+
+r[image.run]
+A load runs none of the image's code before the application starts. The
+shipped modules it builds first are built by the binary's own code
+([`image.verify.shipped-names`](#r-image.verify.shipped-names)).
+
+Once it runs, a decoded image's code runs as compiled code would, with
+the exposure of running its program from source:
+- Every body holds to the bytecode chapter's rules, among them that a
+  send passes as many arguments as its selector takes
+  ([`bytecode.verify.send-arity`](bytecode.md#r-bytecode.verify.send-arity)).
+  So whatever goes wrong in it goes wrong as in a run from source: as a
+  Newspeak error, never as a crash of the process.
+- Its recursion is bounded by the depth limit
+  ([`runtime.depth-limit`](runtime.md#r-runtime.depth-limit)).
+- Its blocks nest no deeper than a source's
+  ([`bytecode.verify.blocks`](bytecode.md#r-bytecode.verify.blocks)), so
+  the activations it stacks are bounded as a source program's are.
