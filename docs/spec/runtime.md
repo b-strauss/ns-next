@@ -65,9 +65,13 @@ A send with no receiver
 Which of steps 1 to 3 applies is decided from the source, before
 anything runs.
 
-1. If a variable named *selector* -- or, for a setter, the name before
-   its colon -- is in scope in the enclosing methods and blocks, read or
-   write it, and answer its value.
+1. If a variable named *selector* is in scope in the enclosing methods
+   and blocks, read it and answer its value. If *selector* is one
+   keyword and a mutable local named by the name before its colon is in
+   scope there, write the argument into the innermost such local and
+   answer the argument
+   ([`semantics.send.local-setter`](language/semantics.md#r-semantics.send.local-setter));
+   a parameter and an immutable local are passed by.
 2. If a class declaration *N* lexically enclosing the send declares a
    member named *selector*, the innermost such *N*, let *k* be its depth
    outwards from the declaration the running code was written in; answer

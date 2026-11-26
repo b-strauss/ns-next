@@ -36,12 +36,18 @@ pub(crate) enum InlineForm<'a> {
     IfFalse(&'a ast::BlockExpression),
     And(&'a ast::BlockExpression),
     Or(&'a ast::BlockExpression),
+    /// `whileTrue:`, and the unary `whileTrue`, which has no body.
     WhileTrue {
         condition: &'a ast::BlockExpression,
-        body: &'a ast::BlockExpression,
+        body: Option<&'a ast::BlockExpression>,
     },
+    /// `whileFalse:`, and the unary `whileFalse`, which has no body.
     WhileFalse {
         condition: &'a ast::BlockExpression,
+        body: Option<&'a ast::BlockExpression>,
+    },
+    /// `repeat`: the receiver evaluated without end.
+    Repeat {
         body: &'a ast::BlockExpression,
     },
 }
@@ -69,6 +75,23 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
     // would run it synchronously, where it has to signal its gap.
     if send.message.eventual {
         return None;
+    }
+    // The unary loops, which the canonical compiler inlines with the
+    // keyword ones (`isInlineableLoop:`): the receiver is the block.
+    if let ast::Selector::Unary(selector) = &send.message.selector {
+        let receiver = || as_inlinable_block(&send.receiver);
+        return match selector.as_str() {
+            "whileTrue" => Some(InlineForm::WhileTrue {
+                condition: receiver()?,
+                body: None,
+            }),
+            "whileFalse" => Some(InlineForm::WhileFalse {
+                condition: receiver()?,
+                body: None,
+            }),
+            "repeat" => Some(InlineForm::Repeat { body: receiver()? }),
+            _ => None,
+        };
     }
     let ast::Selector::Keyword(selector) = &send.message.selector else {
         return None;
@@ -101,11 +124,11 @@ pub(crate) fn recognize(send: &ast::Send) -> Option<InlineForm<'_>> {
         "or:" => Some(InlineForm::Or(as_inlinable_block(&arguments[0])?)),
         "whileTrue:" => Some(InlineForm::WhileTrue {
             condition: as_inlinable_block(&send.receiver)?,
-            body: as_inlinable_block(&arguments[0])?,
+            body: Some(as_inlinable_block(&arguments[0])?),
         }),
         "whileFalse:" => Some(InlineForm::WhileFalse {
             condition: as_inlinable_block(&send.receiver)?,
-            body: as_inlinable_block(&arguments[0])?,
+            body: Some(as_inlinable_block(&arguments[0])?),
         }),
         _ => None,
     }

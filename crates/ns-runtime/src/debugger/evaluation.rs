@@ -294,7 +294,7 @@ fn compile_with(
     }
     let (code, _, metadata) = stack::body(mutator, stack_frame);
     let metadata = metadata.ok_or(NO_SOURCE)?;
-    let expression = body(&metadata)?;
+    let mut expression = body(&metadata)?;
     let chain: Vec<(Symbol, HashSet<Symbol>)> =
         declaration_chain(mutator, &origin.mixin).ok_or(NO_SOURCE)?;
     let classes: Vec<EnclosingClass<'_>> = chain
@@ -334,7 +334,7 @@ fn compile_with(
         variables: &variables,
         labels: &labels,
     };
-    let bindings = resolve_evaluation(&expression, &scope).map_err(|message| {
+    let bindings = resolve_evaluation(&mut expression, &scope).map_err(|message| {
         // The refusals the debugger names itself stand as they are; every
         // other is the compiler's.
         if message == RETURN_FROM_AN_EVALUATION

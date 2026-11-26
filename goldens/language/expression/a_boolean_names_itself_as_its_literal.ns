@@ -1,0 +1,15 @@
+/// `true` and `false` answer their literal's text to `asString` as to
+/// `printString`.
+class ABooleanNamesItselfAsItsLiteral = Object new () (
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: true asString , ' ' , false asString;
+        newLine.
+    t
+        show: true printString , ' ' , false printString;
+        newLine.
+  )
+)

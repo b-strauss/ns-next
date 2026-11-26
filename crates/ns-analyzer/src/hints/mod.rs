@@ -208,6 +208,25 @@ mod tests {
         );
     }
 
+    /// The implicit-receiver send `count: e` writes the local as `count::`
+    /// does, so it keeps the local from the hint.
+    // spec: semantics.send.local-setter
+    #[test]
+    fn a_keyword_send_of_the_setter_keeps_a_local_mutable() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count ::= 1.
+                |
+                count: count + 1.
+                ^count
+              )
+            )
+        "};
+        assert!(names_of(text, HintKind::ReadOnly).is_empty());
+    }
+
     /// The test is by name: a closure's own `count::` keeps the outer
     /// `count` from the hint too.
     #[test]
@@ -426,6 +445,37 @@ mod tests {
                   public run = (
                     |
                       count ::= 1.
+                    |
+                    ^count
+                  )
+                )
+            "}
+        );
+    }
+
+    /// `count: 1` is the assignment `count:: 1` is, and moves alike.
+    // spec: semantics.send.local-setter
+    #[test]
+    fn a_first_keyword_send_of_the_setter_moves_into_the_declaration() {
+        let text = indoc! {"
+            class Module = () (
+              public run = (
+                |
+                  count
+                |
+                count: 1 + 2.
+                ^count
+              )
+            )
+        "};
+        assert_eq!(names_of(text, HintKind::InitializeInDeclaration), ["count"]);
+        assert_eq!(
+            fixed(text, HintKind::InitializeInDeclaration, "count"),
+            indoc! {"
+                class Module = () (
+                  public run = (
+                    |
+                      count ::= 1 + 2.
                     |
                     ^count
                   )
@@ -653,7 +703,14 @@ mod tests {
 
     #[test]
     fn a_chain_a_parenthesized_assignment_or_a_value_naming_the_slot_gets_no_hint() {
-        for statement in ["count:: index:: 1.", "(count:: 1).", "count:: count."] {
+        for statement in [
+            "count:: index:: 1.",
+            "(count:: 1).",
+            "count:: count.",
+            "count: (index: 1).",
+            "(count: 1).",
+            "count: count.",
+        ] {
             let text = format!(
                 "class Module = () (\n  public run = (\n    |\n      count\n      index\n    |\n    {statement}\n    ^count\n  )\n)\n"
             );

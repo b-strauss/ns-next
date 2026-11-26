@@ -124,6 +124,23 @@ instantiated ran under `run` while `build` refused it. Decided with the
 user on 2026-09-30 and adopted on 2026-11-24
 (`docs/design/object-model.md`, "Mixin application", "The root rule").
 
+## A setter send to a local answers its argument
+
+**Bracha §3.6, §5.7, §6.3.2:** a local is a slot of its activation, an
+implicit-receiver send is sent to the current activation first, and a
+slot's setter "returns the receiver of the message", so `x: e` to a
+local would answer the activation itself.
+**This book:** `x: e` to a mutable local writes it and answers the value
+of `e`, as `x:: e` does
+([`semantics.send.local-setter`](../language/semantics.md#r-semantics.send.local-setter)).
+**Why:** Bracha's canonical compilers compile both forms to the same
+local write, whose value is `e` (`NewspeakCompilation.ns`,
+`processLocalWrite:`; `Newspeak2PrimordialSoupCompilation.ns`,
+`localWriteNode:`), and make no object of the activation for it;
+answering it would hand a program its own activation, which Bracha §3.5 reaches
+only through mirrors. Decided with the user on 2026-11-25
+(`docs/design/dispatch.md`, "Setter sends").
+
 ## Gaps
 
 - **Exact decimals** (Bracha §5.1.1): the class `Decimal` and its

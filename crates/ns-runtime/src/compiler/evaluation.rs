@@ -213,7 +213,7 @@ mod tests {
         ),
         String,
     > {
-        let body = parse_expression(expression)?;
+        let mut body = parse_expression(expression)?;
         let classes: Vec<EnclosingClass<'_>> = stop
             .classes
             .iter()
@@ -223,7 +223,7 @@ mod tests {
             })
             .collect();
         let bindings = resolve_evaluation(
-            &body,
+            &mut body,
             &EvaluationScope {
                 classes: &classes,
                 variables: &stop.variables,
@@ -304,6 +304,24 @@ mod tests {
         for lowering in [Lowering::Optimized, Lowering::Reference] {
             let stop = stopped(COUNTER, &["Counter"], lowering);
             let code = compiled(&stop, "count:: 0", &[], lowering);
+            let count = register_of(&stop, "count");
+            assert!(
+                code.instructions().iter().any(|instruction| matches!(
+                    instruction,
+                    Instruction::StoreOuterLocal { depth: 1, index, .. } if *index == count
+                )),
+                "{lowering:?}: {:?}",
+                code.instructions()
+            );
+        }
+    }
+
+    // spec: semantics.send.local-setter
+    #[test]
+    fn a_keyword_send_writes_the_frame_variable_as_its_assignment_does() {
+        for lowering in [Lowering::Optimized, Lowering::Reference] {
+            let stop = stopped(COUNTER, &["Counter"], lowering);
+            let code = compiled(&stop, "count: 0", &[], lowering);
             let count = register_of(&stop, "count");
             assert!(
                 code.instructions().iter().any(|instruction| matches!(
@@ -405,6 +423,16 @@ mod tests {
         let stop = stopped(COUNTER, &["Counter"], Lowering::Optimized);
         assert_eq!(
             resolved(&stop, "argument:: 1", &[]).map(|_| ()),
+            Err("argument is not assignable".to_string())
+        );
+    }
+
+    // spec: semantics.send.local-setter
+    #[test]
+    fn a_keyword_send_to_a_parameter_is_refused_as_its_assignment_is() {
+        let stop = stopped(COUNTER, &["Counter"], Lowering::Optimized);
+        assert_eq!(
+            resolved(&stop, "argument: 1", &[]).map(|_| ()),
             Err("argument is not assignable".to_string())
         );
     }

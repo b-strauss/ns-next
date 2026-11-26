@@ -1,7 +1,8 @@
 //! What code mentions and what it may assign, by name. Every test here is
-//! by name alone, never by binding: an `x::` that writes a closure's own
-//! `x`, or another class's, still counts as writing `x`. That
-//! over-approximates, so it costs a hint at worst, never correctness.
+//! by name alone, never by binding: an `x::` or `x: e` that writes a
+//! closure's own `x`, or sends another class's setter, still counts as
+//! writing `x`. That over-approximates, so it costs a hint at worst, never
+//! correctness.
 
 use std::collections::HashSet;
 
@@ -95,6 +96,28 @@ fn names(node: &Node<'_>, name: &str) -> bool {
     }
 }
 
+/// The name and the value of an implicit-receiver send of one keyword,
+/// `name: value`, which writes a mutable local `name` where one is in
+/// scope.
+pub(super) fn implicit_setter_send(expression: &Expression) -> Option<(&str, &Expression)> {
+    let ExpressionKind::Send(send) = &expression.kind else {
+        return None;
+    };
+    let receiver_is_implicit = send.receiver.synthesized
+        && matches!(&send.receiver.kind, ExpressionKind::Identifier(identifier) if identifier.name == "self");
+    let Selector::Keyword(selector) = &send.message.selector else {
+        return None;
+    };
+    let name = selector.strip_suffix(':')?;
+    if !receiver_is_implicit || name.contains(':') {
+        return None;
+    }
+    let [value] = send.message.arguments.as_slice() else {
+        return None;
+    };
+    Some((name, value))
+}
+
 /// Whether `name` appears anywhere in `statement`.
 pub(super) fn mentions(statement: &Statement, name: &str) -> bool {
     let mut found = false;
@@ -109,18 +132,23 @@ pub(super) fn expression_mentions(expression: &Expression, name: &str) -> bool {
     found
 }
 
-/// The names `slots`' initializers and `statements` assign with `name::`,
-/// their closures included: the only way a local is written.
+/// The names `slots`' initializers and `statements` assign, their closures
+/// included: with `name:: e`, or with the implicit-receiver send
+/// `name: e`, which writes a mutable local of that name as `name::` does
+/// (`ns-runtime`'s `resolver/local_writes.rs`) -- the only ways a local is
+/// written.
 pub(super) fn assigned_in<'tree>(
     slots: &'tree [SlotDeclaration],
     statements: &'tree [Statement],
 ) -> HashSet<&'tree str> {
     let mut assigned = HashSet::new();
     let mut visit = |node: Node<'tree>| {
-        if let Node::Expression(expression) = node
-            && let ExpressionKind::Assign { target, .. } = &expression.kind
-        {
-            assigned.insert(target.name.as_str());
+        if let Node::Expression(expression) = node {
+            if let ExpressionKind::Assign { target, .. } = &expression.kind {
+                assigned.insert(target.name.as_str());
+            } else if let Some((name, _)) = implicit_setter_send(expression) {
+                assigned.insert(name);
+            }
         }
     };
     each_node_in_slots(slots, &mut visit);

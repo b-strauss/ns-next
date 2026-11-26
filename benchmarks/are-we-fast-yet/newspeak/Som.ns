@@ -407,7 +407,7 @@ class Som usingPlatform: platform = (
         hash
         entry
       |
-      hash:: hash: key.
+      hash:: self hash: key.
       entry:: bucket: hash.
       [entry == nil] whileFalse: [
         (entry match: hash key: key) ifTrue: [^entry value].
@@ -421,7 +421,7 @@ class Som usingPlatform: platform = (
         hash
         entry
       |
-      hash:: hash: key.
+      hash:: self hash: key.
       entry:: bucket: hash.
       [entry == nil] whileFalse: [
         (entry match: hash key: key) ifTrue: [^true].
@@ -436,7 +436,7 @@ class Som usingPlatform: platform = (
         index
         current
       |
-      hash:: hash: key.
+      hash:: self hash: key.
       index:: bucketIndex: hash.
       current:: buckets at: index.
       current == nil ifTrue: [

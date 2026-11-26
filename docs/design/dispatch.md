@@ -279,6 +279,43 @@ in the block writing the *method's* `v`, the innermost declaration of `v:`,
 while `v` in the block still reads the parameter.
 `spec_5_7_a_setter_send_passes_a_shadowing_parameter_by` pins it.
 
+**Built (2026-11-25): the implicit-receiver keyword send `id: e` writes a
+mutable local as `id:: e` does.** §3.6 makes a local a slot of its
+activation and §5.7 sends an implicit-receiver message to the current
+activation first, so `id: e` is the send of the local's setter that
+`id:: e` is, and the canonical compiler compiles both to one local write
+(`processImplicitReceiverSend:` and `processLocalWrite:` in
+`prior-art/newspeak/NewspeakCompilation.ns`, `localWriteNode:` in
+Primordial Soup's `Newspeak2PrimordialSoupCompilation.ns`). Its value is
+`e`: §6.3.2's setter answers its receiver, which for a local is the
+activation, and the canonical compilers make no object of it -- handing
+a program its own activation is what §3.5 keeps for mirrors. The spec's
+appendix records the difference ("A setter send to a local answers its
+argument"). The two forms then differ in precedence alone: `id: a foo: b`
+is the one send `id:foo:`.
+
+The resolver decides it as it decides an assignment's target, by the same
+`Resolver::resolve_local_setter` -- `ScopeStack::resolve_setter`, then in
+an evaluated expression the stopped frame's variables -- for an
+implicit-receiver send of one keyword (`resolver/local_writes.rs`'s
+`target`, which names the target by the keyword without its colon and
+binds it at that span), and records the send's span. Once the walk has
+found no error, `local_writes::rewrite_module` (for an evaluated
+expression `rewrite_body`) makes each recorded send the
+`ExpressionKind::Assign` it is, before anything reads the resolved
+module, so both lowerings, the capture analysis, the protective copies'
+`a_send_can_write` and the debugger's metadata see an assignment and need
+no case of their own. `resolve_for_editor` leaves the module as the
+source wrote it: the language server colours the keyword as the local it
+writes from the binding at its name (`semantic_tokens.rs`,
+`local_setter_send`), and the hints count it as a write by name
+(`hints/names.rs`, `implicit_setter_send`).
+`spec_5_7_a_keyword_send_writes_a_mutable_local` pins it: a method's and a
+block's write, the value, a parameter and an immutable local passed by,
+and a mutable local that shadows the class's method of the selector --
+the case the Are We Fast Yet `Som.ns` hash table met, which sends
+`self hash: key` where its local `hash` would take the write.
+
 ### Shapes the resolver must recognize
 
 The parser normalizes several forms, and the resolver keys off those shapes:

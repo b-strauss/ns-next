@@ -113,7 +113,7 @@ pub(crate) fn execute<'gc>(
         Primitive::Element(access) => {
             elements::execute(mutator, access, receiver, selector, arguments).map(wrap_error)
         }
-        Primitive::Block(primitive) => block::execute(mutator, primitive, receiver),
+        Primitive::Block(primitive) => block::execute(mutator, primitive, receiver, arguments),
         Primitive::Platform(primitive) => {
             platform::execute(mutator, primitive, receiver, selector, arguments)
                 .map(|result| result.map(Step::Value))

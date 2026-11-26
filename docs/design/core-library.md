@@ -276,10 +276,10 @@ and `asString`, and on its class side `parse:` ("A Float's text" below);
 `endsWith:` and `at:putCodePoint:`, and on its class side `new:`;
 `String`'s `asUtf8` and `utf8Size` and its class side's
 `fromUtf8:from:to:`; `Closure`'s
-`value` to `value:value:value:` and `numArgs`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
+`value` to `value:value:value:`, `valueWithArguments:` and `numArgs`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
-below). `Closure`'s `whileTrue:` and `whileFalse:` and `Array`'s `do:` are
-Newspeak loops ("Real bodies for control flow and `do:`" below), `do:`
+below). `Closure`'s `whileTrue:`, `whileFalse:`, `whileTrue`, `whileFalse`
+and `repeat` and `Array`'s `do:` are Newspeak loops ("Real bodies for control flow and `do:`" below), `do:`
 reading its size through the `collectionSize:` leaf. `Number`'s `to:do:` and `to:by:do:` are
 ordinary Newspeak (below), and so are `Number>>max:` and
 `Integer>>timesRepeat:`, Primordial Soup's bodies, and `Number`'s `min:`,
@@ -288,8 +288,8 @@ ordinary Newspeak (below), and so are `Number>>max:` and
 no leaf either: its nil protocol is quick methods and its `printString` an
 ordinary one ("The nil protocol" below). `True` and `False` reach no leaf at
 all: their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
-("`True` and `False` are quick methods" below), and their `printString` and
-`hash` ordinary ones. `Boolean` declares nothing of its own either. `Object`'s
+("`True` and `False` are quick methods" below), and their `printString`,
+`asString` and `hash` ordinary ones. `Boolean` declares nothing of its own either. `Object`'s
 protected `doesNotUnderstand:` and `halt`, the exception classes, `Closure`'s
 `on:do:`, `ensure:` and `ifCurtailed:` and `Message` are the exception
 machinery, ordinary Newspeak over the activation leaves ("Exceptions" below).

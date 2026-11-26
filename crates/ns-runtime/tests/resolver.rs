@@ -867,3 +867,93 @@ fn a_superclass_clause_of_1025_mixins_is_refused_at_resolve() {
     );
     assert_eq!(resolve_errors(&module_applying(1024)), Vec::<String>::new());
 }
+
+/// The first statement of the first method in `module`'s root class.
+fn first_statement(module: &ns_syntax::ast::Module) -> &ns_syntax::ast::Expression {
+    let Some(ns_syntax::ast::Member::Method(method)) =
+        module.root_class.instance_side.members.first()
+    else {
+        panic!("the fixture's first member is a method");
+    };
+    let ns_syntax::ast::StatementKind::Expression(expression) = &method.body.statements[0].kind
+    else {
+        panic!("the method's first statement is an expression");
+    };
+    expression
+}
+
+// spec: semantics.send.local-setter
+#[test]
+fn a_keyword_send_to_a_mutable_local_is_its_assignment() {
+    let resolved = resolve_source(indoc! {"
+        class Foo = Object new (
+        ) (
+          bar = ( | x | x: 3 + 4. ^x )
+          x: value = ( ^value )
+        ) : ()
+    "});
+    let ns_syntax::ast::ExpressionKind::Assign { target, value, .. } =
+        &first_statement(&resolved.module).kind
+    else {
+        panic!("the send is an assignment");
+    };
+    assert_eq!(target.name, "x");
+    assert_eq!(
+        resolved.bindings.get(&target.span),
+        Some(&Binding::Local(0))
+    );
+    assert!(matches!(
+        value.kind,
+        ns_syntax::ast::ExpressionKind::Send(_)
+    ));
+}
+
+// spec: semantics.send.local-setter
+#[test]
+fn a_keyword_send_passes_an_immutable_local_by() {
+    let resolved = resolve_source(indoc! {"
+        class Foo = Object new (
+        ) (
+          bar = ( | x = 1. | x: 3. ^x )
+          x: value = ( ^value )
+        ) : ()
+    "});
+    let ns_syntax::ast::ExpressionKind::Send(send) = &first_statement(&resolved.module).kind else {
+        panic!("the send stays a send");
+    };
+    assert_eq!(
+        resolved.bindings.get(&send.span),
+        Some(&Binding::LexicalSend { depth: 0 })
+    );
+}
+
+// spec: semantics.send.local-setter
+#[test]
+fn the_editor_keeps_a_local_write_a_send_and_binds_its_target() {
+    let source = indoc! {"
+        class Foo = Object new (
+        ) (
+          bar = ( | x | [x: 3] value. ^x )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolution = ns_runtime::resolve_for_editor(module);
+    let ns_syntax::ast::ExpressionKind::Send(outer) = &first_statement(&resolution.module).kind
+    else {
+        panic!("`[…] value` is a send");
+    };
+    let ns_syntax::ast::ExpressionKind::Block(block) = &outer.receiver.kind else {
+        panic!("its receiver is the block");
+    };
+    let ns_syntax::ast::StatementKind::Expression(write) = &block.body.statements[0].kind else {
+        panic!("the block's statement is an expression");
+    };
+    let ns_syntax::ast::ExpressionKind::Send(send) = &write.kind else {
+        panic!("the editor keeps the write a send");
+    };
+    let target = ns_runtime::resolver::local_writes::target(&send.message).expect("one keyword");
+    assert_eq!(
+        resolution.bindings.get(&target.span),
+        Some(&Binding::OuterLocal { depth: 1, index: 0 })
+    );
+}

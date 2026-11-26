@@ -1,0 +1,71 @@
+/// A closure's `repeat`, `whileTrue` and `whileFalse` loop on the
+/// receiver alone, `valueWithArguments:` spreads a collection's elements
+/// over the parameters, and `cull:cull:` and `cull:cull:cull:` pass as
+/// many arguments as the block declares.
+class TheClosureLoopsAndArgumentForms = Object new () (
+  firstAbove: limit = (
+    |
+      count ::= 0.
+    |
+    [
+      count:: count + 1.
+      count * count > limit ifTrue: [^count].
+    ] repeat.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      count ::= 0.
+      condition = [
+        count:: count + 1.
+        count < 5.
+      ].
+      untilDone = [
+        count:: count + 1.
+        count >= 8.
+      ].
+      sum = [:first :second :third | first + second + third].
+    |
+    t
+        show: (firstAbove: 50) printString;
+        newLine.
+    condition whileTrue.
+    t
+        show: count printString;
+        newLine.
+    untilDone whileFalse.
+    t
+        show: count printString;
+        newLine.
+    t
+        show: (sum valueWithArguments: {1. 2. 3}) printString;
+        newLine.
+    t
+        show: ([:first :second | first - second] valueWithArguments: 'ba') printString;
+        newLine.
+    t
+        show: ([] valueWithArguments: {}) printString;
+        newLine.
+    [sum valueWithArguments: {1. 2}] on: Error do: [:error |
+      t
+          show: error messageText;
+          newLine.
+    ].
+    t
+        show: ([7] cull: 1 cull: 2) printString;
+        newLine.
+    t
+        show: ([:first | first] cull: 1 cull: 2) printString;
+        newLine.
+    t
+        show: ([:first :second | first + second] cull: 1 cull: 2) printString;
+        newLine.
+    t
+        show: (sum cull: 1 cull: 2 cull: 3) printString;
+        newLine.
+    t
+        show: ([:first :second | second] cull: 1 cull: 2 cull: 3) printString;
+        newLine.
+  )
+)

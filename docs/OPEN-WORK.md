@@ -2707,6 +2707,35 @@ constructs not built yet, each a rule whose identifier holds the segment
 
 ## Unexplained measurements and unmeasured decisions
 
+- **ParserCombinators and Splay run slower than Primordial Soup's
+  interpreter** (an outside measurement, 2026-11-24). On the eleven
+  benchmarks of Primordial Soup's `BenchmarkRunner` on an Apple M1 Max --
+  a 5 s warm-up, the median of three windows of at least a second, in
+  runs a second -- ns-next's JIT made ParserCombinators 10.5 against
+  psoup's 28.6 (0.37×) and Splay 296 against 387 (0.77×), where the other
+  five non-micro benchmarks ran 2.3× to 14× psoup's; its JIT barely helps
+  either over its own interpreter (9.5 and 211). Both allocate heavily,
+  and ParserCombinators leaves blocks by non-local returns. The run
+  predates `repeat`, unary `whileFalse` and `valueWithArguments:`: the
+  sources were rewritten around them, ParserCombinators with a helper
+  that dispatches `valueWithArguments:` by the argument count, so a
+  measurement of the unmodified sources is the first step; then a
+  profile of each on a release build -- the share in optimized code,
+  baseline code, the interpreter, the leaves, the unwinder and the
+  collector -- says where the time goes. The benchmarks are not in the
+  repository: adopting them is a licensing decision of its own.
+- **The interpreter runs at 0.2× to 0.6× Primordial Soup's** (the same
+  measurement). With `NS_NEXT_NO_JIT=1`, ns-next made 24.5 against
+  psoup's 65.7 on ClosureDefFibonacci (0.37×), 40.3 against 135 on
+  ClosureFibonacci (0.30×), 87.8 against 261 on DeltaBlue (0.34×), 59.2
+  against 140 on MethodFibonacci (0.42×), 9.5 against 28.6 on
+  ParserCombinators (0.33×), 139 against 233 on Richards (0.60×) and 211
+  against 387 on Splay (0.55×). psoup's is a bytecode interpreter in C++
+  with its own primitives; what makes the gap -- the send's path, the
+  push and return, the leaves, allocation -- is unmeasured, and matters
+  for every body the JIT has not compiled yet, and on Windows on ARM,
+  which runs interpreted.
+
 - **What stage 1 of the debugger moved, unmeasured** (2026-11-11). The
   measurement against `master` found no slowdown (-0.61% on the geometric
   mean), but Permute at forty iterations is separated slower, +1.4% on a
@@ -3909,6 +3938,16 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The inlining corpus's tests hang on the order symbols are interned in
+  (noted 2026-11-25). `jit::optimizing::inlining_corpus` pairs the sites
+  of the JIT goldens' bodies with callees by the order of their code
+  ids, which follows the order `bodies_of` walks a mixin's methods, an
+  `IdentityMap` keyed by `Symbol` -- the order the symbols were
+  interned in. A resolver change that interned one more name per
+  implicit-receiver keyword send left the corpus the same bodies but
+  paired otherwise, and `an_inlined_body_assembles_for_aapcs64` found 2
+  eliminated blocks where it asks for more than 5. Walking the methods
+  sorted by selector text would make the corpus independent of it.
 - The inlining plan's decisions are collected by every optimizing compile
   (noted 2026-11-19): `optimizing::compile_tree_explained` fills a
   `PlanDecisions` -- small `Vec`s of the scopes the plan inlined and
