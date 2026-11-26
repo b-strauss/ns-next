@@ -22,7 +22,7 @@ after a push to the pull request's branch:
 
 1. Create the job: `CronCreate` (deferred, as `CronDelete` and the GitHub
    MCP tools are: load them with `ToolSearch`,
-   `select:CronCreate,CronDelete`) with `cron: "*/3 * * * *"`,
+   `select:CronCreate,CronDelete`) with `cron: "* * * * *"`, every minute,
    `recurring: true` and this prompt, with the pull request's number:
 
    > Check PR #<number> of b-strauss/ns-next with the GitHub MCP tools
