@@ -3938,6 +3938,16 @@ program's subclass of `String` as an argument, the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- The inlining corpus's tests hang on the order symbols are interned in
+  (noted 2026-11-25). `jit::optimizing::inlining_corpus` pairs the sites
+  of the JIT goldens' bodies with callees by the order of their code
+  ids, which follows the order `bodies_of` walks a mixin's methods, an
+  `IdentityMap` keyed by `Symbol` -- the order the symbols were
+  interned in. A resolver change that interned one more name per
+  implicit-receiver keyword send left the corpus the same bodies but
+  paired otherwise, and `an_inlined_body_assembles_for_aapcs64` found 2
+  eliminated blocks where it asks for more than 5. Walking the methods
+  sorted by selector text would make the corpus independent of it.
 - The inlining plan's decisions are collected by every optimizing compile
   (noted 2026-11-19): `optimizing::compile_tree_explained` fills a
   `PlanDecisions` -- small `Vec`s of the scopes the plan inlined and
