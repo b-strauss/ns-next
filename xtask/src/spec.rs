@@ -489,16 +489,13 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The tests that name `identifier`, each once, in order: a golden's file,
-/// or a Rust test's file and its name.
-fn tests_of(identifier: &str, references: &[Reference]) -> Vec<String> {
-    let mut tests: Vec<String> = Vec::new();
+/// The tests that name `identifier`, each once, in order, as their file and
+/// their name: a Rust test's function, or nothing for a golden, whose file
+/// is the test.
+fn tests_of(identifier: &str, references: &[Reference]) -> Vec<(String, String)> {
+    let mut tests: Vec<(String, String)> = Vec::new();
     for reference in references {
-        let test = if reference.name.is_empty() {
-            display(&reference.test)
-        } else {
-            format!("{} ({})", display(&reference.test), reference.name)
-        };
+        let test = (display(&reference.test), reference.name.clone());
         if reference.identifier == identifier && !tests.contains(&test) {
             tests.push(test);
         }
@@ -508,16 +505,27 @@ fn tests_of(identifier: &str, references: &[Reference]) -> Vec<String> {
 
 /// A rule's tests as its anchor shows them: a list folded shut by default,
 /// since a rule may name dozens of tests and the prose around it is what a
-/// reader reads first, or `none yet`. The HTML stays on one line, so that
+/// reader reads first, or `none yet`. A Rust test shows its name and, beneath
+/// it, its file; a golden its file alone. The HTML stays on one line, so that
 /// Markdown takes it as one HTML block.
-fn listed_tests(tests: &[String]) -> String {
+fn listed_tests(tests: &[(String, String)]) -> String {
     if tests.is_empty() {
         return "<span class=\"rule-tests\">tests: none yet</span>".to_string();
     }
     let noun = if tests.len() == 1 { "test" } else { "tests" };
     let items: String = tests
         .iter()
-        .map(|test| format!("<li><code>{}</code></li>", escape(test)))
+        .map(|(file, name)| {
+            if name.is_empty() {
+                format!("<li><code>{}</code></li>", escape(file))
+            } else {
+                format!(
+                    "<li><code>{}</code><span class=\"test-file\">{}</span></li>",
+                    escape(name),
+                    escape(file)
+                )
+            }
+        })
         .collect();
     format!(
         "<details class=\"rule-tests\"><summary>{} {noun}</summary><ul>{items}</ul></details>",
@@ -992,7 +1000,7 @@ mod tests {
         let references = [
             reference("lex.a", "first"),
             reference("lex.a", "second<T>"),
-            reference("lex.b", "only"),
+            reference("lex.b", ""),
         ];
         let processed = processed_chapter("r[lex.a]\nr[lex.b]\nr[lex.c]\n", &references);
         let lines: Vec<&str> = processed.lines().filter(|line| !line.is_empty()).collect();
@@ -1001,12 +1009,12 @@ mod tests {
             [
                 "<div class=\"rule\" id=\"r-lex.a\"><a href=\"#r-lex.a\">[lex.a]</a> \
                  <details class=\"rule-tests\"><summary>2 tests</summary><ul>\
-                 <li><code>crates/a/tests/b.rs (first)</code></li>\
-                 <li><code>crates/a/tests/b.rs (second&lt;T&gt;)</code></li>\
+                 <li><code>first</code><span class=\"test-file\">crates/a/tests/b.rs</span></li>\
+                 <li><code>second&lt;T&gt;</code><span class=\"test-file\">crates/a/tests/b.rs</span></li>\
                  </ul></details></div>",
                 "<div class=\"rule\" id=\"r-lex.b\"><a href=\"#r-lex.b\">[lex.b]</a> \
                  <details class=\"rule-tests\"><summary>1 test</summary><ul>\
-                 <li><code>crates/a/tests/b.rs (only)</code></li></ul></details></div>",
+                 <li><code>crates/a/tests/b.rs</code></li></ul></details></div>",
                 "<div class=\"rule\" id=\"r-lex.c\"><a href=\"#r-lex.c\">[lex.c]</a> \
                  <span class=\"rule-tests\">tests: none yet</span></div>",
             ]
