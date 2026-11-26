@@ -946,9 +946,12 @@ load is past every hash the image holds, so it collides with none of them
 until the 22-bit hashes wrap.
 
 r[image.load.symbols]
-A symbol record loads as the loading world's canonical symbol of its
-text: `==` to every symbol of that text the loaded code makes, a literal
-`#foo` included ([`image.verify.symbols`](#r-image.verify.symbols)).
+A symbol record's object is new, and it becomes the loading world's
+canonical symbol of its text: `==` to every symbol of that text the
+loaded code makes, a literal `#foo` included. A world that already holds
+a symbol of that text refuses the image
+([`image.verify.symbols`](#r-image.verify.symbols)), so no record ever
+stands beside another symbol of its text.
 
 r[image.load.applications]
 A class's behaviour is rebuilt from its mixin and its superclass, as
@@ -983,13 +986,13 @@ machine that wrote the image or of the one that loads it.
 r[image.load.start]
 The platform a started image's application receives in `main:args:` is
 the first it ever sees: a started image holds no platform and names
-nothing of the shipped world but the kernel
+nothing of the shipped world but the kernel's classes, their metaclasses
+and their levels, never a module's instance
 ([`image.verify.started-image-names`](#r-image.verify.started-image-names)),
 and a writer refuses an application that holds one, with `image encoding
 refuses PlatformFactory Platform in a started application: nothing
 before main:args: reaches it`. A load runs no factory and no initializer
-again: the application holds what its factory and its initializers left
-in it when it was written.
+again: the application holds what it held when it was written.
 
 r[image.load.snapshot]
 An image without `start` is decoded under the same rules but those a

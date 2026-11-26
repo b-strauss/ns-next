@@ -5276,6 +5276,81 @@ fn a_crafted_weak_array_and_ephemeron_decode_to_their_values() {
     });
 }
 
+/// A whole image whose weak array and ephemeron are the only holders of
+/// their referents -- no writer writes one, so it is crafted -- loads
+/// through `image::load` with every slot and field as written: a load
+/// clears nothing. Each referent is told by the hash its record gave it.
+// spec: image.load.weak
+#[test]
+fn a_loaded_weak_array_and_ephemeron_hold_what_their_records_wrote() {
+    let object_record = |writer: &mut encode::Writer, hash: u32| {
+        writer.write_shipped(OBJECT_NAME);
+        writer.write_u32(hash);
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+    };
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 7);
+    writer.write_shipped(WEAK_ARRAY_NAME); // 0: the weak array
+    writer.write_u32(1);
+    writer.write_u8(OBJECT_WEAK_ARRAY);
+    writer.write_u32(2);
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(2);
+    writer.write_u8(VALUE_SMALL_INTEGER);
+    writer.write_i64(5);
+    writer.write_shipped(EPHEMERON_NAME); // 1: the ephemeron
+    writer.write_u32(2);
+    writer.write_u8(OBJECT_EPHEMERON);
+    writer.write_u32(3);
+    writer.write_u8(VALUE_OBJECT_ID); // the key
+    writer.write_u32(3);
+    writer.write_u8(VALUE_OBJECT_ID); // the value
+    writer.write_u32(4);
+    writer.write_u8(VALUE_NIL); // the finalizer
+    object_record(&mut writer, 3); // 2: held by the weak array alone
+    object_record(&mut writer, 4); // 3: the ephemeron's key alone
+    object_record(&mut writer, 5); // 4: the ephemeron's value alone
+    root_class_records(&mut writer, 5);
+    writer.write_u32(2); // two roots
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(0);
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(1);
+    writer.write_u32(0); // no tag-named hashes
+    let bytes = image_with_graph_section(&writer.into_bytes(), 5);
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let (weak, ephemeron) = (loaded.roots[0].clone(), loaded.roots[1].clone());
+    loaded.interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let elements = heap
+            .weak_array_elements(object(mutator.fetch(&weak)))
+            .expect("a weak array");
+        assert_eq!(elements.len(), 2);
+        assert_eq!(
+            heap.object_identity_hash(object(elements[0])),
+            3,
+            "the weakly held element is kept"
+        );
+        assert_eq!(elements[1].as_small_integer(), Some(5));
+        let fields = heap
+            .ephemeron_fields(object(mutator.fetch(&ephemeron)))
+            .expect("an ephemeron");
+        assert_eq!(fields.len(), 3);
+        assert_eq!(
+            heap.object_identity_hash(object(fields[0])),
+            4,
+            "the key is kept"
+        );
+        assert_eq!(
+            heap.object_identity_hash(object(fields[1])),
+            5,
+            "the value is kept"
+        );
+        assert!(fields[2].is_nil());
+    });
+}
+
 /// A weak-array record under any class but `WeakArray` would be an object
 /// of that class holding weakly what its methods take for strong slots.
 // spec: image.verify.weak-records
@@ -7409,6 +7484,49 @@ fn util_identities() -> [ModuleIdentity; 3] {
             None,
         ),
     ]
+}
+
+/// The tools name a loaded module by the identity its record gave: its
+/// name is its id and version, the root declaration names the same, a
+/// class name with the version names that module alone, one without it
+/// both versions, and the id resolves to both versions in order.
+// spec: image.load.modules
+#[test]
+fn the_tools_name_a_loaded_module_by_its_identity() {
+    let loaded = image::load(&util_image(&util_identities(), false))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let names: Vec<ns_runtime::ModuleName> = loaded
+        .modules
+        .iter()
+        .map(|module| ns_runtime::ModuleName::of_identity(&module.identity))
+        .collect();
+    let printed: Vec<String> = names.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        printed,
+        [
+            "com.acme.Util@1.0.0",
+            "com.acme.Util@2.0.0-beta.1",
+            "newspeak.core.Manifest"
+        ]
+    );
+    for (module, name) in loaded.modules.iter().zip(&names) {
+        let Some(carried) = module.declaration.module_identity.as_deref() else {
+            panic!("the root declaration carries its module's identity")
+        };
+        assert_eq!(&ns_runtime::ModuleName::of_identity(carried), name);
+    }
+    let class_module = |text: &str| match ns_runtime::tool_names::class_form(text) {
+        Ok(class) => class.module,
+        Err(_) => panic!("{text} is of the class form"),
+    };
+    let second = class_module("com.acme.Util@2.0.0-beta.1");
+    assert!(second.covers(&names[1]) && !second.covers(&names[0]));
+    let every = class_module("com.acme.Util");
+    assert!(every.covers(&names[0]) && every.covers(&names[1]));
+    let Some(known) = ns_runtime::tool_names::KnownModule::resolve("com.acme.Util", &names) else {
+        panic!("the id names a loaded module")
+    };
+    assert_eq!(known.versions, ["1.0.0", "2.0.0-beta.1"]);
 }
 
 /// An image names its modules as the program did: each its path relative
@@ -18513,6 +18631,75 @@ fn packaged_application() -> Vec<u8> {
             image::package(mutator, &modules, mutator.fetch(&application))
         })
         .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// A started image's application receives in `main:args:`, sent as
+/// `ns-next load` sends it, the loading world's platform -- the image
+/// names nothing of `PlatformFactory`, so it holds no platform before --
+/// and holds what was set in it before the write: a load that ran its
+/// initializer again would answer 41.
+// spec: image.load.start
+#[test]
+fn a_started_application_receives_the_loading_worlds_platform() {
+    let (mut interpreter, class) = load(indoc! {"
+        class App = Object new (| public count ::= 41. public received ::= nil. |) (
+            public main: platform args: arguments = ( received:: platform. ^count )
+        ) : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let seven = interpreter.stash(Value::small_integer(7));
+    expect_ok(
+        interpreter.send(&application, Symbol::intern("count:"), &[seven]),
+        "count:",
+    );
+    let identity = ModuleIdentity::undeclared("App.ns", "App");
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                identity: &identity,
+                with_source: false,
+            }];
+            image::package(mutator, &modules, mutator.fetch(&application))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .shipped_names
+            .iter()
+            .all(|name| name.starts_with("Kernel ") && !name.ends_with(" instance")),
+        "a started image names only the kernel's classes: {:?}",
+        report.shipped_names
+    );
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert!(loaded.start);
+    let root = loaded.roots[0].clone();
+    let platform = loaded.interpreter.platform();
+    let arguments = loaded.interpreter.enter(|mutator| {
+        let array = mutator.new_array(Vec::new());
+        mutator.stash(Value::object(array))
+    });
+    let answer = expect_ok(
+        loaded.interpreter.send(
+            &root,
+            Symbol::MAIN_ARGUMENTS,
+            &[platform.clone(), arguments],
+        ),
+        "main:args:",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            mutator.fetch(&answer).as_small_integer(),
+            Some(7),
+            "the slot holds what was set before the write"
+        );
+    });
+    let received = send_to(&mut loaded, &root, "received");
+    assert!(
+        same_object(&mut loaded, &received, &platform),
+        "the application received the loading world's platform"
+    );
 }
 
 // spec: image.load.start

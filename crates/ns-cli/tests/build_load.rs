@@ -50,7 +50,7 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
     assert!(listing.contains("graph"), "{listing}");
 }
 
-// spec: image.load.start
+// spec: image.load
 #[test]
 fn a_built_image_runs_exactly_as_its_source_does() {
     let (ok, out, error) =
@@ -565,7 +565,7 @@ fn a_project_builds_and_loads_as_it_runs() {
 /// `image::snapshot` is a host's image, not an application `build`
 /// packaged: it carries no start, so there is nothing for `load` to send
 /// `main:args:` to.
-// spec: image.load.start
+// spec: image.load
 #[test]
 fn load_refuses_an_image_that_is_not_started() {
     use ns_runtime::{Interpreter, SourceOrigin};
