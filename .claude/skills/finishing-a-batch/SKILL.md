@@ -84,6 +84,15 @@ Create a todo for each item.
    as current fact — never kept and labelled historical.
 7. **Scratch space.** Before deleting anything under `.temp/`, write deferred
    findings and decisions carried forward into the repository documents.
+8. **The pull request.** Work reaches `master` only through a pull request,
+   so offer it, in one question: push the branch and open the pull request
+   against `master`. On the user's word, push with a bare `git push -u
+   origin <branch>` (never piped), open the pull request with the GitHub
+   MCP tools (`mcp__plugin_github_github__create_pull_request`; its body
+   what the batch built, the decisions taken, the gates run and their
+   results, and the attribution lines), and start watching it at once with
+   the skill `watching-a-pull-request`. The merge, a merge commit, waits
+   for the user's word as well.
 
 ## Common mistakes
 
@@ -94,6 +103,9 @@ Create a todo for each item.
   downloads several IDEs for nothing.
 - **Leaving an open item only in a PROGRESS.md entry.** It belongs in
   `docs/OPEN-WORK.md`.
+- **Ending at the last local commit.** A batch that is finished but never
+  pushed and opened as a pull request has not reached `master`; offer it
+  (step 8) rather than wait to be asked.
 - **Parking an in-topic finding in OPEN-WORK to save a fix round.** A small
   gap the branch made in its own topic is fixed on the branch; OPEN-WORK is
   for future topics and unrelated ones.
