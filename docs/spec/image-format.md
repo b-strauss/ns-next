@@ -1230,6 +1230,26 @@ refuses:
   `image encoding cannot serialize the reified mixin <name>, which is not part of any module the image carries`;
   and a closure or a frame running one of its bodies, with the refusals
   [`image.write.edited`](#r-image.write.edited) gives.
+- **A module root that is no class object**, with
+  `image encoding's root object is not a class`.
+- **An object whose record the loader would refuse**
+  ([`image.verify.metaclass-records`](#r-image.verify.metaclass-records),
+  [`image.verify.shipped-instances`](#r-image.verify.shipped-instances)): a
+  class object whose header is not its metaclass, with
+  `image encoding cannot serialize a class object without a metaclass`;
+  and an unresolved future whose fields a program's code corrupted, with
+  `image encoding cannot serialize a malformed future`. Three more guard
+  what no host can reach today: a body-less declaration's class object
+  without its declaration's scope, with
+  `image encoding cannot serialize a body-less declaration's class object without its declaration's scope`,
+  since such a class object is always made with the room for its scope;
+  a reified mixin of a class side whose instance side is gone, with
+  `image encoding cannot serialize the reified mixin of a class side whose instance side no longer exists`,
+  since a class side lives no longer than its instance side; and a row
+  without its text in an image with source, with
+  ``image encoding cannot carry the source of `<name>`, which was built without it``,
+  since the module's own refusal
+  ([`image.write.source`](#r-image.write.source)) comes first.
 - **The VM mirror, its class, `Top` and their metaclasses, anywhere in the
   graph** ([`image.verify.mirror`](#r-image.verify.mirror)): the mirror,
   checked before every other refusal of what the graph reaches, with
@@ -1253,6 +1273,21 @@ refuses:
   `image encoding refuses the module instance <module> outside a frame: it holds the core library's state`.
   A weak slot holding the mirror or its class is refused as a strong one
   is ([`image.write.weak`](#r-image.write.weak)).
+- **A shipped object no shipped name names**
+  ([`image.verify.shipped-names`](#r-image.verify.shipped-names)): a class
+  object compiled from shipped source that the shipped world does not
+  record -- one a second instance of a shipped module's root builds --
+  with
+  `image encoding refuses the class object <class>: it is compiled from shipped source, and no shipped name names it`.
+  Two more refusals of this kind guard what no host can reach today: a
+  reified mixin compiled from shipped source that no shipped name names,
+  with
+  `image encoding refuses the reified mixin <name>: it is compiled from shipped source, and no shipped name names it`,
+  and a level a program's `<:` clause added over a shipped mixin that no
+  shipped name names, with
+  ``image encoding cannot serialize a level that `<:` clause <n> of class `<name>` added: it applies the shipped mixin <mixin>, which no shipped name names``.
+  Every mixin compiled from shipped source is the mixin of a class the
+  shipped world names or will build under a name, so neither occurs.
 - **A module identity the project's rules refuse**
   ([`image.verify.module-identity`](#r-image.verify.module-identity),
   [`image.verify.modules`](#r-image.verify.modules)): one module's, with
@@ -1272,14 +1307,21 @@ Every object id and every object count an image holds is a `u32`, so an
 image holds fewer than 2^32 objects; a writer handed a graph of more
 aborts today, where it should refuse (`docs/OPEN-WORK.md`, "Writing an
 image of more than about four billion objects aborts instead of
-refusing"). A length a
-running program decides that does not fit its field is refused instead,
+refusing"). A length a running program decides that does not fit its
+field is refused instead,
 such as a register list of more than 65,535 registers, with
 `image encoding cannot write a register list of 65536: it does not fit the image format's 16-bit field`;
 and a body past the argument limit
 ([`bytecode.limit.arguments`](bytecode.md#r-bytecode.limit.arguments)),
 which the decoder refuses, is refused with
-`image encoding cannot write a body arity of 256: it is past the limit of 255 arguments`.
+`image encoding cannot write a <what> of <count>: it is past the limit of 255 arguments`
+-- a body's, a closure's, a factory's or a method's -- such as
+`image encoding cannot write a body arity of 256: it is past the limit of 255 arguments`;
+a body arity the compiler saturated at 65,535 with
+`image encoding cannot write a body arity of 65535 or more: it is past the limit of 255 arguments`.
+Every other 16-bit field a program decides -- a register list's length, a
+closure's copied value count -- is refused past 65,535 with
+`image encoding cannot write a <what> of <count>: it does not fit the image format's 16-bit field`.
 A string's, a symbol's or a byte array's length, a value list's and an
 integer's digit count past a `u32` are refused likewise, with
 `image encoding cannot write a <what> of <length>: it does not fit the image format's 32-bit field`;

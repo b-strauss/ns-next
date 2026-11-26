@@ -12059,6 +12059,113 @@ fn a_weak_slot_holding_the_mirror_or_its_class_is_refused() {
     }
 }
 
+/// A class object compiled from shipped source that no shipped name names
+/// is refused: a second `CollectionsFactory`, which a host makes by sending
+/// the module's class `usingKernel:` and which the shipped world never
+/// records, builds a `Collections` class of its own.
+// spec: image.write.refusals
+#[test]
+fn a_shipped_class_no_shipped_name_names_is_refused() {
+    let (mut interpreter, class) = load(EMPTY);
+    let platform = interpreter.platform();
+    let collections = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let (factory_class, kernel) = interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let facet_class = mutator.class_of(mutator.fetch(&collections));
+        let factory = heap
+            .class_enclosing(facet_class)
+            .expect("the collections factory instance encloses its facet's class");
+        let kernel = heap
+            .class_enclosing(mutator.builtin_class(BuiltinClass::Object))
+            .expect("the kernel instance encloses Object");
+        let factory_class = Value::object(heap.object_class(factory));
+        (
+            mutator.stash(factory_class),
+            mutator.stash(Value::object(kernel)),
+        )
+    });
+    let second_factory = expect_ok(
+        interpreter.send(&factory_class, Symbol::intern("usingKernel:"), &[kernel]),
+        "CollectionsFactory usingKernel:",
+    );
+    let second_collections = expect_ok(
+        interpreter.send(&second_factory, Symbol::intern("build"), &[]),
+        "build",
+    );
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            false,
+            "t.ns",
+            class,
+            &[mutator.fetch(&second_collections)],
+        )
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some(
+            "image encoding refuses the class object Collections: it is compiled from shipped \
+             source, and no shipped name names it"
+        )
+    );
+}
+
+/// A class object whose header is not its metaclass has none, and is
+/// refused rather than written under a header every class record's
+/// metaclass would claim: a host allocates one under `Object`.
+// spec: image.write.refusals
+#[test]
+fn a_class_object_without_a_metaclass_is_refused() {
+    let (mut interpreter, class) = load(EMPTY);
+    let result = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let mixin = root_mixin_of(mutator.heap(), class);
+        let application = mutator.apply_mixin(&mixin, None);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let without: ClassReference = mutator.heap_mut().allocate_class(
+            object_class,
+            NewClass {
+                application,
+                enclosing: None,
+                declaring_class: None,
+                superclass: Some(object_class),
+                builtin: None,
+            },
+        );
+        snapshot_one(mutator, false, "t.ns", class, &[Value::object(without)])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some("image encoding cannot serialize a class object without a metaclass")
+    );
+}
+
+/// A module's root must be a class object: a host that hands an instance
+/// as a module's root class is refused before anything is written.
+// spec: image.write.refusals
+#[test]
+fn a_module_root_that_is_not_a_class_is_refused() {
+    let (mut interpreter, class) = load(EMPTY);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let identity = ModuleIdentity::undeclared("t.ns", "NoClass");
+    let result = interpreter.enter(|mutator| {
+        let modules = [image::ModuleSource {
+            class: object(mutator.fetch(&instance)),
+            identity: &identity,
+            with_source: false,
+        }];
+        image::snapshot(mutator, &modules, &[])
+    });
+    assert_eq!(
+        result.err().as_deref(),
+        Some("image encoding's root object is not a class")
+    );
+}
+
 /// A shipped class is a shipped name, never a record, so it cannot be a
 /// module's root: the kernel's own root class handed as one is refused.
 // spec: image.write.refusals
@@ -17237,6 +17344,7 @@ fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
 /// refuses to write such a future rather than write a record the decoder
 /// would refuse (`future::fields_for_an_image`), and does not see through a
 /// "resolved" one whose value is another future.
+// spec: image.write.refusals
 #[test]
 fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
     let source = indoc! {"
