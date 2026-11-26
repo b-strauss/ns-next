@@ -3208,6 +3208,18 @@ constructs not built yet, each a rule whose identifier holds the segment
 
 ## Known defects and gaps
 
+- **A level over a shipped class side cannot be written into an image.**
+  A program whose `<:` clause names a shipped metaclass -- `List class`,
+  handed in as a factory argument -- applies that class side as a mixin
+  and runs, but the image writer refuses the level the clause added,
+  since no shipped name names a level over a class side
+  (`crates/ns-runtime/src/image/encode.rs`, `encode_class_record`;
+  `a_level_over_a_shipped_class_side_is_refused`,
+  `crates/ns-runtime/tests/image.rs`; `docs/spec/image-format.md`,
+  `image.write.refusals`). Whether the shipped names should gain a kind
+  for such a level, and the loader resolve it, is undecided. The
+  refusal's text also prints the mixin as `class side`, where
+  `Mixin::reflected_name` would print `List class`.
 - **A plugin debugger test timed out once under load** (noted
   2026-11-18, with the trace's stage 1): `NewspeakBreakpointTypesTest`'s
   `testATemporaryBreakpointIsRemovedAfterItsStop` failed with a

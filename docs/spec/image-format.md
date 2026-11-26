@@ -1279,15 +1279,21 @@ refuses:
   record -- one a second instance of a shipped module's root builds --
   with
   `image encoding refuses the class object <class>: it is compiled from shipped source, and no shipped name names it`.
-  Two more refusals of this kind guard what no host can reach today: a
-  reified mixin compiled from shipped source that no shipped name names,
-  with
-  `image encoding refuses the reified mixin <name>: it is compiled from shipped source, and no shipped name names it`,
-  and a level a program's `<:` clause added over a shipped mixin that no
-  shipped name names, with
-  ``image encoding cannot serialize a level that `<:` clause <n> of class `<name>` added: it applies the shipped mixin <mixin>, which no shipped name names``.
-  Every mixin compiled from shipped source is the mixin of a class the
-  shipped world names or will build under a name, so neither occurs.
+  A level a program's `<:` clause added over a shipped mixin that no
+  shipped name names is refused, with
+  ``image encoding cannot serialize a level that `<:` clause <n> of class `<name>` added: it applies the shipped mixin <mixin>, which no shipped name names``:
+  a clause naming a shipped metaclass applies a shipped class side, and
+  no shipped name names a level over one, so
+  ``image encoding cannot serialize a level that `<:` clause 1 of class `Listy` added: it applies the shipped mixin class side, which no shipped name names``
+  refuses a level over `List class`, while one over `List` is written
+  (`docs/OPEN-WORK.md`, "A level over a shipped class side cannot be
+  written into an image"). One more refusal of this kind guards what no
+  host can reach today: a reified mixin compiled from shipped source that
+  no shipped name names, with
+  `image encoding refuses the reified mixin <name>: it is compiled from shipped source, and no shipped name names it`;
+  a reified mixin names its instance side, and every instance side
+  compiled from shipped source is the mixin of a class the shipped world
+  names or will build under a name.
 - **A module identity the project's rules refuse**
   ([`image.verify.module-identity`](#r-image.verify.module-identity),
   [`image.verify.modules`](#r-image.verify.modules)): one module's, with

@@ -12114,6 +12114,67 @@ fn a_shipped_class_no_shipped_name_names_is_refused() {
     );
 }
 
+/// A `<:` clause naming a shipped metaclass applies a shipped class side
+/// as a mixin, and no shipped name names a level over a class side: the
+/// level `Listy`'s clause adds over `List class` is refused. The same
+/// clause naming `List` itself, whose mixin a shipped name names, writes.
+// spec: image.write.refusals
+#[test]
+fn a_level_over_a_shipped_class_side_is_refused() {
+    let source = indoc! {"
+        class Host usingPlatform: given = Object new (| public applied = given. |) (
+          public class Listy = Object new <: applied () ()
+        ) : ()
+    "};
+    for (class_side, expected) in [
+        (
+            true,
+            Some(
+                "image encoding cannot serialize a level that `<:` clause 1 of class `Listy` \
+                 added: it applies the shipped mixin class side, which no shipped name names",
+            ),
+        ),
+        (false, None),
+    ] {
+        let (mut interpreter, class) = load(source);
+        let platform = interpreter.platform();
+        let collections = expect_ok(
+            interpreter.send(&platform, Symbol::intern("collections"), &[]),
+            "platform collections",
+        );
+        let list = expect_ok(
+            interpreter.send(&collections, Symbol::intern("List"), &[]),
+            "collections List",
+        );
+        let applied = interpreter.enter(|mutator| {
+            let list = object(mutator.fetch(&list));
+            let applied = if class_side {
+                mutator.heap().object_class(list)
+            } else {
+                list
+            };
+            mutator.stash(Value::object(applied))
+        });
+        let host = expect_ok(
+            interpreter.instantiate(&class, &[applied]),
+            "Host usingPlatform:",
+        );
+        let listy = expect_ok(
+            interpreter.send(&host, Symbol::intern("Listy"), &[]),
+            "Listy",
+        );
+        let result = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            snapshot_one(mutator, false, "t.ns", class, &[mutator.fetch(&listy)])
+        });
+        assert_eq!(
+            result.err().as_deref(),
+            expected,
+            "class side: {class_side}"
+        );
+    }
+}
+
 /// A class object whose header is not its metaclass has none, and is
 /// refused rather than written under a header every class record's
 /// metaclass would claim: a host allocates one under `Object`.
