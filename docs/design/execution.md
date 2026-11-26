@@ -1307,6 +1307,26 @@ comparison with Primordial Soup or another VM, whose scores it matches in
 form, and for a short program whose per-application setup might hide a
 change in its workload.
 
+**A timed process's output never goes through PowerShell's
+`Start-Process -RedirectStandardOutput`.** What a program prints during
+`main:args:` -- each Are We Fast Yet program's `<Name>: ok`, each
+microbenchmark's result -- lies in the timed span, and every `show:` and
+`newLine` is a write and a flush of the standard output
+(`platform.rs`'s `write_and_flush`), so where that output goes is part of
+what is measured. Into the file `Start-Process` redirects it to, the
+output cost about 1.7 ms a run on the development machine: every program
+under about 5 ms measured 1.8 to 2.4 ms, `bench_loop.ns` 1.83 ms against
+0.079 ms on the same binary, while the seconds-long programs moved by less
+than their spread. It is that redirection's file, not a file as such and
+not the virus scanner: a fresh file in a folder the scanner excludes
+measured the same 1.8 to 1.95 ms, and `cmd`'s `>` into a fresh file
+0.083 ms (measured 2026-11-26). A script starts the process with both
+streams redirected to pipes it reads (`System.Diagnostics.Process` with
+`RedirectStandardOutput` and `RedirectStandardError`, reading one stream
+asynchronously so that neither fills), which measured `bench_loop.ns` at
+0.079 ms, the figure of "What Rust 1.100.0 moved", or through `cmd /c
+start /affinity C03C03 /b /wait … > <file>`.
+
 **The Java counterparts.** `benchmarks/are-we-fast-yet/java/` holds a Java
 counterpart of each of the sixteen programs and of the harness, so that
 ns-next's scores can be put beside a JVM's under one protocol. Decided with
