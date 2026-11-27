@@ -274,27 +274,45 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 1. If two builders of the list edit one class, signal `two builders edit
    Inner` and change nothing. If a builder's class is the core library's,
    signal and change nothing. If a builder's header changes the class's
-   name, access or superclass, signal `the header renames Inner to
-   Renamed; an edit keeps a class's name`, `the header changes the access
-   of Inner; an edit keeps it` or `the header changes the superclass of
-   Inner; an edit keeps it`, and change nothing.
+   superclass, signal `the header changes the superclass of Inner; an
+   edit keeps it` and change nothing.
 2. Prepare each module the list edits once: splice the staged edits of
    its builders into the module's current text, in the list's order,
    each starting from the text the one before it left, and compile the
    staged declarations against the result; if one does not compile,
-   signal and change nothing.
-3. If anything was installed, or a module loaded, since step 2 -- the
+   signal and change nothing. A module's root's header begins at its
+   first metadata comment, so it holds the root's `:module:`. A new name
+   -- the header's, or the one `name:` staged, which for a root rewrites
+   the last part of its `:module:` id too -- or a new access of a nested
+   class compiles its enclosing declaration with it, which answers the
+   class under its name and access; the class keeps its identity, its
+   class objects, its instances and the classes nested in it, and the
+   old name is no longer understood. If the new name is no identifier,
+   signal `Inner cannot be renamed to +, which is no identifier`; if the
+   enclosing class already declares a member of the new name, signal
+   `Outer already has a member named Sibling`; and change nothing.
+3. If a root's new text declares another id or version, the module keeps
+   its path, its root and its class objects and takes that identity,
+   held to the loader's rules
+   ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)):
+   a malformed declaration, an id under `newspeak.`, and an id and
+   version another module of the world has -- or an id another has where
+   either has no version -- signal the loader's message, the last naming
+   both paths, ``two modules are `com.acme.Util@2.0.0`: v1/Util.ns and
+   v2/Util.ns``, and change nothing. The manifest a program holds answers
+   the module under the id it was assembled with.
+4. If anything was installed, or a module loaded, since step 2 -- the
    install epoch moved -- signal `an install ran between the preparation
    and the commit of Inner's install; nothing was installed` and change
    nothing.
-4. At once and running no code, for every module's edits together: make
+5. At once and running no code, for every module's edits together: make
    each new mixin the mixin of every application of the old one; for
    every instance whose layout changed, make a new instance of the new
    layout holding each slot of the same name and `nil` in each new one,
    and [ForwardIdentity](#r-runtime.forward-identity) the old instances to
    them. Then move the install epoch.
-5. A running activation finishes with the code it began with; every send
-   after step 4 finds the new methods.
+6. A running activation finishes with the code it began with; every send
+   after step 5 finds the new methods.
 
 ## Capabilities and limits
 

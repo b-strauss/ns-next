@@ -1,0 +1,56 @@
+/// A root header whose `:module:` declares the id and version another
+/// module of the world has is refused with the loader's message, naming
+/// both modules' paths, and stages nothing; nor does one whose id does not
+/// end in the class's name, nor one in the namespace `newspeak.`. The
+/// module keeps its version, and a version no other module has installs.
+class App packageUsing: manifest = Object new (
+  |
+    private First = manifest at: 'com.acme.Util' version: '1'.
+  |
+) (
+  outcome: action = (
+    ^[
+      action value.
+      'staged'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: First) mixin declaration asBuilder.
+      original = builder header source.
+    |
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: com.acme.Util@2.0.0 *) class Util = Object new () '.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: com.acme.Tool@1.0.0 *) class Util = Object new () '.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: newspeak.Util *) class Util = Object new () '.
+        ]);
+        newLine.
+    transcript
+        print: builder header source = original;
+        newLine.
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: com.acme.Util@1.5.0 *) class Util = Object new () '.
+        ]);
+        newLine.
+    builder install.
+    transcript
+        print: First new answer;
+        show: ' [';
+        show: (ClassMirror reflecting: First) mixin declaration asBuilder header source;
+        show: ']';
+        newLine.
+  )
+)

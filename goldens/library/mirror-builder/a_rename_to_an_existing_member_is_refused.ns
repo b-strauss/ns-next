@@ -1,0 +1,55 @@
+/// `header name:` refuses a name the enclosing class already declares --
+/// a nested class, a method or a slot -- with an Error naming the
+/// enclosing class, and stages nothing; a header that renames the class to
+/// one does too. Installing then keeps the class's name.
+class ARenameToAnExistingMemberIsRefused = Object new (
+  |
+    public slot = 1.
+  |
+) (
+  class Subject = Object new () ()
+
+  class Sibling = Object new () ()
+
+  probe = (
+    ^1.
+  )
+
+  outcome: action = (
+    ^[
+      action value.
+      'staged'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      original = builder header source.
+    |
+    transcript
+        show: (outcome: [builder header name: #Sibling]);
+        newLine.
+    transcript
+        show: (outcome: [builder header name: #probe]);
+        newLine.
+    transcript
+        show: (outcome: [builder header name: #slot]);
+        newLine.
+    transcript
+        show: (outcome: [builder header source: 'class Sibling = Object new ()']);
+        newLine.
+    transcript
+        show: (outcome: [builder header name: 'not a name']);
+        newLine.
+    transcript
+        print: builder header source = original;
+        newLine.
+    builder install.
+    transcript
+        show: (ClassMirror reflecting: Subject) name;
+        newLine.
+  )
+)

@@ -23,7 +23,7 @@ use crate::mixin::RootClauseDefect;
 /// - every nested class, whose accessor has "the same name" (§6).
 ///
 /// Nothing inherited: §5.7 asks where a member is *declared*.
-fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
+pub(crate) fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
     let mut members = Vec::new();
     for slot in body.slots() {
         members.push(Symbol::intern(&slot.name.name));

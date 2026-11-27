@@ -94,6 +94,17 @@ pub(crate) struct EditedTexts {
     pub(crate) header: String,
 }
 
+/// One entry's edit spliced into its module's text (`Mutator::prepare_edit`).
+pub(crate) struct SplicedEdit {
+    /// The module's text with the edit in it.
+    pub(crate) text: String,
+    /// The declaration's new name, when the edit renames it.
+    pub(crate) renamed: Option<Symbol>,
+    /// Whether the edit renames a nested class or changes its access, so
+    /// that its enclosing declaration is compiled again with it.
+    pub(crate) widens: bool,
+}
+
 /// What preparing the edits of one module answers: everything the install
 /// needs of it, built and registered nowhere.
 pub(crate) struct PreparedModule {
@@ -240,49 +251,93 @@ impl<'gc> Mutator<'gc> {
     /// that edits the same module spliced in, so that the entries of one
     /// module compose on one text, in their order.
     ///
+    /// `path` names the declaration in `text`, which an earlier entry's
+    /// rename may have changed from the names the heap holds.
+    ///
     /// Changes nothing: it only reads and splices text.
     pub(crate) fn prepare_edit(
         &self,
         id: MixinId,
         edit: &Edit,
         text: &str,
-    ) -> Result<String, String> {
+        path: &[Symbol],
+    ) -> Result<SplicedEdit, String> {
         let (_, name) = self.editable_declaration(id)?;
-        if let Some(new_name) = edit.new_name {
+        if let Some(new_name) = edit.new_name
+            && !crate::modules::is_identifier(new_name.as_str())
+        {
             return Err(format!(
-                "the header renames {name} to {new_name}; an edit keeps a class's name"
+                "{name} cannot be renamed to {new_name}, which is no identifier"
             ));
         }
-        let (_, path) = self.path_from_module_root(id);
         let original = parse_module(text, &name)?;
-        let Some(original_declaration) = find_declaration(&original.root_class, &path) else {
+        let Some(original_declaration) = find_declaration(&original.root_class, path) else {
             return Err(format!(
                 "{name}'s source text does not hold its declaration"
             ));
         };
+        let header_start = header_start(&original, original_declaration, text);
         let mut spliced = text.to_string();
         for operation in &edit.instance_side {
-            spliced = apply_member_edit(&spliced, &path, Side::Instance, operation, &name)?;
+            spliced = apply_member_edit(&spliced, path, Side::Instance, operation, &name)?;
         }
         for operation in &edit.class_side {
-            spliced = apply_member_edit(&spliced, &path, Side::Class, operation, &name)?;
+            spliced = apply_member_edit(&spliced, path, Side::Class, operation, &name)?;
         }
         if let Some(header) = &edit.header {
-            // Last, because it may rename: every operation before it finds
-            // the declaration by its old name.
-            spliced = replace_header(&spliced, &path, header, &name)?;
+            // Last but for the name, because it may rename: every operation
+            // before it finds the declaration by its old name.
+            spliced = replace_header(&spliced, path, header, &name)?;
         }
         let edited = parse_module(&spliced, &name)?;
-        check_kept_header(
+        let declaration = check_kept_header(
             text,
             original_declaration,
             &spliced,
             &edited,
-            &path,
+            path,
+            header_start,
             edit.header.as_ref().map(String::len),
             &name,
         )?;
-        Ok(spliced)
+        let access_changed = crate::dispatch::effective_access(declaration.access)
+            != crate::dispatch::effective_access(original_declaration.access);
+        let header_name = Symbol::intern(&declaration.name.name);
+        let final_name = edit.new_name.unwrap_or(header_name);
+        if final_name != header_name {
+            spliced =
+                rename_declaration(&spliced, &edited, declaration, path.is_empty(), final_name);
+        }
+        let renamed = final_name.as_str() != original_declaration.name.name;
+        if renamed && let Some((_, enclosing_path)) = path.split_last() {
+            let final_module = parse_module(&spliced, &name)?;
+            let declared_twice = find_declaration(&final_module.root_class, enclosing_path)
+                .is_some_and(|enclosing| {
+                    crate::resolver::declared_members(&enclosing.instance_side)
+                        .into_iter()
+                        .filter(|member| *member == final_name)
+                        .count()
+                        > 1
+                });
+            if declared_twice {
+                let enclosing_name = self
+                    .heap
+                    .enclosing_mixin_id(id)
+                    .and_then(|enclosing| self.heap.mixin(enclosing))
+                    .map_or_else(String::new, |enclosing| enclosing.reflected_name());
+                return Err(format!(
+                    "{enclosing_name} already has a member named {final_name}"
+                ));
+            }
+        }
+        Ok(SplicedEdit {
+            text: spliced,
+            renamed: renamed.then_some(final_name),
+            // The accessor in the enclosing class's method table carries
+            // the class's name and access, and every binding of the name
+            // lies in the enclosing declaration's subtree.
+            widens: !path.is_empty() && (renamed || access_changed),
+        })
     }
 
     /// The edits `entries` of declarations of the module whose root is
@@ -301,26 +356,57 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<PreparedModule, String> {
         let mut declarations = Vec::with_capacity(entries.len());
         for (id, _) in entries {
-            let (current, name) = self.editable_declaration(*id)?;
+            let (_, name) = self.editable_declaration(*id)?;
             let (_, path) = self.path_from_module_root(*id);
-            declarations.push((current, name, path));
+            declarations.push((name, path));
         }
         let first_name = declarations
             .first()
-            .map_or_else(String::new, |(_, name, _)| name.clone());
+            .map_or_else(String::new, |(name, _)| name.clone());
         let Some(original_text) = self.heap.module_source(module_root) else {
             return Err(format!("{first_name} has no source text to edit"));
         };
         let mut text = original_text.to_string();
-        for (id, edit) in entries {
-            text = self.prepare_edit(*id, edit, &text)?;
+        // Each entry's path in the text as it stands, which a rename
+        // changes for the renamed declaration and every one nested in it.
+        let mut paths: Vec<Vec<Symbol>> =
+            declarations.iter().map(|(_, path)| path.clone()).collect();
+        let mut renamed: Vec<(MixinId, Symbol)> = Vec::new();
+        let mut widened = vec![false; entries.len()];
+        for (position, (id, edit)) in entries.iter().enumerate() {
+            let spliced = self.prepare_edit(*id, edit, &text, &paths[position])?;
+            text = spliced.text;
+            widened[position] = spliced.widens;
+            if let Some(new_name) = spliced.renamed {
+                let old_path = paths[position].clone();
+                if let Some(last) = old_path.len().checked_sub(1) {
+                    for path in &mut paths {
+                        if path.starts_with(&old_path) {
+                            path[last] = new_name;
+                        }
+                    }
+                }
+                renamed.push((*id, new_name));
+            }
+        }
+        // The declaration each entry compiles: its own, or for a rename
+        // or an access change its enclosing one, with that one's id.
+        let mut compiled: Vec<(MixinId, Vec<Symbol>)> = Vec::with_capacity(entries.len());
+        for (position, (id, _)) in entries.iter().enumerate() {
+            let path = &paths[position];
+            match (widened[position], self.heap.enclosing_mixin_id(*id)) {
+                (true, Some(enclosing)) => {
+                    compiled.push((enclosing, path[..path.len() - 1].to_vec()));
+                }
+                _ => compiled.push((*id, path.clone())),
+            }
         }
         let edited = parse_module(&text, &first_name)?;
         // Each entry's declaration's extent, so that a resolver error is
         // named by the innermost edited declaration it falls in.
-        let extents: Vec<Option<ns_syntax::Span>> = declarations
+        let extents: Vec<Option<ns_syntax::Span>> = paths
             .iter()
-            .map(|(_, _, path)| find_declaration(&edited.root_class, path).map(|found| found.span))
+            .map(|path| find_declaration(&edited.root_class, path).map(|found| found.span))
             .collect();
         let text: Rc<str> = Rc::from(text);
         // Never `resolve_kernel`: only shipped source records mirror sends.
@@ -337,7 +423,7 @@ impl<'gc> Mutator<'gc> {
             let name = extents
                 .iter()
                 .zip(&declarations)
-                .filter_map(|(extent, (_, name, _))| {
+                .filter_map(|(extent, (name, _))| {
                     extent
                         .filter(|span| span.start <= start && start <= span.end)
                         .map(|span| (span.end - span.start, name))
@@ -352,36 +438,43 @@ impl<'gc> Mutator<'gc> {
         let mut texts = Vec::with_capacity(entries.len());
         let mut replacements = Vec::new();
         let mut synthesized = Vec::new();
-        for (position, ((id, _), (current, name, path))) in
-            entries.iter().zip(&declarations).enumerate()
-        {
+        for (position, (name, _)) in declarations.iter().enumerate() {
+            let Some(declaration) = find_declaration(&resolved.module.root_class, &paths[position])
+            else {
+                return Err(format!(
+                    "{name}'s edited source does not hold its declaration"
+                ));
+            };
+            texts.push(declaration_texts(&resolved.module, &text, declaration));
+            let (id, path) = &compiled[position];
+            // Compiled within another entry's subtree, or with the earlier
+            // entry that compiles the same declaration.
+            let enclosed = compiled.iter().enumerate().any(|(other, (_, other_path))| {
+                other != position
+                    && path.starts_with(other_path)
+                    && (other_path.len() < path.len() || other < position)
+            });
+            if enclosed {
+                continue;
+            }
             let Some(declaration) = find_declaration(&resolved.module.root_class, path) else {
                 return Err(format!(
                     "{name}'s edited source does not hold its declaration"
                 ));
             };
-            texts.push(declaration_texts(&text, declaration));
-            let enclosed = declarations
-                .iter()
-                .enumerate()
-                .any(|(other, (_, _, other_path))| {
-                    other != position
-                        && other_path.len() < path.len()
-                        && path.starts_with(other_path)
-                });
-            if enclosed {
-                continue;
-            }
+            let Some(current) = self.heap.mixin(*id) else {
+                return Err("the edited mixin is unknown to this heap".to_string());
+            };
             let fresh = if path.is_empty() {
-                // The same module in a new version: an edit changes members
-                // and the header, never the path or the metadata above the
-                // class.
+                // The same module in a new version, its identity the one
+                // its edited text declares, under the path it had.
+                let identity = edited_identity(&current, &original_text, &resolved.module, &text)?;
                 self.build_root_mixin(
                     declaration,
                     &resolved.bindings,
                     ModuleSource::User,
                     &text,
-                    current.module_identity.clone(),
+                    identity,
                 )
             } else {
                 self.build_mixin(
@@ -396,7 +489,14 @@ impl<'gc> Mutator<'gc> {
                 self.nothing_registers(&fresh),
                 "internal: a prepared mixin is registered under no id"
             );
-            self.pair(*id, current, &fresh, &mut replacements, &mut synthesized);
+            self.pair(
+                *id,
+                &current,
+                &fresh,
+                &renamed,
+                &mut replacements,
+                &mut synthesized,
+            );
         }
         Ok(PreparedModule {
             #[cfg(test)]
@@ -454,12 +554,15 @@ impl<'gc> Mutator<'gc> {
     /// (`Heap::nested_of`), preorder. A fresh mixin that declares no class
     /// side gets a synthesized one in `synthesized`, under the id of the
     /// class side its old version had, so that every metaclass of the
-    /// subtree keeps its mixin's id.
+    /// subtree keeps its mixin's id. A declaration `renamed` names is
+    /// paired by its new name, so that a renamed class keeps its id, its
+    /// class objects and its instances.
     fn pair(
         &self,
         id: MixinId,
         old: &Rc<Mixin>,
         fresh: &Rc<Mixin>,
+        renamed: &[(MixinId, Symbol)],
         replacements: &mut Vec<(MixinId, Rc<Mixin>)>,
         synthesized: &mut Vec<(MixinId, MixinId, Rc<Mixin>)>,
     ) {
@@ -475,11 +578,19 @@ impl<'gc> Mutator<'gc> {
             }
         }
         for nested in fresh.declared_nested().iter() {
-            let counterpart = self.heap.nested_of(id).iter().copied().find(|old_id| {
-                self.heap
-                    .mixin(*old_id)
-                    .is_some_and(|old_nested| old_nested.name == nested.name)
-            });
+            let name_after = |old_id: MixinId| {
+                renamed
+                    .iter()
+                    .find(|(renamed_id, _)| *renamed_id == old_id)
+                    .map(|(_, new_name)| *new_name)
+                    .or_else(|| self.heap.mixin(old_id).map(|old_nested| old_nested.name))
+            };
+            let counterpart = self
+                .heap
+                .nested_of(id)
+                .iter()
+                .copied()
+                .find(|old_id| name_after(*old_id) == Some(nested.name));
             let Some(nested_id) = counterpart else {
                 continue;
             };
@@ -487,15 +598,27 @@ impl<'gc> Mutator<'gc> {
                 .heap
                 .mixin(nested_id)
                 .expect("internal: the counterpart was found by its row");
-            self.pair(nested_id, &current, nested, replacements, synthesized);
+            self.pair(
+                nested_id,
+                &current,
+                nested,
+                renamed,
+                replacements,
+                synthesized,
+            );
         }
     }
 }
 
 /// What the builder of `declaration` reads after an install: its text and
 /// its header's, sliced from `text`, the edited module's, by the spans of
-/// its parse.
-fn declaration_texts(text: &str, declaration: &ast::ClassDeclaration) -> EditedTexts {
+/// its parse, the header of `module`'s root from its first metadata
+/// comment (`header_start`).
+fn declaration_texts(
+    module: &ast::Module,
+    text: &str,
+    declaration: &ast::ClassDeclaration,
+) -> EditedTexts {
     let declaration_text = crate::mixin::source_text(text, declaration.span)
         .unwrap_or_default()
         .to_string();
@@ -503,7 +626,7 @@ fn declaration_texts(text: &str, declaration: &ast::ClassDeclaration) -> EditedT
         .instance_side
         .members_delimiters
         .map_or(declaration.span.end, |members| members.open.start);
-    let header_text = usize::try_from(declaration.span.start)
+    let header_text = usize::try_from(header_start(module, declaration, text))
         .ok()
         .zip(usize::try_from(header_end).ok())
         .and_then(|(start, end)| text.get(start..end))
@@ -735,8 +858,24 @@ fn apply_member_edit(
     Ok(spliced)
 }
 
+/// Where the header of `declaration`, a declaration of `module` parsed
+/// from `text`, begins: at the class for a nested one, and for the root
+/// at its first metadata comment, so that a root's header holds the
+/// `:module:` that names the module and an edit may change it.
+fn header_start(module: &ast::Module, declaration: &ast::ClassDeclaration, text: &str) -> u32 {
+    if !std::ptr::eq(declaration, &module.root_class) {
+        return declaration.span.start;
+    }
+    ns_syntax::metadata_of(module, text)
+        .into_iter()
+        .filter(|(target, _)| *target == ns_syntax::MetadataTarget::Module)
+        .map(|(_, metadata)| metadata.span.start)
+        .fold(declaration.span.start, u32::min)
+}
+
 /// `text` with the header of the declaration `path` names -- from its
-/// start to its members' `(` -- replaced by `header`.
+/// start, a root's first metadata comment, to its members' `(` --
+/// replaced by `header`.
 fn replace_header(text: &str, path: &[Symbol], header: &str, name: &str) -> Result<String, String> {
     let module = parse_module(text, name)?;
     let Some(declaration) = find_declaration(&module.root_class, path) else {
@@ -754,27 +893,136 @@ fn replace_header(text: &str, path: &[Symbol], header: &str, name: &str) -> Resu
     };
     Ok(splice(
         text,
-        declaration.span.start,
+        header_start(&module, declaration, text),
         members.open.start,
         header,
     ))
 }
 
-/// Refuses an edited module whose declaration lost its place, its name,
-/// its access, its superclass clause or its `<:` clauses. Everything before the
-/// declaration's start is untouched by the splices, so the edited
-/// declaration is the class that starts where the old one did; a header
-/// edit must end where its members' `(` begins, or it spliced a
-/// declaration of its own into the enclosing class.
-fn check_kept_header(
+/// `text`, parsed as `module`, with `declaration` named `new_name`, and
+/// for the root the last part of the id its `:module:` declares too, so
+/// that the id still ends in the class's name.
+fn rename_declaration(
+    text: &str,
+    module: &ast::Module,
+    declaration: &ast::ClassDeclaration,
+    is_root: bool,
+    new_name: Symbol,
+) -> String {
+    let name = declaration.name.span;
+    let renamed = splice(text, name.start, name.end, new_name.as_str());
+    if !is_root {
+        return renamed;
+    }
+    let declared = ns_syntax::metadata_of(module, text)
+        .into_iter()
+        .find(|(target, metadata)| {
+            *target == ns_syntax::MetadataTarget::Module
+                && metadata.tag == crate::modules::MODULE_TAG
+        });
+    let Some((_, metadata)) = declared else {
+        return renamed;
+    };
+    let Some(comment) = crate::mixin::source_text(text, metadata.span) else {
+        return renamed;
+    };
+    let Some(payload_start) = comment.find(&metadata.payload) else {
+        return renamed;
+    };
+    let id = metadata
+        .payload
+        .split_once('@')
+        .map_or(metadata.payload.as_str(), |(id, _)| id);
+    let last_start = id.rfind('.').map_or(0, |dot| dot + 1);
+    let (Ok(start), Ok(end)) = (
+        u32::try_from(payload_start + last_start),
+        u32::try_from(payload_start + id.len()),
+    ) else {
+        return renamed;
+    };
+    // The metadata stands before the class, so the name's splice after it
+    // left its offsets as they were.
+    splice(
+        &renamed,
+        metadata.span.start + start,
+        metadata.span.start + end,
+        new_name.as_str(),
+    )
+}
+
+/// The identity of the new version of `current`, a module's root, whose
+/// text was `original_text` and is `text`, parsed as `edited`: the one it
+/// had while its text declares what it declared, so that an id the
+/// project gave it (`as`) stays; otherwise one of the same path -- an
+/// install changes a module's attributes, never which module it is
+/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// install", decision 9) -- with the declared version and the declared
+/// id, or for an id the project gave, that id ending in the class's new
+/// name. The loader's own refusals refuse it, with their messages: a
+/// malformed declaration and an id in the reserved namespace.
+fn edited_identity(
+    current: &Mixin,
+    original_text: &str,
+    edited: &ast::Module,
+    text: &str,
+) -> Result<Option<Rc<crate::modules::ModuleIdentity>>, String> {
+    let (id, version) = crate::modules::declared_identity(edited, text)?;
+    let Some(identity) = &current.module_identity else {
+        return Ok(None);
+    };
+    let original = ns_syntax::parse(original_text)
+        .ok()
+        .and_then(|module| crate::modules::declared_identity(&module, original_text).ok());
+    if original
+        .as_ref()
+        .is_some_and(|(original_id, original_version)| {
+            *original_id == id && *original_version == version
+        })
+    {
+        return Ok(Some(Rc::clone(identity)));
+    }
+    let given = original
+        .as_ref()
+        .is_some_and(|(original_id, _)| *original_id != identity.id);
+    let id = if given {
+        let class_name = id.class_name().to_string();
+        let given_id = match identity.id.as_str().rsplit_once('.') {
+            Some((prefix, _)) => format!("{prefix}.{class_name}"),
+            None => class_name.clone(),
+        };
+        crate::modules::ModuleId::parse(&given_id, &class_name)?
+    } else {
+        id
+    };
+    crate::modules::check_unreserved(&id)?;
+    Ok(Some(Rc::new(crate::modules::ModuleIdentity {
+        path: identity.path.clone(),
+        id,
+        version,
+    })))
+}
+
+/// The declaration the edited module holds in place of `original`, or a
+/// refusal when it lost its place, its superclass clause or its `<:`
+/// clauses. Everything before the header's start, `header_start`, is
+/// untouched by the splices, so the edited declaration is the class that
+/// starts where the old one did, a root the module's; a header edit must
+/// end where its members' `(` begins, or it spliced a declaration of its
+/// own into the enclosing class.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the texts and parses before and after the edit, and where the header lies"
+)]
+fn check_kept_header<'module>(
     original_text: &str,
     original: &ast::ClassDeclaration,
     text: &str,
-    edited: &ast::Module,
+    edited: &'module ast::Module,
     path: &[Symbol],
+    header_start: u32,
     header_length: Option<usize>,
     name: &str,
-) -> Result<(), String> {
+) -> Result<&'module ast::ClassDeclaration, String> {
     let declaration_start = original.span.start;
     let declaration = match path.split_last() {
         None => Some(&edited.root_class),
@@ -793,7 +1041,7 @@ fn check_kept_header(
                 .instance_side
                 .members_delimiters
                 .is_some_and(|members| {
-                    members.open.start as usize == declaration_start as usize + length
+                    members.open.start as usize == header_start as usize + length
                 })
         })
     };
@@ -806,23 +1054,6 @@ fn check_kept_header(
             declaration_start,
         ));
     };
-    if declaration.name.name != original.name.name {
-        return Err(format!(
-            "the header renames {name} to {}; an edit keeps a class's name",
-            declaration.name.name
-        ));
-    }
-    // The class's accessor in its enclosing class's method table carries
-    // the access, and the enclosing class keeps its version: an edit
-    // that changed it would answer one access from the mirror and honour
-    // another in every send.
-    if crate::dispatch::effective_access(declaration.access)
-        != crate::dispatch::effective_access(original.access)
-    {
-        return Err(format!(
-            "the header changes the access of {name}; an edit keeps it"
-        ));
-    }
     let clause_text =
         |source: &'_ str, clause: &ast::SuperclassClause| clause.span.text(source).to_string();
     let original_clauses: Vec<String> = original
@@ -844,7 +1075,7 @@ fn check_kept_header(
             "the header changes the superclass of {name}; an edit keeps it"
         ));
     }
-    Ok(())
+    Ok(declaration)
 }
 
 #[cfg(test)]
@@ -1290,18 +1521,155 @@ mod tests {
         assert_eq!(method_source, Some("public a = ( ^'ö🙂ü' )"));
     }
 
+    fn rename(new_name: &str) -> Edit {
+        Edit {
+            header: None,
+            instance_side: Vec::new(),
+            class_side: Vec::new(),
+            new_name: Some(Symbol::intern(new_name)),
+        }
+    }
+
+    /// A rename and an access change compile the enclosing declaration
+    /// again, whose accessor and bindings name the class: the enclosing
+    /// mixin is replaced first, the renamed one within it.
+    // spec: runtime.install
+    #[test]
+    fn a_rename_widens_the_edit_to_the_enclosing_declaration() {
+        let (mut interpreter, outer) = load(OUTER);
+        let (root_id, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        for (edit, name, access) in [
+            (rename("Renamed"), "Renamed", ast::AccessModifier::Public),
+            (
+                header_edit("public class Renamed = ()"),
+                "Renamed",
+                ast::AccessModifier::Public,
+            ),
+            (
+                header_edit("private class Inner = ()"),
+                "Inner",
+                ast::AccessModifier::Private,
+            ),
+        ] {
+            let prepared = prepare(&mut interpreter, inner_id, &edit);
+            let (id, fresh_outer) = &prepared.replacements[0];
+            assert_eq!(*id, root_id);
+            let fresh_inner = &fresh_outer.declared_nested()[0];
+            assert_eq!(fresh_inner.name.as_str(), name);
+            assert_eq!(fresh_inner.access, access);
+        }
+        let prepared = prepare(&mut interpreter, inner_id, &rename("Renamed"));
+        assert!(prepared.module_texts[0].contains("public class Renamed = () ("));
+        assert!(prepared.texts[0].header.starts_with("public class Renamed"));
+        // An edit that keeps the name and the access compiles the class
+        // alone.
+        let kept = prepare(
+            &mut interpreter,
+            inner_id,
+            &header_edit("public class Inner = ()"),
+        );
+        assert_eq!(kept.replacements[0].0, inner_id);
+    }
+
+    /// The renamed class is paired with its old version by the name it
+    /// had, so it keeps its id.
+    // spec: runtime.install
+    #[test]
+    fn a_renamed_child_keeps_its_id() {
+        let (mut interpreter, outer) = load(OUTER);
+        let (_, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        for edit in [rename("Renamed"), header_edit("public class Renamed = ()")] {
+            let prepared = prepare(&mut interpreter, inner_id, &edit);
+            let (_, fresh_outer) = &prepared.replacements[0];
+            let fresh_inner = prepared
+                .replacements
+                .iter()
+                .find(|(id, _)| *id == inner_id)
+                .map(|(_, fresh)| fresh.clone())
+                .expect("the renamed Inner is replaced under its id");
+            assert_eq!(fresh_inner.name.as_str(), "Renamed");
+            assert!(Rc::ptr_eq(&fresh_inner, &fresh_outer.declared_nested()[0]));
+            assert!(fresh_inner.methods.contains_key(&Symbol::intern("a")));
+        }
+    }
+
+    /// A rename to a name the enclosing class already declares is refused,
+    /// naming the enclosing class.
+    // spec: runtime.install
+    #[test]
+    fn a_rename_to_an_existing_member_is_refused() {
+        let source = indoc! {"
+            class Outer = Object new (| public slot = 1. |) (
+              public class Inner = () ()
+              public class Sibling = () ()
+              public probe = ( ^1 )
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let (_, inner_id) = root_and_inner_ids(&mut interpreter, &outer);
+        for taken in ["Sibling", "probe", "slot"] {
+            assert_eq!(
+                refusal(&mut interpreter, inner_id, &rename(taken)),
+                format!("Outer already has a member named {taken}")
+            );
+        }
+        assert_eq!(
+            refusal(
+                &mut interpreter,
+                inner_id,
+                &header_edit("public class Sibling = ()")
+            ),
+            "Outer already has a member named Sibling"
+        );
+    }
+
+    /// A root's header begins at its first metadata comment, so that the
+    /// header can change the module's id and version; a nested class's
+    /// begins at the class.
+    // spec: runtime.install
+    #[test]
+    fn a_root_header_holds_its_metadata() {
+        let source = indoc! {"
+            /// A module.
+            (* :module: com.acme.Outer@1.0.0 *)
+            class Outer = Object new () (
+              public a = ( ^1 )
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let root_id = interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &outer);
+            mutator.heap.mixin_id(&root)
+        });
+        let unchanged = prepare(&mut interpreter, root_id, &instance_edit(Vec::new()));
+        assert_eq!(
+            unchanged.texts[0].header,
+            "(* :module: com.acme.Outer@1.0.0 *)\nclass Outer = Object new () "
+        );
+        let edited = prepare(
+            &mut interpreter,
+            root_id,
+            &header_edit("(* :module: com.acme.Outer@1.1.0 *)\nclass Outer = Object new () "),
+        );
+        assert!(
+            edited.module_texts[0]
+                .starts_with("/// A module.\n(* :module: com.acme.Outer@1.1.0 *)\nclass Outer")
+        );
+        let renamed = prepare(&mut interpreter, root_id, &rename("Codec"));
+        assert_eq!(
+            renamed.texts[0].header,
+            "(* :module: com.acme.Codec@1.0.0 *)\nclass Codec = Object new () "
+        );
+    }
+
     /// The edits of `OUTER`'s `Inner` that `every_refusal_answers_its_diagnostic`
     /// and `a_failed_preparation_changes_nothing` refuse, with their
     /// diagnostics.
     fn refused_edits() -> Vec<(Edit, &'static str)> {
         vec![
             (
-                header_edit("public class Renamed = ()"),
-                "the header renames Inner to Renamed; an edit keeps a class's name",
-            ),
-            (
-                header_edit("private class Inner = ()"),
-                "the header changes the access of Inner; an edit keeps it",
+                rename("+"),
+                "Inner cannot be renamed to +, which is no identifier",
             ),
             (
                 header_edit("public class Inner = Object new ()"),

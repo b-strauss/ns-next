@@ -608,14 +608,18 @@ The builder answers `source`, `header`, `instanceSide`, `classSide` and
   mirror's `source` answers.
 - `header`, a `ClassHeaderBuilder`: `source`, the staged header, and
   `source: aString`, which replaces the class header -- its factory, its
-  slots and its initializer -- and refuses a header that renames the
-  class or changes its access, its superclass or its `<:` clauses
-  (changing a superclass is deferred; the clauses are compared as text,
-  so a change of whitespace inside one is refused too). The header is the declaration's text from its start up
-  to, not including, the parenthesis that opens its members, whitespace
-  before that parenthesis included, so a header given to `source:` starts
-  exactly where the declaration does, at its access modifier or `class`,
-  with no whitespace or comment before it.
+  slots and its initializer, and its name and access, which a rename
+  and an access change install ("Planned: the complete install",
+  decisions 4, 5 and 9) -- and refuses a header that changes its
+  superclass or its `<:` clauses (changing a superclass is deferred; the
+  clauses are compared as text, so a change of whitespace inside one is
+  refused too); `name: aSymbol` stages a new name. The header is the
+  declaration's text from its start up to, not including, the
+  parenthesis that opens its members, whitespace before that parenthesis
+  included, so a header given to `source:` starts exactly where the
+  declaration does, at its access modifier or `class`, with no
+  whitespace or comment before it -- for a module's root at its first
+  metadata comment, so that the header holds its `:module:`.
 - `instanceSide` and `classSide`, each a `MixinBuilder`: `methods`, a
   `MutableMemberGroup` with `addFromSource: aString` -- adds the method,
   or replaces the one of the same selector -- and `removeMirrorNamed:
@@ -763,8 +767,9 @@ the edited module text:
 | a member text of the wrong kind | `addFromSource: of <name>'s methods takes one method declaration`; `addFromSource: of <name>'s lazy slots takes one lazy slot declaration` |
 | a member added to, or a header replaced on, a mixin application with no body | `<name> is a mixin application without a body, which an edit cannot add members to`; `<name> is a mixin application without a body, whose header an edit cannot replace` |
 | a syntax error | `<name>'s edited source does not parse: <message> (line <n>)`, the message the parser's, or `the header must declare the class and end where its members begin` for a header that does not end where the members begin |
-| a header that renames | `the header renames <name> to <new name>; an edit keeps a class's name` |
-| a header that changes the class's access | `the header changes the access of <name>; an edit keeps it` |
+| a new name that is no identifier | `<name> cannot be renamed to <new name>, which is no identifier` |
+| a rename to a member name the enclosing class already has | `<enclosing> already has a member named <new name>` |
+| a new identity the loader's rules refuse | the loader's own text (`modules::declared_identity`, `check_unreserved`, `check_distinct`) |
 | a header that changes a superclass or `<:` clause | `the header changes the superclass of <name>; an edit keeps it` |
 | a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
 | an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |

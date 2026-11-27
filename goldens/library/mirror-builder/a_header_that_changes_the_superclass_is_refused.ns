@@ -1,9 +1,8 @@
-/// `header source:` refuses a header that renames the class or changes
-/// its superclass, with an Error naming the class, and stages nothing: the
-/// header still answers the declaration's own, and installing changes
-/// neither the class's name nor its superclass. A header that keeps both
-/// and changes a slot's value is staged.
-class AHeaderThatRenamesOrChangesTheSuperclassIsRefused = Object new () (
+/// `header source:` refuses a header that changes the class's superclass,
+/// with an Error naming the class, and stages nothing: the header still
+/// answers the declaration's own, and installing leaves the superclass as
+/// it was. A header that keeps it and changes a slot's value is staged.
+class AHeaderThatChangesTheSuperclassIsRefused = Object new () (
   class Base = Object new () ()
 
   class Subject = Object new (
@@ -26,11 +25,6 @@ class AHeaderThatRenamesOrChangesTheSuperclassIsRefused = Object new () (
       builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
       original = builder header source.
     |
-    transcript
-        show: (outcome: [
-          builder header source: 'class Renamed = Object new (| public kept = 1. |)'.
-        ]);
-        newLine.
     transcript
         show: (outcome: [builder header source: 'class Subject = Base new (| public kept = 1. |)']);
         newLine.

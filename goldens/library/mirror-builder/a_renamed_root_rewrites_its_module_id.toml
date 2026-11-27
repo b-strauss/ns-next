@@ -1,0 +1,8 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+[(* :module: com.acme.JsonCodec@1.0.0 *)
+class JsonCodec = Object new () ]
+JsonCodec 'JsonCodec' 'json' true
+[(* :module: com.acme.JsonCodec@1.0.0 *)
+class JsonCodec = Object new () ]
+'''

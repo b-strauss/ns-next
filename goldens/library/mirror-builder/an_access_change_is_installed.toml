@@ -1,0 +1,7 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+#protected an object does not understand #Subject
+#public Subject
+#private an object does not understand #Subject
+true Subject 42
+'''

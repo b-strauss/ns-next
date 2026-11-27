@@ -1,0 +1,7 @@
+/// The first version of a module the program holds two versions of.
+(* :module: com.acme.Util@1.0.0 *)
+class Util = Object new () (
+  public answer = (
+    ^1.
+  )
+)

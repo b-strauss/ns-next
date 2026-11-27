@@ -1,0 +1,40 @@
+/// A root header whose `:module:` declares another version installs in
+/// place: the module keeps its class object, the instance made before
+/// migrates to the new slots, keeping its values, and the module's text
+/// declares the new version. The manifest the program was given still
+/// answers the class.
+class App packageUsing: manifest = Object new (
+  |
+    private modules = manifest.
+    private Util = manifest at: 'com.acme.Util'.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Util new.
+      builder = (ClassMirror reflecting: Util) mixin declaration asBuilder.
+    |
+    instance kept: 5.
+    builder
+        header source: '(* :module: com.acme.Util@1.1.0 *) class Util = Object new (| public kept ::= 1. public added ::= 2. |) '.
+    builder install.
+    transcript
+        print: instance kept;
+        show: ' ';
+        print: instance added;
+        show: ' ';
+        print: instance answer;
+        show: ' ';
+        print: Util new added;
+        show: ' ';
+        print: (modules at: 'com.acme.Util') == Util;
+        newLine.
+    transcript
+        show: '[';
+        show: (ClassMirror reflecting: Util) mixin declaration asBuilder header source;
+        show: ']';
+        newLine.
+  )
+)

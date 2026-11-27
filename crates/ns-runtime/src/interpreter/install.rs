@@ -189,6 +189,45 @@ impl<'gc> Mutator<'gc> {
         Ok(texts.remove(0))
     }
 
+    /// Refuses `replacements` when a module root's new version carries an
+    /// identity the loader would refuse beside the world's other modules
+    /// (`docs/design/modules.md`, decision 5): two of one id and one
+    /// version, or two of one id where either has none, with the loader's
+    /// message naming both paths, earlier row first. Only the ids an
+    /// install changes are compared, so an install never answers for a
+    /// pair of modules it did not touch.
+    pub(super) fn refuse_a_colliding_identity(
+        &self,
+        replacements: &[(MixinId, Rc<Mixin>)],
+    ) -> Result<(), String> {
+        use crate::modules::ModuleIdentity;
+        let changed: Vec<(Rc<ModuleIdentity>, Rc<ModuleIdentity>)> = replacements
+            .iter()
+            .filter(|(id, _)| self.heap.enclosing_mixin_id(*id).is_none())
+            .filter_map(|(id, fresh)| {
+                let old = self.heap.mixin(*id)?.module_identity.clone()?;
+                let new = fresh.module_identity.clone()?;
+                (!Rc::ptr_eq(&old, &new)).then_some((old, new))
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(());
+        }
+        let identities: Vec<Rc<ModuleIdentity>> = self
+            .heap
+            .module_identities()
+            .into_iter()
+            .map(|identity| {
+                changed
+                    .iter()
+                    .find(|(old, _)| Rc::ptr_eq(old, &identity))
+                    .map_or(identity, |(_, new)| Rc::clone(new))
+            })
+            .filter(|identity| changed.iter().any(|(_, new)| new.id == identity.id))
+            .collect();
+        crate::modules::check_distinct(identities.iter().map(Rc::as_ref))
+    }
+
     /// What the commit of `prepared` makes stale, read before it replaces
     /// anything: the guard and the index of every application it
     /// re-applies, `old_applications`, and every declaration's version it
@@ -685,8 +724,8 @@ mod tests {
     /// An edit replaces the module's root mixin with a version compiled
     /// from the edited text, which is the same module: its identity, which
     /// the host set when it loaded the module, goes over to the new
-    /// version, since an edit changes members and never the metadata above
-    /// the class.
+    /// version, the same `Rc`, since the edit leaves the id and version its
+    /// text declares as they were.
     #[test]
     fn an_installed_edit_keeps_the_identity() {
         let mut interpreter = Interpreter::bootstrap();
@@ -727,6 +766,141 @@ mod tests {
             .clone()
             .expect("the new version has one");
         assert!(Rc::ptr_eq(&kept, &identity));
+    }
+
+    /// `source` loaded into `interpreter` as the module at `path` with
+    /// the id and version its `:module:` declares.
+    fn load_identified(interpreter: &mut Interpreter, source: &str, path: &str) -> Root {
+        let module = ns_syntax::parse(source).expect("parse");
+        let (id, version) =
+            crate::modules::declared_identity(&module, source).expect("a declared identity");
+        let mut resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from(path)),
+        )
+        .expect("resolve");
+        resolved.identity = Some(Rc::new(crate::modules::ModuleIdentity {
+            path: path.to_string(),
+            id,
+            version,
+        }));
+        interpreter.load_module(&resolved)
+    }
+
+    fn identity_of(
+        interpreter: &mut Interpreter,
+        class: &Root,
+    ) -> Rc<crate::modules::ModuleIdentity> {
+        interpreter.enter(|mutator| {
+            mixin_of(mutator, class)
+                .module_identity
+                .clone()
+                .expect("the root has an identity")
+        })
+    }
+
+    /// A rename of an annotated root is the same module under another id:
+    /// its mixin id, its path and its class object are kept, and its
+    /// `:module:` id ends in the new name.
+    // spec: runtime.install
+    #[test]
+    fn a_root_rename_changes_the_identity_in_place() {
+        let mut interpreter = Interpreter::bootstrap();
+        let source = indoc! {"
+            (* :module: com.acme.Json@1.2.0 *)
+            class Json = Object new () (
+              public a = ( ^1 )
+            )
+        "};
+        let json = load_identified(&mut interpreter, source, "libs/Json.ns");
+        let instance = expect_ok(interpreter.instantiate(&json, &[]), "a Json");
+        let root_id = interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &json);
+            mutator.heap.mixin_id(&mixin)
+        });
+        let edit = Edit {
+            header: None,
+            instance_side: Vec::new(),
+            class_side: Vec::new(),
+            new_name: Some(Symbol::intern("JsonCodec")),
+        };
+        let texts = match interpreter.enter(|mutator| mutator.install_one(root_id, &edit)) {
+            Ok(texts) => texts,
+            Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
+        };
+        assert_eq!(
+            texts.header,
+            "(* :module: com.acme.JsonCodec@1.2.0 *)\nclass JsonCodec = Object new () "
+        );
+        let identity = identity_of(&mut interpreter, &json);
+        assert_eq!(identity.path, "libs/Json.ns");
+        assert_eq!(identity.display_name(), "com.acme.JsonCodec@1.2.0");
+        interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &json);
+            assert_eq!(mutator.heap.known_mixin_id(&mixin), Some(root_id));
+            assert_eq!(mixin.name.as_str(), "JsonCodec");
+            let object = mutator.fetch(&instance).as_object().expect("an instance");
+            let class = mutator.heap.object_class(object);
+            let json = mutator.fetch(&json).as_object().expect("a class object");
+            assert_eq!(
+                mutator.heap.object_identity_key(class),
+                mutator.heap.object_identity_key(json)
+            );
+        });
+        let answer = send(&mut interpreter, &instance, "a");
+        assert_eq!(integer(&mut interpreter, &answer), Some(1));
+    }
+
+    /// An identity another module of the world has is refused with the
+    /// loader's message, and the module keeps its version and identity.
+    // spec: runtime.install
+    #[test]
+    fn a_colliding_identity_changes_nothing() {
+        let mut interpreter = Interpreter::bootstrap();
+        let first = load_identified(
+            &mut interpreter,
+            indoc! {"
+                (* :module: com.acme.Util@1.0.0 *)
+                class Util = Object new () ()
+            "},
+            "v1/Util.ns",
+        );
+        load_identified(
+            &mut interpreter,
+            indoc! {"
+                (* :module: com.acme.Util@2.0.0 *)
+                class Util = Object new () ()
+            "},
+            "v2/Util.ns",
+        );
+        let (root_id, before) = interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &first);
+            (mutator.heap.mixin_id(&mixin), mixin)
+        });
+        let identity = identity_of(&mut interpreter, &first);
+        let edit = header_edit("(* :module: com.acme.Util@2.0.0 *)\nclass Util = Object new () ");
+        let refused = interpreter.enter(|mutator| mutator.install_one(root_id, &edit));
+        match refused {
+            Ok(_) => panic!("the colliding identity was installed"),
+            Err(diagnostic) => assert_eq!(
+                diagnostic,
+                "two modules are `com.acme.Util@2.0.0`: v1/Util.ns and v2/Util.ns"
+            ),
+        }
+        interpreter.enter(|mutator| {
+            assert!(Rc::ptr_eq(&mixin_of(mutator, &first), &before));
+        });
+        assert!(Rc::ptr_eq(
+            &identity_of(&mut interpreter, &first),
+            &identity
+        ));
+        let reserved = header_edit("(* :module: newspeak.Util *)\nclass Util = Object new () ");
+        let refused = interpreter.enter(|mutator| mutator.install_one(root_id, &reserved));
+        match refused {
+            Ok(_) => panic!("the reserved identity was installed"),
+            Err(diagnostic) => assert!(diagnostic.contains("lies in the namespace `newspeak.`")),
+        }
     }
 
     /// An edited nested class is written and loads edited: its added

@@ -658,10 +658,14 @@ one `ClassDeclarationBuilder`, or of several given to
 methods on either side and its lazy slots, changed for every application
 of its mixin at once, the instances whose layout changed migrated with
 their identity, and a running activation finishing with the code it
-began with. Several builders' edits are one change: each is spliced into
-its module's text in the order the builders are given, and two builders
-of one class are refused. A failed install changes nothing, and the core
-library's classes cannot be edited.
+began with. A class can be renamed and a nested class's access changed,
+the class keeping its identity, its class objects and its instances, its
+old name no longer understood; a module's root can be renamed and its
+`:module:` changed, the same module under the new id or version, held to
+the loader's rules. Several builders' edits are one change: each is
+spliced into its module's text in the order the builders are given, and
+two builders of one class are refused. A failed install changes nothing,
+and the core library's classes cannot be edited.
 
 r[semantics.gap.reflection.several-builders]
 A superclass change, the nested classes and a class declared from

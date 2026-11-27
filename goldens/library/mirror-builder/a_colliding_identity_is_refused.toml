@@ -1,0 +1,9 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+two modules are `com.acme.Util@2.0.0`: v1/Util.ns and v2/Util.ns
+`com.acme.Tool` does not end in the class's name `Util`
+`newspeak.Util` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships
+true
+staged
+1 [(* :module: com.acme.Util@1.5.0 *) class Util = Object new () ]
+'''

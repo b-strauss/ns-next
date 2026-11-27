@@ -142,6 +142,10 @@ impl<'gc> Mutator<'gc> {
             #[cfg(test)]
             module_texts.push(prepared.module_text);
         }
+        // Before the commit, and before a check answers, so that a new id
+        // or version two modules would share is refused as the loader
+        // refuses it.
+        self.refuse_a_colliding_identity(&replacements)?;
         Ok(PreparedInstall {
             epoch: self.install_epoch,
             texts: texts

@@ -1,0 +1,79 @@
+/// `header name:` renames a nested class, keeping it: after the install
+/// its enclosing class and a sibling reach it through an implicit send of
+/// the new name, its class object and an instance made before stay, the
+/// class nested in it keeps its class object and its instances, and the
+/// old name is not understood. Before the install the new name is not
+/// understood, and the header shows it.
+class ARenamedNestedClassAnswersItsNewName = Object new () (
+  public class Inner = Object new () (
+    public answer = (
+      ^42.
+    )
+
+    public class Deep = Object new () (
+      public deep = (
+        ^7.
+      )
+    )
+  )
+
+  /// Names the renamed class through an implicit send of its new name.
+  class Sibling = Object new () (
+    public made = (
+      ^Inner2 new answer.
+    )
+  )
+
+  make = (
+    ^Inner2 new.
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      before = Inner.
+      old = Inner new.
+      deepClass = old Deep.
+      oldDeep = deepClass new.
+      builder = (ClassMirror reflecting: Inner) mixin declaration asBuilder.
+    |
+    builder header name: #Inner2.
+    transcript
+        show: '[';
+        show: builder header source;
+        show: ']';
+        newLine.
+    transcript
+        show: (outcome: [make answer]);
+        newLine.
+    builder install.
+    transcript
+        show: (outcome: [make answer]);
+        show: ' ';
+        show: (outcome: [Sibling new made]);
+        newLine.
+    transcript
+        print: Inner2 name;
+        show: ' ';
+        print: Inner2 == before;
+        show: ' ';
+        print: old answer;
+        newLine.
+    transcript
+        print: old Deep == deepClass;
+        show: ' ';
+        print: oldDeep deep;
+        newLine.
+    transcript
+        show: (outcome: [Inner]);
+        newLine.
+    transcript
+        show: (ClassMirror reflecting: Inner2) name;
+        newLine.
+  )
+)

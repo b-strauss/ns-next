@@ -1,0 +1,5 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+5 nil 42 2 true
+[(* :module: com.acme.Util@1.1.0 *) class Util = Object new (| public kept ::= 1. public added ::= 2. |) ]
+'''

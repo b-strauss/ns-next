@@ -1397,10 +1397,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// Every edit is checked as it is staged: the VM splices it, with every
   /// edit staged before it, into the module's current text, then parses
   /// and resolves the module, and an edit it refuses -- a syntax error, a
-  /// member that collides with another, a header that renames the class
-  /// or changes its access or its superclass -- signals an Error with the diagnostic and
-  /// leaves the builder as it was, so a later `install` installs only the
-  /// edits that were accepted.
+  /// member that collides with another, a header that changes the
+  /// superclass, a new name the enclosing class already declares, or a
+  /// module's id and version the world's other modules would share --
+  /// signals an Error with the diagnostic and leaves the builder as it
+  /// was, so a later `install` installs only the edits that were accepted.
+  ///
+  /// A new name or a new access keeps the class's identity: its class
+  /// objects, its instances and the classes nested in it stay, its
+  /// enclosing class's accessor answers it under the new name and access,
+  /// and the old name is not understood. A module's root renamed, or its
+  /// `:module:` changed, is the same module under a new id or version.
   ///
   /// The staged state is Strings and Symbols, never a compiled member, so
   /// nothing exists outside the object space before `install`. Each check
@@ -1426,6 +1433,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// The staged header's text, a String, or nil to keep the
       /// declaration's.
       private headerText ::= nil.
+      /// The staged new name of the class, a Symbol, or nil to keep the
+      /// one the header names.
+      private newName ::= nil.
       /// The staged operations on the instance side, in the order they
       /// were staged: an Array of two-element Arrays, an operation's
       /// Symbol and its text or name, as the VM reads an edit.
@@ -1446,6 +1456,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
         stagedHeader.
       ] staging: [:text |
         self stageHeader: text.
+      ] naming: [:name |
+        self stageName: name.
       ].
       /// The declaration's instance side, a MixinBuilder whose methods and
       /// lazy slots stage through the receiver.
@@ -1533,6 +1545,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     public installed: texts by: anInstaller = (
       (isInstaller: anInstaller) ifFalse: [^self].
       headerText:: nil.
+      newName:: nil.
       instanceOperations:: {}.
       classOperations:: {}.
       stagedSource:: texts at: 1.
@@ -1545,7 +1558,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// side's operations, the class side's and the new name, nil to keep
     /// the class's.
     private edit = (
-      ^{headerText. instanceOperations. classOperations. nil}.
+      ^{headerText. instanceOperations. classOperations. newName}.
     )
 
     /// Stages `operation` on one side, after every operation staged
@@ -1560,14 +1573,15 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @see `check:`.
     private stage: operation onClassSide: classSide = (
       classSide ifTrue: [
-        self check: {headerText. instanceOperations. classOperations , {operation}. nil}.
+        self check: {headerText. instanceOperations. classOperations , {operation}. newName}.
       ] ifFalse: [
-        self check: {headerText. instanceOperations , {operation}. classOperations. nil}.
+        self check: {headerText. instanceOperations , {operation}. classOperations. newName}.
       ].
     )
 
     /// Stages `text` as the declaration's header, in place of any header
-    /// staged before, when the check accepts the result.
+    /// staged before, when the check accepts the result. The header names
+    /// the class itself, so a name staged before is dropped.
     ///
     /// @param text a String, the header as `ClassHeaderBuilder>>source:`
     /// takes it.
@@ -1576,6 +1590,18 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @see `check:`.
     private stageHeader: text = (
       self check: {text. instanceOperations. classOperations. nil}.
+    )
+
+    /// Stages `name` as the class's new name, in place of any name staged
+    /// before, when the check accepts the result.
+    ///
+    /// @param name a Symbol, the name as `ClassHeaderBuilder>>name:` takes
+    /// it.
+    /// @answers the receiver.
+    /// @signals Error the one `check:` signals, staging nothing.
+    /// @see `check:`.
+    private stageName: name = (
+      self check: {headerText. instanceOperations. classOperations. name}.
     )
 
     /// Checks `newState` against the module's current text and, when the
@@ -1598,6 +1624,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       headerText:: newState at: 1.
       instanceOperations:: newState at: 2.
       classOperations:: newState at: 3.
+      newName:: newState at: 4.
       stagedSource:: answer at: 2.
       stagedHeader:: answer at: 3.
     )
@@ -1695,21 +1722,27 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 
   /// The header of a declaration a ClassDeclarationBuilder edits: its text
   /// -- the class's access modifier, name, factory, superclass clause,
-  /// slots and initializer -- as the builder's last check or install
-  /// answered it, and replaced through the builder.
+  /// slots and initializer, and for a module's root the metadata above the
+  /// class from the first, its `:module:` among them -- as the builder's
+  /// last check or install answered it, and replaced or renamed through
+  /// the builder.
   ///
   /// The header's extent is the parse's, which the VM answers with every
   /// check: reading it here would take a second reading of the syntax,
   /// which would have to follow every rule of the lexer to agree with it.
   ///
-  /// @factory makes the header over the builder's two blocks, keeping them
-  /// as given; a ClassDeclarationBuilder's `header` slot sends it.
+  /// @factory makes the header over the builder's three blocks, keeping
+  /// them as given; a ClassDeclarationBuilder's `header` slot sends it.
   /// @param aReadBlock a block of no arguments that answers the builder's
   /// staged header, a String.
   /// @param aStageBlock a one-argument block that stages a header's text,
   /// a String, through the builder, signalling what the builder's check
   /// signals.
-  private class ClassHeaderBuilder reading: aReadBlock staging: aStageBlock = Object (
+  /// @param aNameBlock a one-argument block that stages the class's new
+  /// name, a Symbol, through the builder, signalling what the builder's
+  /// check signals.
+  private class ClassHeaderBuilder reading: aReadBlock staging: aStageBlock naming: aNameBlock
+      = Object (
     |
       /// The block that answers the builder's staged header.
       /// Evaluated afresh by every `source`, so it reads what the
@@ -1719,12 +1752,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// Evaluated by `source:` with the header's text, a String; it
       /// signals what the builder's check signals.
       private staging = aStageBlock.
+      /// The block that stages a new name through the builder.
+      /// Evaluated by `name:` with the name, a Symbol; it signals what
+      /// the builder's check signals.
+      private naming = aNameBlock.
     |
   ) (
     /// Reads the staged header's text: the staged declaration's text from
-    /// its start up to, not including, the parenthesis that opens its
-    /// members -- the text `source:` was last given, as it was given, or
-    /// the declaration's own header when none is staged; all of the
+    /// its start -- for a module's root its first metadata comment -- up
+    /// to, not including, the parenthesis that opens its members, every
+    /// staged edit in it, the name `name:` staged included; the
+    /// declaration's own header when nothing is staged; all of the
     /// declaration's text for one with no members of its own.
     ///
     /// @answers the staged header's text, a String.
@@ -1732,30 +1770,60 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^reading value.
     )
 
-    /// Stages `aString` as the declaration's header. The header replaces
-    /// the declaration's text from its start up to its members'
-    /// parenthesis, so it starts exactly where the declaration does --
-    /// with its access modifier, or `class` when it has none, with no
-    /// whitespace or comment before it -- and holds the class's name,
-    /// factory, superclass clause, slots and initializer:
-    /// `public class Foo = Bar (| x |)`.
+    /// Stages `aString` as the declaration's header, in place of any
+    /// name `name:` staged, since the header names the class itself. The
+    /// header replaces the declaration's text from its start up to its
+    /// members' parenthesis, so it starts exactly where the declaration
+    /// does -- with its access modifier, or `class` when it has none, with
+    /// no whitespace or comment before it, and for a module's root with
+    /// the root's first metadata comment, or the class when it has none --
+    /// and holds the class's name, factory, superclass clause, slots and
+    /// initializer: `public class Foo = Bar (| x |)`. A header that names
+    /// the class otherwise renames it, one of another access changes the
+    /// access of its accessor, and a root's whose `:module:` declares
+    /// another id or version gives the module that identity, keeping its
+    /// path.
     ///
     /// @param aString the header's text, a String or a Symbol, sent
     /// `asString`.
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a
-    /// header that does not parse or does not end where the members begin,
-    /// one that renames the class ('the header renames <name> to <new
-    /// name>; an edit keeps a class's name'), one that changes its access
-    /// ('the header changes the access of <name>; an edit keeps it'; no
-    /// modifier and `protected` are one access), one that changes its
-    /// superclass clause or its `<:` clauses ('the header changes the
-    /// superclass of <name>; an edit keeps it'), and one whose slots
-    /// collide with a member staged or declared. The superclass and `<:`
-    /// clauses are compared as text, so a header that changes only the
-    /// whitespace or comments inside them is refused as well.
+    /// header that does not parse or does not end where the members begin;
+    /// one that changes its superclass clause or its `<:` clauses ('the
+    /// header changes the superclass of <name>; an edit keeps it'), which
+    /// are compared as text, so a header that changes only the whitespace
+    /// or comments inside them is refused as well; one whose slots collide
+    /// with a member staged or declared; one that renames the class to a
+    /// name its enclosing class already declares ('<enclosing name>
+    /// already has a member named <new name>'); and a root's whose
+    /// `:module:` the loader would refuse -- an id that does not end in the
+    /// class's name, a malformed version, an id under `newspeak.`, or an
+    /// id and version another module of the world has ('two modules are
+    /// `<id>@<version>`: <path> and <path>'), each with the loader's
+    /// message.
     public source: aString = (
       staging value: aString asString.
+    )
+
+    /// Stages `aSymbol` as the class's new name: the header's name
+    /// becomes it, and for a module's root whose `:module:` declares an
+    /// id, the id's last part too, so that the id still ends in the
+    /// class's name. The class keeps its identity -- its class objects,
+    /// its instances and the classes nested in it -- its enclosing class's
+    /// accessor answers it under the new name from the install on, and the
+    /// old name is no longer understood there.
+    ///
+    /// @param aSymbol the new name, a Symbol or a String, sent `asSymbol`;
+    /// an identifier.
+    /// @answers the receiver.
+    /// @signals Error with the VM's diagnostic, staging nothing, for a name
+    /// that is no identifier ('<name> cannot be renamed to <new name>,
+    /// which is no identifier'), one the enclosing class already declares
+    /// ('<enclosing name> already has a member named <new name>'), and for
+    /// a module's root an id the loader would refuse, as `source:` lists.
+    /// @see `source:`.
+    public name: aSymbol = (
+      naming value: aSymbol asSymbol.
     )
   )
 

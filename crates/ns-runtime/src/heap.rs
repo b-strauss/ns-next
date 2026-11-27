@@ -5705,6 +5705,19 @@ impl<'gc> Heap<'gc> {
             .collect()
     }
 
+    /// The identity of every module whose root this heap names, the
+    /// shipped ones included, in row order: the world an install's new
+    /// identity is held to (`modules::check_distinct`).
+    pub(crate) fn module_identities(&self) -> Vec<Rc<crate::modules::ModuleIdentity>> {
+        self.tables
+            .mixins
+            .iter()
+            .flatten()
+            .filter(|row| row.enclosing.is_none())
+            .filter_map(|row| row.current.module_identity.clone())
+            .collect()
+    }
+
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the
