@@ -473,7 +473,7 @@ normative rule preceded by an identifier line
 Newspeak -- the ones adopted as ns-next's own rules and the gaps, the
 constructs not built yet, each a rule whose identifier holds `gap` --
 which is the book's source and no longer its measure (`docs/design/specification.md`).
-The design documents and `CLAUDE.md` point at a rule as `` `r[image.bound.sizing]` ``,
+`CLAUDE.md` and the documents under `docs/` point at a rule as `` `r[image.bound.sizing]` ``,
 and `cargo xtask spec` refuses a pointer that names no rule of the book.
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a

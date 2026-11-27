@@ -248,9 +248,10 @@ Decided with the user on 2026-11-26:
    pointers at each section's head, which loses which sentence is which
    rule.
 7. **A pointer is the rule's line in backticks, and the check holds it.**
-   A design document and `CLAUDE.md` name a rule as `` `r[image.bound.sizing]` ``,
-   the form the book declares it in, and `cargo xtask spec` refuses one
-   that names no rule of the book. The bare identifiers in backticks the
+   A design document, `CLAUDE.md` and every other document under `docs/`
+   name a rule as `` `r[image.bound.sizing]` ``, the form the book
+   declares it in, and `cargo xtask spec` refuses one that names no rule
+   of the book. The bare identifiers in backticks the
    design documents used are rewritten so. The alternatives weighed: a
    link into the published book, clickable but showing `master`'s state
    and too long for `CLAUDE.md`, and the bare identifier, which a check
