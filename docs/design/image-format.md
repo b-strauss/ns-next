@@ -183,9 +183,8 @@ images predating a change are disposable and no migration path is owed to them.
 The guarantee that still has to hold is the untrusted-input one, and that comes
 from validating ids and lengths, not from a version field. What the version
 cannot say -- that the image was written by a binary whose shipped world is
-the loading one's -- the fingerprint says (`r[image.header.fingerprint]`): a
-load whose binary computes another refuses the image before it reads
-anything past the header (`DecodeError::ShippedWorldMismatch`).
+the loading one's -- the fingerprint says (`r[image.header.fingerprint]`;
+`DecodeError::ShippedWorldMismatch`).
 
 ## What is *not* serialized
 
@@ -1334,25 +1333,20 @@ rows, and a defect of the module section before one of the mixins' bodies.
 **The module section is held to the project's rules** before any of its
 identities is used (`modules::decode_modules`; [modules.md](modules.md),
 decision 10), each refusal a `DecodeError` naming the module or, for two
-modules, their paths: each record's path relative to the project
-(`modules::check_project_path`: no control or format character, no root,
-drive, `\`, `:` anywhere, so no `core:`, no empty or `.` segment, a `..` only leading, ending in `.ns`
-and naming more than `.ns`) or a `core:` file name; its id identifiers
-separated by dots, ending in the root class's name, which the mixin
-table's root row gives (`ModuleId::parse`); the namespace `newspeak.`
-with `ORIGIN_CORE` and only there (`modules::check_namespace`), and
-`ORIGIN_CORE` for the manifest alone, `newspeak.core.Manifest` at
-`core:Manifest.ns` without a version, since every module an image
-carries is program code and one named as another of the binary's modules
-would be a program's module in the reserved namespace; a version
-semver's (`Version::parse`); no path, id or version holding a control
-character or a format character (Unicode's categories Cc and Cf, the
-latter a fixed table as of Unicode 16.0, `modules.rs`'s
-`check_printable`), which every message quotes escaped, so that a
-crafted image puts no escape sequence on a terminal, nor a bidirectional
-override that shows one path as another; and over all records, no two
-modules of one id and one version, nor of one id where either has none
-(`modules::check_distinct`). The encoder holds every identity it is
+modules, their paths (`r[image.verify.module-identity]`,
+`r[image.verify.modules]`): the path by `modules::check_project_path`,
+the id by `ModuleId::parse` against the root class's name, which the
+mixin table's root row gives, and by `modules::check_namespace`, the
+version by `Version::parse`, and the distinctness of the records by
+`modules::check_distinct`. The manifest alone is `ORIGIN_CORE`, since
+every module an image carries is program code and one named as another of
+the binary's modules would be a program's module in the reserved
+namespace. The control and format characters (Unicode's categories Cc and
+Cf, the latter a fixed table as of Unicode 16.0, `modules.rs`'s
+`check_printable`) are refused and every message quotes them escaped, so
+that a crafted image puts no escape sequence on a terminal, nor a
+bidirectional override that shows one path as another. The encoder holds
+every identity it is
 handed to the same rules (`modules::identity_defect`, which both sides
 share), so it never writes a record the loader refuses
 (`a_module_record_is_held_to_the_project_rules`,
@@ -1410,10 +1404,10 @@ runs no `verify_code_table`, so it shows such a send.
 (`r[image.verify.program-instances]`). Every object of a
 class that is no builtin and whose chain does not reach `Behavior` --
 whose instances are class objects, which the class-reference checks
-hold -- must be an instance record (`ProgramInstanceBody`) of exactly
-its class's application's slot count (`ProgramInstanceFieldCount`), as
-every such instance is allocated and as an install migrates every
-instance to its new layout, so no encoder writes another. A program
+hold -- is an instance record (`ProgramInstanceBody`) of its class's
+application's slot count (`ProgramInstanceFieldCount`), as every such
+instance is allocated and as an install migrates every instance to its
+new layout, so no encoder writes another. A program
 class's application exists only once the applications are rebuilt, so
 the check (`check_program_instances`) runs after that, before any
 decoded code runs. It asks only whether the class is a builtin, so it
@@ -1635,10 +1629,8 @@ they enter against the arguments they hand it -- and raise a Newspeak
 error rather than indexing past them.
 
 **A class record and its metaclass record are held to each other both ways.**
-A class record and its metaclass record must name each other, each
-metaclass record being named by exactly one class record's header, and a
-metaclass record's own header must be `Metaclass` — anything
-else is `MetaclassPairing` (`r[image.verify.metaclass-records]`;
+The two pair one to one, and a failure is `MetaclassPairing`
+(`r[image.verify.metaclass-records]`;
 `rebuild_metaclasses` and `pair_metaclasses` in `decode.rs`). A live class has
 exactly one metaclass (§3.2, "unique"), so this
 refuses nothing a snapshot writes, and it is what keeps a metaclass's identity
@@ -1774,15 +1766,14 @@ the shipped core-library modules alone, `Kernel.ns` and `PlatformFactory.ns`,
 which hands it on only to the factories of the shipped modules it builds
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
 boundary"). **Its class has no declaration in any shipped module, and so no
-shipped name**: no byte sequence can name it, as a value, a superclass, a
-record's class or anywhere else, so an artifact cannot instantiate a second
+shipped name**: no byte sequence can name it (`r[image.verify.mirror]`,
+`r[image.write.refusals]`), so an artifact cannot instantiate a second
 mirror or reach the one there is and claim every primitive, which no source
-module can. The encoder refuses the other direction (`r[image.verify.mirror]`,
-`r[image.write.refusals]`): an image whose graph
-reaches the mirror object is not written at all, since it would hand the
+module can. The encoder refuses the other direction: a graph that reaches
+the mirror object is not written at all, since it would hand the
 capability to whatever loaded it (`a_snapshot_that_reaches_the_mirror_is_refused`,
 `interpreter/mirror.rs`) -- that refusal is checked ahead of every other --
-and neither is one whose graph reaches the mirror's class or its metaclass
+and so is one that reaches the mirror's class or its metaclass
 ("image encoding refuses the VM mirror's class: it has no declaration, so
 no shipped name names it"). Neither can happen to a program built from
 source, which cannot obtain the mirror; both are there for the day
@@ -1960,9 +1951,9 @@ kernel refuses a crafted one with an `ArgumentError`
 them").
 
 **Trailing bytes are refused, not ignored** (`r[image.trailing-bytes]`).
-`load` checks that the byte stream
-is exhausted once the last section has been read and returns
-`DecodeError::TrailingBytes` if not. An unchecked tail would let an image
+`load` checks the stream is
+exhausted once the last section has been read (`DecodeError::TrailingBytes`).
+An unchecked tail would let an image
 with bytes appended — or a truncated, then padded, one — load as something
 its author did not write; see `bytes_after_the_last_section_are_refused_not_ignored`
 in `crates/ns-runtime/tests/image.rs`.
@@ -2672,9 +2663,8 @@ across a Rust edit that leaves the shipped world as it was, nor
 `Manifest.ns`, which is no part of the shipped world: a program compiles it
 as a module of its own and an image carries it. The lowering is not in it:
 `load` always builds the shipped world with the optimized lowering, and an
-application built under the reference lowering carries its own code. A load
-whose binary computes another refuses the image before it reads anything else
-(`ShippedWorldMismatch`, `an_image_of_another_shipped_world_is_refused`). It
+application built under the reference lowering carries its own code. A mismatch is
+`ShippedWorldMismatch` (`an_image_of_another_shipped_world_is_refused`). It
 replaced retiring a builtin tag per removed class, and it closes a coupling
 nothing else checks: a frame of a kernel method is reconciled against the
 loading binary's body of that method. `FORMAT_VERSION` stays 1; images are
