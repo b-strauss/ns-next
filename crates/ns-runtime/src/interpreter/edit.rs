@@ -403,7 +403,19 @@ impl<'gc> Mutator<'gc> {
             declarations.iter().map(|(_, path)| path.clone()).collect();
         let mut renamed: Vec<(MixinId, Symbol)> = Vec::new();
         let mut widened = vec![false; entries.len()];
+        // Each class an entry removes or replaces, with the entry's
+        // position and the verb its diagnostic names.
+        let mut taken: Vec<(MixinId, usize, &'static str)> = Vec::new();
         for (position, (id, edit)) in entries.iter().enumerate() {
+            // Before the splice, which an entry of a taken class could fail
+            // with a less telling diagnostic; by the names the text holds
+            // when this entry is spliced, every earlier rename in effect.
+            taken.extend(
+                self.classes_taken(*id, edit, &renamed)
+                    .into_iter()
+                    .map(|(class, verb)| (class, position, verb)),
+            );
+            self.refuse_an_edit_of_a_taken_class(entries, &taken)?;
             let spliced = self.prepare_edit(*id, edit, &text, &paths[position])?;
             text = spliced.text;
             widened[position] = spliced.widens;
@@ -607,19 +619,12 @@ impl<'gc> Mutator<'gc> {
         }
         let mut kept: Vec<MixinId> = Vec::new();
         for nested in fresh.declared_nested().iter() {
-            let name_after = |old_id: MixinId| {
-                renamed
-                    .iter()
-                    .find(|(renamed_id, _)| *renamed_id == old_id)
-                    .map(|(_, new_name)| *new_name)
-                    .or_else(|| self.heap.mixin(old_id).map(|old_nested| old_nested.name))
-            };
             let counterpart = self
                 .heap
                 .nested_of(id)
                 .iter()
                 .copied()
-                .find(|old_id| name_after(*old_id) == Some(nested.name));
+                .find(|old_id| self.name_after(*old_id, renamed) == Some(nested.name));
             let Some(nested_id) = counterpart else {
                 paired.added.push((id, Rc::clone(nested)));
                 continue;
@@ -640,12 +645,58 @@ impl<'gc> Mutator<'gc> {
         );
     }
 
+    /// The name the declaration `id` has after `renamed`, the renames of
+    /// an install so far: what its module's text calls it, and what
+    /// pairing finds it by.
+    fn name_after(&self, id: MixinId, renamed: &[(MixinId, Symbol)]) -> Option<Symbol> {
+        renamed
+            .iter()
+            .find(|(renamed_id, _)| *renamed_id == id)
+            .map(|(_, new_name)| *new_name)
+            .or_else(|| self.heap.mixin(id).map(|mixin| mixin.name))
+    }
+
+    /// Refuses the entries of a module when one edits a class another
+    /// removes or replaces (`taken`), or one nested in it, in either
+    /// order: the one would edit a class the other's install no longer
+    /// has, or has anew from its text, so no order of the two is what
+    /// both builders staged.
+    fn refuse_an_edit_of_a_taken_class(
+        &self,
+        entries: &[(MixinId, &Edit)],
+        taken: &[(MixinId, usize, &'static str)],
+    ) -> Result<(), String> {
+        let name = |id: MixinId| {
+            self.heap
+                .mixin(id)
+                .map_or_else(String::new, |mixin| mixin.reflected_name())
+        };
+        for (class, taker, verb) in taken {
+            for (position, (id, _)) in entries.iter().enumerate() {
+                if position != *taker && self.is_declared_within(*id, *class) {
+                    return Err(format!(
+                        "the builder of {} edits a class the builder of {} {verb}",
+                        name(*id),
+                        name(entries[*taker].0)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The nested declarations of `id` that `edit`, an entry's, removes
-    /// or replaces, each with the verb a diagnostic names it by: what an
-    /// entry editing one of them, or a declaration nested in one, would
-    /// contradict (`prepare_entries`). A text that is not one class
+    /// or replaces, each with the verb a diagnostic names it by, found by
+    /// the names they have after `renamed`, the renames of the entries
+    /// spliced before it -- the names the text holds when its edit is
+    /// spliced, and pairing finds them by. A text that is not one class
     /// declaration takes nothing; its own preparation refuses it.
-    pub(crate) fn classes_taken(&self, id: MixinId, edit: &Edit) -> Vec<(MixinId, &'static str)> {
+    fn classes_taken(
+        &self,
+        id: MixinId,
+        edit: &Edit,
+        renamed: &[(MixinId, Symbol)],
+    ) -> Vec<(MixinId, &'static str)> {
         edit.instance_side
             .iter()
             .filter_map(|operation| {
@@ -658,9 +709,8 @@ impl<'gc> Mutator<'gc> {
                     _ => return None,
                 };
                 let taken = self.heap.nested_of(id).iter().copied().find(|nested| {
-                    self.heap
-                        .mixin(*nested)
-                        .is_some_and(|mixin| mixin.name.as_str() == name)
+                    self.name_after(*nested, renamed)
+                        .is_some_and(|after| after.as_str() == name)
                 })?;
                 Some((taken, verb))
             })

@@ -2701,6 +2701,118 @@ mod tests {
         }
     }
 
+    /// The class an entry removes or replaces is the one its name stands
+    /// for when the entry is spliced, every earlier rename in effect --
+    /// the class pairing finds by that name: a class renamed to the name
+    /// another entry then adds or removes is taken, and one whose old name
+    /// another entry then adds again is not. An entry that replaces or
+    /// removes a class before another renames it takes the class by the
+    /// name it still has.
+    // spec: runtime.install
+    #[test]
+    fn a_rename_decides_which_class_another_entry_takes() {
+        let (mut interpreter, _, _, inner, inner_id) = outer_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        let renames = InstallEntry::Edit(
+            inner_id,
+            Edit {
+                new_name: Some(Symbol::intern("Foo")),
+                ..add_method("public b = ( ^2 )")
+            },
+        );
+        let of_outer = |edit: Edit| InstallEntry::Edit(outer_id, edit);
+        let objects = [&inner];
+        let before = snapshot(&mut interpreter, &[outer_id, inner_id], &objects);
+        for (entries, expected) in [
+            (
+                [
+                    renames.clone(),
+                    of_outer(add_class("public class Foo = () ()")),
+                ],
+                "the builder of Inner edits a class the builder of Outer replaces",
+            ),
+            (
+                [renames.clone(), of_outer(remove_class("Foo"))],
+                "the builder of Inner edits a class the builder of Outer removes",
+            ),
+            (
+                [
+                    of_outer(add_class("public class Inner = () ()")),
+                    renames.clone(),
+                ],
+                "the builder of Inner edits a class the builder of Outer replaces",
+            ),
+            (
+                [
+                    of_outer(add_class("public class Foo = () ()")),
+                    renames.clone(),
+                ],
+                "Outer already has a member named Foo",
+            ),
+        ] {
+            assert_eq!(install_refusal(&mut interpreter, &entries), expected);
+            assert_unchanged(&mut interpreter, &before, &[outer_id, inner_id], &objects);
+        }
+        // Renamed away, the old name is free: a new class takes it.
+        let entries = [
+            renames,
+            of_outer(add_class(
+                "public class Inner = () ( public fresh = ( ^3 ) )",
+            )),
+        ];
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_entries(&entries)) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        let answer = send(&mut interpreter, &inner, "b");
+        assert_eq!(integer(&mut interpreter, &answer), Some(2));
+        interpreter.enter(|mutator| {
+            let nested = mutator.heap.nested_of(outer_id).to_vec();
+            assert_eq!(nested.len(), 2);
+            assert_eq!(nested[0], inner_id);
+            let renamed = mutator.heap.mixin(inner_id).expect("Foo's row");
+            assert_eq!(renamed.name.as_str(), "Foo");
+            let added = mutator.heap.mixin(nested[1]).expect("the new Inner's row");
+            assert_eq!(added.name.as_str(), "Inner");
+            assert!(added.methods.contains_key(&Symbol::intern("fresh")));
+        });
+    }
+
+    /// A class added to a declaration is reached through an instance of a
+    /// subclass of it, made before the install.
+    // spec: runtime.install
+    #[test]
+    fn an_added_class_is_reached_through_a_subclass_instance() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Base = () ()
+              public class Derived = Base () ()
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let derived_class = send(&mut interpreter, &instance, "Derived");
+        let derived = send(&mut interpreter, &derived_class, "new");
+        let base_id = nested_id_of(&mut interpreter, &outer, "Base");
+        install(
+            &mut interpreter,
+            base_id,
+            &add_class("public class Added = () ( public b = ( ^2 ) )"),
+        );
+        let added_class = send(&mut interpreter, &derived, "Added");
+        let added = send(&mut interpreter, &added_class, "new");
+        let answer = send(&mut interpreter, &added, "b");
+        assert_eq!(integer(&mut interpreter, &answer), Some(2));
+        let again = send(&mut interpreter, &derived, "Added");
+        let same = interpreter.enter(|mutator| {
+            let key = |root: &Root| {
+                let object = mutator.fetch(root).as_object().expect("a class object");
+                mutator.heap.object_identity_key(object)
+            };
+            key(&again) == key(&added_class)
+        });
+        assert!(same, "the subclass instance caches the added class");
+    }
+
     /// A nested-class text of two declarations, or of a method, is
     /// refused, naming the enclosing class.
     // spec: runtime.install

@@ -1019,6 +1019,65 @@ mod tests {
         assert_eq!(integer(&mut interpreter, &answer), Some(1));
     }
 
+    /// A subclass in another module of a removed class keeps it alive
+    /// across collections: the obsolete rows stay, and the subclass's
+    /// instance runs on, inheriting the removed class's last version.
+    #[cfg(debug_assertions)]
+    // spec: vm.heap.obsolete-mixin-out-of-tree
+    #[test]
+    fn a_subclass_in_another_module_keeps_an_obsolete_class() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let source = indoc! {"
+            class Other usingInner: innerClass = Object new (
+              | public inner = innerClass. |
+            ) (
+              public class Sub = inner () (
+                public answer = (
+                  ^super answer + 1
+                )
+              )
+            )
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            SourceOrigin::File(PathBuf::from("other.ns")),
+        )
+        .expect("resolve");
+        let other = interpreter.load_module(&resolved);
+        let other_instance = expect_ok(
+            interpreter.instantiate(&other, std::slice::from_ref(&inner_class)),
+            "an Other",
+        );
+        let sub_class = send(&mut interpreter, &other_instance, "Sub");
+        let sub = send(&mut interpreter, &sub_class, "new");
+        let outer_id = id_of(&mut interpreter, &outer);
+        let inner_id = id_of(&mut interpreter, &inner_class);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let obsolete = inner_rows(&mut interpreter, inner_id);
+        drop((
+            outer,
+            instance,
+            inner_class,
+            other,
+            other_instance,
+            sub_class,
+        ));
+        interpreter.collect_now();
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            for id in &obsolete {
+                assert!(mutator.heap.mixin(*id).is_some(), "an obsolete row stays");
+            }
+            assert!(mutator.heap.is_obsolete(inner_id));
+        });
+        let answer = send(&mut interpreter, &sub, "answer");
+        assert_eq!(integer(&mut interpreter, &answer), Some(2));
+    }
+
     /// A removed class held while nothing names its former module outlives
     /// that module: the module's rows are freed, and the obsolete root
     /// forgets the freed row it was declared in and stays obsolete.

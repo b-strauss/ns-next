@@ -5756,7 +5756,7 @@ impl<'gc> Heap<'gc> {
     /// Whether the mixin `id` is obsolete: an install removed its
     /// declaration, or one it is declared in (`make_obsolete`). `false`
     /// for an id past the table or freed.
-    pub fn is_obsolete(&self, id: MixinId) -> bool {
+    pub(crate) fn is_obsolete(&self, id: MixinId) -> bool {
         let mut current = Some(id);
         while let Some(each) = current {
             let Some(row) = self.mixin_row(each) else {
