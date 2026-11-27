@@ -383,10 +383,8 @@ factory's own arguments, the body's argument registers, so it names no
 list (`InitializeInstance`), and returns the instance (`Return`), not the
 initializer's answer. It depends on nothing but the arity, and needs no
 AST and no resolver; `mixin::factory_entry` attaches it to every factory
-entry, whoever builds one -- both lowerings' source path, the embedded
-shipped code or the image decoder -- so no image carries one and none can
-forge one, and the reference lowering has no shape of its own to check
-here. A host's `Interpreter::instantiate` runs `factory_body` of its
+entry, so no image carries one and none can forge one, and the reference
+lowering has no shape of its own to check here. A host's `Interpreter::instantiate` runs `factory_body` of its
 argument count, so a class object a host built by hand, with no
 metaclass, instantiates too.
 
@@ -450,8 +448,7 @@ stands in for by reference.
 
 **Every register above a send's argument slots is dead when the send
 executes** (`r[vm.compiler.argument-slots-top-live-registers]`,
-`r[bytecode.register.leftovers]`): the callee's header and window go over
-them. The bump allocator makes it true -- nothing is allocated below a slot
+`r[bytecode.register.leftovers]`). The bump allocator makes it true -- nothing is allocated below a slot
 after it, and what an
 argument is computed with lands above -- and both lowerings check it on every
 body in a debug build (`reference::check_leftovers`, which runs the leftover
@@ -534,10 +531,8 @@ output with exit status 0, not a crash — which is why it is an invariant in
 
 **A read-only local is never copied**
 (`r[vm.compiler.read-only-locals]`). A setter send passes by every local
-that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), so a
-parameter's register and an immutable local's are written by their
-initialization and by nothing after it -- no assignment binds to them, in
-this activation or through a closure. The copy guards against a write that
+that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), so
+no assignment binds to such a register. The copy guards against a write that
 can then no longer happen, so `materialize` skips it for such a register,
 whatever `rest` holds; parameters are the commonest operands there are.
 `Lowerer` tracks which registers are read-only (`read_only_locals`, built in
@@ -634,8 +629,8 @@ instruction with the reduced depth.
 
 The rewrite applies equally to a real block compiled inside an inlined region,
 whose `MakeClosure` captures the enclosing *frame*, so a reference the resolver
-counted through the inlined scope is one hop shorter at run time. A
-`Binding::Local` inside an inlined scope cannot occur, because the gate admits no
+counted through the inlined scope is one hop shorter at run time.
+A `Binding::Local` inside an inlined scope cannot occur, because the gate admits no
 names there, and is a compiler-invariant violation. Lexical and super sends are
 unaffected: they resolve against the frame's receiver and `current_class`, which
 an inlined block shares.
@@ -708,9 +703,8 @@ SendPublic dest <- left #<selector> (right)
 after:
 ```
 
-The instruction computes only when both operands are `SmallInteger`s and,
-for the four arithmetic operations, when the result is one; on either
-failure it branches to the fallback (`r[bytecode.instruction.integer-binary]`,
+The instruction branches to the fallback whenever it does not compute
+(`r[bytecode.instruction.integer-binary]`,
 `r[semantics.number.exact]`). It computes on the tagged words, with
 one test of both operands' tag and one overflow test, through the methods
 on `Value` the integer leaves share (`small_integer_sum` and its siblings,
