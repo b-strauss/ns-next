@@ -2280,7 +2280,8 @@ so a freed `Rc<Mixin>` handing its address to a newly allocated one cannot
 make the new mixin hit the old entry and be given a **different, perfectly
 valid** application, the failure class the handle invariants exist to
 prevent. A full collection reclaims every application, every module's tree
-of mixins, every compiled body and every cache range nothing live names
+of mixins and every obsolete declaration's ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The complete install", decision 3), every compiled body and every cache range nothing live names
 any more (`Mutator::reclaim_ids`), and drops every application-cache entry
 whose application or superclass key it freed, so the cache's size follows
 the live applications, edits or not

@@ -16,9 +16,20 @@
 > install"): `ClassDeclarationMirror>>asBuilder` stages edits of a
 > program's class -- its header, its methods on either side, its lazy
 > slots -- as source, and `install` recompiles the class from its
-> module's edited text and commits in one leaf with no safepoint, every
+> module's edited text and commits with no safepoint, every
 > application of the edited mixin re-applied and the instances whose
 > layout changed migrated by one bulk forward, or changes nothing.
+> The complete install is built, the first of hot swap's three batches
+> ("The complete install"): several builders install as one
+> (`installAtomically:`) through three VM-mirror leaves, a superclass
+> change evaluates the new clause for every class object the program
+> reaches, in their creation order, nested classes are added, replaced
+> and removed -- a removed one living on, obsolete, until nothing
+> reaches it, and carried by an image while something does --, a class
+> is renamed and its access changed in place, a module's identity
+> changes in place, `ClassDeclarationBuilder fromSource:` declares a
+> module at run time, and the install vacates only the cache entries
+> naming what it re-applied.
 > Every declaration holds its own text, and an edited program is written
 > to an image and loads back edited, the code an older version runs
 > included, and a program loaded from an image with source can be edited,
@@ -51,7 +62,10 @@
 > `module_source`; `Mutator::replace_mixin`), their reclamation
 > (`interpreter/reclaim.rs`, `heap/reclaim.rs`), a declaration's text
 > (`mixin.rs`'s `DeclarationText`), the edit and the install
-> (`interpreter/edit.rs`, `interpreter/install.rs`), the image's
+> (`interpreter/edit.rs`, `interpreter/install.rs`, and under
+> `interpreter/install/` the preparation's cache and epoch, `prepared.rs`,
+> and the superclass clauses, `superclasses.rs`), the cache check after
+> an install (`interpreter/inline_cache/verify.rs`), the image's
 > `OBJECT_MIXIN` (`image/encode.rs`, `image/decode.rs`), and the
 > debugger, which reads a stopped run's activations and values and
 > patches breakpoints into the bodies it runs
@@ -125,8 +139,9 @@ dictionary or through a cache that is invalidated when the dictionary changes.
 
 Every cache — inline caches, global lookup caches, later JIT speculative
 assumptions — carries a **dependency key**. A "class shape changed", "method
-changed" or "superclass changed" event flushes every cache keyed to the affected
-class, and for a superclass change to its whole subtree.
+changed" or "superclass changed" event vacates every cache entry keyed to the
+affected class, and for a superclass change to its whole subtree, and nothing
+else.
 
 The key is the **mixin application**, not the class object; see
 [dispatch.md](dispatch.md) for why the obvious choice is wrong. Compiled
@@ -141,11 +156,23 @@ activations still running; a debug-build stress mode, `NS_NEXT_STRESS_CACHES`,
 does exactly that at every safepoint. The bulk forward's leaf invalidates
 every cache the same way after its walk (`InlineCaches::invalidate`, from
 `heap::world::forward_identity`). The atomic install ("A MirrorBuilder and
-an atomic install" below) vacates exactly the entries naming an
-application it re-applies or a declaration it replaces, whether or not it
-forwarded, and keeps every other one warm (`InlineCaches::forget_stale`;
-[dispatch.md](dispatch.md), "Invalidation"); nothing else mutates a method
-table at run time. A full collection that reclaims a guard
+an atomic install", "The complete install" below, decision 6) scopes its
+invalidation to what it changed: before it replaces anything it gathers
+the guards and indices of the applications it re-applies -- every class
+object whose chain holds a replaced declaration, or that a changed clause
+re-parents -- and the declaration versions it replaces (`StaleIds`), and
+vacates exactly the entries naming one -- a site's or a polymorphic
+slot's guard, a lexical rule's enclosing application, a global entry, a
+slot target's level and recorded guard, the verified pair, each with its
+baseline cell -- and the nested-class accessor entries naming a replaced
+version, whether or not it forwarded, and keeps every other one warm
+(`InlineCaches::forget_stale`; [dispatch.md](dispatch.md),
+"Invalidation"); it frees the optimized copies keyed on a re-applied
+application, found through the list each application keeps of the
+copies depending on it ([execution.md](execution.md), "Invalidation"). The
+install stress mode checks after every commit that every entry it kept
+is what a fresh lookup decides. Nothing else mutates a method table at
+run time. A full collection that reclaims a guard
 id or an application index vacates exactly the entries that name it by the
 same criterion (`r[vm.dispatch.freed-ids-scrubbed]`;
 `InlineCaches::forget_freed`), so
@@ -211,11 +238,14 @@ activation, and calls mirrors "capabilities for reflection".
 A **MirrorBuilder** applies class changes:
 
 - *Add or remove an instance slot* → new layout → migrate every live instance
-  through one bulk forward → flush the caches.
-- *Add, remove or replace a method* → update the method dictionary → flush the
-  caches.
-- *Change a superclass* → re-resolve lookup for the subtree, flush its caches,
-  re-lay-out instances if inherited slots changed.
+  through one bulk forward → vacate the cache entries naming the class.
+- *Add, remove or replace a method* → update the method dictionary → vacate
+  the cache entries naming the class.
+- *Change a superclass* → re-resolve lookup for the subtree, vacate its
+  cache entries, re-lay-out instances if inherited slots changed.
+
+All three are built ("A MirrorBuilder and an atomic install", "The
+complete install" below).
 
 ### Mirrors that read
 
@@ -471,10 +501,13 @@ else, and none raises: what a program sees is the `Error` or
 declared method is a compiled method whose selector is not a lazy slot's
 name of the same mixin, ordered by its body's source start, then its
 selector, so the order does not depend on the method table's hashing.
-The same family holds 5b1's forward and the two leaves of the
-MirrorBuilder, `reflectionMixin:checkEdit:ifFail:` and
-`reflectionMixin:installEdit:ifFail:`, the table's last rows ("A
-MirrorBuilder and an atomic install" below).
+The same family holds 5b1's forward, the MirrorBuilder's check,
+`reflectionMixin:checkEdit:ifFail:`, and the install's three rows,
+`reflectionPrepareInstall:ifFail:`,
+`reflectionInstall:evaluateClause:epoch:ifFail:` and
+`reflectionInstall:commitEpoch:superclasses:ifFail:`, the table's last
+rows ("A MirrorBuilder and an atomic install", "The complete install"
+below).
 
 **A mixin is reified as a kernel-private object.** A mixin is an immutable
 Rust value in the heap's mixin table, named by its `MixinId`
@@ -598,8 +631,8 @@ mirror's class must be sealed against it" below) -- and for a mixin
 whose module has no text, a program loaded from an image written with
 `--strip-source` among them. A program loaded from an image with source
 is edited like one read from source ("Edited programs in images" below).
-The builder answers `source`, `header`, `instanceSide`, `classSide` and
-`install`:
+The builder answers `source`, `header`, `instanceSide`, `classSide`,
+`declaration` and `install`:
 
 - `source`, the staged declaration's text, from its access modifier (or
   `class`) to its closing parenthesis, with every staged edit spliced in:
@@ -608,18 +641,21 @@ The builder answers `source`, `header`, `instanceSide`, `classSide` and
   mirror's `source` answers.
 - `header`, a `ClassHeaderBuilder`: `source`, the staged header, and
   `source: aString`, which replaces the class header -- its factory, its
-  slots and its initializer, and its name and access, which a rename
-  and an access change install ("Planned: the complete install",
-  decisions 4, 5 and 9) -- and refuses a header that changes its
-  superclass or its `<:` clauses (changing a superclass is deferred; the
-  clauses are compared as text, so a change of whitespace inside one is
-  refused too); `name: aSymbol` stages a new name. The header is the
+  slots and its initializer, its name and access, which a rename and an
+  access change install, its superclass and `<:` clauses, which a
+  superclass change installs, and for a module's root its `:module:`,
+  which a change of the module's identity installs ("The complete
+  install" below, decisions 1, 4, 5 and 9); `name: aSymbol` stages a new
+  name, in place of the header's. The header is the
   declaration's text from its start up to, not including, the
   parenthesis that opens its members, whitespace before that parenthesis
   included, so a header given to `source:` starts exactly where the
   declaration does, at its access modifier or `class`, with no
   whitespace or comment before it -- for a module's root at its first
-  metadata comment, so that the header holds its `:module:`.
+  metadata comment, so that the header holds its `:module:`; a root's
+  `header source` is then not a prefix of its `source`, which starts at
+  the class. A root header given without its `:module:` makes the module
+  undeclared: its id becomes its class's name, without a version.
 - `instanceSide` and `classSide`, each a `MixinBuilder`: `methods`, a
   `MutableMemberGroup` with `addFromSource: aString` -- adds the method,
   or replaces the one of the same selector -- and `removeMirrorNamed:
@@ -628,23 +664,38 @@ The builder answers `source`, `header`, `instanceSide`, `classSide` and
   the same two messages for lazy slots, since a lazy slot is a member
   (`ast::Member::LazySlot`) and so not reached through the header, while
   the class side's `lazySlots` signals an `Error`, as §6.3's class side
-  declares none; and `slots`, which reads the live side's eager slots,
-  since slots are edited through the header, as in both prior arts.
+  declares none; on the instance side `nestedClasses`, a group with the
+  same two messages for nested classes, as Primordial Soup's
+  (`Mirrors.ns:1475-1501`), its `addFromSource:` adding a class or
+  replacing the one of the same name and its `removeMirrorNamed:`
+  removing one, while the class side's signals `nestedClasses: a class
+  side declares no nested classes`; and `slots`, which reads the live
+  side's eager slots, since slots are edited through the header, as in
+  both prior arts.
+
+`ClassDeclarationBuilder fromSource: aString` -- the class
+`platform mirrors` hands out as `ClassDeclarationBuilder`, which a
+program holding a builder reached as `aBuilder class` already -- answers
+a builder over a module no module holds yet, whose `install` declares it
+("The complete install" below, decision 7); it stages nothing before
+that install. A builder's `declaration` answers the declaration mirror
+of what it stands for, `nil` for one from source not installed yet.
 
 The builder stages its edits apart from the live system: its state is
 Newspeak strings and symbols -- the header's text, and for each side the
 member operations in the order they were staged -- so nothing outside the
 object space is created, and nothing a program observes changes before
-`install`. Every `addFromSource:`, `removeMirrorNamed:` and `source:`
-checks the whole staged state with it added, through the leaf
+`install`. Every `addFromSource:`, `removeMirrorNamed:`, `source:` and
+`name:` checks the whole staged state with it added, through the leaf
 `reflectionMixin:checkEdit:ifFail:`, which runs the install's preparation
 without its commit (below), and signals an `Error` with the diagnostic,
 leaving the builder as it was, for a syntax error, a member text that is
 not one member of the group's kind, a member that collides with a slot, a
 nested class, the factory or a member of another kind, or a refused
 header; so an `install` after a failed edit installs only the edits that
-succeeded. `install` sends the leaf `reflectionMixin:installEdit:ifFail:`,
-and afterwards the builder stands for the installed state, with nothing
+succeeded. `install` is the install of the builder alone, as
+`installAtomically:` installs several ("The complete install" below), and
+afterwards the builder stands for the installed state, with nothing
 staged, and can be edited again. The builder's `source` and its header's
 `source` answer the texts the last successful check or install answered,
 so the builder never reads Newspeak syntax itself: the extent of a header
@@ -654,25 +705,29 @@ start from the module's current text, an install another builder made
 meanwhile is under this one's: two edits that each pass their own check
 can still fail together at the second install.
 
-**The edit on the wire, and the leaves' answers.** Both leaves take the
+**The edit on the wire, and the check's answer.** The check takes the
 reified mixin of either side of the edited declaration -- a class side
-stands for its instance side's declaration -- and the same `Array`,
-`{ header. instanceOperations. classOperations }`, which
+stands for its instance side's declaration -- and an `Array`,
+`{ header. instanceOperations. classOperations. newName }`, which
 `interpreter::edit::Edit::from_value` decodes: `header` a `String`, or
 `nil` to keep it; each operations entry an `Array` of two-element
 `Array`s applied in order, `{#addMethod. aString}`, `{#removeMethod.
-aSymbol}`, `{#addLazySlot. aString}` and `{#removeLazySlot. aSymbol}`, the
-class side's method operations only. Both answer `{true. declarationText.
-headerText}` on success and `{false. diagnostic}` on failure, one shape
-for both, because a leaf passes no argument to its `ifFail:` block
-(`interpreter/mirror.rs`'s `failure_step`), so a diagnostic has to travel
-in the answer; they decline -- the block runs -- only for a subject that
-is no reified mixin and for an edit `from_value` cannot read, which the
-builder reports as `a MirrorBuilder takes a member or a header as a
-String and a name as a Symbol`. They are the last two rows of `MIRROR`,
-appended after `elementsOf:forwardIdentityToElementsOf:ifFail:`, reported
-as `checkEdit:` and `installEdit:` ([core-library.md](core-library.md),
-"The VM mirror is the whole Rust boundary").
+aSymbol}`, `{#addLazySlot. aString}`, `{#removeLazySlot. aSymbol}`,
+`{#addClass. aString}` and `{#removeClass. aSymbol}`, the class side's
+method operations only; `newName` a `Symbol`, or `nil` to keep the
+name. It answers `{true. declarationText. headerText}` on success and
+`{false. diagnostic}` on failure, one shape for both, because a leaf
+passes no argument to its `ifFail:` block (`interpreter/mirror.rs`'s
+`failure_step`), so a diagnostic has to travel in the answer; it
+declines -- the block runs -- only for a subject that is no reified
+mixin and for an edit `from_value` cannot read, which the builder
+reports as `a MirrorBuilder takes a member or a header as a String and
+a name as a Symbol`. It prepares through the install's one-entry cache
+("The complete install" below), so that an install of exactly the state
+the builder last checked compiles nothing again. Its row of `MIRROR` is
+reported as `checkEdit:`, and the install's three rows are the table's
+last ([core-library.md](core-library.md), "The VM mirror is the whole
+Rust boundary").
 
 **Compiling: the module's text is what an edit edits.** The resolver
 binds an implicit-receiver send's depth at compile time
@@ -701,7 +756,12 @@ does so from the module's text
    current text and finds the edited declaration by its path of names
    from the module's root class; a module with no text is refused
    (`<name> has no source text to edit`), and so is a text that does not
-   hold the declaration, as an image's crafted text may not.
+   hold the declaration, as an image's crafted text may not. Every entry
+   of an install that edits the same module is spliced into one text, in
+   the builders' order, each starting from the text the one before it
+   left and finding its declaration by the names that text holds, an
+   earlier entry's rename in effect ("The complete install" below,
+   decision 8).
 2. It splices the staged edits into the text by the spans of the parse,
    byte offsets that always fall on character boundaries: the instance
    side's operations in order, then the class side's, then the header,
@@ -713,10 +773,15 @@ does so from the module's text
    its kind and name, attached comments included, or is appended before
    its side's closing parenthesis, and a class-side method of a class
    that declares no class side opens one. A removal cuts the member and
-   its comments. The header replaces the text from the declaration's
-   start to its members' parenthesis, and must end where the members
-   begin; its name and its superclass and `<:` clauses, compared as text,
-   must be the old ones.
+   its comments; a nested class's removal cuts the whole declaration. The
+   header replaces the text from the declaration's start to its members'
+   parenthesis, and must end where the members begin. A new name, the
+   header's or the one `name:` staged, is written into the declaration's
+   name, and for an annotated root into the last part of its `:module:`
+   id, the rest of the comment's payload untouched. A superclass clause or
+   `<:` clauses that differ, compared as text -- so a change of whitespace
+   inside one counts -- make the install evaluate the new clauses
+   (decision 1 below).
 3. It parses the new text whole (`ns_syntax::parse`) and resolves the
    whole module (`resolver::resolve`, never `resolve_kernel`, since only
    shipped source records mirror sends), so every binding on the lexical
@@ -727,11 +792,17 @@ does so from the module's text
    instance side, the declared class side and every nested mixin, each
    fresh and registered under no id. A nested mixin is paired with the
    current version of the old nested mixin of the same name under the same
-   parent; nested classes are not edited in this step, so the two sets of
-   names agree. Every mixin of the subtree whose fresh version declares
+   parent, a renamed one with its old id by the name it had; a fresh name
+   is a declaration added, registered at the commit under the id of the
+   declaration it is added to (`PreparedInstall::added`), and an old name
+   the fresh tree lacks a declaration removed (`PreparedInstall::removed`;
+   decisions 2 and 3 below). A rename or an access change of a nested
+   class compiles its enclosing declaration's subtree instead, since the
+   enclosing class's bindings and its accessor name the class (decision
+   5). Every mixin of the subtree whose fresh version declares
    no class side, while its old one had a registered class side, gets a
    fresh synthesized class side under that class side's id
-   (`PreparedEdit::synthesized`), so every metaclass of the subtree keeps
+   (`PreparedModule::synthesized`), so every metaclass of the subtree keeps
    its mixin's id.
 5. It answers the fresh mixins with the ids they replace, each holding
    its own declaration's text cut from the new text, and the
@@ -745,70 +816,109 @@ does so from the module's text
    carries every earlier edit.
 
 Every failure -- a syntax error, a resolver error, a refused header, a
-refused mixin -- comes from these steps, before anything is replaced, and
-is answered as a `String`, never a panic or a `NewspeakError`; compiling
-the resolved module stays a total lowering. A replacement of a shipped
-mixin's code would bypass the compile-time binding of its `SendMirror`s
-and primitive methods, so `prepare_edit` refuses one on the Rust side too,
+refused mixin -- comes from these steps, or from the install's
+preparation and commit before anything is replaced ("The complete
+install" below), and is answered as a `String`, never a panic or a
+`NewspeakError`; compiling the resolved module stays a total lowering. A
+replacement of a shipped mixin's code would bypass the compile-time
+binding of its `SendMirror`s and primitive methods, so the preparation
+refuses one on the Rust side too (`Mutator::editable_declaration`),
 beside `asBuilder`. A header that drops a slot an added or kept method
 sends to is no failure: the send is bound late, and fails only when it
-runs. The diagnostics, read from `interpreter/edit.rs` and
-`interpreter/install.rs`, with `<name>` the edited mixin's
-`reflected_name` and `<n>` the 1-based line of the diagnostic's start in
-the edited module text:
+runs. The diagnostics, read from `interpreter/edit.rs`,
+`interpreter/install.rs`, `interpreter/install/prepared.rs`,
+`interpreter/install/superclasses.rs` and `MirrorsFactory.ns`, with
+`<name>` the edited mixin's `reflected_name` and `<n>` the 1-based line
+of the diagnostic's start in the text it was found in. **A diagnostic's
+line counts in the module's composed text**: its current text with the
+install's edits of that module spliced in, in the builders' order --
+those up to the one refused, for an error found while splicing, and all
+of them for the whole module's parse and resolution -- a text that no
+builder's `source` shows, since a builder shows its own declaration
+alone.
 
 | Where | Text |
 |---|---|
 | a mixin unknown to the heap | `the edited mixin is unknown to this heap` |
 | a shipped mixin | `<name> belongs to the shipped core library, which no MirrorBuilder edits` |
+| a declaration an install removed, or one nested in it | `<name> was removed by an install, and an obsolete class is not edited` |
 | a class side named directly | `<name> is a class side; an edit names its instance side` (the leaves map a class side to its instance side first, so no program reaches it) |
 | a mixin whose module has no text -- one of an image written with `--strip-source` | `<name> has no source text to edit` |
 | a declaration its module's text does not hold | `<name>'s source text does not hold its declaration`; after the edit, `<name>'s edited source does not hold its declaration` |
-| a member text of the wrong kind | `addFromSource: of <name>'s methods takes one method declaration`; `addFromSource: of <name>'s lazy slots takes one lazy slot declaration` |
+| a member text of the wrong kind | `addFromSource: of <name>'s methods takes one method declaration`; `addFromSource: of <name>'s lazy slots takes one lazy slot declaration`; `addFromSource: of <name>'s nested classes takes one class declaration`, for a text of no class declaration, of two, or of one followed by a member |
 | a member added to, or a header replaced on, a mixin application with no body | `<name> is a mixin application without a body, which an edit cannot add members to`; `<name> is a mixin application without a body, whose header an edit cannot replace` |
 | a syntax error | `<name>'s edited source does not parse: <message> (line <n>)`, the message the parser's, or `the header must declare the class and end where its members begin` for a header that does not end where the members begin |
 | a new name that is no identifier | `<name> cannot be renamed to <new name>, which is no identifier` |
 | a rename to a member name the enclosing class already has | `<enclosing> already has a member named <new name>` |
-| a new identity the loader's rules refuse | the loader's own text (`modules::declared_identity`, `check_unreserved`, `check_distinct`) |
-| a class object of a declaration whose clauses changed, made while they were evaluated | `a class object of <name> was made while its superclass clauses were evaluated; nothing was installed` |
+| a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)`, `<name>` the innermost edited declaration the error falls in |
+| two entries naming one declaration | `two builders edit <name>` |
+| an entry whose declaration, or one it is nested in, another entry removes or replaces | `the builder of <name> edits a class the builder of <other name> removes`, or `replaces` |
+| a module text that is not one class declaration -- none, as an empty text or a comment alone, two, or one followed by a member | `fromSource: takes one class declaration` |
+| a module text that does not parse or resolve | `the module's source does not parse: <message> (line <n>)`; `the module's source does not resolve: <message> (line <n>)` |
+| a new identity the loader's rules refuse -- a root's new `:module:` or rename, or a module from source | the loader's own text (`modules::declared_identity`, `check_unreserved`, `check_distinct`): `` `<id>` does not end in the class's name `<class>` ``, `` `<text>` is no version: <reason> ``, `` `<id>` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships ``, ``two modules are `<id>@<version>`: <path> and <path>`` and ``two modules are `<id>` and one of them has no version: <path> and <path>``, a module without a path named `a module declared from source` (`modules::PATHLESS_MODULE`) |
+| an install or a module load between the preparation and the commit | `an install ran between the preparation and the commit of <name>'s install; nothing was installed`, `<name>` the first entry's |
+| a class object of a declaration whose clauses changed, made while they were evaluated and still reached at the commit | `a class object of <name> was made while its superclass clauses were evaluated; nothing was installed` |
 | a new clause that answers no class | `the superclass clause of <name> answered <description>, which is no class` (`Heap::describe`) |
 | a new clause that makes a class inherit from itself | `the superclass clause of <name> answers a class that inherits from <name>` |
-| a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
 | an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |
+| an element of `installAtomically:`'s collection, or a builder of an Installer, that is no instance of the mirrors module's own `ClassDeclarationBuilder` | `installAtomically: requires ClassDeclarationBuilders`; `an install requires ClassDeclarationBuilders` (each an `ArgumentError` carrying the element, `MirrorsFactory.ns`) |
+| an entry or an edit the leaves cannot read | `a MirrorBuilder takes a member or a header as a String and a name as a Symbol` (`MirrorsFactory.ns`, when a leaf declines) |
+| a side, a header or a name staged on a builder from source before its install | `a ClassDeclarationBuilder from source stages nothing before its install` (`MirrorsFactory.ns`) |
+| the class side's lazy slots or nested classes | `lazySlots: a class side declares no lazy slots`; `nestedClasses: a class side declares no nested classes` (`MirrorsFactory.ns`) |
 
-**The install is one leaf, and its commit has no safepoint**
+A value class whose re-parented chain breaks §3.1.1's conditions is no
+refusal of the install: the commit decides the class object's
+value-class verdict again, as its creation does
+(`redecide_value_class`), and only an instantiation of it signals, with
+the text an instantiation of such a class always signals.
+
+**The commit runs nothing and has no safepoint**
 (`r[vm.heap.install-commit-runs-nothing]`).
-`Mutator::install_edit` (`interpreter/install.rs`) prepares, then
-commits, so no program observes a half-installed edit, not even a mourned
-ephemeron's handler at a safepoint:
+`Mutator::commit_install` (`interpreter/install.rs`) takes the prepared
+install, then finds what it reaches, then commits, so no program observes
+a half-installed edit, not even a mourned ephemeron's handler at a
+safepoint; the superclass clauses an install changes run before it, as
+program code between two of the install's leaves ("The complete install"
+below):
 
-- *Prepare*: the compilation above.
+- *Prepare*: the compilation above, of every module the install edits,
+  and of every module it declares from source.
 - *Find*: one walk of the object space (`Heap::classes_and_instances_over`)
   collects every class object whose application chain holds an
   application of a replaced id -- a subclass in another module, a `<:`
   clause's level, a metaclass, and the class object of a nested mixin in
-  every enclosing instance -- and every object whose class is one of
-  them. §6.2 requires every application to see the edit; the walk finds
-  them without a list of each application's class objects.
-  An instance whose layout may change -- a replaced level of its class's
-  chain declares another slot list or another nested list -- and which the
-  bulk forward would refuse is refused here, the last place anything
-  fails.
+  every enclosing instance -- or that a changed clause re-parents, and
+  every object whose class is one of them. §6.2 requires every
+  application to see the edit; the walk finds them without a list of
+  each application's class objects. A clause answer that is no class
+  and a cycle are refused before it, and an instance whose layout may
+  change -- a replaced level of its class's chain declares another slot
+  list or another nested list, or the chain gains or loses a level --
+  and which the bulk forward would refuse is refused here, the last
+  place anything fails.
 - *Replace*: every fresh mixin under its old id (`Mutator::replace_mixin`),
   the declared class side included, and every fresh synthesized class
   side under the old one's id through the same call, which also forgets
   the old class side's applications, so a metaclass over the unchanged
-  `Class` is not answered the old application from the cache. Each fresh
-  mixin brings its own text, so the module's current text, assembled
-  through the ids, holds the edit from then on.
+  `Class` is not answered the old application from the cache; every
+  added declaration registered under the declaration it is added to, and
+  every removed one made obsolete (`Heap::make_obsolete`; decision 3
+  below); every module declared from source registered with its tree of
+  ids (`Heap::mixin_id`). Each fresh mixin brings its own text, so the
+  module's current text, assembled through the ids, holds the edit from
+  then on.
 - *Re-apply*, superclasses first, by the length of each chain: each class
   object found gets an application of its id's current version over its
   superclass's application now (`Heap::class_install_application`), so it
   keeps its identity, as every class object does
-  ([object-model.md](object-model.md), "Everything stays editable"); its
-  superclass clause is not evaluated again, as in both prior arts. The
-  application cache misses for each, since `replace_mixin` forgets the
-  id's keys and a subclass's superclass application is new.
+  ([object-model.md](object-model.md), "Everything stays editable"). A
+  class object whose clauses did not change keeps its superclass, its
+  clause not evaluated again, as in both prior arts; one whose clauses
+  changed is re-parented over what its new clauses answered
+  (`Heap::class_set_superclass`, its `<:` levels built anew), and decides
+  its value-class verdict again. The application cache misses for each,
+  since `replace_mixin` forgets the id's keys and a subclass's superclass
+  application is new.
 - *Record successors*: an old application whose level keeps its slot
   base and its own slots, by name and in order, records the new one as
   its successor (`Heap::record_successor`), and every earlier predecessor
@@ -821,12 +931,13 @@ ephemeron's handler at a safepoint:
   `MixinApplication::field_names`): a
   slot by the id of the level declaring it, that id's occurrence counted
   from the chain's root -- one chain may apply a mixin twice through `<:`
-  clauses, and an install evaluates no clause again, so an occurrence is
-  the same before and after it -- and its name; a hidden nested-class slot
+  clauses -- and its name; a hidden nested-class slot
   by the nested declaration's id and the occurrence of the level caching
-  it. A slot the edit adds, or moves to another level, is `nil`, and its
+  it. A slot the edit adds, or moves to another level, or of a level a
+  re-parented chain gains, is `nil`, and its
   initializer does not run, so a new lazy slot is computed on its first
-  read. The level is part of a slot's name because a subclass's slot may
+  read; a slot of a level the chain loses, and the hidden slot of a
+  removed nested class, goes. The level is part of a slot's name because a subclass's slot may
   shadow a superclass's of the same name: the canonical
   `AtomicInstallTesting.ns` (`testAddShadowedSlotSubclass` and
   `testAddShadowedSlotSuperclass`, `:77-145`) asserts that the two are kept
@@ -839,10 +950,16 @@ ephemeron's handler at a safepoint:
 - *Forward*: one bulk forward, `heap::forward_identity`
   (`r[runtime.forward-identity]`), replaces every
   migrated instance by its new-shape copy, keeping its identity hash
-  (`r[runtime.memory.identity-hash]`), and
-  invalidates the caches; when nothing migrated the caches are
-  invalidated all the same, since class objects' applications changed
-  under unchanged guards ("Caches and their dependency keys" above). Only
+  (`r[runtime.memory.identity-hash]`), and vacates the cache entries
+  naming an application the install re-applied or a declaration version
+  it replaced (`heap::Invalidation::Stale`); when nothing migrated the
+  install vacates the same entries itself (`inline_cache::vacate_stale`),
+  since class objects' applications changed under unchanged guards
+  ("Caches and their dependency keys" above; decision 6 below). Then it
+  frees every optimized copy keyed on a re-applied application
+  (`jit::invalidate_applications`), drops the debugger's compiled
+  metadata, whose spans count in the old text, sets the edited modules'
+  breakpoints again on the new bodies, and raises the install epoch. Only
   instances are forwarded, never a class object or a mixin. The 5b1 leaf
   `elementsOf:forwardIdentityToElementsOf:ifFail:` stays, without a
   caller in shipped code; the install calls the forward on the Rust side,
@@ -874,8 +991,10 @@ edit-and-continue needs.
 one id match: a handler for an exception class catches an instance made
 before its class was edited. `reflection.rs`'s `instance_side`,
 `Mixin::reflected_name` and `is_shipped` keep following the builder's
-`Weak` link: an edit keeps a mixin's name, its access and its shipped
-flag. The image encoder plans its rows through the ids and names every
+`Weak` link, which every fresh version holds to its own fresh enclosing
+version: a renamed or re-accessed class answers its fresh version's name
+and access, its class side its fresh instance side's, and no edit
+changes the shipped flag. The image encoder plans its rows through the ids and names every
 mixin by its id since road step 5b2b ("Edited programs in images"
 below).
 
@@ -910,112 +1029,200 @@ application or guard, every level over an edited mixin re-applied, a
 migrated instance replaced in every holder, the synthesized class side's
 id, a class object's current application differing from an activation's
 entered level), the successor chain over several
-edits (`interpreter/mod.rs`), the two leaves under both lowerings
+edits (`interpreter/mod.rs`), the leaves under both lowerings
 (`builtins/reflection.rs`) and the id match of `inherits_mixin_of`
-(`builtins/activation.rs`).
+(`builtins/activation.rs`). What the complete install added is pinned
+with it ("The complete install" below).
 
-Deferred beyond the step: a class
-declared from source with no predecessor (`ClassDeclarationBuilder
-fromSource:`, loading a module at run time); a shape-changing `setClass:`
+Not built: a shape-changing `setClass:`
 ([object-model.md](object-model.md), "`become:` is an eager bulk
-forward", "Why eager"); changing a superclass; adding, replacing and
-removing nested classes; `installAtomically:` over several builders;
-editing kernel methods (the open question below); `ActivationMirror` and
-edit-and-continue; and scoping the invalidation ("Caches and their
-dependency keys" above).
+forward", "Why eager"); editing kernel methods (the open question
+below); and `ActivationMirror` and edit-and-continue
+([debugger.md](debugger.md), "Hot swap and edit-and-continue").
 
-### Planned: the complete install
+### The complete install
 
-The debugger's hot swap is split into three batches (decided with the
-user on 2026-11-22): **A**, the complete install in the VM and
-`MirrorsFactory.ns`; **B**, hot swap in the debugger -- saved module
-texts installed over DAP, the plugin and the MCP server, breakpoints set
-again, frames running old code marked, "Create Method" and the forced
-`nil` ([debugger.md](debugger.md), "Hot swap and edit-and-continue",
+The install changes everything a class declaration says, atomically
+through the MirrorBuilder: a superclass, a nested class added, replaced
+or removed, a class renamed or its access changed, a method added,
+changed or removed, the factory and the initializer, a module's
+identity; several builders install as one; and a module is declared from
+source at run time. It is batch **A** of the debugger's hot swap, which
+is split into three batches (decided with the user on 2026-11-22):
+**A**, the complete install in the VM and `MirrorsFactory.ns`; **B**,
+hot swap in the debugger -- saved module texts installed over DAP, the
+plugin and the MCP server, breakpoints set again, frames running old
+code marked, "Create Method" and the forced `nil`
+([debugger.md](debugger.md), "Hot swap and edit-and-continue",
 "Exceptions"); **C**, developing a whole application in the debugger,
 from an empty world: a run without a program, evaluation without a
-stopped frame, new modules joining the project. Everything is to be
-changeable: a superclass, a class added or removed, a method added,
-changed or removed, the factory and the initializer. The Newspeak
-implementations are the models (`prior-art/newspeak/AtomicInstaller.ns`,
+stopped frame, new modules joining the project. Batch A is built
+(2026-11-27,
+[its plan](../superpowers/plans/2026-11-27-1554-complete-install.md));
+B and C are planned. The Newspeak implementations are the models
+(`prior-art/newspeak/AtomicInstaller.ns`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns`); JVMTI's
 `RedefineClasses`, which permits only method bodies to change, is not.
-The specification of the current state is built, and batch A is the next
-batch to build. Its decisions, taken with the user on 2026-11-22 (1 to 8)
-and 2026-11-27 (8's interface and 9):
+The rules are the book's: `r[semantics.reflection.atomic-install]`,
+`r[runtime.install]`, `r[runtime.install.superclass]`,
+`r[runtime.install.epoch]` and `r[runtime.install.module]`, and among
+the VM invariants `r[vm.heap.install-commit-runs-nothing]`,
+`r[vm.heap.obsolete-mixin-out-of-tree]` and
+`r[vm.dispatch.invalidation-after-change]`. Its decisions, taken with
+the user on 2026-11-22 (1 to 8) and 2026-11-27 (8's interface, 9, 10 and
+11), as built:
 
-1. **A superclass change re-evaluates the clause for every existing
-   class object.** A nested class's superclass is computed per enclosing
-   instance (§6, `newspeak-spec.pdf` pp. 39-40), so the new superclass and
-   `<:` clauses are evaluated before the commit, once per existing class
-   object in its enclosing instance's context, as program code against
-   the unchanged world; a failure, or an answer that is no class, changes
-   nothing. The commit, which still runs no code and polls no safepoint,
-   re-applies each class object over its new superclass, keeping its
-   identity, migrates its instances by `FieldName` -- a slot of a level
-   the chain loses goes, one of a level it gains starts `nil`, no
-   initializer runs again -- and refuses a cycle; an install between the
-   evaluation and the commit fails the commit, told by an install epoch.
-   Neither prior art does this: `AtomicInstaller.ns` keeps the old
-   superclass (`:187-188`) and its class comment names the change as
-   unaddressed (`:4-6`), as does Primordial Soup (`Mirrors.ns:433-434`).
+1. **A superclass change re-evaluates the clause for every class object
+   the program reaches.** A nested class's superclass is computed per
+   enclosing instance (§6, `newspeak-spec.pdf` pp. 39-40), so the new
+   superclass and `<:` clauses -- differing from the current ones as
+   text (`clauses_as_written`) -- are evaluated before the commit, once
+   per class object of the declaration, in the order the class objects
+   were made (decision 10), each as program code in the enclosing object
+   its declaration was evaluated in, as part of the class that declares
+   it, against the unchanged world, caching nothing into a hidden slot
+   (`Mutator::clause_evaluation`, `Step::ClauseEvaluation`,
+   `interpreter/install/superclasses.rs`). A body-less declaration's
+   class object, the level its last clause adds, runs its clauses in its
+   declaration's own scope; a metaclass and any other `<:` level runs
+   none. A clause that signals ends the install with what it signals; an
+   answer that is no class, or one that makes a class inherit from
+   itself, is refused; either way nothing changes. The commit, which
+   still runs no code and polls no safepoint, re-parents each class
+   object over its answer, keeping its identity, its `<:` levels built
+   anew (`Mutator::reparent_body_less` for a body-less one), decides its
+   value-class verdict again (`redecide_value_class`), and migrates its
+   instances by `FieldName` -- a slot of a level the chain loses goes,
+   one of a level it gains starts `nil`, no initializer runs again. A
+   module's root evaluates nothing: its class object takes the superclass
+   its fresh `root_shape` names, `Object`, `Value`, or `Value` applied
+   over `Object`. Only class objects the program reaches are evaluated
+   or refused: the Installer has a full collection served before the
+   preparation it keeps and again before the commit ("The three leaves"
+   below), since the walk of the space meets dead class objects too, and
+   a clause's side effects would otherwise depend on the collector.
+   Anything installed, or any module loaded, between the preparation and
+   the commit fails the commit, told by the install epoch, and so does a
+   class object of a changed declaration made while the clauses ran that
+   the program still reaches at the commit, whose own clauses were never
+   evaluated (`r[runtime.install.epoch]`). Neither prior art does this:
+   `AtomicInstaller.ns` keeps the old superclass (`:187-188`) and its
+   class comment names the change as unaddressed (`:4-6`), as does
+   Primordial Soup (`Mirrors.ns:433-434`).
 2. **Nested classes are paired by their path of names.** The same name is
    the same declaration -- its id, class objects and instances kept, its
    instances migrated, an `addFromSource:` of an existing name included,
    unlike Primordial Soup's fresh mixin (`Mirrors.ns:1475-1501`) -- a new
-   name a new mixin, a missing one removed.
+   name a new mixin, registered under the declaration it is added to
+   (`PreparedInstall::added`), a missing one removed
+   (`PreparedInstall::removed`). A nested class's text is read alone
+   first and must be one class declaration, a leading `///` comment or
+   metadata comment and trailing whitespace allowed, never two nor one
+   followed by a member.
 3. **A removed class lives on, obsolete, and the image carries it.** Its
    accessor and its hidden slots go, the enclosing instances migrating,
-   so a send of its name is not understood; its class objects, its
-   instances and its subclasses keep running its last version until a
-   full collection frees it, as `AtomicInstaller.ns:234-240` leaves it.
-   The image writes every reachable obsolete mixin as a row of its own
-   outside its module's declaration tree, marked removed, with its last
-   version's code and its declaration's text, and loads it back
-   obsolete, so a running world with its heap stays serializable
-   ([image-format.md](image-format.md), "Planned: suspend and resume").
+   so a send of its name is not understood; its id leaves its enclosing
+   declaration's nested list and roots a tree of mixin ids of its own,
+   its nested declarations and class sides in it, in no module's tree
+   (`Heap::make_obsolete`, `Heap::is_obsolete`;
+   `r[vm.heap.obsolete-mixin-out-of-tree]`); its class objects, its
+   instances and its subclasses -- one in another module included --
+   keep running its last version, `outer` inside it reaching its
+   enclosing instance, as `AtomicInstaller.ns:234-240` leaves it. A full
+   collection frees an obsolete tree on its own once nothing applies,
+   reifies or holds any of its ids, whether or not its former module
+   lives; a module freed first leaves the obsolete root naming no
+   enclosing row ([object-model.md](object-model.md), "An application has
+   two ids"). No builder edits an obsolete declaration, nor one nested in
+   it (`<name> was removed by an install, and an obsolete class is not
+   edited`). The image writes every obsolete declaration its graph
+   reaches -- a class object applying, declaring or adding through a
+   `<:` clause a mixin of it, a reified mixin of it, a closure or a frame
+   running a body of its last or a superseded version -- as an obsolete
+   tree after the modules' trees, with its last version's code and its
+   text, and loads it back obsolete with no enclosing mixin
+   (`Heap::make_loaded_obsolete`), so a running world with its heap stays
+   serializable ([image-format.md](image-format.md), "Edited programs in
+   the image"; "Planned: suspend and resume"); a loaded obsolete class's
+   reflected name is its own, `Inner`.
 4. **A rename keeps the class's identity**, after Primordial Soup's
    `ClassHeaderBuilder>>name:` (`Mirrors.ns:764-798`): a new name in the
-   header, or `name:`, renames; a sibling of that name is refused; the
-   accessor changes its selector and the names of the classes nested in
-   it follow, unlike `AtomicInstaller.ns:55-58`. A hot swap from text
-   cannot tell a rename from a removal and an addition, so batch B takes
-   a rename from its client.
+   header, or `name:`, renames; a name that is no identifier and a
+   member of that name in the enclosing class are refused; the accessor
+   changes its selector, the old name is no longer understood, and the
+   class objects, the instances and the classes nested in it stay,
+   unlike `AtomicInstaller.ns:55-58`. A renamed child is paired with its
+   old id by the name it had, and a later entry of the same install finds
+   it by its new one. A hot swap from text cannot tell a rename from a
+   removal and an addition, so batch B takes a rename from its client.
 5. **A nested class's access can change.** The accessor carries the
-   access in the enclosing class's method table
-   (`interpreter/edit.rs`'s refusal), so an access change or a rename
-   makes the enclosing declaration part of the install, compiled again
-   and re-applied without migration.
+   access in the enclosing class's method table, and its bindings name
+   the class, so an access change or a rename makes the enclosing
+   declaration part of the install, its subtree compiled again
+   (`SplicedEdit::widens`) and re-applied without migration.
 6. **The invalidation is scoped to the applications the install
-   re-applies.** It vacates exactly the cache entries -- sites,
-   polymorphic slots, the global cache, baseline cells, the verified
-   pair -- that name one, by `InlineCaches::forget_freed`'s criterion,
-   and keeps every other one warm; the optimized copies are found through
-   a list per application of the copies depending on it, as HotSpot's
-   dependencies (`code/dependencies.hpp:105-170`) and V8's `DependentCode`
-   (`objects/dependent-code.h:37-70`) are, not by a scan of every copy
-   (`JitState::copies_depending`); a stress mode checks every remaining
-   entry against a fresh lookup after each install.
-7. **A top-level declaration from source is a module.** `ClassDeclarationBuilder
-   fromSource:` installs a module whose `:module:` is read and checked
-   as the loader reads it, an id and version the world already has
-   refused; it is registered with its tree of ids, its text its current
-   text, and answered as a declaration mirror; one without `:module:`
-   has no identity and is named by its class. The image's module section
-   admits a module without a path. The manifest a running application
-   holds is unchanged; wiring a new module into it is batch C's.
+   re-applies.** Before it replaces anything, the commit gathers the
+   guards and indices of the applications it replaces and the versions
+   of the declarations it replaces (`StaleIds`, `Mutator::stale_after`),
+   and vacates exactly the entries naming one -- sites, polymorphic
+   slots, the global cache, baseline cells, the verified pair -- by
+   `InlineCaches::forget_freed`'s criterion (`InlineCaches::forget_stale`),
+   and the nested-class accessor entries naming a replaced version,
+   whose guard, the enclosing object's application, the install leaves
+   alone; kept, such an entry would create the class of the old version
+   and hold the superseded version alive. Every other entry stays warm.
+   The optimized copies keyed on a re-applied application are found
+   through a list per application of the copies depending on it, as
+   HotSpot's dependencies (`code/dependencies.hpp:105-170`) and V8's
+   `DependentCode` (`objects/dependent-code.h:37-70`) are, not by a scan
+   of every copy (`JitState::dependents`, `copies_depending_on`;
+   [execution.md](execution.md), "Invalidation"). The install traces one
+   `caches` event, `vacated cause=edit`. The install stress mode,
+   `NS_NEXT_STRESS_INSTALL`, the sixteenth, checks every remaining entry
+   against a fresh lookup after each commit ([dispatch.md](dispatch.md),
+   "Invalidation"; "Caches and their dependency keys" above).
+7. **A top-level declaration from source is a module.**
+   `ClassDeclarationBuilder fromSource:` checks a module's text as its
+   install would, and the install declares it: one class declaration, a
+   leading comment and trailing whitespace allowed, parsed, resolved with
+   `resolver::resolve`, never `resolve_kernel`, and its `:module:` read
+   by `modules::declared_identity` and held to `check_unreserved` and,
+   with every identity the same install makes, to `check_distinct`
+   against the world, as the loader holds a project's, an id and version
+   the world already has refused. The commit registers its root with its
+   tree of ids, its text, every character of it, its current text, and
+   raises the install epoch, as a module's load does; the builder then
+   stands for its declaration, which `declaration` reflects. One without
+   `:module:` is undeclared: its id is its class's name, without a
+   version. Such a module has no path, since no file holds it
+   (`ModuleIdentity::path` is an `Option`), and is named `a module
+   declared from source` in the loader's messages
+   (`modules::PATHLESS_MODULE`); the image's module section writes it
+   with the origin tag `ORIGIN_NONE` (4) ([image-format.md](image-format.md),
+   "Module section"; [modules.md](modules.md), decision 1). The manifest
+   a running application holds is unchanged, and so are the tools'
+   module lists -- `ns-cli`'s `known_modules`, the trace filter, the DAP
+   agent -- which learn no module from source; wiring a new module into
+   either, and a class object of one made by Newspeak code, are batch
+   C's ([OPEN-WORK.md](../OPEN-WORK.md)).
 8. **`installAtomically:` installs several builders as one.** Each
    builder's operations are spliced into its module's text in the order
-   given, the builders of one module composing on one intermediate text;
-   every module is prepared and every clause evaluated, then one walk,
-   one commit and one invalidation; two builders of one declaration, or
-   one whose declaration another removes or replaces, are refused, naming
-   both -- the check `MirrorsForSqueak.ns:1698` marks `#BOGUS` as
-   missing -- and any failure changes nothing. Its interface is
-   Primordial Soup's `nestedClasses` group (`addFromSource:`,
-   `removeMirrorNamed:`), the header builder's `name:`,
-   `ClassDeclarationBuilder fromSource:`, and `installAtomically:` on
-   the mirrors facet.
+   given, the builders of one module composing on one text; every module
+   is prepared and every clause evaluated, then one walk, one commit and
+   one invalidation; two builders of one declaration, or one whose
+   declaration another removes or replaces, are refused, naming both --
+   the check `MirrorsForSqueak.ns:1698` marks `#BOGUS` as missing -- and
+   any failure changes nothing. Its interface is Primordial Soup's
+   `nestedClasses` group (`addFromSource:`, `removeMirrorNamed:`), the
+   header builder's `name:`, `ClassDeclarationBuilder fromSource:`, and
+   `installAtomically:` on the mirrors facet. The collection is copied
+   first, and an element that is not exactly an instance of the mirrors
+   module's own `ClassDeclarationBuilder` is refused before any builder
+   is read: the commit hands a builder from source its reified mixin,
+   which a program's subclass could otherwise keep. A builder hands its
+   entry (`entryFor:`) and takes its installed texts (`installed:by:`)
+   only for this module's exact `Installer`, which no other object
+   receives, so the reified mixin is handed to no program object.
 9. **An install changes a module's identity in place.** A module's
    identity is its path ([modules.md](modules.md), decision 1), which no
    install changes, so a text whose `:module:` names another id or
@@ -1024,28 +1231,172 @@ and 2026-11-27 (8's interface and 9):
    `ModuleIdentity` of the same path, and its mixin ids, class objects
    and instances are kept, every other change of the install reaching the
    running instances. A `name:` renaming an annotated root rewrites the
-   last part of the id in its `:module:` too, as the names of the classes
-   nested in it follow (decision 4), after Primordial Soup's `name:`,
-   which renames a top-level class in place (`Mirrors.ns:764-798`). The
-   new identity is held to the loader's rules before the commit --
+   last part of the id in its `:module:` too, the rest of the payload
+   untouched, as the names of the classes nested in it follow (decision
+   4), after Primordial Soup's `name:`, which renames a top-level class
+   in place (`Mirrors.ns:764-798`). A module named by `newspeak.json`'s
+   `as` keeps that id across an install, a rename replacing its last
+   part, and takes the version its text declares, as
+   [modules.md](modules.md)'s decision 5 gives the version to the text.
+   The new identity is held to the loader's rules before the commit --
    [modules.md](modules.md)'s decisions 2, 5 and 9: a well-formed
    version, an id whose last part is the class's name, none under
    `newspeak.`, and no other module of the world of that id and version,
-   or of that id where either has none -- with the loader's messages, and
-   a failure changes nothing. Nothing on a send's path reads an identity,
-   so it costs the hot path nothing, adds no invalidation to decision 6's
-   and leaves every warm entry warm; the image writes the current
-   identity under the unchanged path. The manifest a running application
-   holds is unchanged (decision 7): it answers the module under the id it
-   was assembled with. A breakpoint naming the old id or version is batch
-   B's to set again. Neither making a new module beside the old, which
-   would leave the install's other changes out of the running program and
-   put two modules of one path into the image, nor refusing the change,
-   JVMTI's answer (`jvmtiRedefineClasses.cpp:1405-1407`), is taken.
+   or of that id where either has none (`Heap::module_identities`) --
+   with the loader's messages, and a failure changes nothing. Nothing on
+   a send's path reads an identity, so it costs the hot path nothing,
+   adds no invalidation to decision 6's and leaves every warm entry warm;
+   the image writes the current identity under the unchanged path. The
+   manifest a running application holds is unchanged (decision 7): it
+   answers the module under the id it was assembled with. A breakpoint
+   naming the old id or version is batch B's to set again. Neither making
+   a new module beside the old, which would leave the install's other
+   changes out of the running program and put two modules of one path
+   into the image, nor refusing the change, JVMTI's answer
+   (`jvmtiRedefineClasses.cpp:1405-1407`), is taken.
+10. **The clauses run in creation order.** Every class object carries a
+    creation stamp, a `SmallInteger` drawn from a heap counter whenever
+    one is made (`class_field::CREATION_STAMP`, after every field machine
+    code reads; `Heap::class_creation_stamp`), which no collection, move
+    or image changes, so the order in which an install evaluates clauses
+    -- ascending stamps -- does not depend on where the collector laid
+    the class objects out. The image's class, body-less class and
+    metaclass records carry the stamp; the decoder holds the stamps
+    unique, by sorting them once every record is read, and below 2^59
+    (`CLASS_STAMP_LIMIT`), so that a loaded world keeps stamps to draw
+    above the image's highest, and the loader moves the counter past the
+    highest (`r[image.load.class-stamps]`). Chosen over a weak
+    creation-order registry, a new table to keep through collections,
+    moves and reclaims, whose order after a load would be the graph's,
+    and over an unspecified order, which would make a program's
+    behaviour depend on the collector.
+11. **Every class object has one layout.** Each carries an applied
+    level's fields -- the class its `<:` clause named and its
+    declaration's scope, `nil` on an ordinary class object -- so twelve
+    fields, 112 bytes ([object-model.md](object-model.md), "The object
+    layout"), and a declaration that gains or loses its body of its own
+    is installed in place: each class object is rewritten, keeping its
+    identity (decision 2), becoming the level its last clause adds or the
+    class of its own body over the levels its clauses add, and its
+    instances migrate by field name. Chosen over forwarding class
+    objects, a new kind of forward that would weaken the lock that the
+    bulk forward forwards instances only, and over refusing the change,
+    a carve-out. The image record writes only the stamp new: a record's
+    kind says where those fields are non-nil.
 
-Every decision of the batch names, per option, what it does to the hot
-path, to what the optimizing JIT can still generate, to the warm-up after
-the install, and to the image, the image of a running world included.
+**The three leaves.** A leaf runs no Newspeak code, so a superclass
+clause is evaluated between two of them, and the install is three
+`MIRROR` rows, appended after `block:valueWithArguments:ifFail:`, reported
+as `prepareInstall`, `evaluateClause:epoch:` and
+`commitEpoch:superclasses:`, which only `MirrorsFactory.ns`'s `Installer`
+and `ClassDeclarationBuilder` send ([core-library.md](core-library.md),
+"The VM mirror is the whole Rust boundary"; `builtins/reflection.rs`).
+Each takes the install's entries, an `Array` with one entry a builder, in
+the builders' order, `{subject. edit}`: `subject` the reified mixin of
+either side of the edited declaration and `edit` the check's four-element
+`Array` ("The edit on the wire, and the check's answer" above), or, for
+a module declared from source, `nil` and the module's text, a `String`
+(`InstallEntry::Edit`, `InstallEntry::Module`):
+
+- `reflectionPrepareInstall:ifFail:` prepares the install and commits
+  nothing (`Mutator::prepare_install`), answering `{true. epoch.
+  clauses}` -- the install epoch the commit is to name, and an `Array`
+  of `{classObject. enclosingObject}`, one per class object of a
+  declaration whose clauses change, in creation order
+  (`Mutator::clause_class_objects`) -- or `{false. diagnostic}`.
+- `reflectionInstall:evaluateClause:epoch:ifFail:` takes one of those
+  class objects and the epoch, and answers a step activating the fresh
+  clause body on the enclosing object, its current class the class
+  object's declaring class (`Heap::class_declaring`), as the
+  interpreter's own clause activation does, with a plain delivery of the
+  answer; it declines, and its block runs, for a moved epoch or an
+  object that is no such class object.
+- `reflectionInstall:commitEpoch:superclasses:ifFail:` takes the epoch and
+  an `Array` of `{classObject. answer}` pairs, and commits
+  (`Mutator::commit_install`), answering `{true. results}`, per entry
+  `{declarationText. headerText}`, or for a module declared from source
+  `{reifiedMixin. declarationText. headerText}`, or `{false.
+  diagnostic}` with nothing changed.
+
+Each declines, and the Installer signals `a MirrorBuilder takes a member
+or a header as a String and a name as a Symbol`, for entries it cannot
+read; the commit also declines pairs that are not each a distinct class
+object the preparation answers. The class objects travel through
+Newspeak in the `Array`s alone, since no handle may be held across the
+safepoints between the leaves (`r[vm.handle.nothing-carried-across-safepoint]`):
+what the leaves keep is one prepared install (`PreparedInstallCache`),
+the epoch, the entries and what they prepared to, `Rc<Mixin>`s, ids and
+texts, which a later preparation or commit of the same entries at the
+same epoch takes instead of compiling again, the check's included. A
+commit and a full collection's reclaim of ids drop it, since the ids it
+names may be minted again. The install epoch, a `u64` on the `Mutator`,
+is raised by every commit and every module that joins the heap
+(`load_root_class`, and a module declared from source); it is not the
+debugger's text revision, which moves without an install too.
+
+`Installer>>install` makes the three calls: it refuses a builder that
+is not exactly this module's `ClassDeclarationBuilder`, gathers the
+entries, and, when a first preparation -- in a method of its own, so
+that its answer dies with it -- says that clauses change, has a full
+collection served at a safepoint (`vmMirror garbageCollect:`); it then
+prepares, evaluates each clause, has another full collection served when
+there were any, so that a class object a clause made and dropped is no
+class object the commit refuses, commits, and hands each builder its
+texts. An install of no builders answers at once, preparing and
+committing nothing and leaving the epoch, so that it fails no install it
+runs within.
+
+**What it costs.** Nothing on a send's path: the stamp and the applied
+level's fields lie after every field machine code reads, and no
+identity, epoch or obsolete mark is read by a send. A class object is
+112 bytes where it was 80 to 104. An install that keeps every clause
+costs what it cost before but for a narrower invalidation, so the
+warm-up after it is that of the entries it vacated alone; one that
+changes a clause costs two full collections and one activation per
+class object the program reaches. An image grows by eight bytes per
+class or metaclass record and four for the mixin table's obsolete count.
+
+**What pins it.** The goldens under `goldens/library/mirror-builder/`,
+held to their outcomes under both lowerings and through `build` then
+`load`: two builders installing as one, two of one class refused, a
+failed atomic install changing nothing, an atomic install taking only
+builders; a nested class added, one with a clause, one replaced with its
+instances migrated, one removed running on obsolete, a builder of a
+removed class refused; a renamed nested class answering its new name, a
+rename to an existing member refused, an access change installed; a
+renamed root rewriting its `:module:` id, a version change installed in
+place, an `as` id kept, a colliding identity refused; a superclass
+change re-parenting every class object, a `<:` clause added, a slot of a
+lost level going and one of a gained level starting `nil`, a clause that
+signals changing nothing, one answering no class and a cycle refused, a
+clause that installs failing the commit, a class object made during the
+evaluation failing it, a clause running only for the class objects a
+program reaches, the clauses running in the order their class objects
+were made; and a module declared from source, one without metadata named
+by its class, one of a taken identity refused, a text of two
+declarations refused, a module and an edit installing as one. Rust
+tests pin the scoped invalidation
+(`an_install_vacates_only_entries_naming_a_reapplied_application`,
+`interpreter/inline_cache.rs`) and its trace
+(`an_install_is_traced_vacating_the_caches_once`, `tests/trace.rs`), the
+INSTALL check against corrupted entries of every kind
+(`interpreter/inline_cache/verify.rs`), the obsolete class's reclaim
+(`an_unreachable_obsolete_class_is_reclaimed`, `interpreter/reclaim.rs`)
+and load (`an_obsolete_class_loads_obsolete`, `interpreter/install.rs`),
+the texts of two declarations and the splice around multi-byte text
+(`a_nested_class_text_of_two_declarations_is_refused`,
+`a_nested_class_splice_keeps_multibyte_text`), the stamps' decoding
+(`image/decode.rs`) and the leaves under both lowerings
+(`builtins/reflection.rs`).
+
+**Its limits.** The INSTALL check compares a lexical site's non-private
+entry, whose key does not name N, with a lookup made without N's private
+member, which the global entry of the same send is checked with, and
+skips megamorphic sites, sites of loose ranges and entries whose key no
+live object has. What the batch leaves open is in
+[OPEN-WORK.md](../OPEN-WORK.md): an install from inside a clause of a
+creation in progress, a re-parenting onto or off a builtin with a native
+representation, and a debugger evaluation at the collection's safepoint.
 
 ### Edited programs in images
 
@@ -1070,6 +1421,10 @@ goes through `build` then `load` again.
   method a closure or a frame still runs after an install replaced or
   removed it runs its old code after a load
   ([image-format.md](image-format.md), "Edited programs in the image").
+- **A removed declaration the graph reaches is an obsolete tree** after
+  the modules' trees, which loads obsolete ("The complete install"
+  above, decision 3), and a module declared from source is a module
+  record without a path (decision 7).
 - **An image carries its program's source by default** (decided with the
   user on 2026-10-19), each declaration's current text once, and
   `ns-next build --strip-source` leaves it out
@@ -1219,8 +1574,9 @@ an edit: the install replaces it under the old one's id rather than
 letting the next application mint a fresh one. Still on a mixin's address
 or its builder's link: `reflection.rs`'s `instance_side`,
 `Mixin::reflected_name` and `is_shipped`, which follow the builder's
-`Weak` link and stay so -- what they answer, a name, an access and the
-shipped flag, no replacement changes. Until a heap registers a mixin, its
+`Weak` link and stay so -- a name and an access are the version's own,
+which a rename or an access change gives a fresh version, and the
+shipped flag no replacement changes. Until a heap registers a mixin, its
 nested declarations are the tree its builder declared
 (`Mixin::declared_nested`), which the compiler, the shipped-code decoder,
 the image's mixin builder and an edit's pairing read; registering a mixin
@@ -1236,7 +1592,8 @@ ids, and the successors of dead applications; the application cache's
 entries for them, so the cache is weak ([memory.md](memory.md), "Weak
 references"); a module's tree of mixin ids, as one, once no live
 application, class object, reified mixin object or Rust holder names any
-of it; a superseded version once only the table holds it and no closure,
+of it, and an obsolete declaration's tree by the same rule, on its own
+("The complete install" above, decision 3); a superseded version once only the table holds it and no closure,
 frame or activation runs code compiled in it; and every code id and cache
 range nothing names. Every table mints its smallest free row first and
 gives its trailing free rows back.

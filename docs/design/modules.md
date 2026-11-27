@@ -53,7 +53,17 @@ directory of `newspeak.json`, against which its paths are resolved
 already, or, for a program that is one `.ns` file, relative to that file's
 directory: `libs/util-1/Util.ns` and `libs/util-2/Util.ns` are two modules
 whatever they declare; `..` reaches a library beside the project. It is
-the one name every module has and two versions do not share. Every such
+the one name every module read from a file has and two versions do not
+share. A module a program declares from source at run time
+(`ClassDeclarationBuilder fromSource:`), which no file holds, has no path
+(`ModuleIdentity::path` is an `Option`): it is told apart by its id and
+version alone, which the install holds distinct from every other
+module's, and a message naming its path names it `a module declared from
+source` (`modules::PATHLESS_MODULE`;
+[liveness-and-reflection.md](liveness-and-reflection.md), "The complete
+install", decision 7). An install keeps a module's path, so an install
+that changes its id or version changes the identity of the same module
+(decision 9 there). Every such
 path ends in `.ns`, a one-file program's too, so `ns-next run Solo.txt` is
 refused ([image-format.md](image-format.md), "Packaging"). A module on
 another drive or share than the project has no path relative to it and is
@@ -209,7 +219,11 @@ them to everything decision 2, 5 and 9 hold a project to
 input", `CLAUDE.md`). The origin tags `ORIGIN_PROJECT` and `ORIGIN_CORE` took
 the next free numbers, and
 `ORIGIN_FILE` and `ORIGIN_EMBEDDED` are retired
-([image-format.md](image-format.md), "Module section").
+([image-format.md](image-format.md), "Module section"). A module declared
+from source has no path, and its record is `ORIGIN_NONE` (4) with none
+(2026-11-27), its id held outside `newspeak.` as every program module's;
+an image records the identity an install gave a module, under the path
+it always had.
 
 ## What follows from it
 

@@ -7,7 +7,9 @@
 > recorded guards of a slot access (road step 5b1, "`become:` is an eager
 > bulk forward", "What a slot access checks"), the atomic install that
 > calls the forward and re-applies every class object of an edited mixin
-> (road step 5b2a, "Everything stays editable"), and the reclamation of
+> (road step 5b2a, "Everything stays editable") -- since the complete
+> install over a new superclass too, a removed class living on obsolete --,
+> and the reclamation of
 > the per-heap ids -- every application, guard id, module tree of mixin
 > ids, superseded version and code id nothing names any more, freed in a
 > full collection and minted again smallest first, the application cache
@@ -2315,7 +2317,8 @@ no class object, no activation's entered level, no application-cache key
 or value and no other application's superclass link or successor entry
 names it; a mixin id once no application, no class object's applied-clause
 field, no reified mixin object and no holder of one of its versions names
-it or any other id of its module's tree; a code id once no closure or
+it or any other id of its tree -- its module's, or the obsolete tree a
+declaration an install removed roots, freed on its own; a code id once no closure or
 frame object names it. A class's change of application restamps every
 instance's header by a heap walk (`Heap::class_set_application`;
 `r[vm.dispatch.header-guard-stamped]`) before
@@ -2546,8 +2549,8 @@ application" above); and last the creation stamp (`CREATION_STAMP`), a
 `SmallInteger` drawn from the heap's counter when the class object is made
 and kept by every move and by an image, which orders class objects by their
 creation -- the order in which an install evaluates superclass clauses
-([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: the
-complete install"). Every class object has all twelve fields, 112 bytes with
+([liveness-and-reflection.md](liveness-and-reflection.md), "The complete
+install", decision 10). Every class object has all twelve fields, 112 bytes with
 its header and class word, so that an install can turn a class object of a
 declaration with a body into a body-less declaration's and back in place,
 keeping its identity. The builtin tag, the applied clause, the application
@@ -3093,6 +3096,34 @@ through the same walk, and continue from the divorced frame ("The object
 layout" above). Closures keep their old code, as in Smalltalk, and new
 ones get the new code. A value class's instances migrate the same way, inside the VM, which
 no program can observe, since a value has no identity.
+
+A superclass change re-parents a class object in place too: the install
+evaluates the new clauses for each class object, then writes its new
+superclass (`Heap::class_set_superclass`) and builds its `<:` levels
+anew, and a declaration that gains or loses a body of its own keeps its
+class objects, each rewritten from the class of its own body into the
+level its last clause adds or back, which every class object's one
+layout of twelve fields allows ("The object layout" above;
+[liveness-and-reflection.md](liveness-and-reflection.md), "The complete
+install", decisions 1 and 11).
+
+**A removed class lives on obsolete** (`r[vm.heap.obsolete-mixin-out-of-tree]`).
+A nested declaration an install removes leaves its enclosing
+declaration's nested list, so no application of the enclosing class
+reserves it a hidden slot, the enclosing instances migrating without
+it, and no module's text holds it; its id roots a tree of its own,
+outside every module's, with its nested declarations and class sides
+(`Heap::make_obsolete`, `Heap::is_obsolete`). Its row keeps its last
+version, so its class objects, its instances and its subclasses -- in
+another module too -- go on running it, and `outer` inside it reaches
+the enclosing instance its class object holds. A full collection frees
+the tree on its own once nothing names any of its ids, by the rule of a
+module's tree ("An application has two ids" above), whether or not its
+former module lives; a module freed first leaves the obsolete root
+naming no enclosing row. An image carries an obsolete tree the graph
+reaches, and the loader registers it obsolete with no enclosing row
+(`Heap::make_loaded_obsolete`; [image-format.md](image-format.md),
+"Edited programs in the image").
 
 ## Decisions
 

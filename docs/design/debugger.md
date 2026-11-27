@@ -366,11 +366,13 @@ debugging API at the safepoint". What it and the later stages build on:
   (`r[image.write.source]`).
   An image does not record which lowering compiled its code
   ([compiler.md](compiler.md), "The reference lowering").
-- **The MirrorBuilder's install** replaces a program's class -- its header,
-  its methods on either side, its lazy slots -- atomically; it refuses a
-  shipped class, and cannot yet change a superclass or the nested classes
+- **The MirrorBuilder's install** replaces a program's classes -- their
+  headers, superclasses and names included, their methods on either
+  side, their lazy slots and nested classes -- atomically, several
+  builders as one, and declares a module from source; it refuses a
+  shipped class
   ([liveness-and-reflection.md](liveness-and-reflection.md), "A
-  MirrorBuilder and an atomic install").
+  MirrorBuilder and an atomic install", "The complete install").
 - **A signal searches its handler before anything unwinds**
   (`r[runtime.handler-search]`; "nothing is
   unwound until it decides", `Kernel.ns`, `signal`), and an unhandled

@@ -117,9 +117,17 @@ Rust 1.100.0, edition 2024, seven crates:
   the send machinery it calls
   (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
-  `mirror.rs` and its leaves in `builtins/`, a MirrorBuilder's edit
-  prepared from its module's current text in `edit.rs` and installed
-  atomically in `install.rs`), the debugging API at the run loop's
+  `mirror.rs` and its leaves in `builtins/`, the edits of several
+  MirrorBuilders, a module declared from source among them, prepared
+  from their modules' current texts in `edit.rs` and installed as one in
+  `install.rs` through three mirror rows -- prepare, evaluate a changed
+  superclass clause for each class object the program reaches, in the
+  order of the creation stamp every class object carries, and commit,
+  which re-parents in place, makes a removed nested class obsolete, a
+  tree of ids of its own that runs on until nothing reaches it, and
+  vacates only the cache entries naming what it re-applied
+  (`install/prepared.rs`, `install/superclasses.rs`;
+  `liveness-and-reflection.md`, "The complete install")), the debugging API at the run loop's
   safepoint (`debugger/`: `Interpreter::attach_debugger` hands out a
   `DebugRemote`, whose thread pauses the run and reads its stack and
   values at the stop -- or whose two halves (`into_parts`), a
