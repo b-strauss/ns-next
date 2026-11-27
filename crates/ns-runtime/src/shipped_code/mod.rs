@@ -266,6 +266,80 @@ mod tests {
         assert_eq!(path, ShippedCodePath::Embedded);
     }
 
+    /// Counts the factories of `mixin`, every mixin nested in it and every
+    /// class side among them, asserting that each carries the body its
+    /// arity synthesizes and that no method table entry is one of the
+    /// mixin's level initializers.
+    fn count_synthesized_factories(mixin: &Mixin) -> usize {
+        let initializers: Vec<&Rc<CompiledCode>> = mixin
+            .initializer_code
+            .iter()
+            .chain(&mixin.own_initializer_code)
+            .chain(&mixin.standalone_initializer_code)
+            .collect();
+        let mut factories = 0;
+        for entry in mixin.methods.values() {
+            let code = match entry {
+                crate::mixin::MethodEntry::Factory(factory) => {
+                    let arity = u16::try_from(factory.argument_count).unwrap_or(u16::MAX);
+                    assert!(
+                        crate::bytecode::compiles_alike(
+                            &factory.code,
+                            &crate::compiler::factory_body(arity)
+                        ),
+                        "{}'s factory carries another body than its arity's",
+                        mixin.reflected_name()
+                    );
+                    factories += 1;
+                    &factory.code
+                }
+                crate::mixin::MethodEntry::Compiled(method) => &method.code,
+                _ => continue,
+            };
+            assert!(
+                code.kind != crate::bytecode::CodeKind::Initializer
+                    && !initializers
+                        .iter()
+                        .any(|initializer| Rc::ptr_eq(initializer, code)),
+                "{}'s method table holds an initializer",
+                mixin.reflected_name()
+            );
+        }
+        factories
+            + mixin
+                .declared_nested()
+                .iter()
+                .chain(&mixin.class_side)
+                .map(|nested| count_synthesized_factories(nested))
+                .sum::<usize>()
+    }
+
+    /// Every factory the embedded shipped code decodes to carries the body
+    /// `compiler::factory_body` synthesizes for its arity, whose bytes
+    /// carry the arity alone, and every level initializer stays outside
+    /// the method tables. The artifact must be current and the optimized
+    /// boot must decode it, so that a stale one fails here rather than
+    /// leaving every boot to compile the source.
+    // spec: vm.compiler.factory-body-synthesized
+    #[test]
+    fn every_factory_the_embedded_code_decodes_carries_the_synthesized_body() {
+        assert!(
+            usable(embedded()),
+            "the embedded shipped code is missing or stale: run `cargo xtask shipped-code`"
+        );
+        let mut interpreter = Interpreter::bootstrap();
+        let path = interpreter.enter(|mutator| mutator.shipped_code_path);
+        assert_eq!(path, ShippedCodePath::Embedded);
+        let factories: usize = decoded_modules(embedded())
+            .iter()
+            .map(|(_, root)| count_synthesized_factories(root))
+            .sum();
+        assert!(
+            factories > 0,
+            "the shipped modules declare factories, `StringBuilder new:` among them"
+        );
+    }
+
     // spec: vm.compiler.embedded-code-current
     #[test]
     fn the_reference_boot_compiles_from_source() {

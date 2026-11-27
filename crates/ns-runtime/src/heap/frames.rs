@@ -1069,6 +1069,7 @@ mod tests {
         assert_eq!(caller_top_above_start(word), 0);
     }
 
+    // spec: vm.activation.header-one-size
     #[test]
     fn the_header_is_thirteen_words_in_every_build() {
         assert_eq!(frame_header::COUNT, 13);

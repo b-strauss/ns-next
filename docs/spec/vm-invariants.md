@@ -887,7 +887,10 @@ Protects: [`runtime.memory.weak`](runtime.md#r-runtime.memory.weak),
 r[vm.handle.mixin-registered-in-one-heap]
 A mixin is registered in at most one heap, and registering a mixin
 registers its whole declared tree, enclosing mixins first, so a mixin's
-id always names a row of the one heap that minted it.
+id always names a row of the one heap that minted it; registering takes
+the tree's nested declarations into the heap, and a build with debug
+assertions refuses a second heap's registration of a mixin another
+already registered.
 
 Protects:
 [`semantics.mixin.application`](language/semantics.md#r-semantics.mixin.application),

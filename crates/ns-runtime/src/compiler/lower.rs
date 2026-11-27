@@ -4712,14 +4712,29 @@ mod tests {
     // spec: vm.compiler.vector-never-a-value
     #[test]
     fn an_indirection_vector_is_read_only_as_a_vector() {
-        let code = lower_whole_method(
-            indoc! {"
-                class X = Object new (
-                ) (
-                  foo = ( | t b | t:: 1. b:: [ t:: t + 1 ]. b value. ^t + 1 )
-                ) : ()
-            "},
-            0,
+        let source = indoc! {"
+            class X = Object new (
+            ) (
+              foo = ( | t b | t:: 1. b:: [ t:: t + 1 ]. b value. ^t + 1 )
+            ) : ()
+        "};
+        let (method, bindings) = resolve_method(source, 0);
+        let mut lowerer = method_lowerer(&method, &bindings);
+        // `t`'s own register, as the body's layout places it.
+        let own_register = lowerer
+            .layout
+            .local_register(super::super::temporary_index(lowerer.argument_count, 0));
+        assert_ne!(
+            Some(own_register),
+            lowerer.layout.vector_register,
+            "`t` has a register of its own beside the vector's"
+        );
+        lowerer.lower_local_initializers(&method.body.temporaries);
+        lowerer.lower_body(&method.body.statements);
+        let code = lowerer.finish(method.span);
+        assert!(
+            own_register < code.register_count,
+            "`t`'s own register is one of the body's"
         );
         assert!(
             code.instructions()
@@ -4743,8 +4758,6 @@ mod tests {
             "the block writes `t` through the vector it is handed"
         );
         assert_vectors_are_no_values(&code, &[]);
-        // `t`, the first temporary of a method without arguments.
-        let own_register = crate::bytecode::HEADER_REGISTERS;
         assert!(
             code.instructions()
                 .iter()

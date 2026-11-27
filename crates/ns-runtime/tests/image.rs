@@ -13302,6 +13302,7 @@ fn a_nested_mixin_round_trips_through_the_table() {
 /// declared levels must produce an error, never an abort.
 // spec: image.untrusted
 // spec: image.verify.mixin-tree
+// spec: vm.heap.no-recursion-over-input-depth
 #[test]
 fn a_deeply_nested_mixin_tree_does_not_blow_the_stack() {
     let bytes = image_with_mixin_table(&["X"], &mixin_chain(100_000));
@@ -14838,18 +14839,53 @@ fn factory_body_of<'gc>(
     }
 }
 
+/// What `class` and its class side hold besides their factory: every
+/// level initializer is a body on the mixin, an initializer's kind, and no
+/// method table entry is one of them.
+fn assert_initializers_outside_the_method_tables<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    path: &str,
+) {
+    for mixin in [applied_mixin(heap, class), class_side_of(heap, class)] {
+        let initializers: Vec<&Rc<CompiledCode>> = mixin
+            .initializer_code
+            .iter()
+            .chain(&mixin.own_initializer_code)
+            .chain(&mixin.standalone_initializer_code)
+            .collect();
+        for entry in mixin.methods.values() {
+            let code = match entry {
+                ns_runtime::mixin::MethodEntry::Compiled(method) => &method.code,
+                ns_runtime::mixin::MethodEntry::Factory(factory) => &factory.code,
+                _ => continue,
+            };
+            assert!(
+                code.kind != CodeKind::Initializer
+                    && !initializers
+                        .iter()
+                        .any(|initializer| Rc::ptr_eq(initializer, code)),
+                "{path}: a method table holds an initializer"
+            );
+        }
+    }
+}
+
 /// A factory's body is synthesized from its arity alone, whoever attaches
-/// it: a program's class compiled from source, the same class decoded
-/// from an image, which carries no factory body, and a class of the core
-/// library, which the boot decodes from the embedded shipped code. Each
-/// is the body of one argument `compiler::factory_body` makes.
+/// it: a program's class compiled from source, and the same class decoded
+/// from an image, whose code table carries no factory body -- none of its
+/// bodies allocates an instance. Each is the body of one argument
+/// `compiler::factory_body` makes, and each level initializer stays on its
+/// mixin, outside the method tables. The embedded shipped code's factories
+/// are held to the same body by `shipped_code`'s own test.
 // spec: vm.compiler.factory-body-synthesized
 #[test]
 fn every_path_that_builds_a_factory_attaches_the_body_its_arity_synthesizes() {
     let source = indoc! {"
         class X usingPlatform: p = Object new (
-          | public builder = p kernel StringBuilder. |
+          | public held = p. |
         ) (
+          public answer = ( ^42 )
         ) : ()
     "};
     let synthesized = ns_runtime::compiler::factory_body(1);
@@ -14866,34 +14902,50 @@ fn every_path_that_builds_a_factory_attaches_the_body_its_arity_synthesizes() {
         );
     };
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
-    let instance = expect_ok(
-        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
-        "instantiate",
-    );
-    let builder = expect_ok(
-        interpreter.send(&instance, Symbol::intern("builder"), &[]),
-        "builder",
-    );
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let builder = class_reference(mutator, &builder);
+        assert!(
+            applied_mixin(mutator.heap(), class)
+                .initializer_code
+                .is_some(),
+            "X's level has an initializer"
+        );
         assert_synthesized(
             &factory_body_of(mutator.heap(), class, "usingPlatform:"),
             "compiled from source",
         );
-        assert_synthesized(
-            &factory_body_of(mutator.heap(), builder, "new:"),
-            "decoded from the embedded shipped code",
+        assert_initializers_outside_the_method_tables(
+            mutator.heap(),
+            class,
+            "compiled from source",
         );
         module_only_image(mutator, false, "t.ns", class).expect("snapshot")
     });
+    let mut reader = decode::Reader::new(&bytes);
+    decode::read_header(&mut reader).expect("a header");
+    let symbols = symbols::decode(&mut reader).expect("a symbol table");
+    let table = decode::decode_code_table(&mut reader, &symbols).expect("a code table");
+    assert!(!table.codes.is_empty(), "the image carries X's bodies");
+    for code in &table.codes {
+        assert!(
+            !code
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::AllocateInstance { .. })),
+            "the image carries a factory body"
+        );
+    }
     let mut loaded = image::load(&bytes).expect("load");
     let class = loaded.modules[0].class.clone();
     loaded.interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         assert_synthesized(
             &factory_body_of(mutator.heap(), class, "usingPlatform:"),
+            "decoded from an image",
+        );
+        assert_initializers_outside_the_method_tables(
+            mutator.heap(),
+            class,
             "decoded from an image",
         );
     });
