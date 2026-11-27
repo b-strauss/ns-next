@@ -80,7 +80,7 @@ first.
 | The rest of Primordial Soup's core API, by a second inventory of every public selector: `Closure`'s `repeat`, `whileTrue`, `whileFalse`, `cull:cull:`, `cull:cull:cull:` and `valueWithArguments:`, a mirror row whose step activates the block with an Array's elements, and `True`'s and `False`'s `asString` | Complete | 2026-11-26 | -- |
 | The unary `whileTrue` and `whileFalse` and `repeat` on a block literal inlined by both lowerings as `whileTrue:` is (`control_flow::recognize`, `lower_while`, `Body::while_loop`), `repeat` a loop without a condition, so that a `^` in its block is the method's own return, as the canonical compiler's `isInlineableLoop:` inlines them | Complete | 2026-11-26 | -- |
 | The specification's image format -- the encodings, the header, the sections, the tags of fourteen spaces and the structure, the rules the decoder checks on an image, the bounds of a load and the operations *LoadImage* and *WriteImage*, all normative, written into `docs/spec/image-format.md`, the tags and the structure held to the code by tests and every refusal of the writer stated with its text; the decoder refuses a send and a method record whose argument count is not their selector's | Complete | 2026-11-26 | [specification-image-format](superpowers/plans/2026-11-26-1643-specification-image-format.md) |
-| The specification's VM invariants -- 227 `vm.*` rules in eight sections after the terms they are stated in, written into `docs/spec/vm-invariants.md`, each with a `Protects:` line reaching a rule of the first four parts and named by tests, by a detector of the chapter's table or by an `Undetected:` line; `cargo xtask spec` checks them, the table of detectors against the stress gate's modes and the pointers of `CLAUDE.md` and the design documents, which point at the rules by `` `r[...]` `` | Complete | 2026-11-27 | [specification-vm-invariants](superpowers/plans/2026-11-27-0004-specification-vm-invariants.md) |
+| The specification's VM invariants -- 227 `vm.*` rules in eight sections after the terms they are stated in, written into `docs/spec/vm-invariants.md`, each with a `Protects:` line reaching a rule of the first four parts and named by tests, by a detector of the chapter's table or by an `Undetected:` line; `cargo xtask spec` checks them, the table of detectors against the stress gate's modes and the pointers of `CLAUDE.md`, of the documents of `docs/` and of the design documents, which point at a rule by its rule line in a code span | Complete | 2026-11-27 | [specification-vm-invariants](superpowers/plans/2026-11-27-0004-specification-vm-invariants.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -8975,12 +8975,12 @@ chapter's table (the stress modes, the debug build's checks, the compiler's
 checks) or by an `Undetected:` line with its reason. `cargo xtask spec`
 checks a `Protects:` that reaches no rule outside the invariants, a rule with
 no test, no detector and no `Undetected:` line, a table of detectors that
-lacks a row for a stress mode the gate runs, and a pointer in `CLAUDE.md` or a
-design document that names no rule; a `// spec:` line may stand above a `fn`
-inside `for_each_lowering!`, and the rendered book lists a rule's detectors
-beside its tests. The design documents and `CLAUDE.md` point at the rules by
-`` `r[...]` ``, their own statements of a rule shrunk to a sentence beside the
-pointer.
+lacks a row for a stress mode the gate runs, and a pointer in `CLAUDE.md`, a
+document of `docs/` or a design document that names no rule; a `// spec:`
+line may stand above a `fn` inside `for_each_lowering!`, and the rendered
+book lists a rule's detectors beside its tests. The design documents and
+`CLAUDE.md` point at a rule by its rule line in a code span, their own
+statements of a rule shrunk to a sentence beside the pointer.
 
 - `d1354a95` -- the decisions and the plan.
 - `e8c86c05` -- the pointers' check.

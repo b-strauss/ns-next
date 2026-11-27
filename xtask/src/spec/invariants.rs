@@ -2,7 +2,7 @@
 //! each of its rules takes (`docs/design/specification.md`, "The fifth
 //! batch's decisions").
 
-use super::{Reference, Rule, display, fence_of, read, rule_line, walk_markdown};
+use super::{Place, Reference, Rule, display, read, rule_line, walk_markdown};
 use std::path::Path;
 
 /// The chapter that holds the VM invariants, and the only one that may
@@ -66,43 +66,31 @@ pub fn detectors_in(markdown: &str, chapter: &Path) -> Result<Vec<Detector>, Str
     let location = |line: usize| format!("{}:{line}", display(chapter));
     let mut detectors = Vec::new();
     let mut refusals = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
     let mut in_table = false;
     let mut blocks = 0;
     let mut rows_seen = 0;
-    let _ = walk_markdown(markdown, |line, text, outside| {
-        if outside {
-            return;
-        }
-        // A line of a fenced block while no fence is open is the one that
-        // opens it.
-        let Some((character, length)) = fence else {
-            fence = fence_of(text);
-            let info = text
-                .trim_start_matches(' ')
-                .trim_start_matches(['`', '~'])
-                .trim();
-            in_table = info == "spec-table vm-detectors";
-            if in_table {
-                blocks += 1;
-                rows_seen = 0;
-                if blocks == 2 {
-                    refusals.push(format!(
-                        "{}: a second table of detectors; the chapter has one",
-                        location(line)
-                    ));
+    let _ = walk_markdown(markdown, |line, text, place| {
+        match place {
+            Place::Outside => return,
+            Place::Opens(info) => {
+                in_table = info == "spec-table vm-detectors";
+                if in_table {
+                    blocks += 1;
+                    rows_seen = 0;
+                    if blocks == 2 {
+                        refusals.push(format!(
+                            "{}: a second table of detectors; the chapter has one",
+                            location(line)
+                        ));
+                    }
                 }
+                return;
             }
-            return;
-        };
-        if let Some((closing, closing_length)) = fence_of(text)
-            && closing == character
-            && closing_length >= length
-            && text.trim().chars().all(|next| next == character)
-        {
-            in_table = false;
-            fence = None;
-            return;
+            Place::Closes => {
+                in_table = false;
+                return;
+            }
+            Place::Inside => {}
         }
         if !in_table || text.trim().is_empty() {
             return;
@@ -207,20 +195,28 @@ pub fn check_detectors(
             ));
         }
     }
+    // A name is how the book lists a detector under a rule, so two rows
+    // of one name would read as one detector with the rules of both.
+    for (index, detector) in detectors.iter().enumerate() {
+        if detectors[..index]
+            .iter()
+            .any(|earlier| earlier.name == detector.name)
+        {
+            refusals.push(format!(
+                "{VM_CHAPTER}:{}: the detector {} has more than one row",
+                detector.line, detector.name
+            ));
+        }
+    }
     for mode in stress_modes {
         let rows: Vec<&Detector> = detectors
             .iter()
             .filter(|detector| detector.kind == DetectorKind::Stress && detector.name == *mode)
             .collect();
-        match rows.len() {
-            0 => refusals.push(format!(
+        if rows.is_empty() {
+            refusals.push(format!(
                 "the stress mode {mode} has no row in the table of detectors"
-            )),
-            1 => {}
-            _ => refusals.push(format!(
-                "{VM_CHAPTER}:{}: the stress mode {mode} has more than one row",
-                rows[1].line
-            )),
+            ));
         }
     }
     if refusals.is_empty() {
@@ -242,8 +238,8 @@ struct RuleSpan {
 fn rule_spans(markdown: &str) -> Vec<RuleSpan> {
     let mut spans: Vec<RuleSpan> = Vec::new();
     let mut open = false;
-    let _ = walk_markdown(markdown, |line, text, outside| {
-        if !outside {
+    let _ = walk_markdown(markdown, |line, text, place| {
+        if !place.is_outside() {
             return;
         }
         if let Some(identifier) = rule_line(text) {
@@ -274,6 +270,15 @@ impl RuleSpan {
         self.lines
             .iter()
             .any(|(_, text)| text.starts_with(UNDETECTED))
+    }
+
+    /// Whether an `Undetected:` line of the rule says nothing after its
+    /// marker: the line exists to say why nothing can detect the breach.
+    fn lacks_a_reason(&self) -> bool {
+        self.lines.iter().any(|(_, text)| {
+            text.strip_prefix(UNDETECTED)
+                .is_some_and(|reason| reason.trim().is_empty())
+        })
     }
 
     /// The identifiers the paragraph that begins with `Protects:` links to,
@@ -331,6 +336,14 @@ pub fn check_invariants(
             ));
         }
     }
+    for rule in rules {
+        if !rule.identifier.starts_with("vm.") && rule.chapter == Path::new(VM_CHAPTER) {
+            refusals.push(format!(
+                "{VM_CHAPTER}:{}: `{}` is declared among the VM invariants, which hold only `vm.` rules",
+                rule.line, rule.identifier
+            ));
+        }
+    }
     let spans = rule_spans(&read(&book.join(VM_CHAPTER))?);
     let protected_by = |identifier: &str| -> Vec<String> {
         spans
@@ -380,6 +393,9 @@ pub fn check_invariants(
         let detected = detectors
             .iter()
             .any(|detector| detector.rules.contains(&span.identifier));
+        if span.lacks_a_reason() {
+            refusals.push(format!("{location} is marked undetected without a reason"));
+        }
         match (span.is_undetected(), tested || detected) {
             (false, false) => refusals.push(format!(
                 "{location} has no test, no detector and no `{UNDETECTED}` line"
@@ -498,6 +514,64 @@ mod tests {
         let refusal = vm_check(&vm_scratch("vm-both", &chapter, ""), &[]).expect_err("both");
         assert!(
             refusal.contains("`vm.a` is marked undetected but has a detector or a test"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn an_undetected_line_without_a_reason_is_refused() {
+        for (name, line) in [
+            ("vm-reasonless", "Undetected:"),
+            ("vm-blank", "Undetected:   "),
+        ] {
+            let chapter = format!(
+                "# VM
+
+r[vm.a]
+{PROTECTS_SAMPLE}{line}
+"
+            );
+            let refusal = vm_check(&vm_scratch(name, &chapter, ""), &[]).expect_err(name);
+            assert!(
+                refusal
+                    .contains("vm-invariants.md:3: `vm.a` is marked undetected without a reason"),
+                "{name}: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_of_another_part_declared_among_the_vm_invariants_is_refused() {
+        let chapter = format!(
+            "# VM
+
+r[vm.a]
+{PROTECTS_SAMPLE}Undetected: none.
+
+r[semantics.stray]
+Text.
+"
+        );
+        let refusal =
+            vm_check(&vm_scratch("vm-foreign", &chapter, ""), &[]).expect_err("a foreign rule");
+        assert!(
+            refusal.contains(
+                "vm-invariants.md:7: `semantics.stray` is declared among the VM invariants, which hold only `vm.` rules"
+            ),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn two_detectors_of_one_name_are_refused() {
+        let detectors = table_of(&[
+            "| poison | debug | p | `vm.a` |",
+            "| poison | compiler | q | `vm.b` |",
+        ])
+        .expect("rows");
+        let refusal = check_detectors(&[], &detectors, &[]).expect_err("two rows");
+        assert!(
+            refusal.contains("vm-invariants.md:5: the detector poison has more than one row"),
             "{refusal}"
         );
     }
@@ -648,7 +722,7 @@ mod tests {
             table_of(&["| MOVES | stress | m | |", "| MOVES | stress | m | |"]).expect("rows");
         let refusal = check_detectors(&[], &detectors, &["MOVES"]).expect_err("two rows");
         assert!(
-            refusal.contains("vm-invariants.md:5: the stress mode MOVES has more than one row"),
+            refusal.contains("vm-invariants.md:5: the detector MOVES has more than one row"),
             "{refusal}"
         );
     }

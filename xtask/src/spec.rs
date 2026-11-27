@@ -73,10 +73,32 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
     opens.then_some((character, length))
 }
 
+/// Where a line of Markdown stands with respect to the fenced code blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place<'a> {
+    /// Outside every fenced block.
+    Outside,
+    /// The line that opens a fenced block, with its info string.
+    Opens(&'a str),
+    /// A line inside a fenced block.
+    Inside,
+    /// The line that closes a fenced block.
+    Closes,
+}
+
+impl Place<'_> {
+    fn is_outside(self) -> bool {
+        self == Place::Outside
+    }
+}
+
 /// Calls `visit` with each line of `markdown`, its 1-based number, and
-/// whether it stands outside every fenced code block; answers the line of a
-/// fence still open at the end, which hides every line after it.
-fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Option<usize> {
+/// where it stands with respect to the fenced code blocks; answers the
+/// line of a fence still open at the end, which hides every line after it.
+fn walk_markdown<'a>(
+    markdown: &'a str,
+    mut visit: impl FnMut(usize, &'a str, Place<'a>),
+) -> Option<usize> {
     let mut open: Option<(char, usize)> = None;
     let mut opened_at = 0;
     for (index, line) in lines_of(markdown).enumerate() {
@@ -84,7 +106,11 @@ fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Op
             (None, Some(fence)) => {
                 open = Some(fence);
                 opened_at = index + 1;
-                visit(index + 1, line, false);
+                let info = line
+                    .trim_start_matches(' ')
+                    .trim_start_matches(fence.0)
+                    .trim();
+                visit(index + 1, line, Place::Opens(info));
             }
             (Some((character, length)), Some((closing, closing_length)))
                 if closing == character
@@ -92,10 +118,10 @@ fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Op
                     && line.trim().chars().all(|next| next == character) =>
             {
                 open = None;
-                visit(index + 1, line, false);
+                visit(index + 1, line, Place::Closes);
             }
-            (Some(_), _) => visit(index + 1, line, false),
-            (None, None) => visit(index + 1, line, true),
+            (Some(_), _) => visit(index + 1, line, Place::Inside),
+            (None, None) => visit(index + 1, line, Place::Outside),
         }
     }
     open.map(|_| opened_at)
@@ -118,8 +144,8 @@ fn display(path: &Path) -> String {
 pub fn rules_in(markdown: &str, chapter: &Path) -> Result<Vec<Rule>, String> {
     let mut rules = Vec::new();
     let mut refusals = Vec::new();
-    let unclosed = walk_markdown(markdown, |line, text, outside| {
-        if !outside {
+    let unclosed = walk_markdown(markdown, |line, text, place| {
+        if !place.is_outside() {
             return;
         }
         if text.starts_with("r[") && rule_line(text).is_none() {
@@ -308,8 +334,8 @@ pub fn check_links(book: &Path) -> Result<(), String> {
     let mut refusals = Vec::new();
     for chapter in book_chapters(book)? {
         let markdown = read(&book.join(&chapter))?;
-        let _ = walk_markdown(&markdown, |line, text, outside| {
-            if !outside {
+        let _ = walk_markdown(&markdown, |line, text, place| {
+            if !place.is_outside() {
                 return;
             }
             let mut rest = text;
@@ -522,29 +548,38 @@ pub struct Pointer {
     pub line: usize,
 }
 
-/// Every pointer `CLAUDE.md` and the design documents directly below
-/// `docs/design/` make to a rule. Only a span that is a backtick, `r[`, the
-/// identifier, `]` and a backtick is one, so that `` `ns-next-analyzer[.exe]` ``
-/// is not; a fenced block holds samples and is skipped. A pointer is no
-/// test's reference, so the rendered book lists it nowhere.
+/// The Markdown files directly in `directory`, sorted; none when it does
+/// not exist.
+fn markdown_files_in(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    if !directory.is_dir() {
+        return Ok(found);
+    }
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: cannot be read: {error}", display(directory)))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("{}: cannot be read: {error}", display(directory)))?
+            .path();
+        if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Every pointer `CLAUDE.md`, the documents directly in `docs/` -- the
+/// open work and the progress among them -- and the design documents
+/// directly below `docs/design/` make to a rule. Only a span that is a
+/// backtick, `r[`, the identifier, `]` and a backtick is one, so that
+/// `` `ns-next-analyzer[.exe]` `` is not; a fenced block holds samples and
+/// is skipped. A pointer is no test's reference, so the rendered book lists
+/// it nowhere.
 pub fn pointers_in(root: &Path) -> Result<Vec<Pointer>, String> {
     let mut documents = vec![root.join("CLAUDE.md")];
-    let design = root.join("docs/design");
-    if design.is_dir() {
-        let mut found = Vec::new();
-        let entries = std::fs::read_dir(&design)
-            .map_err(|error| format!("{}: cannot be read: {error}", display(&design)))?;
-        for entry in entries {
-            let path = entry
-                .map_err(|error| format!("{}: cannot be read: {error}", display(&design)))?
-                .path();
-            if path.extension().is_some_and(|extension| extension == "md") {
-                found.push(path);
-            }
-        }
-        found.sort();
-        documents.extend(found);
-    }
+    documents.extend(markdown_files_in(&root.join("docs"))?);
+    documents.extend(markdown_files_in(&root.join("docs/design"))?);
     let mut pointers = Vec::new();
     let mut refusals = Vec::new();
     for path in documents {
@@ -553,8 +588,8 @@ pub fn pointers_in(root: &Path) -> Result<Vec<Pointer>, String> {
         }
         let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
         let text = read(&path)?;
-        walk_markdown(&text, |line, content, outside| {
-            if !outside {
+        walk_markdown(&text, |line, content, place| {
+            if !place.is_outside() {
                 return;
             }
             let mut rest = content;
@@ -693,12 +728,27 @@ fn listed_checks(tests: &[(String, String)], detectors: &[&Detector], undetected
     )
 }
 
+/// The rules of `chapter` marked `Undetected:`: only the VM invariants
+/// take that line, so in any other chapter it is text and marks nothing.
+fn undetected_of(markdown: &str, chapter: &Path) -> Vec<String> {
+    if chapter == Path::new(VM_CHAPTER) {
+        undetected_in(markdown)
+    } else {
+        Vec::new()
+    }
+}
+
 /// A chapter with each rule line made an anchor that lists the rule's checks.
-fn processed_chapter(markdown: &str, references: &[Reference], detectors: &[Detector]) -> String {
-    let undetected = undetected_in(markdown);
+fn processed_chapter(
+    markdown: &str,
+    chapter: &Path,
+    references: &[Reference],
+    detectors: &[Detector],
+) -> String {
+    let undetected = undetected_of(markdown, chapter);
     let mut processed = String::new();
-    let _ = walk_markdown(markdown, |_, line, outside| {
-        match rule_line(line).filter(|_| outside) {
+    let _ = walk_markdown(markdown, |_, line, place| {
+        match rule_line(line).filter(|_| place.is_outside()) {
             Some(identifier) => {
                 processed.push_str(&format!(
                     "<div class=\"rule\" id=\"r-{identifier}\"><a href=\"#r-{identifier}\">[{identifier}]</a> \
@@ -817,7 +867,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     let source = output.join("src");
     let mut undetected = Vec::new();
     for chapter in &chapters {
-        undetected.extend(undetected_in(&read(&book.join(chapter))?));
+        undetected.extend(undetected_of(&read(&book.join(chapter))?, chapter));
     }
     let _ = std::fs::remove_dir_all(output);
     let write = |path: &Path, contents: &str| -> Result<(), String> {
@@ -832,7 +882,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
         let markdown = read(&book.join(chapter))?;
         write(
             &source.join(chapter),
-            &processed_chapter(&markdown, &references, &detectors),
+            &processed_chapter(&markdown, chapter, &references, &detectors),
         )?;
     }
     let mut summary = read(&book.join("SUMMARY.md"))?.replace("\r\n", "\n");
@@ -1210,7 +1260,12 @@ mod tests {
             reference("lex.a", "second<T>"),
             reference("lex.b", ""),
         ];
-        let processed = processed_chapter("r[lex.a]\nr[lex.b]\nr[lex.c]\n", &references, &[]);
+        let processed = processed_chapter(
+            "r[lex.a]\nr[lex.b]\nr[lex.c]\n",
+            Path::new("lexical.md"),
+            &references,
+            &[],
+        );
         let lines: Vec<&str> = processed.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(
             lines,
@@ -1348,6 +1403,21 @@ two
         assert_eq!(refusal, "CLAUDE.md:1: `r[Vm.X]` is no rule identifier");
     }
 
+    /// The documents of `docs/` itself -- the open work, the progress --
+    /// point at rules as the design documents do.
+    #[test]
+    fn a_pointer_in_a_document_of_docs_is_read() {
+        let scratch = pointer_scratch(
+            "pointer-docs",
+            "docs/OPEN-WORK.md",
+            "`r[vm.none]`
+",
+        );
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        assert_eq!(pointers.len(), 1);
+        assert_eq!(pointers[0].document, Path::new("docs/OPEN-WORK.md"));
+    }
+
     #[test]
     fn every_pointer_names_a_rule_of_the_book() {
         let root = repository_root();
@@ -1375,6 +1445,7 @@ two
         }];
         let one = processed_chapter(
             "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
             &references,
             &[detector("SCAVENGE", DetectorKind::Stress)],
         );
@@ -1390,6 +1461,7 @@ two
         );
         let several = processed_chapter(
             "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
             &references,
             &[
                 detector("SCAVENGE", DetectorKind::Stress),
@@ -1411,6 +1483,7 @@ two
         );
         let alone = processed_chapter(
             "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
             &[],
             &[detector("SCAVENGE", DetectorKind::Stress)],
         );
@@ -1419,11 +1492,31 @@ two
 
     #[test]
     fn an_undetected_rule_shows_so() {
-        let processed = processed_chapter("r[vm.a]\nProtects: x.\nUndetected: none.\n", &[], &[]);
+        let processed = processed_chapter(
+            "r[vm.a]\nProtects: x.\nUndetected: none.\n",
+            Path::new(VM_CHAPTER),
+            &[],
+            &[],
+        );
         assert!(
             processed.contains("<span class=\"rule-tests\">tests: none, undetected</span>"),
             "{processed}"
         );
+    }
+
+    /// `Undetected:` is the VM invariants' convention; in another chapter
+    /// it is text, and the rule is untested as any other.
+    #[test]
+    fn only_a_vm_invariant_shows_undetected() {
+        let markdown = "r[lex.a]
+Undetected: none.
+";
+        let processed = processed_chapter(markdown, Path::new("lexical.md"), &[], &[]);
+        assert!(
+            processed.contains("<span class=\"rule-tests\">tests: none yet</span>"),
+            "{processed}"
+        );
+        assert!(undetected_of(markdown, Path::new("lexical.md")).is_empty());
     }
 
     #[test]
