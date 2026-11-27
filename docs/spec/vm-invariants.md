@@ -110,7 +110,8 @@ requests a scavenge. Each object's header carries a **mark bit**, set
 while a full collection marks it, and a **remembered bit**, set while it
 is in the remembered set. The **forwarding table** maps, chunk by chunk,
 each survivor of a full collection to its new offset. An ephemeron whose
-key nothing else reaches is **mourned**: queued for its finalizer. The
+key nothing but ephemerons reaches is **mourned**: each of its fields is
+set to nil, its finalizer never run. The
 **canonical table** holds the one symbol object of each interned text,
 and a **weak table** holds the symbols a program makes until the
 canonical table adopts them; a **reified mixin** is the object that
