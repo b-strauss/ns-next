@@ -933,8 +933,8 @@ implementations are the models (`prior-art/newspeak/AtomicInstaller.ns`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns`); JVMTI's
 `RedefineClasses`, which permits only method bodies to change, is not.
 The specification of the current state is built, and batch A is the next
-batch to build. Its decisions so far, each
-taken with the user on 2026-11-22:
+batch to build. Its decisions, taken with the user on 2026-11-22 (1 to 8)
+and 2026-11-27 (8's interface and 9):
 
 1. **A superclass change re-evaluates the clause for every existing
    class object.** A nested class's superclass is computed per enclosing
@@ -1003,19 +1003,41 @@ taken with the user on 2026-11-22:
    one commit and one invalidation; two builders of one declaration, or
    one whose declaration another removes or replaces, are refused, naming
    both -- the check `MirrorsForSqueak.ns:1698` marks `#BOGUS` as
-   missing -- and any failure changes nothing. Proposed with it, not
-   decided on its own: Primordial Soup's `nestedClasses` group
-   (`addFromSource:`, `removeMirrorNamed:`), the header builder's
-   `name:`, `ClassDeclarationBuilder fromSource:`, and
-   `installAtomically:` on the mirrors facet.
+   missing -- and any failure changes nothing. Its interface is
+   Primordial Soup's `nestedClasses` group (`addFromSource:`,
+   `removeMirrorNamed:`), the header builder's `name:`,
+   `ClassDeclarationBuilder fromSource:`, and `installAtomically:` on
+   the mirrors facet.
+9. **An install changes a module's identity in place.** A module's
+   identity is its path ([modules.md](modules.md), decision 1), which no
+   install changes, so a text whose `:module:` names another id or
+   version, or whose root class has another name, is the same module
+   with other attributes: the root mixin's new version carries a new
+   `ModuleIdentity` of the same path, and its mixin ids, class objects
+   and instances are kept, every other change of the install reaching the
+   running instances. A `name:` renaming an annotated root rewrites the
+   last part of the id in its `:module:` too, as the names of the classes
+   nested in it follow (decision 4), after Primordial Soup's `name:`,
+   which renames a top-level class in place (`Mirrors.ns:764-798`). The
+   new identity is held to the loader's rules before the commit --
+   [modules.md](modules.md)'s decisions 2, 5 and 9: a well-formed
+   version, an id whose last part is the class's name, none under
+   `newspeak.`, and no other module of the world of that id and version,
+   or of that id where either has none -- with the loader's messages, and
+   a failure changes nothing. Nothing on a send's path reads an identity,
+   so it costs the hot path nothing, adds no invalidation to decision 6's
+   and leaves every warm entry warm; the image writes the current
+   identity under the unchanged path. The manifest a running application
+   holds is unchanged (decision 7): it answers the module under the id it
+   was assembled with. A breakpoint naming the old id or version is batch
+   B's to set again. Neither making a new module beside the old, which
+   would leave the install's other changes out of the running program and
+   put two modules of one path into the image, nor refusing the change,
+   JVMTI's answer (`jvmtiRedefineClasses.cpp:1405-1407`), is taken.
 
-Open: what an install that changes a module's identity -- its
-`:module:` id or version, or its root class's name -- does: change it in
-place, keeping the module's mixin ids, class objects and instances; make
-a new module beside the old; or refuse it. Every decision of the batch
-names, per option, what it does to the hot path, to what the optimizing
-JIT can still generate, to the warm-up after the install, and to the
-image, the image of a running world included.
+Every decision of the batch names, per option, what it does to the hot
+path, to what the optimizing JIT can still generate, to the warm-up after
+the install, and to the image, the image of a running world included.
 
 ### Edited programs in images
 

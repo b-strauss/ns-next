@@ -16,9 +16,9 @@ when they were written.
 ## Next
 
 **The complete install, the first of hot swap's three batches** (decisions
-taken with the user on 2026-11-22 but for one, the change of a module's
-identity; the branch `feature/complete-install` is parked with batch A's
-decisions; [liveness-and-reflection.md](design/liveness-and-reflection.md),
+taken with the user on 2026-11-22 and 2026-11-27, the change of a
+module's identity the last of them;
+[liveness-and-reflection.md](design/liveness-and-reflection.md),
 "Planned: the complete install"): the install that changes everything --
 a superclass, a class added or removed, a method added, changed or
 removed, the factory and the initializer -- atomically through the
@@ -47,7 +47,7 @@ uncaught `MessageNotUnderstood` and the forced `nil` from
 DAP, requests of ns-next's own, and in the plugin a hot-swap action.
 Hot swap is split into three batches, the complete install, hot swap in
 the debugger and developing in an empty world, and the first one's
-decisions are taken but for one, the change of a module's identity
+decisions are taken
 ([liveness-and-reflection.md](design/liveness-and-reflection.md),
 "Planned: the complete install"); the first of the three is the complete install, the item above.
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
