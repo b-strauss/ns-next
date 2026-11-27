@@ -33,9 +33,6 @@ impl Mutator<'_> {
         mut gathered: GatheredIds,
         carried_budgets: &mut IdentityMap<usize, i64>,
     ) {
-        // A prepared install names ids this collection may reclaim and
-        // mint again for other declarations; its commit prepares afresh.
-        self.prepared_install = None;
         let stack = self.heap.stack_roots();
         // A running activation names its body by id, beside the marked
         // closures and frames: step 3 asks which bodies run, step 4 frees
@@ -274,6 +271,13 @@ impl Mutator<'_> {
             any_freed = true;
         }
         if any_freed {
+            // A prepared install names mixin ids, which this collection
+            // frees and may mint again for other declarations, so its
+            // commit prepares afresh. It holds no other id, no application
+            // and no handle (`PreparedInstallCache`), so a collection that
+            // frees no mixin id keeps it, and the clauses the Installer
+            // evaluates after its collections are the ones it commits.
+            self.prepared_install = None;
             debug_assert!(
                 self.applications
                     .keys()

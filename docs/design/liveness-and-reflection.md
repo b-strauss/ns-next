@@ -1349,9 +1349,12 @@ safepoints between the leaves (`r[vm.handle.nothing-carried-across-safepoint]`):
 what the leaves keep is one prepared install (`PreparedInstallCache`),
 the epoch, the entries and what they prepared to, `Rc<Mixin>`s, ids and
 texts, which a later preparation or commit of the same entries at the
-same epoch takes instead of compiling again, the check's included. A
-commit and a full collection's reclaim of ids drop it, since the ids it
-names may be minted again. The install epoch, a `u64` on the `Mutator`,
+same epoch takes instead of compiling again, the check's included, so
+that the commit installs the very versions whose clauses the evaluation
+leaf ran. A commit drops it, and so does a full collection that frees a
+mixin id (`Mutator::reclaim_mixins`), since the ids it names may be
+minted again; one that frees none, as the Installer's collections
+between the leaves usually do, keeps it. The install epoch, a `u64` on the `Mutator`,
 is raised by every commit and every module that joins the heap
 (`load_root_class`, and a module declared from source); it is not the
 debugger's text revision, which moves without an install too.

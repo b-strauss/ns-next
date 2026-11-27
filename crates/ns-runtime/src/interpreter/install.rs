@@ -2447,6 +2447,47 @@ mod tests {
         assert!(!Rc::ptr_eq(&first, &third));
     }
 
+    /// A full collection that frees no mixin id keeps the prepared install,
+    /// so that the commit after the Installer's collections installs the
+    /// versions whose clauses it evaluated; one that frees a tree of ids,
+    /// which may be minted again for other declarations, drops it.
+    #[cfg(debug_assertions)]
+    // spec: runtime.install
+    #[test]
+    fn a_preparation_is_kept_across_a_collection_that_frees_no_mixin() {
+        // The roots keep the edited module's tree.
+        let (mut interpreter, _outer, _inner_class, _inner, inner_id) = outer_and_inner(OUTER);
+        let module =
+            module_of(&installed(&mut interpreter, &[InstallEntry::Module(FRESH.to_string())])[0]);
+        let entries = [InstallEntry::Edit(
+            inner_id,
+            add_method("public b = ( ^2 )"),
+        )];
+        let prepare = |interpreter: &mut Interpreter| match interpreter
+            .enter(|mutator| mutator.prepare_install(&entries))
+        {
+            Ok(prepared) => prepared,
+            Err(diagnostic) => panic!("the preparation was refused: {diagnostic}"),
+        };
+        // What the boot left for a first collection to free goes first.
+        interpreter.collect_now();
+        interpreter.collect_now();
+        let first = prepare(&mut interpreter);
+        interpreter.collect_now();
+        interpreter.collect_now();
+        let second = prepare(&mut interpreter);
+        assert!(Rc::ptr_eq(&first, &second), "nothing was freed");
+        drop(module);
+        interpreter.collect_now();
+        interpreter.collect_now();
+        assert!(
+            interpreter.enter(|mutator| mutator.prepared_install.is_none()),
+            "the module's tree was freed"
+        );
+        let third = prepare(&mut interpreter);
+        assert!(!Rc::ptr_eq(&first, &third));
+    }
+
     /// Two edits that collide only together -- a method and a lazy slot of
     /// one name, a header slot and a method of one name -- are refused
     /// with the resolver's diagnostic, and the install leaves every
@@ -3025,6 +3066,58 @@ mod tests {
                 &[inner, inner_class, block, outer_instance],
             );
         }
+    }
+
+    /// A removed class only an image's roots reach loads obsolete, and once
+    /// the host drops those roots a full collection frees its tree, its
+    /// class side with it, while the module it was removed from lives on:
+    /// a loaded obsolete tree is freed as a removed declaration of a
+    /// running world is.
+    #[cfg(debug_assertions)]
+    // spec: image.load.obsolete
+    #[test]
+    fn a_loaded_obsolete_class_is_freed_once_nothing_reaches_it() {
+        let (mut interpreter, outer, inner_class, inner, inner_id) = module_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let bytes = image_of(&mut interpreter, &outer, &[inner, inner_class]);
+        let mut image = loaded(&bytes);
+        let loaded_inner = applied_id_of(&mut image.interpreter, &image.roots[1]);
+        let loaded_outer = root_id_of(&mut image.interpreter, &image.modules[0].class);
+        let obsolete = image.interpreter.enter(|mutator| {
+            assert!(mutator.heap.is_obsolete(loaded_inner));
+            mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&loaded_inner))
+                .expect("Inner has a tree")
+        });
+        assert_eq!(obsolete[0], loaded_inner);
+        assert!(obsolete.len() >= 2, "the tree holds Inner's class side");
+        assert!(!obsolete.contains(&loaded_outer));
+        image.interpreter.collect_now();
+        image.interpreter.enter(|mutator| {
+            assert!(
+                mutator.heap.mixin(loaded_inner).is_some(),
+                "a root still reaches Inner"
+            );
+        });
+        image.roots.clear();
+        image.interpreter.collect_now();
+        image.interpreter.collect_now();
+        image.interpreter.enter(|mutator| {
+            for id in &obsolete {
+                assert!(
+                    mutator.heap.mixin(*id).is_none(),
+                    "an obsolete row is freed"
+                );
+            }
+            assert!(
+                mutator.heap.mixin(loaded_outer).is_some(),
+                "the module stays"
+            );
+        });
     }
 
     /// A subclass in another module of a removed class, and a class nested
