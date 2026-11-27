@@ -49,10 +49,49 @@ impl SendKind {
 /// borrow the mutator: where it stands, its key and its target.
 struct Recorded {
     place: String,
+    source: Source,
     guard: DispatchId,
     rule: CacheRule,
     selector: Symbol,
     target: Target,
+}
+
+/// Where an entry stands.
+#[derive(Clone, Copy)]
+enum Source {
+    Site,
+    PolymorphicSlot,
+    Global,
+}
+
+/// How many entries the check compared with a lookup, by where they stand
+/// and by the rule they were recorded under: what a test reads to see that
+/// no kind of entry is always skipped.
+#[derive(Default, Debug)]
+pub(super) struct Compared {
+    pub(super) sites: usize,
+    pub(super) polymorphic_slots: usize,
+    pub(super) global_entries: usize,
+    pub(super) public: usize,
+    pub(super) lexical: usize,
+    pub(super) private: usize,
+    pub(super) super_sends: usize,
+}
+
+impl Compared {
+    fn count(&mut self, recorded: &Recorded) {
+        match recorded.source {
+            Source::Site => self.sites += 1,
+            Source::PolymorphicSlot => self.polymorphic_slots += 1,
+            Source::Global => self.global_entries += 1,
+        }
+        match recorded.rule {
+            CacheRule::Public => self.public += 1,
+            CacheRule::Lexical(_) => self.lexical += 1,
+            CacheRule::LexicalPrivate => self.private += 1,
+            CacheRule::Super => self.super_sends += 1,
+        }
+    }
 }
 
 /// One live receiver of each dispatch id and one class object of each
@@ -111,16 +150,50 @@ impl InlineCaches {
             let mut pending: Vec<Rc<CompiledCode>> = vec![Rc::clone(&family.code)];
             while let Some(body) = pending.pop() {
                 for instruction in &body.instructions() {
-                    if let Instruction::MakeClosure { code: block, .. } = instruction {
-                        pending.push(Rc::clone(block));
-                    }
+                    // No `_` arm, so that a new cached send must say which
+                    // rule its entries are recorded under.
                     let kind = match instruction {
                         Instruction::SendPublic { .. } | Instruction::SendInlinable { .. } => {
                             SendKind::Public
                         }
                         Instruction::SendLexical { .. } => SendKind::Lexical,
                         Instruction::SendSuper { .. } => SendKind::Super,
-                        _ => continue,
+                        Instruction::MakeClosure { code: block, .. } => {
+                            pending.push(Rc::clone(block));
+                            continue;
+                        }
+                        Instruction::SendMirror { .. }
+                        | Instruction::InitializeSuperclass { .. }
+                        | Instruction::InitializeAppliedLevel { .. }
+                        | Instruction::CheckAppliedClause { .. }
+                        | Instruction::LoadLiteral { .. }
+                        | Instruction::LoadSelf { .. }
+                        | Instruction::LoadEnclosingObject { .. }
+                        | Instruction::Move { .. }
+                        | Instruction::StoreLocal { .. }
+                        | Instruction::LoadOuterLocal { .. }
+                        | Instruction::StoreOuterLocal { .. }
+                        | Instruction::MakeArray { .. }
+                        | Instruction::MakeVector { .. }
+                        | Instruction::LoadVector { .. }
+                        | Instruction::StoreVector { .. }
+                        | Instruction::InitializeSlot { .. }
+                        | Instruction::ReturnSlotIfFilled { .. }
+                        | Instruction::MakeFuture { .. }
+                        | Instruction::ResolveFuture { .. }
+                        | Instruction::LoadOwnSlot { .. }
+                        | Instruction::InitializeSlotProvisionally { .. }
+                        | Instruction::Return { .. }
+                        | Instruction::ImplicitReturn { .. }
+                        | Instruction::NonLocalReturn { .. }
+                        | Instruction::SignalNonBoolean { .. }
+                        | Instruction::Jump { .. }
+                        | Instruction::JumpIfNotBoolean { .. }
+                        | Instruction::BranchIfFalse { .. }
+                        | Instruction::BranchIfTrue { .. }
+                        | Instruction::IntegerBinary { .. }
+                        | Instruction::AllocateInstance { .. }
+                        | Instruction::InitializeInstance { .. } => continue,
                     };
                     let (Some(site), Some((selector, _))) =
                         (instruction.call_site(), instruction.sent_message())
@@ -156,9 +229,14 @@ impl InlineCaches {
             SendKind::Lexical if target.site_privacy() == Some(true) => CacheRule::LexicalPrivate,
             SendKind::Lexical => CacheRule::Lexical(DispatchId::NONE),
         };
-        let mut push = |place: String, entry: &CacheEntry, selector: Symbol, kind: SendKind| {
+        let mut push = |place: String,
+                        source: Source,
+                        entry: &CacheEntry,
+                        selector: Symbol,
+                        kind: SendKind| {
             recorded.push(Recorded {
                 place,
+                source,
                 guard: entry.guard,
                 rule: rule_of(kind, &entry.target),
                 selector,
@@ -187,11 +265,17 @@ impl InlineCaches {
                         .enumerate()
                     {
                         if !matches!(slot.target, Target::Vacant) {
-                            push(site(Some(position)), slot, selector, kind);
+                            push(
+                                site(Some(position)),
+                                Source::PolymorphicSlot,
+                                slot,
+                                selector,
+                                kind,
+                            );
                         }
                     }
                 }
-                _ => push(site(None), entry, selector, kind),
+                _ => push(site(None), Source::Site, entry, selector, kind),
             }
         }
         for (index, entry) in self.global.entries.iter().enumerate() {
@@ -203,6 +287,7 @@ impl InlineCaches {
                     "global entry {index}, #{} under {:?},",
                     entry.selector, entry.rule
                 ),
+                source: Source::Global,
                 guard: entry.guard,
                 rule: entry.rule,
                 selector: entry.selector,
@@ -221,9 +306,18 @@ impl<'gc> Mutator<'gc> {
     /// commit (`Mutator::commit_install`). It calls the lookups alone and
     /// leaves every cache as it found it.
     pub(crate) fn verify_caches_against_lookups(&mut self) -> Result<(), String> {
+        self.compare_caches_with_lookups().map(|_| ())
+    }
+
+    /// `verify_caches_against_lookups`, answering how many entries of
+    /// each kind it compared.
+    pub(super) fn compare_caches_with_lookups(&mut self) -> Result<Compared, String> {
         let receivers = Receivers::walk(self);
+        let mut compared = Compared::default();
         for recorded in self.caches.recorded_entries() {
-            self.verify_entry(&receivers, &recorded)?;
+            if self.verify_entry(&receivers, &recorded)? {
+                compared.count(&recorded);
+            }
         }
         if let Some((guard, level)) = self.caches.verified_slot_level
             && let Some(receiver) = receivers.by_guard.get(&guard)
@@ -236,34 +330,35 @@ impl<'gc> Mutator<'gc> {
                 guard.bits()
             ));
         }
-        Ok(())
+        Ok(compared)
     }
 
-    /// `recorded` against a fresh lookup for its key; nothing for a key
-    /// no live object has, which no send can present.
+    /// `recorded` against a fresh lookup for its key, answering whether it
+    /// was compared: not for a key no live object has, which no send can
+    /// present.
     fn verify_entry(
         &mut self,
         receivers: &Receivers<'gc>,
         recorded: &Recorded,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let guard = recorded.guard;
         let class_of_id = |id: DispatchId| receivers.classes.get(&id).copied();
         let (receiver, lexical_class, superclass) = match recorded.rule {
             CacheRule::Public => {
                 let Some(receiver) = receivers.by_guard.get(&guard) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 (*receiver, None, None)
             }
             CacheRule::Lexical(lexical_id) => {
                 let Some(receiver) = receivers.by_guard.get(&guard) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let lexical_class = if lexical_id == DispatchId::NONE {
                     None
                 } else {
                     let Some(lexical_class) = class_of_id(lexical_id) else {
-                        return Ok(());
+                        return Ok(false);
                     };
                     Some(lexical_class)
                 };
@@ -273,13 +368,13 @@ impl<'gc> Mutator<'gc> {
             // where N no longer has the member, which the chain then tells.
             CacheRule::LexicalPrivate => {
                 let Some(lexical_class) = class_of_id(guard) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 (Value::object(lexical_class), Some(lexical_class), None)
             }
             CacheRule::Super => {
                 let Some(superclass) = class_of_id(guard) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 (Value::object(superclass), None, Some(superclass))
             }
@@ -306,7 +401,7 @@ impl<'gc> Mutator<'gc> {
         if self.target_agrees(&recorded.target, &resolved, key)
             && self.recorded_guard_holds(receivers, &recorded.target)
         {
-            return Ok(());
+            return Ok(true);
         }
         Err(format!(
             "{} caches {} where the lookup decides {}",
@@ -552,7 +647,8 @@ mod tests {
         }
     }
 
-    /// `Edited` and `Untouched`, each sent `value` by `warm:and:`; a
+    /// `Edited` and `Untouched`, each sent `value` by `warm:and:`, and
+    /// both by the one site of `poly:`, which so goes polymorphic; a
     /// subclass and a `<:` level over `Edited`, each sent `value` by
     /// `warmLevels`, which also sends `new` to every class; a lexical send
     /// of `Edited`'s `helper` from its nested `Deep`, a `super` send from
@@ -577,8 +673,11 @@ mod tests {
           public warm: edited and: untouched = (
             edited value.
             untouched value.
+            self poly: edited.
+            self poly: untouched.
             ^0
           )
+          public poly: receiver = ( ^receiver value )
           public warmLevels = (
             Sub new value.
             Mixed new value.
@@ -653,52 +752,105 @@ mod tests {
         }
     }
 
-    /// The site of `warm:and:` sending `value` to `Edited`'s instance,
-    /// and the one sending it to `Untouched`'s.
-    fn value_sites(mutator: &Mutator<'_>, program: &crate::Root) -> (usize, usize) {
+    /// The sites of `Program`'s `method` sending `value`, in emission
+    /// order.
+    fn value_sites(mutator: &Mutator<'_>, program: &crate::Root, method: &str) -> Vec<usize> {
         let program_class = mutator.class_of(mutator.fetch(program));
         let code = mutator
             .heap
             .class_application(program_class)
             .expect("applied")
             .mixin
-            .compiled_method(Symbol::intern("warm:and:"))
-            .expect("Program has warm:and:")
+            .compiled_method(Symbol::intern(method))
+            .expect("Program has the method")
             .code
             .clone();
-        let sites = mutator
+        mutator
             .caches
-            .site_indices_of(&code, Symbol::intern("value"));
-        (sites[0].expect("warmed"), sites[1].expect("warmed"))
+            .site_indices_of(&code, Symbol::intern("value"))
+            .into_iter()
+            .map(|site| site.expect("warmed"))
+            .collect()
+    }
+
+    /// The check's report, which must find a stale entry.
+    fn problem_found(mutator: &mut Mutator<'_>) -> String {
+        let problem = mutator
+            .verify_caches_against_lookups()
+            .expect_err("the stale entry is found");
+        assert!(problem.contains("where the lookup decides"), "{problem}");
+        problem
     }
 
     /// An entry that is not what the lookup decides for its key -- here
-    /// `Untouched>>value` under `Edited`'s guard -- is reported with its
-    /// site, where the warm caches it was written into passed.
+    /// `Untouched>>value` under `Edited`'s guard, written in turn into a
+    /// monomorphic site, a polymorphic slot and a global entry -- is
+    /// reported with its place, where the warm caches it was written into
+    /// passed.
     // spec: vm.dispatch.cache-records-lookup
     #[test]
     fn a_stale_entry_is_reported() {
-        let (mut interpreter, program, _, _) = warmed();
+        let (mut interpreter, program, edited, _) = warmed();
         interpreter.enter(|mutator| {
             assert_eq!(mutator.verify_caches_against_lookups(), Ok(()));
-            let (edited_site, untouched_site) = value_sites(mutator, &program);
+            let warm_sites = value_sites(mutator, &program, "warm:and:");
+            let (edited_site, untouched_site) = (warm_sites[0], warm_sites[1]);
             let wrong = mutator.caches.sites[untouched_site].target.clone();
-            mutator.caches.sites[edited_site].target = wrong;
-            let problem = mutator
-                .verify_caches_against_lookups()
-                .expect_err("the stale entry is found");
+
+            let kept =
+                std::mem::replace(&mut mutator.caches.sites[edited_site].target, wrong.clone());
+            let problem = problem_found(mutator);
             assert!(
                 problem.starts_with(&format!("site {edited_site}, a public send of #value,")),
                 "{problem}"
             );
-            assert!(problem.contains("where the lookup decides"), "{problem}");
+            mutator.caches.sites[edited_site].target = kept;
+            assert_eq!(mutator.verify_caches_against_lookups(), Ok(()));
+
+            let poly_site = value_sites(mutator, &program, "poly:")[0];
+            let Target::Polymorphic { block, .. } = mutator.caches.sites[poly_site].target else {
+                panic!("poly:'s site is polymorphic");
+            };
+            let slots = &mut mutator.caches.pool[block as usize];
+            assert!(matches!(slots[0].target, Target::Method { .. }));
+            let other = slots[1].target.clone();
+            let kept = std::mem::replace(&mut slots[0].target, other);
+            let problem = problem_found(mutator);
+            assert!(
+                problem.starts_with(&format!(
+                    "slot 0 of site {poly_site}, a public send of #value,"
+                )),
+                "{problem}"
+            );
+            mutator.caches.pool[block as usize][0].target = kept;
+            assert_eq!(mutator.verify_caches_against_lookups(), Ok(()));
+
+            let edited_guard = mutator.heap.dispatch_id(mutator.fetch(&edited));
+            let global = mutator
+                .caches
+                .global
+                .entries
+                .iter()
+                .position(|entry| {
+                    !entry.is_vacant()
+                        && entry.guard == edited_guard
+                        && entry.selector == Symbol::intern("value")
+                        && entry.rule == CacheRule::Public
+                })
+                .expect("Edited's value is in the global cache");
+            mutator.caches.global.entries[global].target = wrong;
+            let problem = problem_found(mutator);
+            assert!(
+                problem.starts_with(&format!("global entry {global}, #value under Public,")),
+                "{problem}"
+            );
         });
     }
 
     /// After an install the caches kept, and those the program fills
     /// again, are what the lookups decide -- the install stress mode's
-    /// own check at the commit among them -- and the check changes no
-    /// cache.
+    /// own check at the commit among them -- every kind of entry compared,
+    /// and the check changes no cache.
     // spec: vm.dispatch.cache-records-lookup
     // spec: vm.dispatch.invalidation-after-change
     #[test]
@@ -731,7 +883,22 @@ mod tests {
         interpreter.enter(|mutator| {
             let before = mutator.caches.statistics();
             assert!(before.filled_sites > 0, "the caches are warm");
-            assert_eq!(mutator.verify_caches_against_lookups(), Ok(()));
+            let compared = match mutator.compare_caches_with_lookups() {
+                Ok(compared) => compared,
+                Err(problem) => panic!("a stale entry after the install: {problem}"),
+            };
+            // Every kind of entry was compared, none always skipped.
+            for (kind, count) in [
+                ("site", compared.sites),
+                ("polymorphic slot", compared.polymorphic_slots),
+                ("global entry", compared.global_entries),
+                ("public", compared.public),
+                ("lexical", compared.lexical),
+                ("private lexical", compared.private),
+                ("super", compared.super_sends),
+            ] {
+                assert!(count > 0, "no {kind} entry was compared: {compared:?}");
+            }
             assert_eq!(
                 mutator.caches.statistics(),
                 before,

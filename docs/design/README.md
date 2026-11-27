@@ -598,7 +598,7 @@ its own, so cheap inputs share one. What bounds the suite's wall time is
 the longest test that cannot be split: the compilations of a body past the
 register ceiling, a few seconds each in a debug build.
 
-The invocations above are Git Bash syntax; the fifteen stress modes do
+The invocations above are Git Bash syntax; the sixteen stress modes do
 anything only in a debug build, `NS_NEXT_NO_JIT` in every
 build ([memory.md](memory.md), "The move stress mode", "The gates the collector needs", "Generations";
 [dispatch.md](dispatch.md), "Invalidation"; [execution.md](execution.md),
