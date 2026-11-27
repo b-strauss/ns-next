@@ -1,9 +1,9 @@
 /// A module declared from source without `:module:` is named by its
 /// class, without a version: its header holds no metadata, a second
 /// module of that name is refused with the loader's message, which names
-/// a module without a path by its id, and so is a module of the name of
-/// the program's own module, which declares no `:module:` either and is
-/// named by its path.
+/// a module without a path as one declared from source, and so is a
+/// module of the name of the program's own module, which declares no
+/// `:module:` either and is named by its path.
 class AModuleFromSourceWithoutMetadataIsNamedByItsClass = Object new () (
   outcome: action = (
     ^[

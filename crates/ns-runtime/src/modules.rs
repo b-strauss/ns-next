@@ -355,12 +355,12 @@ impl ModuleIdentity {
         }
     }
 
-    /// How a message names the module: by its path, or, without one, by
-    /// its `display_name`, the one name such a module has.
+    /// How a message names the module beside its id: by its path, or,
+    /// without one, as what it is, since the message names the id already.
     pub fn described(&self) -> String {
         match &self.path {
             Some(path) => path.clone(),
-            None => self.display_name(),
+            None => PATHLESS_MODULE.to_string(),
         }
     }
 
@@ -372,6 +372,10 @@ impl ModuleIdentity {
         }
     }
 }
+
+/// How a message names a module without a path, one a program declared
+/// from source (`ModuleIdentity::described`).
+pub const PATHLESS_MODULE: &str = "a module declared from source";
 
 /// The tag of the metadata that declares a module's id and version.
 pub const MODULE_TAG: &str = "module";
@@ -444,7 +448,7 @@ pub fn check_unreserved(id: &ModuleId) -> Result<(), String> {
 /// Refuses two modules no request could pick between (decision 5): two of
 /// one id and one version, and two of one id where either has no version.
 /// Names the first such pair in the order given, the earlier module first,
-/// by their paths, a module without one by its `display_name`. Linear in the count, each id's modules grouped as they
+/// by their paths, a module without one as `PATHLESS_MODULE`. Linear in the count, each id's modules grouped as they
 /// come, since an image's module section is input of any size.
 pub fn check_distinct<'identity>(
     identities: impl IntoIterator<Item = &'identity ModuleIdentity>,

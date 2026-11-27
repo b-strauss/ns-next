@@ -1,7 +1,7 @@
 rules = ["semantics.reflection.atomic-install", "runtime.install.module", "semantics.module.identity"]
 stdout = '''
 Plain [class Plain = Object new () ]
-two modules are `Plain` and one of them has no version: Plain and Plain
-two modules are `AModuleFromSourceWithoutMetadataIsNamedByItsClass` and one of them has no version: a_module_from_source_without_metadata_is_named_by_its_class.ns and AModuleFromSourceWithoutMetadataIsNamedByItsClass
+two modules are `Plain` and one of them has no version: a module declared from source and a module declared from source
+two modules are `AModuleFromSourceWithoutMetadataIsNamedByItsClass` and one of them has no version: a_module_from_source_without_metadata_is_named_by_its_class.ns and a module declared from source
 declared
 '''

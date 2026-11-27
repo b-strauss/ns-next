@@ -4,7 +4,7 @@
 /// class's name, and one in the namespace `newspeak.`. A version no other
 /// module has installs. Two builders of one identity each pass their own
 /// check, but once the first is installed the second's install is
-/// refused, both modules named by their ids for want of a path.
+/// refused, both named "a module declared from source" for want of a path.
 (* :module: com.acme.AModuleFromSourceWithATakenIdentityIsRefused@1.0.0 *)
 class AModuleFromSourceWithATakenIdentityIsRefused = Object new () (
   outcome: action = (

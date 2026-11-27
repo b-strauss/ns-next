@@ -889,10 +889,19 @@ fn declaration_texts(
 }
 
 /// The diagnostic of a module text `ns_syntax::parse` refused with
-/// `diagnostics`: a text whose part before its first error is a whole
+/// `diagnostics`: a text that writes no `class` at all -- an empty one, a
+/// comment alone -- and one whose part before its first error is a whole
 /// module -- a class declaration followed by a second one, or by a member
-/// -- is not one class declaration; any other does not parse.
+/// -- are not one class declaration; any other does not parse.
 fn source_module_parse_refusal(text: &str, diagnostics: &[ns_syntax::Diagnostic]) -> String {
+    let declares_no_class = ns_syntax::lex(text).is_ok_and(|tokens| {
+        tokens
+            .iter()
+            .all(|token| token.kind != ns_syntax::TokenKind::Class)
+    });
+    if declares_no_class {
+        return "fromSource: takes one class declaration".to_string();
+    }
     let first_error = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == ns_syntax::Severity::Error)

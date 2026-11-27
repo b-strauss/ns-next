@@ -1598,8 +1598,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals Error with the loader's message, for a builder from source
     /// whose module's id and version another module of the world has
     /// declared since `fromSource:` -- 'two modules are `<id>@<version>`:
-    /// <path> and <id>@<version>' -- or its id where either has no version,
-    /// the module from source named by its id for want of a path.
+    /// <path> and a module declared from source' -- or its id where either
+    /// has no version, a module without a path named 'a module declared
+    /// from source'.
     /// @see `Mirrors>>installAtomically:` and `fromSource:`.
     public install = (
       (Installer builders: {self}) install.
@@ -1802,16 +1803,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param aString the module's text, after `asString` a String.
     /// @answers a new ClassDeclarationBuilder over the module.
     /// @signals Error with the VM's diagnostic, declaring nothing: 'fromSource:
-    /// takes one class declaration' for a text of none or of more, or of a
+    /// takes one class declaration' for a text of none -- an empty one, a
+    /// comment alone -- or of more, or of a
     /// member after the class; 'the module's source does not parse:
     /// <message> (line <n>)' and 'the module's source does not resolve:
     /// <message> (line <n>)'; and the loader's own messages for a
     /// `:module:` it refuses -- an id not ending in the class's name, a
     /// malformed version, an id in the namespace `newspeak.` -- and for an
     /// id and version another module of the world has, or an id another
-    /// has where either has no version, the module from source named by
-    /// its id: 'two modules are `<id>@<version>`: <path> and
-    /// <id>@<version>'.
+    /// has where either has no version, a module without a path named 'a
+    /// module declared from source': 'two modules are `<id>@<version>`:
+    /// <path> and a module declared from source'.
     /// @signals Error 'a MirrorBuilder takes a member or a header as a
     /// String and a name as a Symbol' when `aString asString` is no String.
     /// @see `install` and `declaration`.

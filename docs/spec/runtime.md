@@ -377,8 +377,8 @@ r[runtime.install.module]
 `ClassDeclarationBuilder fromSource:` given a module's text checks it as
 the install would, and the builder's install declares the module:
 
-1. If the text is not one class declaration -- none, two, or one followed
-   by a member -- signal `fromSource: takes one class declaration`; if it
+1. If the text is not one class declaration -- none, as an empty text or
+   a comment alone, two, or one followed by a member -- signal `fromSource: takes one class declaration`; if it
    does not parse, signal `the module's source does not parse: <message>
    (line <n>)`; if it does not resolve, signal `the module's source does
    not resolve: <message> (line <n>)`; and change nothing.
@@ -388,17 +388,19 @@ the install would, and the builder's install declares the module:
    malformed declaration and an id under `newspeak.` signal the loader's
    message; so do an id and version another module of the world or of the
    same install has, or an id another has where either has no version,
-   the module without a path named by its id: ``two modules are
-   `com.acme.Util@1.0.0`: v1/Util.ns and com.acme.Util@1.0.0``. Either way
+   a module without a path named `a module declared from source`: ``two
+   modules are `com.acme.Util@1.0.0`: v1/Util.ns and a module declared
+   from source``. Either way
    nothing changes.
 3. The commit makes the module one of the world's, its text, every
    character of it, its current text, and the builder stands for its
    declaration from then on; it moves the install epoch, as a module's load
    does. The manifest a program holds does not answer it.
 
-Before its install the builder stages nothing: its sides and its header
-signal `a ClassDeclarationBuilder from source stages nothing before its
-install`, and its declaration is `nil`.
+Before its install the builder stages nothing: reading either of its
+sides, or staging a new header or name through its header, signals `a
+ClassDeclarationBuilder from source stages nothing before its install`;
+its header's `source` answers `nil`, and so does its declaration.
 
 ## Capabilities and limits
 

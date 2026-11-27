@@ -261,8 +261,8 @@ impl<'gc> Mutator<'gc> {
     /// the modules the install declares from source, likewise: two of one
     /// id and one version, or two of one id where either has none, with
     /// the loader's message naming both paths, earlier row first and the
-    /// modules from source last, in entry order, each named by its id for
-    /// want of a path. Only the ids an install changes or adds are
+    /// modules from source last, in entry order, each named as
+    /// `modules::PATHLESS_MODULE` for want of a path. Only the ids an install changes or adds are
     /// compared, so an install never answers for a pair of modules it did
     /// not touch.
     pub(super) fn refuse_a_colliding_identity(
@@ -3904,6 +3904,13 @@ mod tests {
             refusal(&mut interpreter, "class A = () ()\npublic b = ( ^1 )\n"),
             "fromSource: takes one class declaration"
         );
+        for no_class in ["", "  \n", "/// A comment alone.\n", "3"] {
+            assert_eq!(
+                refusal(&mut interpreter, no_class),
+                "fromSource: takes one class declaration",
+                "{no_class:?}"
+            );
+        }
         let unparsed = refusal(&mut interpreter, "class A = (");
         assert!(
             unparsed.starts_with("the module's source does not parse: "),
@@ -3937,7 +3944,8 @@ mod tests {
 
     /// A module from source whose id and version another module of the
     /// world has, or another module of the same install, is refused with
-    /// the loader's message, the module without a path named by its id;
+    /// the loader's message, the module without a path named as one
+    /// declared from source;
     /// one of another version installs.
     // spec: runtime.install.module
     #[test]
@@ -3956,12 +3964,13 @@ mod tests {
         );
         assert_eq!(
             module_refusal(&mut interpreter, &[taken]),
-            "two modules are `com.acme.Util@1.0.0`: v1/Util.ns and com.acme.Util@1.0.0"
+            "two modules are `com.acme.Util@1.0.0`: v1/Util.ns and a module declared from source"
         );
         let fresh = InstallEntry::Module("class Fresh = Object new () ()".to_string());
         assert_eq!(
             module_refusal(&mut interpreter, &[fresh.clone(), fresh]),
-            "two modules are `Fresh` and one of them has no version: Fresh and Fresh"
+            "two modules are `Fresh` and one of them has no version: a module declared from \
+             source and a module declared from source"
         );
         let other = InstallEntry::Module(
             "(* :module: com.acme.Util@2.0.0 *)\nclass Util = Object new () ()".to_string(),
@@ -4036,5 +4045,63 @@ mod tests {
         let instance = expect_ok(image.interpreter.instantiate(&class, &[]), "a Fresh");
         let answer = send(&mut image.interpreter, &instance, "answer");
         assert_eq!(integer(&mut image.interpreter, &answer), Some(42));
+    }
+
+    /// A module from source lives while its reified mixin lives, and once
+    /// nothing reaches it a full collection frees its tree of ids: the
+    /// world no longer lists it, and a module of the same identity installs
+    /// again.
+    // spec: runtime.install.module
+    #[test]
+    fn an_unreferenced_module_from_source_is_reclaimed() {
+        let mut interpreter = Interpreter::bootstrap();
+        let entries = [InstallEntry::Module(FRESH.to_string())];
+        let module = module_of(&installed(&mut interpreter, &entries)[0]);
+        let is_listed = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                mutator
+                    .heap
+                    .module_identities()
+                    .iter()
+                    .any(|identity| identity.display_name() == "com.acme.Fresh@1.0.0")
+            })
+        };
+        let (ids, reified) = interpreter.enter(|mutator| {
+            let root = mutator.heap.known_mixin_id(&module).expect("registered");
+            let nested: Vec<MixinId> = mutator
+                .heap
+                .nested_mixins(&module)
+                .iter()
+                .filter_map(|nested| mutator.heap.known_mixin_id(nested))
+                .collect();
+            let reified = mutator.reified_mixin(&module);
+            let reified = mutator.stash(Value::object(reified));
+            (
+                std::iter::once(root).chain(nested).collect::<Vec<_>>(),
+                reified,
+            )
+        });
+        assert_eq!(ids.len(), 2, "the root and Inner");
+        // Every Rust-side holder of a version goes: one would keep the tree.
+        drop(module);
+        interpreter.collect_now();
+        assert!(is_listed(&mut interpreter), "the reified mixin keeps it");
+        drop(reified);
+        interpreter.collect_now();
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            for id in &ids {
+                assert!(mutator.heap.mixin(*id).is_none(), "its ids are freed");
+            }
+        });
+        assert!(!is_listed(&mut interpreter));
+        let again = module_of(&installed(&mut interpreter, &entries)[0]);
+        assert_eq!(
+            again
+                .module_identity
+                .as_ref()
+                .map(|identity| identity.display_name()),
+            Some("com.acme.Fresh@1.0.0".to_string())
+        );
     }
 }
