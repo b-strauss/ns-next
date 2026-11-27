@@ -1393,7 +1393,7 @@ and held, as every value is. The heap's accessors
 alone describe a value (`r[vm.heap.stop-runs-no-code]`).
 
 An instance's fields are named from the layout of its class's application
-(`values.rs`'s `field_labels`, over `MixinApplication::field_layout`, the
+(`values.rs`'s `field_labels`, over `MixinApplication::checked_field_layout` and `lay_out_fields`, the
 one walk of the layout, which an install copies fields by too;
 `object-model.md`, "Mixin application"): each level of the chain, from the
 root, lays its own slots down at its slot base in declaration order, then

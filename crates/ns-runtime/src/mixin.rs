@@ -1727,7 +1727,9 @@ pub(crate) fn lay_out_fields<'a>(
     fields
 }
 
-/// One field of an instance's layout (`MixinApplication::field_layout`).
+/// One field of an instance's layout (`lay_out_fields`, through
+/// `MixinApplication::checked_field_layout` or
+/// `Mutator::field_names_of_class`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LaidOutField {
     pub(crate) name: FieldName,
