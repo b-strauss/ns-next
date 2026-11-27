@@ -467,7 +467,7 @@ image, the bounds of a load and the operations that load and write one
 of the other parts false without a program seeing why, each `vm.*` rule
 saying what it protects and what finds its breach -- tests, the
 chapter's table of detectors (the stress modes, a debug build's checks,
-the Rust compiler's) or an `Undetected:` line with the reason --, each
+the Rust compiler's) or an `Undetected:` line with the reason; each
 normative rule preceded by an identifier line
 `r[lex.comment.line]`, and an appendix of the differences from Bracha's
 Newspeak -- the ones adopted as ns-next's own rules and the gaps, the
@@ -574,12 +574,16 @@ raises when it runs (`Literal::UnresolvedIdentifier`, `Literal::BodyTooLarge`,
 **An expression's value register must still hold that value when its consumer
 executes.** A named local's register is live storage, which `lower_operand`
 and an assignment through a setter copy whenever something lowered afterwards
-can write it -- a question about the register (`a_send_can_write(register)`),
-not the send -- while parameters and immutable locals are never copied
-(`ScopeStack::resolve_setter`, `lower_assign`'s `debug_assert!`s against
-`read_only_locals`). Getting it wrong is silent wrong output at exit status 0
-(`r[vm.compiler.value-register]`, `r[vm.compiler.read-only-locals]`,
-`r[vm.compiler.simultaneous-temporary-writable]`; `execution.md`, "Fewer
+can write it -- including a setter send that runs user code before the very
+next instruction. Whether something can is a question about the register
+(`a_send_can_write(register)`), not the send: only an assignment in the same
+body, inlined blocks included, and the fallback closure of an inlinable
+conditional that assigns the local can, and parameters and immutable locals
+are never copied (`ScopeStack::resolve_setter`, `lower_assign`'s
+`debug_assert!`s against `read_only_locals`). Getting it wrong is silent wrong
+output at exit status 0 (`r[vm.compiler.value-register]`,
+`r[vm.compiler.read-only-locals]`, `r[vm.compiler.simultaneous-temporary-writable]`,
+`r[vm.compiler.fallback-closure-by-reference]`; `execution.md`, "Fewer
 protective copies").
 
 **A register a frame does not read before it writes it is dead, and only
@@ -593,6 +597,7 @@ in `bytecode.rs`'s exhaustive matches (`registers_read`, `register_written`,
 `jump_target`, `falls_through`, `successors`, `Instruction::argument_slots`,
 `Instruction::sent_message`), or the analysis misjudges it
 (`r[vm.activation.dead-registers-nilled]`, `r[vm.activation.top-at-window-end]`,
+`r[vm.activation.suspension-copies-registers]`,
 `r[vm.compiler.register-effects-declared]`,
 `r[vm.compiler.argument-slots-top-live-registers]`,
 `r[bytecode.register.leftovers]`, `r[bytecode.register-effects]`,
@@ -624,10 +629,12 @@ same decision and calls `Heap::remember` through a leaf.** A scavenge reads
 only the young objects and the remembered old ones, so a store into an old
 object any other way leaves the young object it names unreachable --
 moved or reclaimed, silently, at exit status 0. Only an initializing store
-into an object just allocated (which is why every old allocation outside the
-image decoder is born remembered), the collector's own rewrites, the bulk
-forward behind `become:` (`Heap::forward_identity`) and the replacement of
-resolved futures write words without it (`r[vm.heap.barrier]`,
+into an object just allocated skips the barrier, which is why every old
+allocation outside the image decoder is born remembered; besides those, only
+the collector's own rewrites and the bulk forward behind `become:`
+(`Heap::forward_identity`), which keep the remembered set themselves, and the
+replacement of resolved futures, which runs only before a full collection
+empties the nursery, write words without it (`r[vm.heap.barrier]`,
 `r[vm.heap.frame-copies-remembered]`, `r[vm.heap.old-allocations-born-remembered]`,
 `r[vm.heap.remembered-set-exact]`, `r[vm.heap.bulk-forward-atomic]`,
 `r[vm.heap.resolved-future-replaced-in-fields]`; `memory.md`, "Generations").
@@ -763,27 +770,35 @@ instead, never the clause's message (`r[semantics.mixin.clause-order]`,
 shipped core-library modules reach it (`r[runtime.vm-mirror]`; `core-library.md`,
 "The VM mirror is the whole Rust boundary"). Never loosen one of the locks that
 keep it there, and never add a way for a program to obtain the mirror, its class
-or a `MirrorSend` binding: only `resolver::resolve_kernel` records
-`Binding::MirrorSend`, and an edit resolves with `resolve`
-(`r[vm.mirror.binding-only-in-shipped-resolution]`); every shipped module's
-mirror slot is checked before its instance is recorded -- at boot, by
-`recordShippedModule:` or by the loader -- and no program reaches a shipped
-root (`r[vm.mirror.slot-checked-before-recording]`,
-`r[vm.mirror.one-instance-per-shipped-module]`, `r[vm.mirror.root-instance-unreachable]`,
-`r[vm.mirror.facet-classes-private]`); the mirror's class and `Top` have no name
-a program can write, and the factory body's allocation
-(`instantiate::allocate_for_factory`) refuses the mirror's class
-(`r[vm.mirror.class-unnameable]`, `r[vm.mirror.not-instantiable]`); the encoder
-names a shipped object by its declaration (`image/shipped_names.rs`) and refuses
-a graph reaching the mirror, its class, `Top` or their metaclasses, the decoder
-refuses a shipped name where the position rule forbids it, and `SendMirror` has
-no wire tag (`r[image.verify.mirror]`, `r[image.shipped.positions]`,
-`r[image.write.refusals]`, `r[vm.mirror.no-wire-tag]`); the bulk-forward leaf
-refuses the mirror, every withheld value and every builtin or shipped instance
-on either side (`builtins/reflection.rs`'s `may_be_forwarded`;
-`r[vm.mirror.forward-refuses-shipped]`, `r[runtime.forward-identity]`); and the
-MirrorBuilder refuses every edit to a shipped mixin, in `asBuilder` and again in
-`interpreter/edit.rs`'s `prepare_edit` (`r[vm.mirror.shipped-mixins-never-edited]`).
+or a `MirrorSend` binding:
+
+- Only `resolver::resolve_kernel` records `Binding::MirrorSend`, and only the
+  shipped modules are resolved with it; an edit resolves with `resolve`
+  (`r[vm.mirror.binding-only-in-shipped-resolution]`).
+- Every shipped module's mirror slot is checked before its instance is
+  recorded -- at boot, by `recordShippedModule:` or by the loader -- so no
+  program reaches a shipped root, nor the mirror or the kernel instance as the
+  argument of a send its receiver may not understand
+  (`r[vm.mirror.slot-checked-before-recording]`,
+  `r[vm.mirror.one-instance-per-shipped-module]`,
+  `r[vm.mirror.root-instance-unreachable]`, `r[vm.mirror.facet-classes-private]`).
+- The mirror's class has no declaration and so no name, no program can name
+  `Top`, and the factory body's allocation (`instantiate::allocate_for_factory`)
+  refuses the mirror's class (`r[vm.mirror.class-unnameable]`,
+  `r[vm.mirror.not-instantiable]`).
+- The encoder names a shipped object by its declaration
+  (`image/shipped_names.rs`) and refuses a graph reaching the mirror, its class,
+  `Top` or their metaclasses; the decoder refuses `Top`, `Activation` and every
+  other shipped name in a position the rule does not allow; and `SendMirror` has
+  no wire tag (`r[image.verify.mirror]`, `r[image.shipped.positions]`,
+  `r[image.write.refusals]`, `r[vm.mirror.no-wire-tag]`).
+- The bulk-forward leaf refuses the mirror, every withheld value and every
+  builtin or shipped instance on either side (`builtins/reflection.rs`'s
+  `may_be_forwarded`; `r[vm.mirror.forward-refuses-shipped]`,
+  `r[runtime.forward-identity]`).
+- The MirrorBuilder refuses every edit to a shipped mixin, in `asBuilder` and
+  again in `interpreter/edit.rs`'s `prepare_edit`
+  (`r[vm.mirror.shipped-mixins-never-edited]`).
 
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key, and an
@@ -845,17 +860,22 @@ carries on from any exit (`r[vm.machine.observers-after-exit]`,
   value the frame word does not hold yet -- an inlined scope's receiver and
   current class among them -- and is entered only at its prologue, just past it
   at a push, or at the entry of the poll a frame left it at, restoring what
-  `metadata::poll_restores` names; a frame that goes on mid-body otherwise goes
-  on in the baseline code (`r[vm.machine.registers-held-between-frame-nodes]`,
+  `metadata::poll_restores` names. A frame that goes on mid-body otherwise goes
+  on in the baseline code, at a send's destination or by running its
+  instruction again, never inside one, and a frame the debugger may write goes
+  on interpreted (`r[vm.machine.registers-held-between-frame-nodes]`,
   `r[vm.machine.inlined-scope-current-class]`, `r[vm.machine.exit-writes-every-scope]`,
-  `r[vm.machine.entered-only-at-entries]`, `r[vm.machine.back-into-optimized-code]`;
+  `r[vm.machine.entered-only-at-entries]`, `r[vm.machine.back-into-optimized-code]`,
+  `r[vm.machine.scope-resumes-at-boundary]`,
+  `r[vm.machine.written-frame-goes-on-interpreted]`;
   `execution.md`, "The optimizing tier's foundation", "Inlining").
 - The run loop enters machine code through `jit::entered` and `jit::resumed`
   and delivers a send through `jit::called` and `jit::called_closure`
-  (`mod.rs`); the entry block's lasting words are written only when what they
-  name changes, which marks the block stale (`JitState::mark_block_stale`), and
-  hold no handle (`r[vm.machine.entry-block-current]`,
-  `r[vm.machine.entry-returns-to-its-caller]`). A cache cell is written only
+  (`mod.rs`), and every entry returns to the native frame that made it
+  (`r[vm.machine.entry-returns-to-its-caller]`); the entry block's lasting
+  words are written only when what they name changes, which marks the block
+  stale (`JitState::mark_block_stale`), and hold no handle
+  (`r[vm.machine.entry-block-current]`). A cache cell is written only
   from its entry and the JIT's state, and a stub does what
   `Mutator::act_with_base` does for its target and nothing more
   (`r[vm.machine.cells-follow-entries]`, `r[vm.machine.stub-does-what-act-does]`).
@@ -865,7 +885,7 @@ carries on from any exit (`r[vm.machine.observers-after-exit]`,
   cleared or written afresh wherever that stops naming its machine code -- a
   stale row is a jump into another body's code
   (`r[vm.machine.machine-entry-rows]`, `r[vm.machine.dispatching-rows]`,
-  `r[vm.machine.code-ids-kept-with-code]`).
+  `r[vm.machine.code-ids-kept-with-code]`, `r[vm.machine.moved-base-frees-code]`).
 - The code zone is compacted only at the run loop's safepoint, where no return
   address into it exists, and a compaction remaps every cell, row and record
   naming an address in it; a body holds no handle and no address of its own but
@@ -994,10 +1014,11 @@ A commit that changes observable behaviour, a format or an invariant
 changes the rule for it in the specification (`docs/spec/`) in the same
 commit, for every part the book already writes -- today the lexical
 structure, the grammar, the semantics, the run-time semantics, the
-bytecode, the image format and the VM invariants. A new test names the rules it checks: a
-golden in its `.toml`, `rules = ["syntax.outer.alone"]`, a Rust test in a
-comment line `// spec: syntax.outer.alone` directly above its `#[test]`,
-or, for a test written inside `for_each_lowering!`, directly above its `fn`;
+bytecode, the image format and the VM invariants. A new test names the
+rules it checks: a golden in its `.toml`, `rules = ["syntax.outer.alone"]`,
+a Rust test in a comment line `// spec: syntax.outer.alone` directly above
+its `#[test]`, or, for a test written inside `for_each_lowering!`,
+directly above its `fn`;
 a reference to a rule the book does not declare, and a `// spec:` line
 above no test, fail the suite (`xtask/src/spec.rs`).
 
