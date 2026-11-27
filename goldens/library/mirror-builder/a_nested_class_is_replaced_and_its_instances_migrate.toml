@@ -1,0 +1,6 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.heap.migration-by-declared-name"]
+stdout = '''
+5
+true 50 nil 2
+an object does not understand #Deep
+'''

@@ -1,0 +1,41 @@
+/// A nested class an install adds may name a sibling in its superclass
+/// clause and apply a mixin through a `<:` clause: the clauses are
+/// evaluated when the class is first sent for, in the enclosing instance,
+/// and its instances inherit from both.
+class AnAddedNestedClassWithAClause = Object new () (
+  class Holder = Object new () (
+    public class Base = Object new () (
+      public base = (
+        ^'base'.
+      )
+    )
+
+    public class Trait = Object new () (
+      public trait = (
+        ^'trait'.
+      )
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+      added
+    |
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class Added = Base new <: Trait () ( public own = ( ^''own'' ) )'.
+    builder install.
+    added:: holder Added new.
+    transcript
+        show: added own;
+        show: ' ';
+        show: added trait;
+        show: ' ';
+        show: added base;
+        newLine.
+  )
+)

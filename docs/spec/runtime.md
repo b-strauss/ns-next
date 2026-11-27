@@ -272,8 +272,13 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 ([`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)).
 
 1. If two builders of the list edit one class, signal `two builders edit
-   Inner` and change nothing. If a builder's class is the core library's,
-   signal and change nothing. If a builder's header changes the class's
+   Inner` and change nothing. If a builder edits a class another builder
+   of the list removes or replaces, or one nested in it, signal `the
+   builder of Inner edits a class the builder of Outer removes` (or
+   `replaces`) and change nothing. If a builder's class is the core
+   library's, signal and change nothing; if an install removed it, or a
+   class it is nested in, signal `Inner was removed by an install, and an
+   obsolete class is not edited` and change nothing. If a builder's header changes the class's
    superclass, signal `the header changes the superclass of Inner; an
    edit keeps it` and change nothing.
 2. Prepare each module the list edits once: splice the staged edits of
@@ -291,6 +296,15 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
    signal `Inner cannot be renamed to +, which is no identifier`; if the
    enclosing class already declares a member of the new name, signal
    `Outer already has a member named Sibling`; and change nothing.
+   Nested classes are paired with the old ones by their names: a class
+   text a builder adds under a name its class declares replaces that
+   class, which keeps its identity, its class objects and its instances;
+   one under a new name is a new class; a text that is not one class
+   declaration signals `addFromSource: of Outer's nested classes takes
+   one class declaration` and changes nothing. A class no longer declared
+   is removed and lives on obsolete: its enclosing class no longer
+   understands its name, and its class objects, its instances and its
+   subclasses keep running its last version until nothing reaches them.
 3. If a root's new text declares another id or version, the module keeps
    its path, its root and its class objects and takes that identity,
    held to the loader's rules

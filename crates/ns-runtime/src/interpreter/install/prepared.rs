@@ -27,6 +27,12 @@ pub(crate) struct PreparedInstall {
     /// Every fresh synthesized class side, module by module
     /// (`PreparedModule::synthesized`).
     pub(crate) synthesized: Vec<(MixinId, MixinId, Rc<Mixin>)>,
+    /// Every nested declaration added, with the id of the declaration it
+    /// is added to, module by module (`PreparedModule::added`).
+    pub(crate) added: Vec<(MixinId, Rc<Mixin>)>,
+    /// Every nested declaration removed, module by module
+    /// (`PreparedModule::removed`).
+    pub(crate) removed: Vec<MixinId>,
     /// Each edited module's whole text, in the order the modules were
     /// first named.
     #[cfg(test)]
@@ -93,7 +99,9 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Prepares `entries` without the cache. Every entry is checked, and
-    /// two of one declaration refused, before any text is touched; then
+    /// two of one declaration refused, and so is one whose declaration,
+    /// or one it is nested in, another entry removes or replaces, before
+    /// any text is touched; then
     /// the entries are grouped by the module they edit, in the order each
     /// module is first named, and each module prepared once.
     pub(crate) fn prepare_entries(
@@ -115,6 +123,7 @@ impl<'gc> Mutator<'gc> {
                 }
             }
         }
+        self.refuse_an_edit_of_a_taken_class(&edits)?;
         // Each module with the positions of its entries, in the order the
         // modules are first named.
         let mut modules: Vec<(MixinId, Vec<usize>)> = Vec::new();
@@ -128,6 +137,8 @@ impl<'gc> Mutator<'gc> {
         let mut texts: Vec<Option<EditedTexts>> = vec![None; edits.len()];
         let mut replacements = Vec::new();
         let mut synthesized = Vec::new();
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
         #[cfg(test)]
         let mut module_texts = Vec::new();
         for (module_root, positions) in modules {
@@ -139,6 +150,8 @@ impl<'gc> Mutator<'gc> {
             }
             replacements.extend(prepared.replacements);
             synthesized.extend(prepared.synthesized);
+            added.extend(prepared.added);
+            removed.extend(prepared.removed);
             #[cfg(test)]
             module_texts.push(prepared.module_text);
         }
@@ -154,8 +167,49 @@ impl<'gc> Mutator<'gc> {
                 .collect(),
             replacements,
             synthesized,
+            added,
+            removed,
             #[cfg(test)]
             module_texts,
         })
+    }
+
+    /// Refuses `edits` when one edits a declaration another removes or
+    /// replaces, or one nested in it, in either order: the one would edit
+    /// a class the other's install no longer has, or has anew from its
+    /// text, so neither order of the two is what both builders staged.
+    fn refuse_an_edit_of_a_taken_class(&self, edits: &[(MixinId, &Edit)]) -> Result<(), String> {
+        let name = |id: MixinId| {
+            self.heap
+                .mixin(id)
+                .map_or_else(String::new, |mixin| mixin.reflected_name())
+        };
+        for (taker, (taker_id, taker_edit)) in edits.iter().enumerate() {
+            for (taken, verb) in self.classes_taken(*taker_id, taker_edit) {
+                for (position, (id, _)) in edits.iter().enumerate() {
+                    if position != taker && self.is_declared_within(*id, taken) {
+                        return Err(format!(
+                            "the builder of {} edits a class the builder of {} {verb}",
+                            name(*id),
+                            name(*taker_id)
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the declaration `id` is `ancestor` or declared in it, at
+    /// any depth.
+    fn is_declared_within(&self, id: MixinId, ancestor: MixinId) -> bool {
+        let mut current = Some(id);
+        while let Some(each) = current {
+            if each == ancestor {
+                return true;
+            }
+            current = self.heap.enclosing_mixin_id(each);
+        }
+        false
     }
 }

@@ -478,6 +478,21 @@ Protects:
 [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity)
 
+r[vm.heap.obsolete-mixin-out-of-tree]
+A nested declaration an install removes is obsolete: its id leaves its
+enclosing declaration's nested list, so no new application of the
+enclosing class reserves it a hidden slot and no module's text holds it,
+and it roots a tree of mixin ids of its own, its nested declarations and
+class sides in it, in no module's tree. Its row and its last version
+stay, its class objects, instances and subclasses running that version,
+until a full collection finds nothing naming its tree, which it frees on
+its own, whether or not the module it was removed from lives; a module
+freed before it leaves the obsolete root naming no enclosing row. No
+builder edits an obsolete declaration.
+
+Protects: [`runtime.install`](runtime.md#r-runtime.install),
+[`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)
+
 r[vm.heap.migration-by-declared-name]
 An install migrates each instance whose layout changed by copying every
 field by the id of the level that declares it (that level's occurrence

@@ -1459,21 +1459,25 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ] naming: [:name |
         self stageName: name.
       ].
-      /// The declaration's instance side, a MixinBuilder whose methods and
-      /// lazy slots stage through the receiver.
+      /// The declaration's instance side, a MixinBuilder whose methods,
+      /// lazy slots and nested classes stage through the receiver.
       public instanceSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
           removing: #removeMethod
           staging: [:operation | self stage: operation onClassSide: false])
           lazySlots: (MutableMemberGroup adding: #addLazySlot
               removing: #removeLazySlot
               staging: [:operation | self stage: operation onClassSide: false])
+          nestedClasses: (MutableMemberGroup adding: #addClass
+              removing: #removeClass
+              staging: [:operation | self stage: operation onClassSide: false])
           mixin: (MixinMirror reflecting: aReifiedMixin).
       /// The declaration's class side, a MixinBuilder whose methods stage
-      /// through the receiver; it has no lazy slots.
+      /// through the receiver; it has no lazy slots and no nested classes.
       public classSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
           removing: #removeMethod
           staging: [:operation | self stage: operation onClassSide: true])
           lazySlots: nil
+          nestedClasses: nil
           mixin: (MixinMirror reflecting: (vmMirror reflectionMixinClassSide: aReifiedMixin
               ifFail: [nil])).
     |
@@ -1484,9 +1488,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// parenthesis, with every edit staged since the builder was made or
     /// last installed spliced in, as the last check answered it. With
     /// nothing staged it is the text the declaration mirror's `source`
-    /// answers. A staged header starts it; a staged method or lazy slot
-    /// that replaces a member stands where the member stood, and one that
-    /// adds a member stands last on its side.
+    /// answers. A staged header starts it; a staged method, lazy slot or
+    /// nested class that replaces a member stands where the member stood,
+    /// and one that adds a member stands last on its side.
     ///
     /// @answers the staged declaration's text, a String.
     public source = (
@@ -1499,7 +1503,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// its identity, by one of the new layout whose slots of an old name
     /// keep their values and whose new slots are nil, their initializers
     /// not run. A method or a closure already running finishes with the
-    /// code it was running.
+    /// code it was running. A nested class removed lives on obsolete, its
+    /// name no longer understood by the declaration, and one replaced
+    /// keeps its class objects and its instances.
     ///
     /// An install of the receiver alone, as `Mirrors>>installAtomically:`
     /// installs several builders.
@@ -1510,9 +1516,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// the class, nor its instances, nor what the receiver stages -- when
     /// the staged edits no longer apply to the module's current text, as
     /// when another builder's install gave the class a slot of the name of
-    /// a staged method; and 'cannot migrate an instance of <class name>,
-    /// which is not an ordinary object' when an instance whose layout would
-    /// change cannot be copied into the new one.
+    /// a staged method; '<class name> was removed by an install, and an
+    /// obsolete class is not edited' once an install removed the
+    /// declaration, or one it is nested in; and 'cannot migrate an
+    /// instance of <class name>, which is not an ordinary object' when an
+    /// instance whose layout would change cannot be copied into the new
+    /// one.
     /// @see `Mirrors>>installAtomically:`.
     public install = (
       (Installer builders: {self}) install.
@@ -1674,9 +1683,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals Error with the VM's diagnostic, changing nothing --
     /// neither a class, nor its instances, nor what a builder stages --
     /// when the install refuses an edit: 'two builders edit <class name>'
-    /// for two builders of one declaration, 'an install ran between the
-    /// preparation and the commit of <class name>'s install; nothing was
-    /// installed' when something was installed after the preparation, and
+    /// for two builders of one declaration, 'the builder of <class name>
+    /// edits a class the builder of <other class name> removes' (or
+    /// 'replaces') for a builder of a nested class, or of one nested in
+    /// it, that another builder removes or replaces, 'an install ran
+    /// between the preparation and the commit of <class name>'s install;
+    /// nothing was installed' when something was installed after the preparation, and
     /// every diagnostic `ClassDeclarationBuilder>>install` lists; and the
     /// one `refuseEntries` signals when the VM cannot read an entry.
     public install = (
@@ -1833,9 +1845,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 
   /// One side of a declaration a ClassDeclarationBuilder edits, the
   /// instance side or the class side: its methods and, on the instance
-  /// side, its lazy slots, each a MutableMemberGroup that stages through
-  /// the builder; and the live side's slots, which an edit changes only
-  /// through the header.
+  /// side, its lazy slots and its nested classes, each a
+  /// MutableMemberGroup that stages through the builder; and the live
+  /// side's slots, which an edit changes only through the header.
   ///
   /// @factory makes one side of a builder's declaration over the groups
   /// and the mirror it is given, keeping them as given; a
@@ -1844,8 +1856,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// @param aMethodGroup the MutableMemberGroup of the side's methods.
   /// @param aLazySlotGroup the MutableMemberGroup of the side's lazy
   /// slots, or nil for a class side, which declares none.
+  /// @param aNestedClassGroup the MutableMemberGroup of the side's nested
+  /// classes, or nil for a class side, which declares none.
   /// @param aMixinMirror a mixin mirror on the side's live mixin.
-  private class MixinBuilder methods: aMethodGroup lazySlots: aLazySlotGroup mixin: aMixinMirror
+  private class MixinBuilder
+      methods: aMethodGroup
+      lazySlots: aLazySlotGroup
+      nestedClasses: aNestedClassGroup
+      mixin: aMixinMirror
       = Object (
     |
       /// The group of the side's methods.
@@ -1856,6 +1874,10 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// `lazySlots` answers it itself, and refuses the class side for
       /// its nil.
       private lazySlotGroup = aLazySlotGroup.
+      /// The group of the side's nested classes, nil for a class side.
+      /// `nestedClasses` answers it itself, and refuses the class side
+      /// for its nil.
+      private nestedClassGroup = aNestedClassGroup.
       /// A mixin mirror on the side's live mixin.
       /// Asked afresh by every `slots`, so what it lists is the live
       /// mixin's, never a staged header's.
@@ -1884,6 +1906,25 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^lazySlotGroup.
     )
 
+    /// Hands out the instance side's nested classes, which stage the
+    /// addition, replacement and removal of a nested class through the
+    /// builder. A class added under a name the side already declares
+    /// replaces that class, which keeps its class objects and its
+    /// instances, migrated to the new declaration; a class removed lives
+    /// on obsolete -- its enclosing class no longer understands its name,
+    /// and its class objects, its instances and its subclasses keep
+    /// running its last version until nothing reaches them.
+    ///
+    /// @answers the instance side's MutableMemberGroup of nested classes.
+    /// @signals Error 'nestedClasses: a class side declares no nested
+    /// classes', on the class side.
+    public nestedClasses = (
+      nil == nestedClassGroup ifTrue: [
+        ^Error signal: 'nestedClasses: a class side declares no nested classes'.
+      ].
+      ^nestedClassGroup.
+    )
+
     /// Lists the live side's own eager slots, in declaration order, as
     /// `MixinMirror>>slots` answers them: what the last install made,
     /// never a staged header's.
@@ -1897,18 +1938,18 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   )
 
   /// One group of a side's members a ClassDeclarationBuilder edits -- a
-  /// side's methods, or the instance side's lazy slots: it stages, through
-  /// the builder, the addition or replacement of a member from its text
-  /// and the removal of one by its name. It answers no mirrors; the
+  /// side's methods, or the instance side's lazy slots or nested classes:
+  /// it stages, through the builder, the addition or replacement of a
+  /// member from its text and the removal of one by its name. It answers no mirrors; the
   /// builder's `source` answers what is staged.
   ///
   /// @factory makes a group that stages its additions as `anAddSymbol`
   /// and its removals as `aRemoveSymbol` through `aBlock`, keeping the
   /// three as given.
   /// @param anAddSymbol the Symbol of the operation that adds or replaces
-  /// a member, `#addMethod` or `#addLazySlot`.
+  /// a member, `#addMethod`, `#addLazySlot` or `#addClass`.
   /// @param aRemoveSymbol the Symbol of the operation that removes one,
-  /// `#removeMethod` or `#removeLazySlot`.
+  /// `#removeMethod`, `#removeLazySlot` or `#removeClass`.
   /// @param aBlock a one-argument block that stages an operation, an Array
   /// of the operation's Symbol and its text or name, through the builder,
   /// signalling what the builder's check signals.
@@ -1935,13 +1976,16 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param aString one member's text, a String or a Symbol, sent
     /// `asString`: one method declaration, `public foo: x = (^x)`, for a
     /// group of methods, one lazy slot declaration,
-    /// `lazy public cache = 1.`, for a group of lazy slots.
+    /// `lazy public cache = 1.`, for a group of lazy slots, one class
+    /// declaration, `public class Point = (| x |) ()`, for a group of
+    /// nested classes.
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a text
     /// that does not parse ('<name>'s edited source does not parse: …
     /// (line <n>)'), one that declares no single member of the group's
     /// kind ('addFromSource: of <name>'s methods takes one method
-    /// declaration', '… lazy slots takes one lazy slot declaration'), and a
+    /// declaration', '… lazy slots takes one lazy slot declaration', '…
+    /// nested classes takes one class declaration'), and a
     /// member that collides with a slot, a nested class, the factory or a
     /// member of another kind ('<name>'s edited source does not resolve: …
     /// (line <n>)').

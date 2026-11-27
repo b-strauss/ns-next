@@ -918,6 +918,152 @@ mod tests {
         });
     }
 
+    fn remove_class(name: &str) -> Edit {
+        Edit {
+            header: None,
+            instance_side: vec![MemberEdit::RemoveClass(name.to_string())],
+            class_side: Vec::new(),
+            new_name: None,
+        }
+    }
+
+    /// The rows of the tree of `Inner`'s and its class side's ids, as an
+    /// `Inner` instance's class's metaclass registered them.
+    fn inner_rows(interpreter: &mut Interpreter, inner_id: MixinId) -> Vec<MixinId> {
+        interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&inner_id))
+                .expect("Inner has a tree")
+        })
+    }
+
+    /// A removed class nothing names any more is freed on its own, its
+    /// class side with it, while the module it was declared in lives on
+    /// with every row it still declares.
+    #[cfg(debug_assertions)]
+    // spec: vm.heap.obsolete-mixin-out-of-tree
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
+    #[test]
+    fn an_unreachable_obsolete_class_is_reclaimed() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        drop(send(&mut interpreter, &inner, "answer"));
+        let outer_id = id_of(&mut interpreter, &outer);
+        let inner_id = id_of(&mut interpreter, &inner_class);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let obsolete = inner_rows(&mut interpreter, inner_id);
+        assert_eq!(obsolete[0], inner_id);
+        assert!(obsolete.len() >= 2, "the tree holds Inner's class side");
+        let module = interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&outer_id))
+                .expect("the module has a tree")
+        });
+        assert!(module.iter().all(|id| !obsolete.contains(id)));
+        drop((inner_class, inner));
+        interpreter.collect_now();
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            for id in &obsolete {
+                assert!(
+                    mutator.heap.mixin(*id).is_none(),
+                    "an obsolete row is freed"
+                );
+            }
+            for id in &module {
+                assert!(
+                    mutator.heap.mixin(*id).is_some(),
+                    "a row of the module stays"
+                );
+            }
+        });
+        let answer = send(&mut interpreter, &instance, "make");
+        let seven = send(&mut interpreter, &answer, "value");
+        assert_eq!(integer(&mut interpreter, &seven), Some(7));
+    }
+
+    /// A removed class an instance still reaches keeps its rows across a
+    /// collection, and the instance answers its last version's method.
+    #[cfg(debug_assertions)]
+    // spec: vm.heap.obsolete-mixin-out-of-tree
+    #[test]
+    fn a_reachable_obsolete_class_survives_a_collection() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        let outer_id = id_of(&mut interpreter, &outer);
+        let inner_id = id_of(&mut interpreter, &inner_class);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let obsolete = inner_rows(&mut interpreter, inner_id);
+        drop((outer, instance, inner_class));
+        interpreter.collect_now();
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            assert!(mutator.heap.is_obsolete(inner_id));
+            assert!(
+                mutator.heap.mixin(inner_id).is_some(),
+                "Inner keeps its row"
+            );
+        });
+        assert_eq!(inner_rows(&mut interpreter, inner_id)[0], obsolete[0]);
+        let answer = send(&mut interpreter, &inner, "answer");
+        assert_eq!(integer(&mut interpreter, &answer), Some(1));
+    }
+
+    /// A removed class held while nothing names its former module outlives
+    /// that module: the module's rows are freed, and the obsolete root
+    /// forgets the freed row it was declared in and stays obsolete.
+    #[cfg(debug_assertions)]
+    // spec: vm.heap.obsolete-mixin-out-of-tree
+    #[test]
+    fn an_obsolete_class_outlives_its_module() {
+        let (mut interpreter, outer) = load(OUTER);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let outer_id = id_of(&mut interpreter, &outer);
+        let inner_id = id_of(&mut interpreter, &inner_class);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let module = interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&outer_id))
+                .expect("the module has a tree")
+        });
+        let held = interpreter.enter(|mutator| mixin_of(mutator, &inner_class));
+        drop((outer, instance, inner_class));
+        interpreter.collect_now();
+        interpreter.collect_now();
+        interpreter.enter(|mutator| {
+            for id in &module {
+                assert!(
+                    mutator.heap.mixin(*id).is_none(),
+                    "a row of the module is freed"
+                );
+            }
+            assert_eq!(mutator.heap.known_mixin_id(&held), Some(inner_id));
+            assert_eq!(mutator.heap.enclosing_mixin_id(inner_id), None);
+            assert!(mutator.heap.is_obsolete(inner_id));
+            assert!(
+                mutator
+                    .heap
+                    .module_trees()
+                    .iter()
+                    .any(|tree| tree[0] == inner_id)
+            );
+        });
+    }
+
     /// Three edits of `Outer` leave three superseded versions of it, and of
     /// `Inner`, which the install replaced with it; once no activation,
     /// closure or class object holds one, a collection drops them all.

@@ -70,13 +70,20 @@ pub(crate) fn entries_from_value<'gc>(
 /// one of the same kind and name, or one removed by name. A removed name is
 /// the text of the Symbol the program handed over, never an interned
 /// symbol: a program chooses it, and a name no member has -- a
-/// program-made symbol's among them -- removes nothing.
+/// program-made symbol's among them -- removes nothing. A nested class is
+/// added, replaced or removed on the instance side only, where §6.3
+/// declares classes; a replaced one keeps its id, its class objects and
+/// its instances, and a removed one lives on obsolete
+/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// install", decisions 2 and 3).
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum MemberEdit {
     AddMethod(String),
     RemoveMethod(String),
     AddLazySlot(String),
     RemoveLazySlot(String),
+    AddClass(String),
+    RemoveClass(String),
 }
 
 /// What an edit the VM accepts answers the MirrorBuilder: the edited
@@ -116,6 +123,15 @@ pub(crate) struct PreparedModule {
     /// Per entry, in the order given: the edited declaration's and its
     /// header's text, sliced from the edited module's text.
     pub(crate) texts: Vec<EditedTexts>,
+    /// Per nested declaration a fresh mixin declares with no old
+    /// counterpart, preorder: the id of the declaration it is added to and
+    /// its fresh mixin, which the commit registers with its subtree under
+    /// that id (`Heap::adopt_nested`).
+    pub(crate) added: Vec<(MixinId, Rc<Mixin>)>,
+    /// Every nested declaration's id whose enclosing declaration's fresh
+    /// mixin no longer declares it, which the commit makes obsolete
+    /// (`Heap::make_obsolete`).
+    pub(crate) removed: Vec<MixinId>,
     /// Every fresh mixin with the id it is installed under: per entry
     /// whose declaration no other entry's encloses, the edited
     /// declaration's instance side first, then its class side, then
@@ -135,7 +151,7 @@ impl Edit {
     /// The edit `value` stands for, `{ header. instanceOperations.
     /// classOperations. newName }`; `None` for anything else, which the
     /// leaf declines. A class side takes method operations only, since
-    /// §6.3's class side declares nothing else. A new name is a Symbol or
+    /// §6.3's class side declares nothing else: no lazy slot and no class. A new name is a Symbol or
     /// `nil`; it is interned, as the class's name it would become is.
     pub(crate) fn from_value<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Edit> {
         let elements = heap.array_elements(value.as_object()?)?;
@@ -176,11 +192,11 @@ fn symbol_text_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<String> {
 }
 
 /// One side's operations, each a two-element `Array` of its kind and its
-/// argument.
+/// argument; lazy slots and classes only on the instance side.
 fn operations_of<'gc>(
     heap: &Heap<'gc>,
     value: Value<'gc>,
-    lazy_slots: bool,
+    instance_side: bool,
 ) -> Option<Vec<MemberEdit>> {
     heap.array_elements(value.as_object()?)?
         .into_iter()
@@ -192,9 +208,15 @@ fn operations_of<'gc>(
             Some(match symbol_text_of(heap, *kind)?.as_str() {
                 "addMethod" => MemberEdit::AddMethod(string_of(heap, *argument)?),
                 "removeMethod" => MemberEdit::RemoveMethod(symbol_text_of(heap, *argument)?),
-                "addLazySlot" if lazy_slots => MemberEdit::AddLazySlot(string_of(heap, *argument)?),
-                "removeLazySlot" if lazy_slots => {
+                "addLazySlot" if instance_side => {
+                    MemberEdit::AddLazySlot(string_of(heap, *argument)?)
+                }
+                "removeLazySlot" if instance_side => {
                     MemberEdit::RemoveLazySlot(symbol_text_of(heap, *argument)?)
+                }
+                "addClass" if instance_side => MemberEdit::AddClass(string_of(heap, *argument)?),
+                "removeClass" if instance_side => {
+                    MemberEdit::RemoveClass(symbol_text_of(heap, *argument)?)
                 }
                 _ => return None,
             })
@@ -214,6 +236,7 @@ enum Side {
 enum MemberKind {
     Method,
     LazySlot,
+    Class,
 }
 
 impl<'gc> Mutator<'gc> {
@@ -230,6 +253,13 @@ impl<'gc> Mutator<'gc> {
             // compile-time binding of its mirror sends and primitives.
             return Err(format!(
                 "{name} belongs to the shipped core library, which no MirrorBuilder edits"
+            ));
+        }
+        if self.heap.is_obsolete(id) {
+            // Its declaration is in no module's text any more, so there is
+            // no text to splice an edit into.
+            return Err(format!(
+                "{name} was removed by an install, and an obsolete class is not edited"
             ));
         }
         debug_assert!(
@@ -436,8 +466,7 @@ impl<'gc> Mutator<'gc> {
             )
         })?;
         let mut texts = Vec::with_capacity(entries.len());
-        let mut replacements = Vec::new();
-        let mut synthesized = Vec::new();
+        let mut paired = Paired::default();
         for (position, (name, _)) in declarations.iter().enumerate() {
             let Some(declaration) = find_declaration(&resolved.module.root_class, &paths[position])
             else {
@@ -489,21 +518,16 @@ impl<'gc> Mutator<'gc> {
                 self.nothing_registers(&fresh),
                 "internal: a prepared mixin is registered under no id"
             );
-            self.pair(
-                *id,
-                &current,
-                &fresh,
-                &renamed,
-                &mut replacements,
-                &mut synthesized,
-            );
+            self.pair(*id, &current, &fresh, &renamed, &mut paired);
         }
         Ok(PreparedModule {
             #[cfg(test)]
             module_text: text,
             texts,
-            replacements,
-            synthesized,
+            replacements: paired.replacements,
+            synthesized: paired.synthesized,
+            added: paired.added,
+            removed: paired.removed,
         })
     }
 
@@ -556,27 +580,32 @@ impl<'gc> Mutator<'gc> {
     /// class side its old version had, so that every metaclass of the
     /// subtree keeps its mixin's id. A declaration `renamed` names is
     /// paired by its new name, so that a renamed class keeps its id, its
-    /// class objects and its instances.
+    /// class objects and its instances. Pairing by name is what makes an
+    /// `addFromSource:` of an existing name a replacement; a fresh nested
+    /// mixin no old one pairs with is added, and an old one no fresh one
+    /// pairs with is removed.
     fn pair(
         &self,
         id: MixinId,
         old: &Rc<Mixin>,
         fresh: &Rc<Mixin>,
         renamed: &[(MixinId, Symbol)],
-        replacements: &mut Vec<(MixinId, Rc<Mixin>)>,
-        synthesized: &mut Vec<(MixinId, MixinId, Rc<Mixin>)>,
+        paired: &mut Paired,
     ) {
-        replacements.push((id, Rc::clone(fresh)));
+        paired.replacements.push((id, Rc::clone(fresh)));
         if let Some(class_side_id) = self.old_class_side_id(id, old) {
             match &fresh.class_side {
-                Some(class_side) => replacements.push((class_side_id, Rc::clone(class_side))),
-                None => synthesized.push((
+                Some(class_side) => paired
+                    .replacements
+                    .push((class_side_id, Rc::clone(class_side))),
+                None => paired.synthesized.push((
                     id,
                     class_side_id,
                     super::metaclass::synthesized_class_side(fresh),
                 )),
             }
         }
+        let mut kept: Vec<MixinId> = Vec::new();
         for nested in fresh.declared_nested().iter() {
             let name_after = |old_id: MixinId| {
                 renamed
@@ -592,22 +621,61 @@ impl<'gc> Mutator<'gc> {
                 .copied()
                 .find(|old_id| name_after(*old_id) == Some(nested.name));
             let Some(nested_id) = counterpart else {
+                paired.added.push((id, Rc::clone(nested)));
                 continue;
             };
+            kept.push(nested_id);
             let current = self
                 .heap
                 .mixin(nested_id)
                 .expect("internal: the counterpart was found by its row");
-            self.pair(
-                nested_id,
-                &current,
-                nested,
-                renamed,
-                replacements,
-                synthesized,
-            );
+            self.pair(nested_id, &current, nested, renamed, paired);
         }
+        paired.removed.extend(
+            self.heap
+                .nested_of(id)
+                .iter()
+                .copied()
+                .filter(|old_id| !kept.contains(old_id)),
+        );
     }
+
+    /// The nested declarations of `id` that `edit`, an entry's, removes
+    /// or replaces, each with the verb a diagnostic names it by: what an
+    /// entry editing one of them, or a declaration nested in one, would
+    /// contradict (`prepare_entries`). A text that is not one class
+    /// declaration takes nothing; its own preparation refuses it.
+    pub(crate) fn classes_taken(&self, id: MixinId, edit: &Edit) -> Vec<(MixinId, &'static str)> {
+        edit.instance_side
+            .iter()
+            .filter_map(|operation| {
+                let (name, verb) = match operation {
+                    MemberEdit::RemoveClass(name) => (name.clone(), "removes"),
+                    MemberEdit::AddClass(text) => match read_member_text(text) {
+                        Ok(Some((MemberKind::Class, name))) => (name, "replaces"),
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let taken = self.heap.nested_of(id).iter().copied().find(|nested| {
+                    self.heap
+                        .mixin(*nested)
+                        .is_some_and(|mixin| mixin.name.as_str() == name)
+                })?;
+                Some((taken, verb))
+            })
+            .collect()
+    }
+}
+
+/// What pairing a module's fresh mixins with their old versions answers
+/// (`Mutator::pair`), as `PreparedModule` holds it.
+#[derive(Default)]
+struct Paired {
+    replacements: Vec<(MixinId, Rc<Mixin>)>,
+    synthesized: Vec<(MixinId, MixinId, Rc<Mixin>)>,
+    added: Vec<(MixinId, Rc<Mixin>)>,
+    removed: Vec<MixinId>,
 }
 
 /// What the builder of `declaration` reads after an install: its text and
@@ -709,12 +777,12 @@ fn member_range(member: &ast::Member) -> (u32, u32) {
     (start, span.end)
 }
 
-/// The kind and name of a method or a lazy slot; `None` for a class.
-fn member_kind_and_name(member: &ast::Member) -> Option<(MemberKind, String)> {
+/// The kind and name of a member.
+fn member_kind_and_name(member: &ast::Member) -> (MemberKind, String) {
     match member {
-        ast::Member::Method(method) => Some((MemberKind::Method, method_name(&method.pattern))),
-        ast::Member::LazySlot(slot) => Some((MemberKind::LazySlot, slot.name.name.clone())),
-        ast::Member::Class(_) => None,
+        ast::Member::Method(method) => (MemberKind::Method, method_name(&method.pattern)),
+        ast::Member::LazySlot(slot) => (MemberKind::LazySlot, slot.name.name.clone()),
+        ast::Member::Class(class) => (MemberKind::Class, class.name.name.clone()),
     }
 }
 
@@ -726,6 +794,9 @@ fn wrong_kind(name: &str, kind: MemberKind) -> String {
         }
         MemberKind::LazySlot => {
             format!("addFromSource: of {name}'s lazy slots takes one lazy slot declaration")
+        }
+        MemberKind::Class => {
+            format!("addFromSource: of {name}'s nested classes takes one class declaration")
         }
     }
 }
@@ -752,7 +823,7 @@ fn read_member_text(member_text: &str) -> Result<Option<(MemberKind, String)>, (
     let [member] = side.members.as_slice() else {
         return Ok(None);
     };
-    Ok(member_kind_and_name(member))
+    Ok(Some(member_kind_and_name(member)))
 }
 
 /// `text` with `operation` applied to `side` of the declaration `path`
@@ -778,6 +849,8 @@ fn apply_member_edit(
         MemberEdit::AddLazySlot(member_text) => (MemberKind::LazySlot, Some(member_text), None),
         MemberEdit::RemoveMethod(selector) => (MemberKind::Method, None, Some(selector)),
         MemberEdit::RemoveLazySlot(slot) => (MemberKind::LazySlot, None, Some(slot)),
+        MemberEdit::AddClass(member_text) => (MemberKind::Class, Some(member_text), None),
+        MemberEdit::RemoveClass(class) => (MemberKind::Class, None, Some(class)),
     };
     let body = match side {
         Side::Instance => Some(&declaration.instance_side),
@@ -786,9 +859,8 @@ fn apply_member_edit(
     let existing = |member_name: &str| {
         body.and_then(|body| {
             body.members.iter().find(|member| {
-                member_kind_and_name(member).is_some_and(|(member_kind, declared)| {
-                    member_kind == kind && declared == member_name
-                })
+                let (member_kind, declared) = member_kind_and_name(member);
+                member_kind == kind && declared == member_name
             })
         })
     };

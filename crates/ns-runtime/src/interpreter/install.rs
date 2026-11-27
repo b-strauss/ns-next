@@ -374,6 +374,21 @@ impl<'gc> Mutator<'gc> {
         for (id, children) in adopted {
             self.heap.adopt_nested(id, children);
         }
+        debug_assert!(
+            prepared.added.iter().all(|(enclosing, fresh)| {
+                self.heap.known_mixin_id(fresh).is_some_and(|id| {
+                    self.heap.enclosing_mixin_id(id) == Some(*enclosing)
+                        && self.heap.nested_of(*enclosing).contains(&id)
+                })
+            }),
+            "internal: an added declaration is registered under the one it is added to"
+        );
+        // Its parent's nested row no longer names it, so the parent's new
+        // applications reserve it no hidden slot; its class objects and
+        // instances keep the application they have.
+        for id in &prepared.removed {
+            self.heap.make_obsolete(*id);
+        }
         // After the instance side's replacement, which forgets the class
         // side synthesized from its previous version; through the
         // mutator's replacement, which forgets the old class side's
@@ -2474,5 +2489,298 @@ mod tests {
             }
             Ok(_) => panic!("an edit was installed from a text without its declaration"),
         }
+    }
+
+    // Nested classes added, replaced and removed
+
+    fn add_class(text: &str) -> Edit {
+        instance_edit(vec![MemberEdit::AddClass(text.to_string())])
+    }
+
+    fn remove_class(name: &str) -> Edit {
+        instance_edit(vec![MemberEdit::RemoveClass(name.to_string())])
+    }
+
+    /// The id of the declaration `id` is nested in.
+    fn enclosing_of(interpreter: &mut Interpreter, id: MixinId) -> MixinId {
+        interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .enclosing_mixin_id(id)
+                .expect("the declaration is nested")
+        })
+    }
+
+    /// The message of the error a send of `selector` to `receiver` raises.
+    fn send_error(interpreter: &mut Interpreter, receiver: &Root, selector: &str) -> String {
+        match interpreter.send(receiver, Symbol::intern(selector), &[]) {
+            Ok(_) => panic!("{selector} was understood"),
+            Err(HostSignal::Return) => panic!("{selector}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => error.message,
+        }
+    }
+
+    /// A removed class lives on obsolete: an instance and the class object
+    /// made before the install keep running its last version, the enclosing
+    /// class no longer understands its name, its row stays and is obsolete,
+    /// and the module's text no longer holds it.
+    // spec: runtime.install
+    // spec: vm.heap.obsolete-mixin-out-of-tree
+    #[test]
+    fn a_removed_class_runs_on_obsolete() {
+        let (mut interpreter, outer_instance, inner_class, inner, inner_id) =
+            outer_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let answer = send(&mut interpreter, &inner, "a");
+        assert_eq!(integer(&mut interpreter, &answer), Some(1));
+        let made = send(&mut interpreter, &inner_class, "new");
+        let slot = send(&mut interpreter, &made, "x");
+        assert_eq!(integer(&mut interpreter, &slot), Some(1));
+        let message = send_error(&mut interpreter, &outer_instance, "Inner");
+        assert!(message.contains("does not understand #Inner"), "{message}");
+        interpreter.enter(|mutator| {
+            assert!(mutator.heap.is_obsolete(inner_id));
+            assert!(!mutator.heap.is_obsolete(outer_id));
+            assert!(!mutator.heap.nested_of(outer_id).contains(&inner_id));
+            assert_eq!(mutator.heap.enclosing_mixin_id(inner_id), Some(outer_id));
+            let module = mutator.heap.module_source(outer_id).expect("Outer's text");
+            assert!(!module.contains("class Inner"), "{module}");
+            let tree = mutator
+                .heap
+                .module_trees()
+                .into_iter()
+                .find(|tree| tree.contains(&inner_id))
+                .expect("Inner has a tree");
+            assert_eq!(tree[0], inner_id, "Inner roots a tree of its own");
+            assert!(!tree.contains(&outer_id));
+        });
+    }
+
+    /// A class added to an enclosing declaration gets a fresh id declared
+    /// in it, and an existing instance of the enclosing class answers it.
+    // spec: runtime.install
+    #[test]
+    fn an_added_class_gets_an_id_under_its_enclosing_one() {
+        let (mut interpreter, outer_instance, _, _, inner_id) = outer_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        let edit = add_class("public class Added = () (\n  public b = ( ^2 )\n)");
+        let prepared = interpreter.enter(|mutator| {
+            mutator.prepare_entries(&[InstallEntry::Edit(outer_id, edit.clone())])
+        });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
+        };
+        let [(enclosing, fresh)] = prepared.added.as_slice() else {
+            panic!("one class is added");
+        };
+        assert_eq!(*enclosing, outer_id);
+        assert_eq!(fresh.name.as_str(), "Added");
+        assert!(prepared.removed.is_empty());
+        install(&mut interpreter, outer_id, &edit);
+        let added_class = send(&mut interpreter, &outer_instance, "Added");
+        let added = send(&mut interpreter, &added_class, "new");
+        let answer = send(&mut interpreter, &added, "b");
+        assert_eq!(integer(&mut interpreter, &answer), Some(2));
+        interpreter.enter(|mutator| {
+            let nested = mutator.heap.nested_of(outer_id).to_vec();
+            assert_eq!(nested.len(), 2);
+            assert_eq!(nested[0], inner_id);
+            let added_id = nested[1];
+            assert_ne!(added_id, inner_id);
+            assert_eq!(mutator.heap.enclosing_mixin_id(added_id), Some(outer_id));
+            let added = mutator.heap.mixin(added_id).expect("Added's row");
+            assert_eq!(added.name.as_str(), "Added");
+        });
+    }
+
+    /// An `addFromSource:` of an existing name replaces the class, keeping
+    /// its id, its class objects and its instances, which migrate: a kept
+    /// slot keeps its value, an added one starts nil.
+    // spec: runtime.install
+    #[test]
+    fn a_replaced_nested_class_keeps_its_id_and_class_objects() {
+        let (mut interpreter, outer_instance, inner_class, inner, inner_id) =
+            outer_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        let five = integer_root(&mut interpreter, 5);
+        drop(send_with(&mut interpreter, &inner, "x:", &[five]));
+        let edit = add_class(
+            "public class Inner = (| public x ::= 1. public y ::= 3. |) (\n  public a = ( ^9 )\n)",
+        );
+        let prepared = interpreter.enter(|mutator| {
+            mutator.prepare_entries(&[InstallEntry::Edit(outer_id, edit.clone())])
+        });
+        match prepared {
+            Ok(prepared) => assert!(prepared.added.is_empty() && prepared.removed.is_empty()),
+            Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
+        }
+        install(&mut interpreter, outer_id, &edit);
+        let again = send(&mut interpreter, &outer_instance, "Inner");
+        let same = interpreter.enter(|mutator| {
+            let key = |root: &Root| {
+                let object = mutator.fetch(root).as_object().expect("a class object");
+                mutator.heap.object_identity_key(object)
+            };
+            key(&again) == key(&inner_class)
+        });
+        assert!(
+            same,
+            "the accessor answers the class object it answered before"
+        );
+        let answer = send(&mut interpreter, &inner, "a");
+        assert_eq!(integer(&mut interpreter, &answer), Some(9));
+        let kept = send(&mut interpreter, &inner, "x");
+        assert_eq!(integer(&mut interpreter, &kept), Some(5));
+        let added = send(&mut interpreter, &inner, "y");
+        assert!(is_nil(&mut interpreter, &added));
+        interpreter.enter(|mutator| {
+            assert_eq!(mutator.heap.nested_of(outer_id), &[inner_id]);
+            assert!(!mutator.heap.is_obsolete(inner_id));
+        });
+    }
+
+    /// An entry whose declaration, or one it is nested in, another entry
+    /// removes or replaces is refused, naming both, in either order, and
+    /// nothing changes; once removed, the class's own edit is refused.
+    // spec: runtime.install
+    #[test]
+    fn an_entry_whose_class_another_removes_or_replaces_is_refused() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Inner = () (
+                public class Deep = () ()
+              )
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let outer_id = root_id_of(&mut interpreter, &outer);
+        let inner_id = nested_id_of(&mut interpreter, &outer, "Inner");
+        let deep_id = nested_id_of(&mut interpreter, &inner_class, "Deep");
+        let objects = [&instance, &inner_class];
+        let before = snapshot(&mut interpreter, &[outer_id, inner_id, deep_id], &objects);
+        let edit_of = |id| InstallEntry::Edit(id, add_method("public b = ( ^2 )"));
+        let removes = InstallEntry::Edit(outer_id, remove_class("Inner"));
+        let replaces = InstallEntry::Edit(outer_id, add_class("public class Inner = () ()"));
+        for (entries, expected) in [
+            (
+                [edit_of(inner_id), removes.clone()],
+                "the builder of Inner edits a class the builder of Outer removes",
+            ),
+            (
+                [removes.clone(), edit_of(deep_id)],
+                "the builder of Deep edits a class the builder of Outer removes",
+            ),
+            (
+                [replaces.clone(), edit_of(inner_id)],
+                "the builder of Inner edits a class the builder of Outer replaces",
+            ),
+        ] {
+            assert_eq!(install_refusal(&mut interpreter, &entries), expected);
+            assert_unchanged(
+                &mut interpreter,
+                &before,
+                &[outer_id, inner_id, deep_id],
+                &objects,
+            );
+        }
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        for id in [inner_id, deep_id] {
+            let refused = interpreter
+                .enter(|mutator| mutator.install_one(id, &add_method("public b = ( ^2 )")))
+                .err()
+                .expect("an obsolete class is not edited");
+            let name = if id == inner_id { "Inner" } else { "Deep" };
+            assert_eq!(
+                refused,
+                format!("{name} was removed by an install, and an obsolete class is not edited")
+            );
+        }
+    }
+
+    /// A nested-class text of two declarations, or of a method, is
+    /// refused, naming the enclosing class.
+    // spec: runtime.install
+    #[test]
+    fn a_nested_class_text_of_two_declarations_is_refused() {
+        let (mut interpreter, _, _, _, inner_id) = outer_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        for text in [
+            "class A = ()() class B = ()()",
+            "public b = ( ^2 )",
+            "class A = ()() public b = ( ^2 )",
+        ] {
+            let refused = interpreter
+                .enter(|mutator| mutator.install_one(outer_id, &add_class(text)))
+                .err()
+                .expect("the text is refused");
+            assert_eq!(
+                refused,
+                "addFromSource: of Outer's nested classes takes one class declaration"
+            );
+        }
+    }
+
+    /// Spans are byte offsets: a class added, replaced and removed between
+    /// comments of several bytes a character keeps every one of them, and
+    /// a removed class goes with its comment.
+    // spec: runtime.install
+    #[test]
+    fn a_nested_class_splice_keeps_multibyte_text() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public before = ( ^'ä🙂' )
+              /// Grüße 🙂
+              public class Inner = () (
+                public a = ( ^'ä' )
+              )
+              /// Ende ä 🙂
+              public after = ( ^'🙂ü' )
+              /// Weg 🙂
+              public class Other = () ()
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let outer_id = root_id_of(&mut interpreter, &outer);
+        let replaced = "public class Inner = () (\n  public a = ( ^'ö🙂' )\n)";
+        install(&mut interpreter, outer_id, &add_class(replaced));
+        install(
+            &mut interpreter,
+            outer_id,
+            &add_class("public class Added = () ( public b = ( ^'é' ) )"),
+        );
+        install(&mut interpreter, outer_id, &remove_class("Other"));
+        let module = interpreter
+            .enter(|mutator| mutator.heap.module_source(outer_id))
+            .expect("Outer's text");
+        // The removed class leaves the indentation it stood after, and the
+        // added one's line break follows it, which indoc would trim.
+        let expected = indoc! {"
+            class Outer = Object new () (
+              public before = ( ^'ä🙂' )
+              public class Inner = () (
+              public a = ( ^'ö🙂' )
+            )
+              /// Ende ä 🙂
+              public after = ( ^'🙂ü' )
+            INDENT
+
+            public class Added = () ( public b = ( ^'é' ) )
+            )
+        "}
+        .replace("INDENT", "  ");
+        assert_eq!(module, expected);
+        for (selector, expected) in [("before", "ä🙂"), ("after", "🙂ü")] {
+            let answer = send(&mut interpreter, &instance, selector);
+            assert_eq!(string(&mut interpreter, &answer).as_deref(), Some(expected));
+        }
+        let inner_class = send(&mut interpreter, &instance, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        let answer = send(&mut interpreter, &inner, "a");
+        assert_eq!(string(&mut interpreter, &answer).as_deref(), Some("ö🙂"));
     }
 }

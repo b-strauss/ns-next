@@ -5600,6 +5600,7 @@ impl<'gc> Heap<'gc> {
             current: Rc::clone(mixin),
             enclosing,
             nested: Vec::new(),
+            obsolete: false,
         });
         self.tables
             .mixin_ids
@@ -5724,6 +5725,49 @@ impl<'gc> Heap<'gc> {
     /// table or freed.
     pub(crate) fn enclosing_mixin_id(&self, id: MixinId) -> Option<MixinId> {
         self.mixin_row(id)?.enclosing
+    }
+
+    /// Makes the nested declaration `id` obsolete, as an install that
+    /// removed it from its enclosing declaration leaves it
+    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// install", decision 3): its id leaves its parent's nested list, so
+    /// no new application of the parent reserves it a hidden slot and no
+    /// assembled text holds it, and its row and every row declared in it
+    /// stay, its class objects, instances and subclasses running its last
+    /// version, until a full collection finds nothing naming its tree,
+    /// which from here on is a tree of its own (`module_trees`). Its
+    /// `enclosing` is kept, so that its path and its reflected name still
+    /// say where it was declared.
+    pub(crate) fn make_obsolete(&mut self, id: MixinId) {
+        let enclosing = self.mixin_row_mut(id).enclosing;
+        debug_assert!(
+            enclosing.is_some(),
+            "internal: only a nested declaration is removed"
+        );
+        if let Some(enclosing) = enclosing {
+            self.mixin_row_mut(enclosing)
+                .nested
+                .retain(|nested| *nested != id);
+        }
+        self.mixin_row_mut(id).obsolete = true;
+        self.tables.mixins_changed();
+    }
+
+    /// Whether the mixin `id` is obsolete: an install removed its
+    /// declaration, or one it is declared in (`make_obsolete`). `false`
+    /// for an id past the table or freed.
+    pub fn is_obsolete(&self, id: MixinId) -> bool {
+        let mut current = Some(id);
+        while let Some(each) = current {
+            let Some(row) = self.mixin_row(each) else {
+                return false;
+            };
+            if row.obsolete {
+                return true;
+            }
+            current = row.enclosing;
+        }
+        false
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
