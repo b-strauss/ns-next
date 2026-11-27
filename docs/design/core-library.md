@@ -362,17 +362,15 @@ once per text it interns and stores it beside the text, so an interned
 symbol's `hash` is one probe of the canonical table and one read, as a
 `Map` keyed by symbols needs it;
 only a program-made symbol whose text nothing has interned hashes its
-text, in place. Being the text's, it is the same in every process and
-survives a snapshot.
+text, in place.
 
 **Strings are code points in two widths.** A `String` is an object of the
 byte-indexed format while every code point fits Latin-1, one byte per code
 point, and of the 32-bit-indexed format otherwise, 32 bits per code point,
 so `size` and `at:` are one access each, read in place from the object's
-words. It is canonical (`r[vm.heap.string-canonical-width]`), so `=` compares
-the words directly and `hash` agrees with
-it. Every element is a Unicode scalar value, at most U+10FFFF and never a
-surrogate, so UTF-8 stays the encoding at every boundary -- source, the
+words. The width is canonical (`r[vm.heap.string-canonical-width]`), so `=`
+compares the words directly. Every element is a Unicode scalar value, so
+UTF-8 stays the encoding at every boundary -- source, the
 transcript, the image -- and the conversion to it is total; `CodePoints`
 (`crates/ns-runtime/src/code_points.rs`) is the Rust-side form a string is
 built from and copied out to. `hash` is the hash of the UTF-8 text, the value
@@ -545,14 +543,10 @@ does not bound this**: none of the eight benchmark sources sends `=` or
 source that does is what would show it, and there is none yet.
 
 **§3.1.1's four conditions are enforced, and where**
-(`r[semantics.value.conditions]`). §3.1.1's second
-bullet asks four things of an object taken to be a value: that all its slots
-"are immutable, have been initialized and contain value objects", that "its
-enclosing objects (3.3) are all value objects", and that "its class inherits
-from class `Value` and does not define an identity method (`==`)". Each is
-refused rather than silently allowing a value that is not one, and each where
-an instance would come into being; [object-model.md](object-model.md), "A
-value object's four conditions", has the whole design:
+(`r[semantics.value.conditions]`): each is refused where an instance
+would come into being, rather than allowing a value that is not one;
+[object-model.md](object-model.md), "A value object's four conditions",
+has the whole design:
 
 - **A mutable slot anywhere in a value's chain means no instance.**
   `Mutator::apply_mixin` computes `inherits_value` and the first mutable slot
@@ -1095,10 +1089,8 @@ it, read correctly.
 **No program reaches a shipped module's root**
 (`r[vm.mirror.root-instance-unreachable]`). The platform's class is
 `PlatformFactory`'s nested `Platform`, whose factory is `new`; the factory
-that takes the mirror belongs to the root, and nothing a program can name
-answers the root's instance or its class -- the class accessors of its
-facets answer nested classes only, and the root instance is only ever the
-enclosing object of the classes a program is handed. So no program can
+that takes the mirror belongs to the root, and the root instance is only
+ever the enclosing object of the classes a program is handed. So no program can
 build a second root instance over something that is not the mirror, and no
 runtime refusal is needed: the bootstrap instantiates `Kernel` and
 `PlatformFactory` through the same `Interpreter::instantiate` a host uses,
@@ -1170,10 +1162,7 @@ a nested class reaches whatever the root holds through its *real*
 enclosing root instance, and anything that reaches the instance reaches the
 class through `class` and can make more. So a shipped module that programs
 receive only as a restricted facet -- the I/O, network and debugger modules
-still to come -- must not make a nested class with the module's full
-authority publicly reachable, through a lazy slot, a class accessor or the
-class of any object it hands out; the facet's own classes are what a
-program may reach.
+still to come -- keeps its full-authority classes private.
 
 **An image names the platform's classes by their declarations.** The
 platform and its facets are ordinary records of their shipped classes, and
@@ -1631,8 +1620,7 @@ handle. They are no slots, since the class declares none; nothing writes
 them after creation; and the collector traces them as it traces any fixed
 pointer field, so neither the format table nor `pointer_ranges` needed an
 arm. A fraction is always in **normal form**
-(`r[vm.heap.fraction-normal-form]`), so equal fractions have equal parts
-and no fraction equals an integer. The runtime
+(`r[vm.heap.fraction-normal-form]`). The runtime
 alone makes one, through `Mutator::new_fraction`, which
 `Mutator::new_rational` calls for an exact result whose denominator is not
 1, answering an integer otherwise. `Fraction numerator:denominator:` is the
@@ -1893,10 +1881,8 @@ a multiple of four. It is the first format that needs a per-object fix-up
 in the movers; slack inside the object touches the fewest invariants,
 where an aligned bump with `Free` fillers would break the compaction's
 dense forwarding. The heap's readers `debug_assert!` the alignment, and the
-move stress mode's shifting offsets reach all four positions. A mover that
-skips it leaves the data at the old offset within the block, wrong bytes at
-exit status 0 ([memory.md](memory.md), "Every mover realigns a
-`ByteArray`'s data").
+move stress mode's shifting offsets reach all four positions
+([memory.md](memory.md), "Every mover realigns a `ByteArray`'s data").
 
 **`heap.rs`'s accessors copy out**, as the seam's do: allocating, `size`,
 a byte, a range copied, a range replaced (`memmove`), and a value read or
@@ -2418,8 +2404,7 @@ root sends the kernel instance it keeps, and one the instance understands
   `do:`, `keysAndValuesDo:`, `isEmpty`, `copyWith:` (a new `WeakArray` one
   longer, the element last), `isKindOfArray` and `isKindOfWeakArray`
   answering `true`. It holds any object, a value included, weakly
-  (`r[runtime.memory.weak]`: a slot whose object is collected reads `nil`,
-  and an immediate is never collected).
+  (`r[runtime.memory.weak]`; an immediate is never collected).
 - `Ephemeron new` answers one whose `key`, `value` and `finalizer` are
   `nil`; `key:`, `value:` and `finalizer:` answer the receiver. Its state
   is three private slots, `storedKey`, `storedValue` and
@@ -2445,9 +2430,7 @@ root sends the kernel instance it keeps, and one the instance understands
   (`interpreter::future::declines_for_a_future`), so a future standing for
   a value is refused as the value is. `nil` is the key of an ephemeron
   that has none, the state it is made in and the one its collected key
-  leaves it in. Its value and finalizer are held through its key, and a
-  key nothing but ephemerons reaches is collected and the three set to
-  `nil` (`r[runtime.memory.ephemeron]`).
+  leaves it in (`r[runtime.memory.ephemeron]`).
   `isKindOfEphemeron` answers `true`.
 - `WeakMap new`: `at:` (answering `nil` for an absent key), `at:put:`
   (answering the value), `includesKey:`, `removeKey:` (answering the value
@@ -2637,8 +2620,8 @@ Setting a word to `nil`
 stores no young object, and the scavenge remembers an old holder itself
 when a word it rewrote to a resolved future's value names a young copy. A
 program's store into a weak slot goes through the barrier like every
-store (`Heap::weak_array_set_element`): an old weak object naming a young
-one must be remembered for the scavenge to forward or clear the word.
+store (`Heap::weak_array_set_element`), so the scavenge forwards or clears
+the word.
 
 **The stress modes take them as they are.** The collection and scavenge
 stress modes run the passes above at their own safepoints, the move stress
@@ -2657,29 +2640,23 @@ name. **The encoder writes what a collection would keep**
 Soup's serializer does
 (`prior-art/primordialsoup/newspeak/Serialization.ns:548-561, 718-726,
 793-795`; `GraphTable::build` and `GraphTable::weakly_held` in
-`image/encode.rs`): a weak word names its object only if the graph reaches
-that object strongly otherwise, and is `nil` if not; an ephemeron's value
-and finalizer are traced once its key is reached, to a fixpoint, so a key
-reached only through another ephemeron's value is found however long the
-chain, and an ephemeron whose key never is is written with every field
-`nil`. Every round scans in list order, so the encoding stays canonical.
+`image/encode.rs`): the ephemerons' fixpoint runs to the end of any chain,
+and every round scans in list order, so the encoding stays canonical.
 
 **What takes no record is kept, never cleared.** A weak word or an
 ephemeron's key holding an immediate, a shipped name -- which the loading
 world holds strongly -- or an object written by value -- a
 `LargeInteger`, a boxed `Float` or a `Fraction`, which take no object id
 and are written whole wherever they are referenced (§3.1.1) -- is written
-as it is, even where nothing else in the graph reaches it. A collection's
-timing is unspecified, so keeping more than a collection would is never
-wrong, and a value has no identity a load could tell apart. A future is
-seen through first. The walk still meets what a weak array's slot or an
-ephemeron's key holds: a shipped object there is listed among the shipped
-names, and an unnamed shipped class, or the VM mirror, there refuses the
-whole image, as a strongly held one does. An ephemeron's value and
-finalizer are met only once its key is reached, so an unnamed shipped
-class or the mirror that only a mourned ephemeron's value or finalizer
-holds refuses nothing; nothing of it is written either way, since the
-encoder writes a mourned ephemeron with every field `nil`.
+as it is. A collection's timing is unspecified, so keeping more than a
+collection would is never wrong, and a value has no identity a load could
+tell apart. A future is seen through first. The walk still meets what a
+weak array's slot or an ephemeron's key holds, so a shipped object there
+is listed among the shipped names and an unnamed shipped class, or the VM
+mirror, refuses the whole image. An ephemeron's value and finalizer are
+met only once its key is reached, so an unnamed shipped class or the
+mirror that only a mourned ephemeron's value or finalizer holds refuses
+nothing; the encoder writes a mourned ephemeron with every field `nil`.
 
 **The decoder holds each body to its class**
 (`r[image.verify.weak-records]`). It sizes both records from
@@ -3715,7 +3692,7 @@ an argument that is no block is sent `value` through the kernel's private
 (`r[semantics.exception.handler]`, `r[runtime.handler-search]`,
 `r[runtime.unwind]`). `signal` walks the sender chain for a handler and
 runs the handler block **on top of the stack**: nothing is unwound until the
-handler decides, by `return:`, `retry`, `resume:` or `pass`. The walk goes
+handler decides. The walk goes
 through one leaf, `activationNextHandler:`, which answers the next enabled
 `on:do:` activation outward and reifies no activation it passes -- as Cog's
 handler search marries only the context it finds (`primitiveFindHandlerContext`,
@@ -3783,8 +3760,7 @@ names it, and a selector that is no Symbol is reported as `signal`'s, so no
 override can make an unhandled exception carry on and the failure block
 never runs. The termination unwinds to the run's floor, running every
 pending `ensure:` and `ifCurtailed:` block on the way, as Pharo does when it
-terminates a process, and the host receives the error: the CLI prints
-"Uncaught Newspeak error: " and the text and exits with status 1. A pending
+terminates a process, and the host receives the error. A pending
 block's output therefore precedes the error line, which the host prints
 once the run has ended; a golden records `stdout` and `stderr` apart, so no
 recorded outcome depends on the order. The `HostError`'s selector and
@@ -3892,9 +3868,7 @@ with an argument that is no `Message` fails inside the handler, on
   registers of the method's arguments and of its `handlerActive` or
   `complete` local), recognized by selector when the kernel's `Closure` is
   compiled (`compiler::unwind_marker`), as the quick methods are; only
-  kernel methods carry one, it is never written to an image, and a decoded
-  body has none. The unwinder and the leaves read it off each activation's
-  code afresh, never from an inline cache.
+  kernel methods carry one.
 - **One unwinder**, `interpreter::unwind`, for every cause: non-local
   return, `returnValue:`, `restart` and termination. It pops from the top
   towards its target; at an `ensure:` activation whose block has not run —
@@ -3999,8 +3973,7 @@ with an argument that is no `Message` fails inside the handler, on
   offset, because
   a frame is divorced on its activation's pop and never married again,
   where a later signal at the same offset would inherit an offset. It is
-  given back once that activation above is gone, and released whenever a
-  host's run ends. A push past the reserve ends the run at once and
+  given back once that activation above is gone. A push past the reserve ends the run at once and
   uncatchably — as a termination, so pending `ensure:` blocks still run.
   If the overrun is the signalling machinery's — the error it holds the
   reserve for is still searching for its handler, after `signal` or a
@@ -4152,8 +4125,7 @@ synchronized".
 
 **Built.** The parser keeps the modifier (`SlotDeclaration.lazy`,
 [frontend.md](frontend.md)), its rule is
-`r[semantics.slot.lazy]`: the slot starts `nil` and its getter evaluates
-the initializer while the slot holds `nil`, as §6.3.3 says.
+`r[semantics.slot.lazy]`.
 `goldens/language/slot/accessor/spec_6_3_3_*` pin first use, the
 `nil` answer, the abandoned initializer and one mixin's lazy slot under
 two applications at different field offsets;
@@ -4257,8 +4229,7 @@ a module's instance once it is recorded. The design as decided:
   module's instance in a lazy slot, `collectionsModule` and its four
   siblings. One instance per module is a guarantee of the VM, not of the
   lazy slot (`r[vm.mirror.one-instance-per-shipped-module]`):
-  `ShippedWorld::add_module_instance` refuses a second, and only
-  an instance of the pending class is recorded. A module an image names is
+  `ShippedWorld::add_module_instance` refuses a second. A module an image names is
   built by the loader before the graph is decoded, by the same functions
   (`Interpreter::build_shipped_names`; "Shipped names in the image" below).
   The same table later holds user modules and falls back to the file
