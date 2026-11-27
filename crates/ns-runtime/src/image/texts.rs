@@ -49,8 +49,13 @@ impl TextIds {
 /// (`mixins::row_texts`): a text belongs to one declaration, so no two
 /// instance sides name one text even where two hold one allocation. A row
 /// whose declaration holds no text -- one built without source -- is
-/// refused.
-pub(crate) fn encode(writer: &mut Writer, rows: &[Row]) -> Result<TextIds, String> {
+/// refused. The rows from `obsolete_from` on are the obsolete trees'
+/// (`mixins::plan_obsolete`), which belong to no module.
+pub(crate) fn encode(
+    writer: &mut Writer,
+    rows: &[Row],
+    obsolete_from: usize,
+) -> Result<TextIds, String> {
     let mut texts: Vec<Rc<DeclarationText>> = Vec::new();
     let mut ids: Vec<Option<u32>> = vec![None; rows.len()];
     let class_sides: HashSet<u32> = rows.iter().filter_map(|row| row.class_side).collect();
@@ -58,23 +63,31 @@ pub(crate) fn encode(writer: &mut Writer, rows: &[Row]) -> Result<TextIds, Strin
         .iter()
         .flat_map(|row| row.nested.iter().copied())
         .collect();
-    // The rows are in preorder, module after module, so the module a row
-    // belongs to is the last row that is no row's child.
-    let mut module = None;
+    // The rows are in preorder, module after module and then each obsolete
+    // tree, so the tree a row belongs to is the last row that is no row's
+    // child: a module's root, or a removed declaration's.
+    let mut tree = None;
     for (index, row) in rows.iter().enumerate() {
         let row_id = u32_field("mixin table id", index);
         if class_sides.contains(&row_id) {
             continue;
         }
         if !nested.contains(&row_id) {
-            module = Some(&row.mixin.name);
+            tree = Some(&row.mixin.name);
         }
         let Some(text) = &row.mixin.text else {
-            return Err(format!(
-                "image encoding cannot carry the source of module `{}`, which was built \
-                 without it",
-                module.unwrap_or(&row.mixin.name)
-            ));
+            let tree = tree.unwrap_or(&row.mixin.name);
+            return Err(if index < obsolete_from {
+                format!(
+                    "image encoding cannot carry the source of module `{tree}`, which was \
+                     built without it"
+                )
+            } else {
+                format!(
+                    "image encoding cannot carry the source of the removed class `{tree}`, \
+                     which was built without it"
+                )
+            });
         };
         let id = u32_field("text table id", texts.len());
         texts.push(Rc::clone(text));

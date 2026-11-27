@@ -119,7 +119,8 @@ pub struct DecodedModule {
 }
 
 /// The inverse of `encode_modules`. The declared count must be the mixin
-/// table's tree count, the length of `root_names` -- each tree's root
+/// table's module tree count -- its trees but the obsolete ones its count
+/// names -- the length of `root_names`, each module tree's root
 /// declaration's name, as `mixins::read` found the trees; a surplus tree
 /// would be declarations no module names, a missing one a module without a
 /// root -- and is bounded by the bytes left before anything is reserved for

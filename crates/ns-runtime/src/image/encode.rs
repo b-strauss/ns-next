@@ -2200,6 +2200,38 @@ impl<'gc> WalkedGraph<'gc> {
             })
             .collect()
     }
+
+    /// The id of every mixin a record of the graph names, in object order,
+    /// a mixin as often as records name it: each class object's applied
+    /// mixin, its declaration and the declaration whose `<:` clause added
+    /// it, and each reified mixin's. A metaclass names nothing its class
+    /// does not. What decides which obsolete trees an image carries
+    /// (`image::write_image`).
+    pub fn named_mixin_ids(&self, heap: &Heap<'gc>) -> Vec<MixinId> {
+        let mut ids = Vec::new();
+        for object in self.table.objects() {
+            match heap.object_shape(*object) {
+                ObjectShape::Class if heap.class_this_class(*object).is_none() => {
+                    let applied = heap
+                        .class_application(*object)
+                        .map(|application| Rc::clone(&application.mixin));
+                    let declaration = heap.class_declaration(*object);
+                    let clause = heap
+                        .class_applied_origin(*object)
+                        .map(|origin| Rc::clone(&origin.declaration));
+                    ids.extend(
+                        [applied, declaration, clause]
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|mixin| heap.known_mixin_id(&mixin)),
+                    );
+                }
+                ObjectShape::Mixin => ids.extend(heap.mixin_object_id(*object)),
+                _ => {}
+            }
+        }
+        ids
+    }
 }
 
 /// Walks the graph from `roots` and the carried modules' root classes

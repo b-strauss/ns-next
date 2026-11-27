@@ -740,17 +740,28 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     )
     .map_err(|error| error.to_string())?;
     let text_reports: Vec<Text> = decoded_texts.into_iter().map(|(text, _)| text).collect();
+    // A set, since both counts are the image's to choose.
+    let obsolete_rows: std::collections::HashSet<u32> =
+        decoded.obsolete_rows.iter().copied().collect();
     let mixin_lines = decoded
         .mixins
         .iter()
         .zip(decoded.code.iter())
-        .map(|(mixin, code)| {
+        .enumerate()
+        .map(|(row, (mixin, code))| {
             let text = match code.text {
                 Some(text) => format!("  text: {}", text.index),
                 None => String::new(),
             };
+            // A removed declaration's row roots an obsolete tree; the rows
+            // nested in it follow it.
+            let obsolete = if u32::try_from(row).is_ok_and(|row| obsolete_rows.contains(&row)) {
+                "  obsolete"
+            } else {
+                ""
+            };
             format!(
-                "{}  slots: {}  factory: {}  methods: {}{text}",
+                "{}  slots: {}  factory: {}  methods: {}{text}{obsolete}",
                 mixin.name,
                 mixin.slots.len(),
                 match &mixin.factory {

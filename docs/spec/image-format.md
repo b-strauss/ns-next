@@ -278,11 +278,17 @@ writes a body; its compiled methods, each with its selector, access,
 arity and body; the rows of its nested declarations and of its class
 side; the bodies of its full initializer, its initializer's own part,
 its standalone initializer and its superclass clause, each when it has
-one; and, in an image with source, its text. The rows form a forest, one
-tree per module, the module's root declaration its root and the children
-of a row its nested declarations and then its class side; each tree is
-written in preorder, a row before its children, and the trees in module
-order.
+one; and, in an image with source, its text. The rows form a forest, the
+children of a row its nested declarations and then its class side: first
+one tree per module, the module's root declaration its root, in module
+order, and then one obsolete tree per declaration an install removed
+that the graph still reaches
+([`runtime.install`](runtime.md#r-runtime.install)), the removed
+declaration its root, with every declaration nested in it, each as it
+last was. Each tree is written in preorder, a row before its children.
+After the rows, the table holds how many of its last trees are obsolete
+trees. An obsolete tree belongs to no module: no module record names it,
+and its root is nested in no row.
 
 The methods of a row are in the order of their selectors' text. Every
 accessor of a slot follows from its name, kind and access and is not
@@ -362,7 +368,7 @@ code-table                                 count:u32  body:body*count
 text-table                                 count:u32  text:declaration-text*count
 declaration-text                           start:u32  end:u32  hole_count:u32  hole:hole*hole_count  text:text
 hole                                       start:u32  end:u32
-mixin-table                                count:u32  row:mixin-row*count
+mixin-table                                count:u32  row:mixin-row*count  obsolete:u32
 mixin-row                                  name:symbol  access:access  start:u32  end:u32  slot_count:u32  slot:slot*slot_count  has_factory:u8  factory:factory?has_factory  has_initializer_expressions:u8  has_superclass:u8  superclass:clause-message?has_superclass  application_count:u32  application:clause-message*application_count  has_body:u8  method_count:u32  method:method*method_count  nested_count:u32  nested:row-id*nested_count  has_class_side:u8  class_side:row-id?has_class_side  has_initializer:u8  initializer:code-id?has_initializer  has_own_initializer:u8  own_initializer:code-id?has_own_initializer  has_standalone_initializer:u8  standalone_initializer:code-id?has_standalone_initializer  has_superclass_clause:u8  superclass_clause:code-id?has_superclass_clause  text:text-index?flag:has-source
 slot                                       name:symbol  kind:slot-kind  access:access
 slot-kind/slot-kind
@@ -525,8 +531,10 @@ r[image.verify.mixin-tree]
    row once and in table order, so that no row is its own ancestor, none
    has two parents and none is a child of a row of another tree; no tree
    nests more than 130 rows deep, its root counted, the 128 nested classes
-   the parser takes under a root and the innermost one's class side; and
-   the table holds as many trees as the module section holds records.
+   the parser takes under a root and the innermost one's class side, an
+   obsolete tree as a module's; the table counts no more obsolete trees
+   than it holds trees, read before anything is split by it; and the trees
+   but the obsolete ones are as many as the module section holds records.
 
 r[image.verify.initializers]
 9. A row's bodies hold to its declaration, each of the kind and the
@@ -864,8 +872,10 @@ built included, is dropped with it
 4. If the header sets `has-source`, read the text table
    ([`image.texts`](#r-image.texts)). Read the mixin table
    ([`image.mixins`](#r-image.mixins)) and the module section
-   ([`image.modules`](#r-image.modules)), and hold them and the texts to
-   rules 5 to 10 ([`image.limit.clauses`](#r-image.limit.clauses) to
+   ([`image.modules`](#r-image.modules)), the module section's records
+   naming the mixin table's trees but its obsolete ones, which load
+   obsolete ([`image.load.obsolete`](#r-image.load.obsolete)), and hold
+   them and the texts to rules 5 to 10 ([`image.limit.clauses`](#r-image.limit.clauses) to
    [`image.verify.module-identity`](#r-image.verify.module-identity)) and
    to the first half of rule 11, no two records of one module
    ([`image.verify.modules`](#r-image.verify.modules)). Every count and
@@ -980,6 +990,18 @@ in the graph reaches. The next collection treats them as
 [`runtime.memory.ephemeron`](runtime.md#r-runtime.memory.ephemeron)
 say.
 
+r[image.load.obsolete]
+An obsolete tree loads obsolete, as the install that removed its root
+left it in the world that wrote the image
+([`runtime.install`](runtime.md#r-runtime.install)): its root is nested
+in no declaration and no module's tree holds it, so no module's source
+text holds its text and no enclosing class answers its name; its class
+objects, its subclasses and its instances run its last version, and its
+declarations' texts are kept. A full collection frees it once nothing
+reaches it, as it frees a removed declaration in a running world. An
+image written from the loaded world writes it again as an obsolete tree
+while the graph reaches it.
+
 r[image.load.modules]
 Each module keeps the identity its record gives -- its path relative to
 its project, its id and its version ([`image.modules`](#r-image.modules)):
@@ -1036,7 +1058,7 @@ program's or the binary's, and changes nothing of the world it reads.
 3. Let the declarations be each module's root declaration and every
    declaration it nests, each as it now is
    ([`image.write.edited`](#r-image.write.edited)), one tree per module in
-   the order of *modules*: the rows of the mixin table
+   the order of *modules*: the first rows of the mixin table
    ([`image.mixins`](#r-image.mixins)). Refuse a tree nested more than
    130 rows deep, which the loader would refuse
    ([`image.verify.mixin-tree`](#r-image.verify.mixin-tree)).
@@ -1053,24 +1075,35 @@ program's or the binary's, and changes nothing of the world it reads.
    class that is not its module's record, breaks the root rule or is
    shipped, and a graph that reaches the VM mirror, its class or a shipped
    class no shipped name names
-   ([`image.write.refusals`](#r-image.write.refusals)).
+   ([`image.write.refusals`](#r-image.write.refusals)). Then let the
+   obsolete declarations be every declaration an install removed that the
+   graph reaches -- one a class object applies, declares or adds through a
+   `<:` clause, is nested in, one a reified mixin stands for, and one a
+   closure or a frame runs a body of, of its last version or of one an
+   install superseded -- in the order the world registered them, whether
+   or not *modules* holds the module it was removed from. Each, with every
+   declaration nested in it as it last was, is a tree of the mixin table
+   after the modules' trees, held to the same ceiling; a removed
+   declaration nothing reaches is not written.
 5. Write the code table ([`image.code-table`](#r-image.code-table)): every
-   body the declarations carry, the blocks nested in them, and every body
-   a closure or a frame of the graph runs that an older version of one of
-   the declarations compiled
+   body the declarations and the obsolete declarations carry, the blocks
+   nested in them, and every body a closure or a frame of the graph runs
+   that an older version of one of them compiled
    ([`image.write.edited`](#r-image.write.edited)). Refuse a closure or a
    frame that runs any other body.
 6. If the modules carry source, write the text table
    ([`image.texts`](#r-image.texts),
-   [`image.write.source`](#r-image.write.source)), refusing a module
-   built without its text. Write the mixin table
-   and the module section, a record for each module in the order of
+   [`image.write.source`](#r-image.write.source)), refusing a module or
+   an obsolete declaration built without its text. Write the mixin table,
+   the modules' trees, the obsolete trees and their count, and the module
+   section, a record for each module in the order of
    *modules*, naming its root class's record
    ([`image.modules`](#r-image.modules)).
 7. Write the object table, a record for each object the walk entered, and
    the roots, in their order ([`image.graph`](#r-image.graph)). Every
    program class, level and reified mixin the graph reaches is of one of
-   the declarations: refuse one of a module not among *modules*, and a
+   the declarations or of an obsolete one: refuse one of a module not
+   among *modules*, and a
    shipped name where [`image.shipped.positions`](#r-image.shipped.positions)
    does not let it stand ([`image.write.refusals`](#r-image.write.refusals)).
    Then write the tag-named hashes: the identity
@@ -1177,7 +1210,9 @@ the source of some modules only is refused with
 `image encoding carries source for every module or for none: one module has none`.
 A module built without its text -- one an image without source loaded --
 cannot be written with source, and the write is refused with
-``image encoding cannot carry the source of module `<name>`, which was built without it``.
+``image encoding cannot carry the source of module `<name>`, which was built without it``;
+an obsolete declaration built without its text, with
+``image encoding cannot carry the source of the removed class `<name>`, which was built without it``.
 
 r[image.write.edited]
 A program a MirrorBuilder edited
@@ -1234,7 +1269,10 @@ refuses:
   a reified mixin of one of its declarations, with
   `image encoding cannot serialize the reified mixin <name>, which is not part of any module the image carries`;
   and a closure or a frame running one of its bodies, with the refusals
-  [`image.write.edited`](#r-image.write.edited) gives.
+  [`image.write.edited`](#r-image.write.edited) gives. A declaration an
+  install removed is none of these: it is written as an obsolete tree,
+  whichever module it was removed from ([`image.write`](#r-image.write),
+  step 4).
 - **A module root that is no class object**, with
   `image encoding's root object is not a class`.
 - **An object whose record the loader would refuse**

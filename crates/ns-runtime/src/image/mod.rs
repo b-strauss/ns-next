@@ -3,9 +3,10 @@
 //! `docs/design/image-format.md`. Layout: header (magic, format version,
 //! flags, the shipped world's fingerprint), symbol table, code
 //! table, text table (only with `FLAG_HAS_SOURCE`: each declaration's own
-//! text, `texts`), mixin table (one tree per module, in module order, each
-//! row naming its text when the image carries source), module section
-//! (per module: its path, id and version, the object id of its root class
+//! text, `texts`), mixin table (one tree per module, in module order, then
+//! one per removed declaration the graph reaches, each row naming its text
+//! when the image carries source, then the obsolete trees' count), module
+//! section (per module: its path, id and version, the object id of its root class
 //! record),
 //! then the shipped names, object table (frames included), roots,
 //! tag-named hashes.
@@ -61,10 +62,15 @@ struct Describing {
     mixin_ids: mixins::MixinIds,
 }
 
-/// The rows the describing sections write, planned before the graph is
-/// walked, and whether they carry their texts.
+/// The rows the describing sections write -- the modules' trees, planned
+/// before the graph is walked, then the obsolete trees the graph reaches
+/// (`plan_reached_obsolete`) -- and whether they carry their texts.
 struct Planned {
     rows: Vec<mixins::Row>,
+    /// The row the first obsolete tree starts at: the modules' rows' count.
+    obsolete_from: usize,
+    /// How many obsolete trees follow the modules'.
+    obsolete_trees: u32,
     with_source: bool,
 }
 
@@ -122,7 +128,73 @@ fn plan_describing<'gc>(
     // code table, the text table and the mixin table describe one program:
     // the program as an edit left it, each declaration's text once.
     let rows = mixins::plan(heap, &module_roots)?;
-    Ok(Planned { rows, with_source })
+    Ok(Planned {
+        obsolete_from: rows.len(),
+        rows,
+        obsolete_trees: 0,
+        with_source,
+    })
+}
+
+/// Appends to `planned` the obsolete tree of every removed declaration the
+/// walked graph reaches (`r[image.write]`, step 4), in the heap's row order:
+/// one a record names -- a class object applying a mixin of it, declared
+/// by it or added by its `<:` clause, a reified mixin of it -- and one
+/// whose code a closure or a frame runs, a version an install superseded
+/// included. A removed declaration nothing reaches is not written. An
+/// obsolete tree is whole in itself, so it is written whether or not the
+/// image carries the module it was removed from.
+fn plan_reached_obsolete<'gc>(
+    heap: &Heap<'gc>,
+    planned: &mut Planned,
+    walked: &encode::WalkedGraph<'gc>,
+) -> Result<(), String> {
+    let roots = heap.obsolete_roots();
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let mut reached: HashSet<MixinId> = walked
+        .named_mixin_ids(heap)
+        .into_iter()
+        .filter_map(|id| heap.obsolete_root(id))
+        .collect();
+    let bodies: HashSet<usize> = walked
+        .bodies(heap)
+        .iter()
+        .map(|body| Rc::as_ptr(body) as usize)
+        .collect();
+    for root in &roots {
+        if bodies.is_empty() || reached.contains(root) {
+            continue;
+        }
+        let Some(root_mixin) = heap.mixin(*root) else {
+            continue;
+        };
+        let tree = mixins::tree_versions(heap, &root_mixin);
+        let ids: HashSet<MixinId> = tree
+            .iter()
+            .filter_map(|mixin| heap.known_mixin_id(mixin))
+            .collect();
+        let mut compiled = HashSet::new();
+        for version in tree
+            .iter()
+            .chain(heap.superseded_mixins().iter().filter(|version| {
+                heap.known_mixin_id(version)
+                    .is_some_and(|id| ids.contains(&id))
+            }))
+        {
+            version_bodies(version, &mut compiled);
+        }
+        if compiled.iter().any(|body| bodies.contains(body)) {
+            reached.insert(*root);
+        }
+    }
+    let written: Vec<MixinId> = roots
+        .into_iter()
+        .filter(|root| reached.contains(root))
+        .collect();
+    planned.obsolete_trees = mixins::plan_obsolete(heap, &mut planned.rows, &written)?;
+    Ok(())
 }
 
 /// Encodes the code table and the mixin table into their own buffers,
@@ -138,7 +210,12 @@ fn encode_describing(
     planned: Planned,
     bodies: &[Rc<CompiledCode>],
 ) -> Result<Describing, String> {
-    let Planned { rows, with_source } = planned;
+    let Planned {
+        rows,
+        obsolete_from,
+        obsolete_trees,
+        with_source,
+    } = planned;
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
     let extra = extra_bodies(heap, &rows, bodies);
@@ -147,7 +224,7 @@ fn encode_describing(
     // file, which after an edit is no longer the program's text.
     let (texts, text_ids) = if with_source {
         let mut texts = encode::Writer::new();
-        let text_ids = texts::encode(&mut texts, &rows)?;
+        let text_ids = texts::encode(&mut texts, &rows, obsolete_from)?;
         (Some(texts), Some(text_ids))
     } else {
         (None, None)
@@ -158,6 +235,7 @@ fn encode_describing(
     let mixin_ids = mixins::encode(
         &mut mixin_writer,
         &rows,
+        obsolete_trees,
         &mut symbols,
         &ids,
         text_ids.as_ref(),
@@ -354,11 +432,14 @@ fn write_image<'gc>(
                 .to_string(),
         );
     }
-    let planned = plan_describing(heap, modules)?;
+    let mut planned = plan_describing(heap, modules)?;
     let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
     // Walked before the code table is written: the bodies the graph runs
     // decide which code of an older version the table carries.
     let walked = encode::walk_graph(mutator, roots, &classes)?;
+    // After the walk, which decides which removed declarations the image
+    // still needs; before the code table, which carries their bodies.
+    plan_reached_obsolete(heap, &mut planned, &walked)?;
     let mut describing = encode_describing(heap, planned, &walked.bodies(heap))?;
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
@@ -619,6 +700,15 @@ fn decode_graph_phase<'gc>(
     let shipped = shipped_names::resolve(names, &mutator.shipped_world, header.start)
         .map_err(|error| error.to_string())?;
     let module_root_ids: Vec<u32> = decoded_modules.iter().map(|module| module.root).collect();
+    // Registered obsolete before any record names them, so that the world
+    // the graph is decoded into already holds each removed declaration as
+    // the world that wrote it did: out of every module's tree. A Rust
+    // table's rows only; nothing is allocated in the heap.
+    for row in &mixins.obsolete_rows {
+        let root = &mixins.mixins[*row as usize];
+        let id = mutator.heap.mixin_id(root);
+        mutator.heap.make_loaded_obsolete(id);
+    }
     let mut context = decode::DecodeContext {
         mutator,
         module_roots: &module_root_ids,

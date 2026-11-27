@@ -2557,6 +2557,209 @@ mod tests {
         });
     }
 
+    /// The id of the mixin the class object `class` applies, which the
+    /// heap registered when it applied it.
+    fn applied_id_of(interpreter: &mut Interpreter, class: &Root) -> MixinId {
+        interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, class);
+            mutator
+                .heap
+                .known_mixin_id(&mixin)
+                .expect("an applied mixin is registered")
+        })
+    }
+
+    /// Whether any mixin `interpreter`'s heap names is called `name`.
+    fn names_a_mixin(interpreter: &mut Interpreter, name: &str) -> bool {
+        interpreter.enter(|mutator| {
+            mutator.heap.mixin_ids().into_iter().any(|id| {
+                mutator
+                    .heap
+                    .mixin(id)
+                    .is_some_and(|mixin| mixin.name.as_str() == name)
+            })
+        })
+    }
+
+    /// A removed class an image reaches is written as a tree of its own
+    /// and loads obsolete: its instance answers its last version, its
+    /// class object makes more and a block of its method runs, while it
+    /// stands in no module's tree and its former module's text does not
+    /// hold it. Written again from the loaded world, it loads obsolete
+    /// again.
+    // spec: image.load.obsolete
+    // spec: image.mixins
+    // spec: image.write
+    #[test]
+    fn an_obsolete_class_loads_obsolete() {
+        let (mut interpreter, outer, inner_class, inner, inner_id) = module_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let block = send(&mut interpreter, &inner, "block");
+        let outer_instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let mut bytes = image_of(
+            &mut interpreter,
+            &outer,
+            &[inner, inner_class, block, outer_instance],
+        );
+        for round in ["first", "second"] {
+            let mut image = loaded(&bytes);
+            let [inner, inner_class, block, outer_instance] = image.roots.as_slice() else {
+                panic!("{round}: four roots");
+            };
+            let (inner, inner_class, block, outer_instance) = (
+                inner.clone(),
+                inner_class.clone(),
+                block.clone(),
+                outer_instance.clone(),
+            );
+            let answer = send(&mut image.interpreter, &inner, "a");
+            assert_eq!(integer(&mut image.interpreter, &answer), Some(1), "{round}");
+            let made = send(&mut image.interpreter, &inner_class, "new");
+            let slot = send(&mut image.interpreter, &made, "x");
+            assert_eq!(integer(&mut image.interpreter, &slot), Some(1), "{round}");
+            let value = send(&mut image.interpreter, &block, "value");
+            assert_eq!(integer(&mut image.interpreter, &value), Some(1), "{round}");
+            let message = send_error(&mut image.interpreter, &outer_instance, "Inner");
+            assert!(message.contains("does not understand #Inner"), "{message}");
+            let loaded_inner = applied_id_of(&mut image.interpreter, &inner_class);
+            let loaded_outer = root_id_of(&mut image.interpreter, &image.modules[0].class);
+            image.interpreter.enter(|mutator| {
+                assert!(mutator.heap.is_obsolete(loaded_inner), "{round}");
+                assert!(!mutator.heap.is_obsolete(loaded_outer), "{round}");
+                assert_eq!(mutator.heap.enclosing_mixin_id(loaded_inner), None);
+                assert!(!mutator.heap.nested_of(loaded_outer).contains(&loaded_inner));
+                let module = mutator
+                    .heap
+                    .module_source(loaded_outer)
+                    .expect("Outer's text");
+                assert!(!module.contains("class Inner"), "{round}: {module}");
+                let inner_mixin = mutator.heap.mixin(loaded_inner).expect("Inner's row");
+                let own = mutator
+                    .heap
+                    .assembled_text(&inner_mixin)
+                    .expect("Inner keeps its text");
+                assert!(own.contains("public a = ( ^1 )"), "{round}: {own}");
+            });
+            let module = image.modules[0]
+                .source
+                .clone()
+                .expect("the image has source");
+            assert!(!module.contains("class Inner"), "{round}: {module}");
+            bytes = image_of(
+                &mut image.interpreter,
+                &image.modules[0].class,
+                &[inner, inner_class, block, outer_instance],
+            );
+        }
+    }
+
+    /// A subclass in another module of a removed class, and a class nested
+    /// in the removed one, load with it: the removed class's tree is
+    /// written whole, after both modules' trees, and the subclass's
+    /// instance inherits its last version.
+    // spec: image.load.obsolete
+    #[test]
+    fn a_subclass_in_another_module_of_an_obsolete_class_loads() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Inner = (| public x ::= 1. |) (
+                public class Deep = () (
+                  public d = ( ^4 )
+                )
+                public a = ( ^1 )
+              )
+            )
+        "};
+        let (mut interpreter, outer, inner_class, inner, inner_id) = module_and_inner(source);
+        let deep_class = send(&mut interpreter, &inner, "Deep");
+        let deep = send(&mut interpreter, &deep_class, "new");
+        let other_source = indoc! {"
+            class Other usingInner: innerClass = Object new (
+              | public inner = innerClass. |
+            ) (
+              public class Sub = inner () (
+                public answer = ( ^a + 1 )
+              )
+            )
+        "};
+        let other = load_into(&mut interpreter, other_source);
+        let other_instance = expect_ok(
+            interpreter.instantiate(&other, std::slice::from_ref(&inner_class)),
+            "an Other",
+        );
+        let sub_class = send(&mut interpreter, &other_instance, "Sub");
+        let sub = send(&mut interpreter, &sub_class, "new");
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let bytes = interpreter.enter(|mutator| {
+            let outer_identity = crate::modules::ModuleIdentity::undeclared("t.ns", "Outer");
+            let other_identity = crate::modules::ModuleIdentity::undeclared("other.ns", "Other");
+            let class = |root: &Root| mutator.fetch(root).as_object().expect("a class object");
+            let modules = [
+                crate::image::ModuleSource {
+                    class: class(&outer),
+                    identity: &outer_identity,
+                    with_source: true,
+                },
+                crate::image::ModuleSource {
+                    class: class(&other),
+                    identity: &other_identity,
+                    with_source: true,
+                },
+            ];
+            let roots = [
+                mutator.fetch(&sub),
+                mutator.fetch(&deep),
+                mutator.fetch(&deep_class),
+            ];
+            crate::image::snapshot(mutator, &modules, &roots).expect("snapshot")
+        });
+        let mut image = loaded(&bytes);
+        let [sub, deep, deep_class] = image.roots.as_slice() else {
+            panic!("three roots");
+        };
+        let (sub, deep, deep_class) = (sub.clone(), deep.clone(), deep_class.clone());
+        let answer = send(&mut image.interpreter, &sub, "answer");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(2));
+        let answer = send(&mut image.interpreter, &deep, "d");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(4));
+        let deep_id = applied_id_of(&mut image.interpreter, &deep_class);
+        image.interpreter.enter(|mutator| {
+            assert!(
+                mutator.heap.is_obsolete(deep_id),
+                "Deep is obsolete through Inner"
+            );
+            let root = mutator
+                .heap
+                .obsolete_root(deep_id)
+                .expect("Deep stands in an obsolete tree");
+            assert_eq!(
+                mutator.heap.mixin(root).expect("Inner's row").name.as_str(),
+                "Inner"
+            );
+            assert_eq!(mutator.heap.enclosing_mixin_id(root), None);
+        });
+        assert_eq!(image.modules.len(), 2);
+    }
+
+    /// A removed class nothing of the graph reaches is not written: the
+    /// image holds no row of it and none of its text, though the world
+    /// that wrote it still holds it.
+    // spec: image.write
+    #[test]
+    fn an_unreachable_obsolete_class_is_not_written() {
+        let (mut interpreter, outer, _inner_class, _inner, inner_id) = module_and_inner(OUTER);
+        let outer_id = enclosing_of(&mut interpreter, inner_id);
+        install(&mut interpreter, outer_id, &remove_class("Inner"));
+        let outer_instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        assert!(names_a_mixin(&mut interpreter, "Inner"));
+        let bytes = image_of(&mut interpreter, &outer, &[outer_instance]);
+        assert!(!contains(&bytes, "public a = ( ^1 )"));
+        let mut image = loaded(&bytes);
+        assert!(!names_a_mixin(&mut image.interpreter, "Inner"));
+    }
+
     /// A class added to an enclosing declaration gets a fresh id declared
     /// in it, and an existing instance of the enclosing class answers it.
     // spec: runtime.install

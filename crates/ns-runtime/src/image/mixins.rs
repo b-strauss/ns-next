@@ -143,21 +143,62 @@ fn current_preorder(heap: &Heap<'_>, mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>
 ///
 /// Planned once per image and handed to every table it describes -- the
 /// code table, the text table and the mixin table -- so that all three
-/// follow the same rows.
+/// follow the same rows, the obsolete trees `plan_obsolete` appends once
+/// the graph is walked among them.
 pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
+    let mut rows = Vec::new();
+    append_trees(heap, &mut rows, module_roots)?;
+    Ok(rows)
+}
+
+/// Appends to `rows`, after the module trees `plan` made, one tree per
+/// obsolete declaration of `obsolete_roots` (`Heap::obsolete_root`): the
+/// declaration an install removed with every declaration nested in it, as
+/// it last was. Answers how many trees it appended, the count the mixin
+/// table writes after its rows. The graph decides which: a declaration
+/// nothing the image writes names is not written, so an image carries the
+/// obsolete classes a program still reaches and no other.
+pub fn plan_obsolete(
+    heap: &Heap<'_>,
+    rows: &mut Vec<Row>,
+    obsolete_roots: &[MixinId],
+) -> Result<u32, String> {
+    let roots: Vec<Rc<Mixin>> = obsolete_roots
+        .iter()
+        .filter_map(|id| heap.mixin(*id))
+        .collect();
+    append_trees(heap, rows, &roots)?;
+    Ok(u32_field("mixin table obsolete tree count", roots.len()))
+}
+
+/// The current versions of `root`'s tree, `root` first, in
+/// `mixin::preorder` order: the versions one tree of the mixin table
+/// describes.
+pub(crate) fn tree_versions(heap: &Heap<'_>, root: &Rc<Mixin>) -> Vec<Rc<Mixin>> {
     let mut order = Vec::new();
-    for root in module_roots {
+    current_preorder(heap, root, &mut order);
+    order
+}
+
+/// The trees under `roots`, appended to `rows` one after another, their
+/// row ids following the rows already there. Each tree's children are
+/// rows of the same tree, so the ids are assigned over the appended rows
+/// alone.
+fn append_trees(heap: &Heap<'_>, rows: &mut Vec<Row>, roots: &[Rc<Mixin>]) -> Result<(), String> {
+    let first = rows.len();
+    let mut order = Vec::new();
+    for root in roots {
         current_preorder(heap, root, &mut order);
     }
     let rows_by_key: HashMap<usize, u32> = order
         .iter()
         .enumerate()
-        .map(|(index, mixin)| (mixin_key(mixin), u32_field("mixin table id", index)))
+        .map(|(index, mixin)| (mixin_key(mixin), u32_field("mixin table id", first + index)))
         .collect();
     // Every child's current version is in `order` -- `current_preorder`
     // put it there -- so the lookup cannot miss.
     let row_of = |child: &Rc<Mixin>| rows_by_key[&mixin_key(&current(heap, child))];
-    let mut rows = Vec::with_capacity(order.len());
+    rows.reserve(order.len());
     for mixin in &order {
         let mut methods: Vec<Rc<MixinMethod>> = mixin.compiled_methods().cloned().collect();
         methods.sort_by(|left, right| left.selector.as_str().cmp(right.selector.as_str()));
@@ -175,7 +216,7 @@ pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, Str
     // Unreachable for a tree built from parsed source (the ceiling is
     // derived from the parser's own), so what this catches is a mixin tree
     // assembled programmatically.
-    let depth = depth_of(&rows);
+    let depth = depth_of(rows);
     if depth > MAX_MIXIN_DEPTH {
         return Err(format!(
             "image encoding refuses a class tree nested {depth} levels deep: \
@@ -183,7 +224,7 @@ pub fn plan(heap: &Heap<'_>, module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, Str
              image past it could never be loaded"
         ));
     }
-    Ok(rows)
+    Ok(())
 }
 
 /// The forest's depth in `Mixin` links, counting each tree's root as level 1.
@@ -263,13 +304,16 @@ pub(crate) fn access_from_tag(tag: u8) -> Result<AccessModifier, DecodeError> {
 /// the row describes the current one.
 pub type MixinIds = HashMap<MixinId, u32>;
 
-/// Writes the mixin table of `rows` (`plan`) and returns the id -> row id
-/// map the object graph addresses a class object's mixin by. With `texts`,
-/// the image carries its source, and each row ends with the index of its
-/// declaration's text in the text table (`texts::encode`).
+/// Writes the mixin table of `rows` (`plan`, then `plan_obsolete`) and
+/// returns the id -> row id map the object graph addresses a class
+/// object's mixin by. With `texts`, the image carries its source, and each
+/// row ends with the index of its declaration's text in the text table
+/// (`texts::encode`). After the rows, `obsolete_trees`: how many of the
+/// last trees are obsolete ones rather than modules'.
 pub fn encode(
     writer: &mut Writer,
     rows: &[Row],
+    obsolete_trees: u32,
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
     texts: Option<&TextIds>,
@@ -358,6 +402,10 @@ pub fn encode(
             writer.write_u32(texts.id_of(index, mixin)?);
         }
     }
+    // A count rather than a mark per row: the trees the rows form say where
+    // each one starts, so the count alone tells the modules' trees from the
+    // obsolete ones, and no row can be marked against the tree it stands in.
+    writer.write_u32(obsolete_trees);
     Ok(rows
         .iter()
         .enumerate()
@@ -419,15 +467,20 @@ pub struct RowText {
 }
 
 /// The decoded mixin table: the rebuilt declarations, in row-id order (which
-/// is `mixin::preorder` order of each module's root, one tree after another),
-/// and each one's code bindings at the same index.
+/// is `mixin::preorder` order of each module's root, one tree after another,
+/// then of each obsolete tree's), and each one's code bindings at the same
+/// index.
 #[derive(Debug)]
 pub struct Decoded {
     pub mixins: Vec<Rc<Mixin>>,
     pub code: Vec<MixinCode>,
-    /// Each tree's first row, in table order: the row of each module's root
-    /// declaration, as `check_preorder` found the trees.
+    /// Each module tree's first row, in table order: the row of each
+    /// module's root declaration, as `check_preorder` found the trees.
     pub module_rows: Vec<u32>,
+    /// Each obsolete tree's first row, in table order: the row of each
+    /// declaration an install removed, which the loader registers
+    /// obsolete (`Heap::make_loaded_obsolete`).
+    pub obsolete_rows: Vec<u32>,
 }
 
 impl Decoded {
@@ -436,6 +489,7 @@ impl Decoded {
             mixins: Vec::new(),
             code: Vec::new(),
             module_rows: Vec::new(),
+            obsolete_rows: Vec::new(),
         }
     }
 
@@ -493,9 +547,12 @@ pub fn decode(
 /// trees found, no mixin built yet.
 pub struct ReadTable {
     raw: Vec<RawRow>,
-    /// Each tree's first row, in table order: the row of each module's root
-    /// declaration, as `check_preorder` found the trees.
+    /// Each module tree's first row, in table order: the row of each
+    /// module's root declaration, as `check_preorder` found the trees.
     pub module_rows: Vec<u32>,
+    /// Each obsolete tree's first row, in table order: the trees after
+    /// the modules' the table's count names.
+    pub obsolete_rows: Vec<u32>,
 }
 
 impl ReadTable {
@@ -526,6 +583,10 @@ impl ReadTable {
 ///    ancestor, no row has two parents, no row reaches back into an earlier
 ///    tree), that no tree is deeper than `MAX_MIXIN_DEPTH`, and where each
 ///    tree starts.
+///
+/// Then the count after the rows, of the last trees that are obsolete
+/// ones, is held to the trees the walk found before it splits them: the
+/// trees before are the modules', which the module section counts.
 pub fn read(
     reader: &mut Reader,
     symbols: &symbols::Table,
@@ -538,10 +599,21 @@ pub fn read(
         raw.push(read_row(reader, symbols, codes, has_source)?);
     }
     check_ids(&raw)?;
-    let module_rows = check_preorder(&raw)?;
+    let mut module_rows = check_preorder(&raw)?;
     check_member_names(&raw)?;
     check_lazy_slot_getters(&raw)?;
-    Ok(ReadTable { raw, module_rows })
+    let obsolete = reader.read_u32()?;
+    let trees = u32::try_from(module_rows.len()).unwrap_or(u32::MAX);
+    if obsolete > trees {
+        return Err(DecodeError::ObsoleteTreeCountMismatch { obsolete, trees });
+    }
+    // `obsolete` is at most the tree count, so the split lies inside the list.
+    let obsolete_rows = module_rows.split_off(module_rows.len() - obsolete as usize);
+    Ok(ReadTable {
+        raw,
+        module_rows,
+        obsolete_rows,
+    })
 }
 
 fn read_row(
@@ -811,11 +883,13 @@ fn check_lazy_slot_getters(raw: &[RawRow]) -> Result<(), DecodeError> {
 /// the depth is the image's to choose.
 ///
 /// A table describing several modules is several such trees, one after
-/// another in module order, so the walk starts a new tree wherever the
-/// previous one ended; each tree's first row is a module's root, which is
-/// how the module section names it. A row nothing reaches therefore starts
-/// a tree of its own, and is refused where the trees are counted against
-/// the modules the image declares.
+/// another in module order, and then the obsolete trees, so the walk
+/// starts a new tree wherever the previous one ended and answers each
+/// tree's first row: a module's root, which is how the module section
+/// names it, or a removed declaration's. A row nothing reaches therefore
+/// starts a tree of its own, and is refused where the trees are counted
+/// against the modules the image declares and the obsolete trees the
+/// table counts. Every tree, obsolete or not, is held to one ceiling.
 fn check_preorder(raw: &[RawRow]) -> Result<Vec<u32>, DecodeError> {
     let mut module_rows = Vec::new();
     let mut expected: u32 = 0;
@@ -1005,9 +1079,15 @@ pub fn build(
     texts: &[Rc<DeclarationText>],
     module_identities: &[Rc<ModuleIdentity>],
 ) -> Result<Decoded, DecodeError> {
-    let ReadTable { raw, module_rows } = table;
+    let ReadTable {
+        raw,
+        module_rows,
+        obsolete_rows,
+    } = table;
     // Each module's root row carries its module's identity, as a loaded
-    // module's root mixin does (`Mixin::module_identity`).
+    // module's root mixin does (`Mixin::module_identity`). An obsolete
+    // tree's root carries none: it is no module's, and its row is the root
+    // of a tree with no enclosing mixin, as every tree's is.
     let mut row_identities: Vec<Option<Rc<ModuleIdentity>>> = vec![None; raw.len()];
     for (row, identity) in module_rows.iter().zip(module_identities) {
         row_identities[*row as usize] = Some(Rc::clone(identity));
@@ -1147,5 +1227,6 @@ pub fn build(
             .map(|code| code.expect("every row was built"))
             .collect(),
         module_rows,
+        obsolete_rows,
     })
 }

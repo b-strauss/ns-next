@@ -506,11 +506,12 @@ fn write_mixin_row_with_method_shapes(
     writer.write_boolean(false); // no superclass clause body
 }
 
-/// A hand-crafted mixin table of exactly one leaf row.
+/// A hand-crafted mixin table of exactly one leaf row, and no obsolete tree.
 fn one_row_mixin_table(name_id: u32, methods: &[(u32, u32)]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
     write_mixin_row(&mut writer, name_id, methods, &[]);
+    writer.write_u32(0); // no obsolete tree
     writer.into_bytes()
 }
 
@@ -527,6 +528,7 @@ fn mixin_chain(depth: u32) -> Vec<u8> {
         let nested: &[u32] = if level + 1 < depth { &child } else { &[] };
         write_mixin_row(&mut writer, 0, &[], nested);
     }
+    writer.write_u32(0); // no obsolete tree
     writer.into_bytes()
 }
 
@@ -858,7 +860,8 @@ fn round_trip_code_table<'gc>(
     let ids = encode::encode_code_table(&mut writer, &rows, &[], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(&mut mixin_writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
+    mixins::encode(&mut mixin_writer, &rows, 0, &mut symbols, &ids, None)
+        .expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
@@ -3330,6 +3333,7 @@ fn mixin_ids_for<'gc>(
     mixins::encode(
         &mut scratch,
         &rows_of(mutator.heap(), class),
+        0,
         symbols,
         ids,
         None,
@@ -12184,6 +12188,73 @@ fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     );
 }
 
+/// The mixin table's count of obsolete trees, the `u32` after its rows,
+/// is held to the trees the rows form before anything reads it: a count
+/// past them is refused, whatever its size, and a count within them takes
+/// its trees from the modules, which the module section's count then
+/// refuses. Nothing panics.
+// spec: image.verify.mixin-tree
+// spec: image.untrusted
+#[test]
+fn an_obsolete_count_beyond_the_trees_is_refused() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let count_at = module_section_start(&bytes) - 4;
+    assert_eq!(
+        bytes[count_at..count_at + 4],
+        0u32.to_le_bytes(),
+        "the image holds no obsolete tree"
+    );
+    for obsolete in [3, 4, u32::MAX] {
+        let mut crafted = bytes.clone();
+        crafted[count_at..count_at + 4].copy_from_slice(&obsolete.to_le_bytes());
+        assert_eq!(
+            load_error(&crafted),
+            decode::DecodeError::ObsoleteTreeCountMismatch { obsolete, trees: 2 }.to_string()
+        );
+    }
+    assert_eq!(
+        decode::DecodeError::ObsoleteTreeCountMismatch {
+            obsolete: 3,
+            trees: 2
+        }
+        .to_string(),
+        "the image's mixin table counts 3 obsolete tree(s) but holds 2 tree(s)"
+    );
+    let mut crafted = bytes.clone();
+    crafted[count_at..count_at + 4].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::ModuleCountMismatch {
+            declared: 2,
+            trees: 1
+        }
+        .to_string()
+    );
+    // A count within the trees takes the last ones.
+    let mut writer = encode::Writer::new();
+    writer.write_u32(2);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    writer.write_u32(1);
+    let table = writer.into_bytes();
+    let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
+        .expect("a module tree and an obsolete one decode");
+    assert_eq!(decoded.module_rows, vec![0]);
+    assert_eq!(decoded.obsolete_rows, vec![1]);
+    // The count cut short, alone after the rows.
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    let mut table = writer.into_bytes();
+    table.extend_from_slice(&[0, 0]);
+    let Err(error) = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
+    else {
+        panic!("a table whose count is cut short must be refused");
+    };
+    assert_eq!(error, decode::DecodeError::UnexpectedEndOfFile);
+}
+
 // spec: image.verify.counts
 #[test]
 fn a_module_count_past_the_bytes_left_is_refused() {
@@ -12880,6 +12951,7 @@ fn decode_one_row_with_method_shapes(
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
     write_mixin_row_with_method_shapes(&mut writer, 0, slots, methods, &[]);
+    writer.write_u32(0); // no obsolete tree
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     let codes = [Rc::new(every_instruction_once())];
@@ -13149,6 +13221,7 @@ fn a_class_side_method_named_like_the_factory_is_refused() {
             }],
             &[],
         );
+        writer.write_u32(0); // no obsolete tree
         let bytes = writer.into_bytes();
         let mut reader = decode::Reader::new(&bytes);
         let codes = [Rc::new(every_instruction_once())];
@@ -13488,6 +13561,7 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     writer.write_u32(2);
     write_mixin_row(&mut writer, 0, &[], &[]);
     write_mixin_row(&mut writer, 0, &[], &[]); // reached by no row
+    writer.write_u32(0); // no obsolete tree
     let table = writer.into_bytes();
     let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
         .expect("a forest of two trees decodes");
@@ -13507,7 +13581,7 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     );
     assert_eq!(
         error,
-        "the image declares 1 module(s) but its mixin table holds 2 tree(s)"
+        "the image declares 1 module(s) but its mixin table holds 2 module tree(s)"
     );
 }
 
@@ -13553,7 +13627,8 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         let ids = encode::encode_code_table(&mut code, &rows, &[], &mut symbols)
             .expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
+        mixins::encode(&mut writer, &rows, 0, &mut symbols, &ids, None)
+            .expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
         let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)

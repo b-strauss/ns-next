@@ -173,12 +173,20 @@ pub enum DecodeError {
     MixinTableNotATree {
         row: u32,
     },
-    /// The mixin table holds a different number of declaration trees than
-    /// the image declares modules. Each tree's first row is a module's root,
-    /// so a surplus tree -- a row nothing reaches -- would be a module no
-    /// part of the image names, and a missing one a module without a root.
+    /// The mixin table holds a different number of module trees -- its
+    /// trees but the obsolete ones its count names -- than the image
+    /// declares modules. Each such tree's first row is a module's root, so
+    /// a surplus tree -- a row nothing reaches -- would be a module no part
+    /// of the image names, and a missing one a module without a root.
     ModuleCountMismatch {
         declared: u32,
+        trees: u32,
+    },
+    /// The mixin table counts more obsolete trees than its rows form
+    /// trees: the count names the last trees, and no split of the trees
+    /// leaves as many as it says.
+    ObsoleteTreeCountMismatch {
+        obsolete: u32,
         trees: u32,
     },
     /// A module record names its module as no project could: a path that
@@ -912,7 +920,13 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ModuleCountMismatch { declared, trees } => write!(
                 f,
-                "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
+                "the image declares {declared} module(s) but its mixin table holds {trees} module \
+                 tree(s)"
+            ),
+            DecodeError::ObsoleteTreeCountMismatch { obsolete, trees } => write!(
+                f,
+                "the image's mixin table counts {obsolete} obsolete tree(s) but holds {trees} \
+                 tree(s)"
             ),
             DecodeError::ModuleIdentity { module, reason } => {
                 write!(f, "module {module} of the image: {reason}")

@@ -5757,17 +5757,51 @@ impl<'gc> Heap<'gc> {
     /// declaration, or one it is declared in (`make_obsolete`). `false`
     /// for an id past the table or freed.
     pub(crate) fn is_obsolete(&self, id: MixinId) -> bool {
+        self.obsolete_root(id).is_some()
+    }
+
+    /// The removed declaration that makes the mixin `id` obsolete
+    /// (`is_obsolete`): `id` itself or the nearest declaration it is
+    /// declared in that an install removed, the root of the obsolete tree
+    /// `id` stands in, which an image writes whole. `None` for a mixin
+    /// that is not obsolete, and an id past the table or freed.
+    pub(crate) fn obsolete_root(&self, id: MixinId) -> Option<MixinId> {
         let mut current = Some(id);
         while let Some(each) = current {
-            let Some(row) = self.mixin_row(each) else {
-                return false;
-            };
+            let row = self.mixin_row(each)?;
             if row.obsolete {
-                return true;
+                return Some(each);
             }
             current = row.enclosing;
         }
-        false
+        None
+    }
+
+    /// The id of every removed declaration (`make_obsolete`), the root of
+    /// each obsolete tree, in row order.
+    pub(crate) fn obsolete_roots(&self) -> Vec<MixinId> {
+        self.tables
+            .mixins
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.as_ref().is_some_and(|row| row.obsolete))
+            .filter_map(|(index, _)| MixinId::from_index(index))
+            .collect()
+    }
+
+    /// Makes the mixin `id`, a tree's root registered from an image's
+    /// obsolete tree, obsolete as `make_obsolete` leaves a removed
+    /// declaration whose former module a collection freed: out of every
+    /// module's tree, declared in no row (`image::mixins::read`,
+    /// `r[image.load.obsolete]`). The image names no former parent, so
+    /// there is none to leave.
+    pub(crate) fn make_loaded_obsolete(&mut self, id: MixinId) {
+        debug_assert!(
+            self.mixin_row_mut(id).enclosing.is_none(),
+            "internal: an image's obsolete tree is declared in no row"
+        );
+        self.mixin_row_mut(id).obsolete = true;
+        self.tables.mixins_changed();
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
