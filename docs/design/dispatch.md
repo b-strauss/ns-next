@@ -1595,7 +1595,11 @@ cell. Its own bulk forward vacates the same and nothing more
 (`heap::Invalidation::Stale`), since it forwards only instances of the
 classes it re-applied, whose old guards no receiver carries once it ends.
 Every other entry stays warm, an unrelated class's sends hitting their
-entries and cells straight after the install. The dependency key is the one
+entries and cells straight after the install. The vacating is traced as one
+`vacated cause=edit` event (`inline_cache::vacate_stale`;
+[developer-tool.md](developer-tool.md), "The events and their lines"). A
+metaclass applies its own class side to `Class` (§3.2), so a subclass's
+factory entry stays: its class side is not the one replaced. The dependency key is the one
 of [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
 their dependency keys": the application, never the class object.
 

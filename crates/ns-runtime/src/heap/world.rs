@@ -93,9 +93,10 @@ pub(crate) enum Invalidation<'a> {
     /// Every entry, traced for the cause: a bulk forward of any objects
     /// may forward the receivers of any entry.
     Everything(crate::trace_events::VacateCause),
-    /// The entries naming these ids (`InlineCaches::forget_stale`): an
-    /// install forwards only instances of the classes it re-applied,
-    /// which are what every other entry it changes names too.
+    /// The entries naming these ids, traced for an edit
+    /// (`inline_cache::vacate_stale`): an install forwards only instances
+    /// of the classes it re-applied, which are what every other entry it
+    /// changes names too.
     Stale(&'a super::reclaim::StaleIds),
 }
 
@@ -124,7 +125,9 @@ pub(crate) fn forward_identity<'gc>(
         Invalidation::Everything(cause) => {
             crate::interpreter::inline_cache::vacate_every_cache(mutator, cause);
         }
-        Invalidation::Stale(stale) => mutator.caches.forget_stale(stale),
+        Invalidation::Stale(stale) => {
+            crate::interpreter::inline_cache::vacate_stale(mutator, stale);
+        }
     }
     Ok(())
 }

@@ -399,9 +399,11 @@ pub enum TraceEventKind {
         site: u32,
         receiver: String,
     },
-    /// Every inline cache was vacated at once -- every site, every
-    /// polymorphic block and the global cache -- for `cause` (`vacated`);
-    /// about no body. Each site's next miss moves it from `vacant` again.
+    /// The inline caches were vacated for `cause` (`vacated`): every
+    /// site, every polymorphic block and the global cache at once, but for
+    /// `VacateCause::Edit`, which vacated only the entries an install
+    /// made stale; about no body. Each vacated site's next miss moves it
+    /// from `vacant` again.
     CachesVacated { cause: VacateCause },
 }
 
@@ -563,11 +565,14 @@ impl OsrRefusal {
     }
 }
 
-/// What vacated every inline cache at once. An install is none: it
-/// vacates only the entries naming what it re-applied
-/// (`InlineCaches::forget_stale`).
+/// What vacated the inline caches: every entry at once, but for an
+/// install.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VacateCause {
+    /// An install vacated exactly the entries naming an application it
+    /// re-applied or a declaration it replaced
+    /// (`inline_cache::vacate_stale`); every other entry stays.
+    Edit,
     /// A bulk forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`).
     BulkForward,
     /// A breakpoint switched a method's fast path, which every entry
@@ -588,6 +593,7 @@ impl VacateCause {
     /// The cause's name, as a line spells it: kebab case.
     pub fn name(self) -> &'static str {
         match self {
+            VacateCause::Edit => "edit",
             VacateCause::BulkForward => "bulk-forward",
             VacateCause::Breakpoint => "breakpoint",
             VacateCause::JitSwitched => "jit-switched",

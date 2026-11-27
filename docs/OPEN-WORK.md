@@ -2360,13 +2360,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   is undecided, and no test pins the window.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   mirror forces no future".
-- **Scoped invalidation.** Every invalidation flushes every inline cache:
-  the bulk forward's (`InlineCaches::invalidate`), the cache stress mode's
-  and the tests' (`Interpreter::invalidate_caches`), and the atomic install
-  flushes them through the forward, or itself when it forwarded nothing.
-  Scoping an invalidation to the applications an edit affects is deferred.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Caches
-  and their dependency keys".
 - **A `SourceOrigin` for code entered in the debugger.** `SourceOrigin` has
   `File(PathBuf)` and `Embedded(String)` (`types.rs`); code entered live
   wants a variant of its own. [object-model.md](design/object-model.md),

@@ -2757,6 +2757,21 @@ fn record_transition<'gc>(
 /// transitions that follow have their reason.
 pub(crate) fn vacate_every_cache(mutator: &mut Mutator<'_>, cause: VacateCause) {
     mutator.caches.invalidate();
+    trace_vacated(mutator, cause);
+}
+
+/// Vacates the entries an install made stale
+/// (`InlineCaches::forget_stale`), traced as one event about no body for
+/// `VacateCause::Edit`, so that the transitions of the sites it vacated
+/// have their reason and an install is never silent in the trace.
+pub(crate) fn vacate_stale(mutator: &mut Mutator<'_>, stale: &crate::heap::reclaim::StaleIds) {
+    mutator.caches.forget_stale(stale);
+    trace_vacated(mutator, VacateCause::Edit);
+}
+
+/// Records the caches' vacating for `cause`, when the trace takes the
+/// `caches` category.
+fn trace_vacated(mutator: &mut Mutator<'_>, cause: VacateCause) {
     if mutator.jit.tracer.traces(TraceCategory::Caches) {
         mutator.jit.tracer.record(Pending::about_body(
             TraceCategory::Caches,
@@ -4206,7 +4221,11 @@ mod tests {
 
     /// Two unrelated classes, `Edited` and `Untouched`, each sent `value`
     /// by `warm:and:`, their nested-class accessors sent by `classes`, and
-    /// a lexical send of `Edited`'s `helper` from `Edited`'s nested `Deep`.
+    /// a lexical send of `Edited`'s `helper` from `Edited`'s nested `Deep`;
+    /// `Sub`, a subclass of `Edited`, and `Mixed`, whose `<:` clause
+    /// applies `Edited`, each sent `value` by `warmLevels`, which also
+    /// sends `new` to `Sub`, `Mixed`, `Edited` and `Untouched`; and
+    /// `subAdded`, which sends the method the install adds to a new `Sub`.
     const AN_EDITED_AND_AN_UNTOUCHED_CLASS: &str = indoc::indoc! {"
         class Program = Object new () (
           public class Edited = Object new () (
@@ -4229,15 +4248,36 @@ mod tests {
             Untouched.
             ^0
           )
+          public class Sub = Edited () ()
+          public class Mixed = Object new <: Edited () ()
+          public warmLevels = (
+            Sub new value.
+            Mixed new value.
+            Edited new.
+            Untouched new.
+            ^0
+          )
+          public subAdded = ( ^Sub new added )
         ) : ()
     "};
 
     /// An install vacates exactly what names an application it re-applies
-    /// or a declaration it replaces -- `Edited`'s site entry, the
-    /// global-cache entry whose lexical rule names `Edited`'s application,
-    /// the verified pair naming `Edited`'s level, and the accessor's entry
-    /// naming `Edited`'s replaced declaration -- and keeps `Untouched`'s
-    /// entries as they were.
+    /// or a declaration it replaces, with its cell -- `Edited`'s site
+    /// entry, the entries of a subclass and of a `<:` level over `Edited`,
+    /// `Edited new`'s factory entry, guarded by `Edited`'s metaclass, whose
+    /// class side the install replaced, the global-cache entry whose
+    /// lexical rule names `Edited`'s application, the verified pair naming
+    /// `Edited`'s level, and the accessor's entry naming `Edited`'s
+    /// replaced declaration -- and keeps `Untouched`'s entries and cells
+    /// as they were, every cell agreeing with its entry after. `Sub new`'s
+    /// and `Mixed new`'s factory entries stay too: §3.2 inherits no class
+    /// side, so each metaclass applies its own class side to `Class`, which
+    /// the install changes for neither, and the kept entry instantiates
+    /// `Sub` in its new layout.
+    /// The cells name machine code: every body is compiled at its first
+    /// entry. A subclass in another module is re-applied as this one is;
+    /// the install stress mode checks every entry against a fresh lookup
+    /// after each install of the suite, that one among them.
     // spec: vm.dispatch.invalidation-after-change
     #[test]
     fn an_install_vacates_only_entries_naming_a_reapplied_application() {
@@ -4259,6 +4299,7 @@ mod tests {
             interpreter.set_stress_breakpoints(false);
             interpreter.set_stress_step(false);
         }
+        interpreter.set_jit_stress(true);
         let class = interpreter.load_module(&resolved);
         let program = expect_ok(interpreter.instantiate(&class, &[]), "a Program");
         let edited_class = expect_ok(
@@ -4296,6 +4337,10 @@ mod tests {
                 "classes",
             );
             expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+            expect_ok(
+                interpreter.send(&program, Symbol::intern("warmLevels"), &[]),
+                "warmLevels",
+            );
         }
         interpreter.enter(|mutator| {
             let edited_object = mutator.fetch(&edited_class).as_object().expect("a class");
@@ -4331,6 +4376,27 @@ mod tests {
             };
             let edited_accessor = accessor_sites("Edited");
             let untouched_accessor = accessor_sites("Untouched");
+            let warmed = |sites: Vec<Option<usize>>| -> Vec<usize> {
+                sites
+                    .into_iter()
+                    .map(|site| site.expect("warmed"))
+                    .collect()
+            };
+            let level_values = warmed(
+                mutator
+                    .caches
+                    .site_indices_of(&code_of("warmLevels"), Symbol::intern("value")),
+            );
+            let factories = warmed(
+                mutator
+                    .caches
+                    .site_indices_of(&code_of("warmLevels"), Symbol::NEW),
+            );
+            // `Sub`'s and `Mixed`'s `value`, and `Edited`'s `new`.
+            let reapplied: Vec<usize> = std::iter::once(edited_site)
+                .chain(level_values.iter().copied())
+                .chain(std::iter::once(factories[2]))
+                .collect();
             let lexical_naming_edited = |caches: &InlineCaches| {
                 caches.global.entries.iter().any(|entry| {
                     !entry.is_vacant() && entry.rule == CacheRule::Lexical(edited_guard)
@@ -4343,14 +4409,34 @@ mod tests {
                 Target::NestedClass { .. }
             ));
             assert!(lexical_naming_edited(caches), "the lexical entry is warm");
-            let untouched_before = [
-                caches.sites[untouched_site].clone(),
-                caches.sites[untouched_accessor].clone(),
+            for site in &reapplied {
+                assert!(
+                    !matches!(caches.sites[*site].target, Target::Vacant),
+                    "every entry over `Edited` is warm"
+                );
+                assert_ne!(caches.cells.site(*site), Cell::VACANT);
+            }
+            assert!(matches!(
+                caches.sites[factories[2]].target,
+                Target::Factory { .. }
+            ));
+            // `Untouched`'s, and the factories of `Sub`, `Mixed` and
+            // `Untouched`.
+            let untouched_sites = [
+                untouched_site,
+                untouched_accessor,
+                factories[0],
+                factories[1],
+                factories[3],
             ];
+            let untouched_before: Vec<(CacheEntry, Cell)> = untouched_sites
+                .iter()
+                .map(|site| (caches.sites[*site].clone(), caches.cells.site(*site)))
+                .collect();
             assert!(
                 untouched_before
                     .iter()
-                    .all(|entry| !matches!(entry.target, Target::Vacant)),
+                    .all(|(entry, _)| !matches!(entry.target, Target::Vacant)),
                 "Untouched's entries are warm"
             );
             mutator.caches.record_slot_level(edited_guard, edited_level);
@@ -4385,15 +4471,27 @@ mod tests {
             );
             assert!(!lexical_naming_edited(caches));
             assert!(!caches.slot_level_verified(edited_guard, edited_level));
-            let untouched_after = [
-                &caches.sites[untouched_site],
-                &caches.sites[untouched_accessor],
-            ];
-            for (before, after) in untouched_before.iter().zip(untouched_after) {
+            for site in reapplied.iter().chain([&edited_accessor]) {
+                assert!(
+                    matches!(caches.sites[*site].target, Target::Vacant),
+                    "an entry over `Edited` is vacated"
+                );
+                assert_eq!(caches.cells.site(*site), Cell::VACANT);
+            }
+            for (site, (before, cell)) in untouched_sites.iter().zip(&untouched_before) {
+                let after = &caches.sites[*site];
                 assert_eq!(before.guard, after.guard);
                 assert_eq!(caches.state_of(before), caches.state_of(after));
+                assert_eq!(caches.cells.site(*site), *cell, "the cell stays");
             }
+            assert_eq!(caches.verify_cells(&mutator.heap, &mutator.jit), Ok(()));
         });
+        let added = expect_ok(
+            interpreter.send(&program, Symbol::intern("subAdded"), &[]),
+            "subAdded",
+        );
+        let added = interpreter.enter(|mutator| mutator.fetch(&added).as_small_integer());
+        assert_eq!(added, Some(4), "the kept factory entry makes a new `Sub`");
     }
 
     /// A site moves vacant, monomorphic, polymorphic in the order first

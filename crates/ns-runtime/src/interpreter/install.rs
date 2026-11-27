@@ -98,7 +98,7 @@ impl<'gc> Mutator<'gc> {
             // The applications changed under unchanged class objects, so
             // every entry decided for the old ones is stale, and only
             // those: no other lookup changed.
-            self.caches.forget_stale(&stale);
+            super::inline_cache::vacate_stale(self, &stale);
         } else {
             debug_assert!(
                 migration
