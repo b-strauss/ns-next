@@ -7698,7 +7698,9 @@ impl<'gc> Heap<'gc> {
     ///
     /// `reparented` names class objects an install re-parents whatever
     /// mixin they apply -- a body-less declaration's, which applies its last
-    /// clause's mixin -- so that the chains over them are found too.
+    /// clause's mixin -- and the `<:` levels that follow such a class
+    /// object's application (`Mutator::follows_a_reparenting`), so that the
+    /// chains over them are found too.
     pub(crate) fn classes_and_instances_over(
         &self,
         replaced: impl Fn(MixinId) -> bool,

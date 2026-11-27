@@ -1106,6 +1106,16 @@ the user on 2026-11-22 (1 to 8) and 2026-11-27 (8's interface, 9, 10 and
    value-class verdict again (`redecide_value_class`), and migrates its
    instances by `FieldName` -- a slot of a level the chain loses goes,
    one of a level it gains starts `nil`, no initializer runs again. A
+   `<:` level elsewhere that names a re-parented class applies what that
+   class applies once re-parented, in that class's enclosing object and
+   declaring class, as `nested::build_applied_levels` would apply it
+   now -- its last clause's mixin once it lost its body, its own once it
+   gained one -- so the walk takes the chains over such a level too
+   (`Mutator::follows_a_reparenting`), and the commit re-applies each
+   class object after its superclass and after the class its clause
+   named (`Mutator::reapply_order`; the goldens
+   `a_level_naming_a_class_that_loses_its_body_applies_what_it_applies`
+   and `a_level_naming_a_class_that_gains_a_body_applies_its_mixin`). A
    module's root evaluates nothing: its class object takes the superclass
    its fresh `root_shape` names, `Object`, `Value`, or `Value` applied
    over `Object`. Only class objects the program reaches are evaluated

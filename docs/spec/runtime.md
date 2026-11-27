@@ -357,8 +357,14 @@ re-parented as any class: its class object, the level its last clause
 adds, becomes the level of the new last clause. A declaration that loses
 its body keeps its class objects, each becoming the level its last clause
 adds, and one that gains a body keeps them too, each becoming the class
-of its own body over the levels its clauses add. A module's root
-evaluates nothing: it takes the superclass its new header names,
+of its own body over the levels its clauses add. A `<:` level that names
+a class the install re-parents applies, once installed, what that class
+applies then, in that class's enclosing object and declaring class, as
+the clause's evaluation would apply it (§6.2): a class that lost its body
+gives the level its last clause's mixin, one that gained a body its own
+mixin; every instance over the level migrates as above, and every class
+over it has the value-class verdict (§3.1.1) decided again, as every
+class over a re-parented class has. A module's root evaluates nothing: it takes the superclass its new header names,
 `Object`, `Value` or `Value` applied over `Object`.
 
 r[runtime.install.epoch]

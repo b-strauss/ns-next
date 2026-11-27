@@ -1,0 +1,70 @@
+/// A `<:` level naming a mixin application without a body applies what
+/// that class applies, so when the class gains a body of its own, every
+/// level naming it applies the class's own mixin, as a fresh evaluation
+/// of the clause would: an instance made before the install answers the
+/// class's own methods and no longer the mixin it applied, and keeps its
+/// own slots.
+class ALevelNamingAClassThatGainsABodyAppliesItsMixin = Object new () (
+  class Holder = Object new () (
+    public class Trait = Object new (
+      |
+        public mark ::= #initialized.
+      |
+    ) (
+      public trait = (
+        ^#trait.
+      )
+    )
+
+    public class Inner = Object new <: Trait.
+
+    public class User = Object new <: Inner (
+      |
+        public own ::= 3.
+      |
+    ) ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder User new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    old own: 4.
+    transcript
+        show: (outcome: [old trait]);
+        show: ' ';
+        show: (outcome: [old inner]);
+        newLine.
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class Inner = Object new () ( public inner = ( ^#inner ) )'.
+    builder install.
+    transcript
+        show: (outcome: [old trait]);
+        show: ' ';
+        show: (outcome: [old inner]);
+        show: ' ';
+        show: (outcome: [old mark]);
+        show: ' ';
+        print: old own;
+        newLine.
+    transcript
+        show: (outcome: [holder User new trait]);
+        show: ' ';
+        show: (outcome: [holder User new inner]);
+        newLine.
+    transcript
+        show: (outcome: [Holder new User new trait]);
+        show: ' ';
+        show: (outcome: [Holder new User new inner]);
+        newLine.
+  )
+)

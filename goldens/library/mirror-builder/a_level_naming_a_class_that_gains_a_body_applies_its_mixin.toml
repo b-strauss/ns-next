@@ -1,0 +1,7 @@
+rules = ["runtime.install.superclass", "semantics.mixin.application"]
+stdout = '''
+#trait an object does not understand #inner
+an object does not understand #trait #inner an object does not understand #mark 4
+an object does not understand #trait #inner
+an object does not understand #trait #inner
+'''

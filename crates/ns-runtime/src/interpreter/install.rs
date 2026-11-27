@@ -94,7 +94,7 @@ impl<'gc> Mutator<'gc> {
             .collect();
         let (classes, instances) = self.heap.classes_and_instances_over(
             |candidate| fresh_by_id.contains_key(&candidate),
-            |class| reparented.contains_key(&self.heap.object_identity_key(class)),
+            |class| self.follows_a_reparenting(class, &reparented),
         );
         let class_positions = self.class_positions(&classes);
         self.refuse_an_unmigratable_instance(
@@ -129,7 +129,13 @@ impl<'gc> Mutator<'gc> {
         }
         // Every module text an agent holds may be this edit's.
         self.breakpoints.raise_text_revision();
-        self.reapply(&classes, &old_applications, &reparentings, &reparented);
+        self.reapply(
+            &classes,
+            &class_positions,
+            &old_applications,
+            &reparentings,
+            &reparented,
+        );
         let migration = self.migrate(&classes, &class_positions, &old_names, &instances);
         // An unmoved instance, a class object whose metaclass was re-applied
         // among them, carries its class's old guard until restamped.
@@ -397,9 +403,43 @@ impl<'gc> Mutator<'gc> {
         Ok(())
     }
 
+    /// Whether the commit re-parents `class` (`reparented`, by identity
+    /// key), or `class` is a level a `<:` clause added whose named class
+    /// it re-parents, directly or through the class that one names: such a
+    /// level applies what its named class applies (§6.2), which a
+    /// re-parenting that gives the named class a body, or takes it away,
+    /// changes, so the chains over it are re-applied too. A named class is
+    /// a class object the clause answered, never a level of the chain
+    /// naming it, so the walk ends; it stops at a class object it has met
+    /// all the same, which only a crafted image could make it meet.
+    fn follows_a_reparenting(
+        &self,
+        class: ClassReference<'gc>,
+        reparented: &IdentityMap<usize, usize>,
+    ) -> bool {
+        let mut current = class;
+        let mut visited: IdentityMap<usize, ()> = IdentityMap::default();
+        loop {
+            let key = self.heap.object_identity_key(current);
+            if reparented.contains_key(&key) {
+                return true;
+            }
+            if self.heap.class_applied_declaration(current).is_none()
+                || visited.insert(key, ()).is_some()
+            {
+                return false;
+            }
+            let Some(named) = self.heap.class_named(current) else {
+                return false;
+            };
+            current = named;
+        }
+    }
+
     /// Whether a replaced level of `class`'s chain declares other slots,
     /// by name and in order, or other nested classes than the fresh
-    /// version replacing it, or a level of the chain is re-parented.
+    /// version replacing it, or a level of the chain is re-parented or
+    /// follows a re-parented class (`follows_a_reparenting`).
     fn layout_may_change(
         &self,
         class: ClassReference<'gc>,
@@ -408,7 +448,7 @@ impl<'gc> Mutator<'gc> {
     ) -> bool {
         let mut level = Some(class);
         while let Some(current) = level {
-            if reparented.contains_key(&self.heap.object_identity_key(current)) {
+            if self.follows_a_reparenting(current, reparented) {
                 return true;
             }
             if let Some(application) = self.heap.class_application(current) {
@@ -486,25 +526,32 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// Gives every class object of `classes` an application of its mixin's
-    /// current version over its superclass's application now, superclasses
-    /// first, so a superclass found is re-applied before its subclasses;
-    /// its superclass clause is not evaluated again. A class object of
-    /// `reparentings` (`reparented`, by identity key) gets its new
+    /// current version over its superclass's application now, in
+    /// `reapply_order`, so that a superclass, and a class a level's clause
+    /// named, is re-applied before what is built over it; its superclass
+    /// clause is evaluated before the commit, never in it. A class object
+    /// of `reparentings` (`reparented`, by identity key) gets its new
     /// superclass first and its `<:` levels built anew over it
-    /// (`nested::build_applied_levels`); once any chain may have changed,
-    /// every nested class object has §3.1.1's verdict decided again.
-    /// Records an old level whose slot base and own slots the edit kept as
-    /// succeeded by the new one, so an activation entered at it passes the
-    /// slot check.
+    /// (`nested::build_applied_levels`). A level a `<:` clause added whose
+    /// named class is re-applied applies what that class applies now, in
+    /// that class's lexical context, as the clause's evaluation would
+    /// (`nested::build_applied_levels`): the named class's own mixin once
+    /// it has a body, its last clause's once it has none. Once any chain
+    /// may have changed, every nested class object has §3.1.1's verdict
+    /// decided again. Records an old level whose slot base and own slots
+    /// the edit kept as succeeded by the new one, so an activation entered
+    /// at it passes the slot check.
     fn reapply(
         &mut self,
         classes: &[ClassReference<'gc>],
+        class_positions: &IdentityMap<usize, usize>,
         old_applications: &[Rc<MixinApplication>],
         reparentings: &[Reparenting<'gc>],
         reparented: &IdentityMap<usize, usize>,
     ) {
-        // Before the sort, so that a re-parented class object sorts after
-        // its new superclass and every class object over it after it.
+        // Before the order is decided, so that a re-parented class object
+        // comes after its new superclass and every class object over it
+        // after it.
         for reparenting in reparentings {
             if !self
                 .heap
@@ -513,16 +560,7 @@ impl<'gc> Mutator<'gc> {
                 unreachable!("internal: a re-parented class is a class object");
             }
         }
-        let mut order: Vec<usize> = (0..classes.len()).collect();
-        order.sort_by_cached_key(|position| {
-            let mut length = 0_usize;
-            let mut level = self.heap.class_superclass(classes[*position]);
-            while let Some(current) = level {
-                length += 1;
-                level = self.heap.class_superclass(current);
-            }
-            length
-        });
+        let order = self.reapply_order(classes, class_positions, reparentings, reparented);
         for position in order {
             let class = classes[position];
             let old = &old_applications[position];
@@ -534,20 +572,33 @@ impl<'gc> Mutator<'gc> {
             let reparenting = reparented
                 .get(&self.heap.object_identity_key(class))
                 .map(|index| &reparentings[*index]);
+            let named = self.named_and_reapplied(class, class_positions, reparented);
             // A re-parented class object applies its declaration's fresh
             // version, which a body-less declaration's class object did not
-            // apply before: it applied its last clause's mixin.
-            let id = match reparenting {
-                Some(reparenting) => reparenting.declaration,
-                None => self
+            // apply before: it applied its last clause's mixin. A level
+            // whose named class the order re-applied already applies that
+            // class's mixin.
+            let current = match (reparenting, named) {
+                (Some(reparenting), _) => self
                     .heap
-                    .known_mixin_id(&old.mixin)
-                    .expect("internal: an applied mixin is registered"),
+                    .mixin(reparenting.declaration)
+                    .expect("internal: a registered mixin has a row"),
+                (None, Some(named)) => {
+                    let Some(application) = self.heap.class_application(named) else {
+                        unreachable!("internal: a named class is a class object");
+                    };
+                    Rc::clone(&application.mixin)
+                }
+                (None, None) => {
+                    let id = self
+                        .heap
+                        .known_mixin_id(&old.mixin)
+                        .expect("internal: an applied mixin is registered");
+                    self.heap
+                        .mixin(id)
+                        .expect("internal: a registered mixin has a row")
+                }
             };
-            let current = self
-                .heap
-                .mixin(id)
-                .expect("internal: a registered mixin has a row");
             if let Some(reparenting) = reparenting
                 && reparenting.becomes_body_less
             {
@@ -587,6 +638,19 @@ impl<'gc> Mutator<'gc> {
             if !self.heap.class_install_application(class, Rc::clone(&new)) {
                 unreachable!("internal: the walk collects class objects");
             }
+            // The applied mixin's code walks out from the named class's
+            // context (§6.2), which a re-parenting that gave the named
+            // class a body, or took it away, changed.
+            if let Some(named) = named {
+                let enclosing = self.heap.class_enclosing(named);
+                let declaring_class = self.heap.class_declaring(named);
+                if !self
+                    .heap
+                    .class_set_lexical_context(class, enclosing, declaring_class)
+                {
+                    unreachable!("internal: a level is a class object");
+                }
+            }
             if !reparentings.is_empty() && self.heap.class_this_class(class).is_none() {
                 self.redecide_value_class(class, new.inherits_value);
             }
@@ -599,6 +663,93 @@ impl<'gc> Mutator<'gc> {
                 self.heap.record_successor(old.index(), new.index());
             }
         }
+    }
+
+    /// The order `reapply` takes `classes` in: each after its superclass
+    /// and, for a level a `<:` clause added, after the class the clause
+    /// named, and a re-parented class object after every class its new
+    /// clauses answered, wherever those are among `classes` -- what it is
+    /// built over is then built first. A depth-first walk with a stack of
+    /// its own, since a chain's length is the program's, or an image's.
+    /// No class depends on itself once `refuse_a_cycle` has passed; a
+    /// dependency met again on the walk is passed over all the same.
+    fn reapply_order(
+        &self,
+        classes: &[ClassReference<'gc>],
+        class_positions: &IdentityMap<usize, usize>,
+        reparentings: &[Reparenting<'gc>],
+        reparented: &IdentityMap<usize, usize>,
+    ) -> Vec<usize> {
+        let position_of = |class: ClassReference<'gc>| {
+            class_positions
+                .get(&self.heap.object_identity_key(class))
+                .copied()
+        };
+        let dependencies = |position: usize| -> Vec<usize> {
+            let class = classes[position];
+            let mut found: Vec<usize> = Vec::new();
+            found.extend(self.heap.class_superclass(class).and_then(position_of));
+            if self.heap.class_applied_declaration(class).is_some() {
+                found.extend(self.heap.class_named(class).and_then(position_of));
+            }
+            if let Some(index) = reparented.get(&self.heap.object_identity_key(class)) {
+                found.extend(
+                    reparentings[*index]
+                        .applied
+                        .iter()
+                        .filter_map(|(_, applied)| applied.as_object())
+                        .filter_map(position_of),
+                );
+            }
+            found
+        };
+        // Unvisited, on the walk, or placed.
+        let mut state = vec![0_u8; classes.len()];
+        let mut order = Vec::with_capacity(classes.len());
+        for start in 0..classes.len() {
+            if state[start] != 0 {
+                continue;
+            }
+            let mut stack = vec![(start, false)];
+            while let Some((position, expanded)) = stack.pop() {
+                if expanded {
+                    state[position] = 2;
+                    order.push(position);
+                    continue;
+                }
+                if state[position] != 0 {
+                    continue;
+                }
+                state[position] = 1;
+                stack.push((position, true));
+                for dependency in dependencies(position) {
+                    if state[dependency] == 0 {
+                        stack.push((dependency, false));
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    /// For `class`, a level a `<:` clause added that the commit does not
+    /// re-parent itself, the class its clause named when the commit
+    /// re-applies that class too (`class_positions`), whose application
+    /// the level follows; `None` otherwise.
+    fn named_and_reapplied(
+        &self,
+        class: ClassReference<'gc>,
+        class_positions: &IdentityMap<usize, usize>,
+        reparented: &IdentityMap<usize, usize>,
+    ) -> Option<ClassReference<'gc>> {
+        if reparented.contains_key(&self.heap.object_identity_key(class))
+            || self.heap.class_applied_declaration(class).is_none()
+        {
+            return None;
+        }
+        self.heap
+            .class_named(class)
+            .filter(|named| class_positions.contains_key(&self.heap.object_identity_key(*named)))
     }
 
     /// Every field of an instance of `class`, by index, named by its level
@@ -3659,6 +3810,39 @@ mod tests {
             );
             assert_eq!(answer, "installed");
             assert_eq!(refused(&mut interpreter), expected, "{text}");
+        }
+    }
+
+    /// A body-less class the install does not re-parent, `Mixed = Base <:
+    /// Trait.`, over a superclass it does, `Base` re-parented over `Value`
+    /// in an enclosing instance that is no value, records §3.1.1's refusal
+    /// on its class object, and clears it once `Base` is back over
+    /// `Object`: the verdict of a level over a re-parented chain is decided
+    /// again.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_body_less_class_over_a_reparented_chain_decides_its_value_verdict_again() {
+        let (mut interpreter, outer_class) = load(REPARENTED);
+        let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+        let mixed_class = send(&mut interpreter, &outer, "Mixed");
+        let base_class = send(&mut interpreter, &outer, "Base");
+        let refused = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                let class = mutator.fetch(&mixed_class).as_object().expect("a class");
+                mutator.heap.class_has_value_refusal(class)
+            })
+        };
+        assert!(!refused(&mut interpreter));
+        for (header, expected) in [
+            ("public class Base = Value new (| public base = 1. |)", true),
+            (
+                "public class Base = Object new (| public base ::= 1. |)",
+                false,
+            ),
+        ] {
+            let answer = install_header(&mut interpreter, &outer, &base_class, header);
+            assert_eq!(answer, "installed");
+            assert_eq!(refused(&mut interpreter), expected, "{header}");
         }
     }
 
