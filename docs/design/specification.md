@@ -48,9 +48,9 @@ rule naming no code, with a `Protects:` line linking the rules of the
 first four parts it keeps true, and named by tests, by a detector of the
 table of detectors (a stress mode, a check of a debug build, a check of
 the compiler) or by an `Undetected:` line with its reason; `cargo xtask
-spec` checks all of it (below, "The fifth batch's decisions"), and the
-design documents and `CLAUDE.md` point at the rules by
-their identifiers in backticks.
+spec` checks all of it (below, "The fifth batch's decisions";
+`xtask/src/spec/invariants.rs`), and `CLAUDE.md` and the documents
+under `docs/` point at the rules by their identifiers in backticks.
 
 ## Why
 

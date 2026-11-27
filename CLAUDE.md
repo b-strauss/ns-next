@@ -444,11 +444,15 @@ build; refreshing it is deleting `target/mcp/` while no server runs from
 it and running the task again (`mcp.rs`; `debugger.md`, "The MCP
 server", "Starting it"); and `spec`, which checks the specification's
 book -- every rule identifier well formed and unique, every chapter in
-`SUMMARY.md`, every test's reference and every link naming a rule -- and
+`SUMMARY.md`, every test's reference, every link and every pointer naming
+a rule, and every VM invariant protecting a rule of the first four parts
+and named by a test, a detector or an `Undetected:` line, the table of
+detectors held to the stress modes -- and
 renders it with mdBook into `target/spec/html/index.html`, each rule
-listing the tests that name it, which `.github/workflows/spec.yml` runs
+listing the tests and detectors that name it, which `.github/workflows/spec.yml` runs
 and publishes on GitHub Pages at every push to `master` that can change
-the book (`spec.rs`; `specification.md`); and
+the book (`spec.rs`, the VM invariants' checks in `spec/invariants.rs`;
+`specification.md`); and
 `references`, which downloads the reference papers the repository names
 but does not carry into `docs/references/`, which `.gitignore` keeps out
 of the tree, each held to its SHA-256 (`references.rs`;
