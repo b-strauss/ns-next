@@ -58,7 +58,7 @@ as the parts are written, `semantics`, `runtime`, `bytecode`, `image` and
 `vm`. An identifier is unique in the book and never reused for another
 rule. In the rendered book each identifier is an anchor and lists the
 tests that check its rule; the appendix "Untested rules" lists the rules
-no test names yet.
+no golden, no Rust test and no detector names.
 
 **Tests name their rules.** A golden names the rules it checks in its
 `.toml`, `rules = ["syntax.outer.alone"]`; a Rust test in a comment line

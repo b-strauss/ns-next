@@ -284,6 +284,14 @@ benchmarks", describes.
   `r[vm.heap.number-one-representation]`, `r[vm.heap.fraction-normal-form]`
   and `r[vm.heap.string-canonical-width]` -- protect the closest rules
   instead. Whether the book gets a part on the core library is undecided.
+- **Many VM invariants bundle several clauses under one identifier**
+  (2026-11-27, with the VM invariants). A rule such as
+  `r[vm.heap.id-reclaimed-only-when-unnamed]` or
+  `r[vm.machine.safepoint-request-bits]` states several independent
+  clauses, so a test or a detector that names it may check one clause of
+  it and leave the others unchecked, while the book lists the rule as
+  tested. Splitting each such rule into one rule a clause, each clause
+  with a test or a detector of its own, is future work.
 
 ## The road to a high-performance VM
 

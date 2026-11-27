@@ -117,7 +117,7 @@ Each decided with the user on 2026-11-23.
    test in a comment, as a test of `rust-lang/rust` names its rule in a
    `//@ reference:` header. The book shows each rule's tests, as a
    list folded shut beneath the rule's anchor, and an appendix the rules
-   no test names yet. The grammar, the instruction
+   no golden, no Rust test and no detector names. The grammar, the instruction
    table and the tag table stand in marked, machine-readable blocks that
    Rust tests hold to the code -- `opcodes.rs` to the tag table among
    them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
@@ -205,7 +205,8 @@ Decided with the user on 2026-11-26:
    links, followed through other `vm.*` rules, reach no rule of the
    first four parts. The chapter's sections follow the subsystems: the
    model, the heap and the collector, handles and the brand, activations
-   and frames, the compiler, dispatch and the caches, machine code. Each
+   and frames, the compiler, dispatch and the caches, machine code, the
+   VM mirror and the image loader. Each
    rule's reasoning and the defects it has produced stay in the design
    documents. The alternatives weighed: the same line as a convention no
    check holds, and judgements over the store and the frames as

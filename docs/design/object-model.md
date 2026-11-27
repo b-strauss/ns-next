@@ -104,15 +104,16 @@ through the accessors (`value.as_small_integer() == Some(3)`).
 
 **Each number has one representation**
 (`r[vm.heap.number-one-representation]`). A `SmallInteger` is an integer
-within `SMALL_INTEGER_MIN` and `SMALL_INTEGER_MAX`; any other is an object of
-the kernel class `LargeInteger`, of the 64-bit-indexed format: its words are
-the magnitude's digits, its sign is the header's negative bit, and it holds no
-handle. `Mutator::new_integer` decides which
-([core-library.md](core-library.md), "Large integers"). A float outside the
-`SmallFloat64` range is a boxed `Float`, an instance of the builtin `Float`
-whose one 64-bit-indexed word holds the `f64`'s bits and no handle, and
-`Mutator::new_float` decides between the immediate and the boxed form by
-Spur's range test. Soup boxes every
+from `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`, -2^60 to 2^60 - 1; any other
+is an object of the kernel class `LargeInteger`, of the 64-bit-indexed
+format: its words are the magnitude's digits, its sign is the header's
+negative bit, and it holds no handle. `Mutator::new_integer` decides which
+([core-library.md](core-library.md), "Large integers"). A finite float in
+the `SmallFloat64` range is immediate; every other float -- NaN, the
+infinities, denormals and magnitudes outside that range -- is a boxed
+`Float`, an instance of the builtin `Float` whose one 64-bit-indexed word
+holds the `f64`'s bits and no handle, and `Mutator::new_float` decides
+between the immediate and the boxed form by Spur's range test. Soup boxes every
 float, which costs an allocation per floating-point result; Spur's split
 keeps the common range immediate. Both are §5.1.1's binary float; the
 `FixedPointNumber` that section names for non-integral literals -- `Decimal`, the gap
