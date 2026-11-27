@@ -193,13 +193,15 @@ impl<'gc> Mutator<'gc> {
     /// The class objects whose superclass clauses an install of `prepared`
     /// evaluates before its commit, in the space's order: every class
     /// object of a nested declaration whose clauses it changes -- no
-    /// metaclass, and no level a `<:` clause added, whose superclass the
-    /// clause that added it decides. A root's class object evaluates
-    /// nothing: its superclass follows its fresh `root_shape`.
+    /// metaclass, and no level a `<:` clause added but a body-less
+    /// declaration's class object, the level its last clause adds. A
+    /// root's class object evaluates nothing: its superclass follows its
+    /// fresh `root_shape`.
     ///
-    /// The walk meets dead class objects too; the leaf that answers them
-    /// keeps them alive from then on, so that the commit's walk meets each
-    /// again.
+    /// The walk meets every class object the space holds, dead ones too,
+    /// so the installer has a full collection served just before the leaf
+    /// that answers them, and again before the commit: what remains is
+    /// what the program reaches (`MirrorsFactory.ns`, `Installer>>install`).
     pub(crate) fn clause_class_objects(
         &self,
         prepared: &PreparedInstall,
@@ -228,13 +230,31 @@ impl<'gc> Mutator<'gc> {
         prepared: &PreparedInstall,
         class: ClassReference<'gc>,
     ) -> Option<MixinId> {
-        if self.heap.class_this_class(class).is_some() || self.heap.class_is_applied_level(class) {
+        let id = self.declaration_of_class_object(class)?;
+        (prepared.clauses_changed.contains(&id) && self.heap.enclosing_mixin_id(id).is_some())
+            .then_some(id)
+    }
+
+    /// The id of the declaration `class` is the class object of: a
+    /// body-less declaration's for the level its last clause adds, its
+    /// application's mixin's for any other class object; `None` for a
+    /// metaclass, for any other level a `<:` clause added and for an
+    /// object that is no class.
+    pub(crate) fn declaration_of_class_object(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<MixinId> {
+        if self.heap.class_this_class(class).is_some() {
+            return None;
+        }
+        if let Some(declaration) = self.heap.class_body_less_declaration(class) {
+            return self.heap.known_mixin_id(declaration);
+        }
+        if self.heap.class_applied_origin(class).is_some() {
             return None;
         }
         let application = self.heap.class_application(class)?;
-        let id = self.heap.known_mixin_id(&application.mixin)?;
-        (prepared.clauses_changed.contains(&id) && self.heap.enclosing_mixin_id(id).is_some())
-            .then_some(id)
+        self.heap.known_mixin_id(&application.mixin)
     }
 
     /// Whether the declaration `id` is `ancestor` or declared in it, at

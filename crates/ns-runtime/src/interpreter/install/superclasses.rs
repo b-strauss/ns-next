@@ -16,7 +16,9 @@ use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::interpreter::edit::InstallEntry;
 use crate::interpreter::{Mutator, Step};
-use crate::mixin::Mixin;
+use std::rc::Rc;
+
+use crate::mixin::{Mixin, MixinApplication};
 use crate::types::{BuiltinClass, Value};
 
 /// A class object the commit re-parents, and what over.
@@ -30,6 +32,11 @@ pub(super) struct Reparenting<'gc> {
     /// clause order, from which the commit builds the levels anew
     /// (`nested::build_applied_levels`).
     pub(super) applied: Vec<(usize, Value<'gc>)>,
+    /// For a body-less declaration's class object, the declaration's id:
+    /// the class object is the level its last clause adds, so the commit
+    /// builds the levels below it anew and makes the class object itself
+    /// the level of the new last clause.
+    pub(super) body_less: Option<MixinId>,
 }
 
 impl<'gc> Mutator<'gc> {
@@ -55,11 +62,29 @@ impl<'gc> Mutator<'gc> {
             let object = self.builtin_class(BuiltinClass::Object);
             return Some(Step::Value(Value::object(object)));
         };
+        let (enclosing, declaring_class) = self.clause_context(class)?;
         Some(Step::ClauseEvaluation {
             code,
-            enclosing: self.heap.class_enclosing(class)?,
-            declaring_class: self.heap.class_declaring(class)?,
+            enclosing,
+            declaring_class,
         })
+    }
+
+    /// The enclosing object and the declaring class `class`'s declaration
+    /// was evaluated in, which its clause runs in: a body-less
+    /// declaration's class object keeps them as its declaration scope,
+    /// since its own are the named class's (§6.2).
+    pub(crate) fn clause_context(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<(ObjectReference<'gc>, ClassReference<'gc>)> {
+        match self.heap.class_declaration_scope(class) {
+            Some(scope) => Some((scope.enclosing?, scope.declaring_class?)),
+            None => Some((
+                self.heap.class_enclosing(class)?,
+                self.heap.class_declaring(class)?,
+            )),
+        }
     }
 
     /// Whether `answers`, the commit leaf's pairs, each name a distinct
@@ -79,6 +104,9 @@ impl<'gc> Mutator<'gc> {
         let Ok(prepared) = self.prepare_install(entries) else {
             return true;
         };
+        // Unreachable from the shipped installer while the epoch holds: it
+        // hands over exactly the class objects the preparation answered,
+        // each once.
         let mut seen: IdentityMap<usize, ()> = IdentityMap::default();
         answers.iter().all(|(class, _)| {
             self.clause_declaration(&prepared, *class).is_some()
@@ -124,6 +152,7 @@ impl<'gc> Mutator<'gc> {
                 class,
                 superclass,
                 applied,
+                body_less: (!fresh.has_body).then_some(id),
             });
         }
         Ok(reparentings)
@@ -166,31 +195,37 @@ impl<'gc> Mutator<'gc> {
         Ok((superclass, applied))
     }
 
-    /// Every root class object among `classes` whose declaration's clauses
-    /// `prepared` changes, re-parented over the builtin its fresh
-    /// `root_shape` names, `Value` applied over it when the shape applies
-    /// it, as `Mutator::root_class_of_mixin` builds a root.
-    pub(super) fn root_reparentings(
-        &self,
-        prepared: &PreparedInstall,
-        classes: &[ClassReference<'gc>],
-    ) -> Vec<Reparenting<'gc>> {
+    /// Every root class object whose declaration's clauses `prepared`
+    /// changes, re-parented over the builtin its fresh `root_shape` names,
+    /// `Value` applied over it when the shape applies it, as
+    /// `Mutator::root_class_of_mixin` builds a root. A walk of the space,
+    /// only when a root's clauses change: a body-less root's class object
+    /// applies `Value`'s mixin, so no walk by the replaced ids finds it.
+    pub(super) fn root_reparentings(&self, prepared: &PreparedInstall) -> Vec<Reparenting<'gc>> {
+        if !prepared
+            .clauses_changed
+            .iter()
+            .any(|id| self.heap.enclosing_mixin_id(*id).is_none())
+        {
+            return Vec::new();
+        }
+        let mut classes = Vec::new();
+        self.heap.each_object(|object| {
+            if self.declaration_of_class_object(object).is_some() {
+                classes.push(object);
+            }
+        });
         classes
             .iter()
             .filter_map(|class| {
-                if self.heap.class_this_class(*class).is_some()
-                    || self.heap.class_is_applied_level(*class)
-                {
-                    return None;
-                }
-                let application = self.heap.class_application(*class)?;
-                let id = self.heap.known_mixin_id(&application.mixin)?;
+                let id = self.declaration_of_class_object(*class)?;
                 if !prepared.clauses_changed.contains(&id)
                     || self.heap.enclosing_mixin_id(id).is_some()
                 {
                     return None;
                 }
-                let shape = prepared.fresh_version(id)?.root_shape;
+                let fresh = prepared.fresh_version(id)?;
+                let shape = fresh.root_shape;
                 let over_value = shape.is_some_and(|shape| shape.over_value);
                 let applies_value = shape.is_some_and(|shape| shape.applies_value);
                 let superclass = self.builtin_class(if over_value {
@@ -207,6 +242,7 @@ impl<'gc> Mutator<'gc> {
                     class: *class,
                     superclass,
                     applied,
+                    body_less: (!fresh.has_body).then_some(id),
                 })
             })
             .collect()
@@ -256,9 +292,7 @@ impl<'gc> Mutator<'gc> {
             }
             if cycle {
                 let name = self
-                    .heap
-                    .class_application(class)
-                    .and_then(|application| self.heap.known_mixin_id(&application.mixin))
+                    .declaration_of_class_object(class)
                     .map_or_else(String::new, |id| self.declaration_name(id));
                 return Err(format!(
                     "the superclass clause of {name} answers a class that inherits from {name}"
@@ -268,30 +302,119 @@ impl<'gc> Mutator<'gc> {
         Ok(())
     }
 
+    /// Re-parents `class`, the class object of the body-less declaration
+    /// `declaration` -- the level its last `<:` clause adds -- as
+    /// `reparenting` says, over `superclass` and its application: the
+    /// levels of every clause but the last built anew over it, then the
+    /// class object itself made the level of the new last clause, keeping
+    /// its identity and its declaration's scope: the applied class's
+    /// mixin applied over the levels below, the clause, the class it names
+    /// and that class's enclosing object and declaring class, which the
+    /// applied mixin's code walks out from (§6.2). Answers the class
+    /// object's new application.
+    pub(super) fn reparent_body_less(
+        &mut self,
+        class: ClassReference<'gc>,
+        declaration: MixinId,
+        reparenting: &Reparenting<'gc>,
+        superclass: Option<(ClassReference<'gc>, Rc<MixinApplication>)>,
+    ) -> Rc<MixinApplication> {
+        let current = self
+            .heap
+            .mixin(declaration)
+            .expect("internal: a re-parented declaration has a row");
+        let Some((&(last_index, last_applied), below)) = reparenting.applied.split_last() else {
+            unreachable!("internal: a body-less declaration writes a `<:` clause");
+        };
+        // Every applied class was found a class object before the commit
+        // began (`Mutator::clause_reparentings`).
+        let Ok(top) =
+            crate::interpreter::nested::build_applied_levels(self, &current, superclass, below)
+        else {
+            unreachable!("internal: every applied class is a class object");
+        };
+        let Some((named, named_application)) = last_applied.as_object().and_then(|named| {
+            self.heap
+                .class_application(named)
+                .map(|application| (named, application))
+        }) else {
+            unreachable!("internal: every applied class is a class object");
+        };
+        let new = self.apply_mixin(
+            &named_application.mixin,
+            top.as_ref().map(|(_, application)| application),
+        );
+        let clause = crate::mixin::AppliedClause {
+            declaration: current,
+            index: last_index,
+            named_builtin: self.heap.class_builtin(named),
+        };
+        let enclosing = self.heap.class_enclosing(named);
+        let declaring_class = self.heap.class_declaring(named);
+        let written = top
+            .as_ref()
+            .is_none_or(|(level, _)| self.heap.class_set_superclass(class, *level))
+            && self.heap.class_install_application(class, Rc::clone(&new))
+            && self.heap.class_set_applied_clause(class, clause)
+            && self.heap.class_set_named_class(class, named)
+            && self
+                .heap
+                .class_set_lexical_context(class, enclosing, declaring_class);
+        if !written {
+            unreachable!("internal: a body-less declaration's class object is a level");
+        }
+        new
+    }
+
     /// The reflected name of the declaration `id`'s current version.
     fn declaration_name(&self, id: MixinId) -> String {
         self.heap
             .mixin(id)
             .map_or_else(String::new, |mixin| mixin.reflected_name())
     }
-
     /// Records, or clears, §3.1.1's enclosing-object verdict on `class`, a
     /// nested class object re-applied over a chain an install may have
     /// changed, as `nested::after_clause` records it when the class object
     /// is made: decided, not signalled, so that only an instantiation
     /// refuses.
+    ///
+    /// A body-less declaration's class object is held to its declaration's
+    /// enclosing object and to its level's, as `nested::body_less_class`
+    /// holds it; a root and a level a `<:` clause added below a class have
+    /// no verdict of their own.
     pub(super) fn redecide_value_class(
         &mut self,
         class: ClassReference<'gc>,
-        enclosing: ObjectReference<'gc>,
         inherits_value: bool,
     ) {
-        let refusal = if inherits_value {
-            self.heap.class_superclass(class).and_then(|superclass| {
-                crate::interpreter::value_class::check_value_class(self, enclosing, superclass)
-            })
+        use crate::interpreter::value_class::{check_body_less_value_class, check_value_class};
+        let refusal = if self.heap.class_body_less_declaration(class).is_some() {
+            let Some(enclosing) = self
+                .heap
+                .class_declaration_scope(class)
+                .and_then(|scope| scope.enclosing)
+            else {
+                return;
+            };
+            if inherits_value {
+                check_body_less_value_class(self, enclosing, class)
+            } else {
+                None
+            }
         } else {
-            None
+            if self.heap.class_applied_origin(class).is_some() {
+                return;
+            }
+            let Some(enclosing) = self.heap.class_enclosing(class) else {
+                return;
+            };
+            if inherits_value {
+                self.heap
+                    .class_superclass(class)
+                    .and_then(|superclass| check_value_class(self, enclosing, superclass))
+            } else {
+                None
+            }
         };
         let written = match refusal {
             Some(refusal) => self.record_value_class_refusal(class, refusal),

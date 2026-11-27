@@ -551,42 +551,60 @@ impl<'gc> Mutator<'gc> {
     /// writes another superclass clause or other `<:` clauses than its
     /// current version does in `original_text`, its module's current text:
     /// the declarations whose class objects the install re-parents, a
-    /// nested one's over what its new clause answers in each enclosing
-    /// instance, a root over its new static superclass. A declaration that
-    /// is a mixin application without a body of its own, before or after,
-    /// is refused: its class object is the level its last clause adds, so
-    /// a new clause would change what the class object itself applies.
+    /// nested one's over what its new clauses answer in each enclosing
+    /// instance, a root over its new static superclass. A mixin
+    /// application without a body of its own is re-parented as any other
+    /// declaration; one that gains or loses its body is refused, since its
+    /// class objects would have to become objects of another shape.
     fn clauses_changed(
         &self,
         original_text: &str,
         text: &str,
         replacements: &[(MixinId, Rc<Mixin>)],
     ) -> Result<Vec<MixinId>, String> {
-        let Ok(original) = ns_syntax::parse(original_text) else {
-            return Ok(Vec::new());
+        let does_not_hold = |id: MixinId| {
+            let name = self
+                .heap
+                .mixin(id)
+                .map_or_else(String::new, |mixin| mixin.reflected_name());
+            format!("{name}'s source text does not hold its declaration")
         };
+        // The text every entry of the module was spliced into: the first
+        // entry's preparation parsed it already.
+        let original = ns_syntax::parse(original_text).ok();
+        debug_assert!(
+            original.is_some(),
+            "internal: the module's current text parsed for its first entry"
+        );
         let mut changed = Vec::new();
         for (id, fresh) in replacements {
             if fresh.is_class_side() {
                 continue;
             }
-            let (Some(current), Some(edited)) =
-                (self.heap.mixin(*id), fresh.declaration.as_deref())
-            else {
-                continue;
+            let Some(current) = self.heap.mixin(*id) else {
+                return Err(does_not_hold(*id));
+            };
+            // A fresh mixin is built from source, which always records its
+            // declaration.
+            let Some(edited) = fresh.declaration.as_deref() else {
+                debug_assert!(false, "internal: a fresh mixin records its declaration");
+                return Err(does_not_hold(*id));
             };
             let (_, path) = self.path_from_module_root(*id);
-            let Some(written) = find_declaration(&original.root_class, &path) else {
-                continue;
+            let Some(written) = original
+                .as_ref()
+                .and_then(|original| find_declaration(&original.root_class, &path))
+            else {
+                return Err(does_not_hold(*id));
             };
             if current.has_body == fresh.has_body
                 && clauses_as_written(original_text, written) == clauses_as_written(text, edited)
             {
                 continue;
             }
-            if !current.has_body || !fresh.has_body {
+            if current.has_body != fresh.has_body {
                 return Err(format!(
-                    "{} is a mixin application without a body of its own, whose superclass an install does not change",
+                    "{} gains or loses a body of its own, which an install does not change",
                     current.reflected_name()
                 ));
             }

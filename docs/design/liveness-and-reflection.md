@@ -773,7 +773,7 @@ the edited module text:
 | a class object of a declaration whose clauses changed, made while they were evaluated | `a class object of <name> was made while its superclass clauses were evaluated; nothing was installed` |
 | a new clause that answers no class | `the superclass clause of <name> answered <description>, which is no class` (`Heap::describe`) |
 | a new clause that makes a class inherit from itself | `the superclass clause of <name> answers a class that inherits from <name>` |
-| a changed clause of a mixin application without a body, before or after | `<name> is a mixin application without a body of its own, whose superclass an install does not change` |
+| a declaration that gains or loses a body of its own | `<name> gains or loses a body of its own, which an install does not change` |
 | a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
 | an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |
 

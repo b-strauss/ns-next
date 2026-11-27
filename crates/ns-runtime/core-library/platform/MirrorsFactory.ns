@@ -1717,6 +1717,10 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// Nothing to prepare or commit, so that an empty install moves no
       /// epoch and fails no install whose clause it runs in.
       builders isEmpty ifTrue: [^self].
+      /// The clauses run for the class objects the program reaches, never
+      /// for one the space still holds though nothing reaches it, so dead
+      /// ones are collected first.
+      (self changesClauses: entries) ifTrue: [self collectGarbage].
       prepared:: vmMirror reflectionPrepareInstall: entries ifFail: [^self refuseEntries].
       (prepared at: 1) ifFalse: [^Error signal: (prepared at: 2)].
       epoch:: prepared at: 2.
@@ -1731,6 +1735,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
           ].
         }.
       ].
+      /// A class object a clause made and dropped is no class object the
+      /// commit refuses: only one the program still reaches is.
+      superclasses isEmpty ifFalse: [self collectGarbage].
       committed:: vmMirror reflectionInstall: entries
           commitEpoch: epoch
           superclasses: superclasses
@@ -1739,6 +1746,31 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       (committed at: 2) keysAndValuesDo: [:index :texts |
         (builders at: index) installed: texts by: self.
       ].
+    )
+
+    /// Whether the install of `entries` evaluates any superclass clause:
+    /// a preparation whose answer is dropped when this returns, so that
+    /// the class objects it names keep nothing alive.
+    ///
+    /// @param entries the install's entries, an Array as `install` builds
+    /// it.
+    /// @answers true when the preparation names a class object whose
+    /// clauses change, false otherwise, a refused preparation included.
+    private changesClauses: entries = (
+      |
+        prepared = vmMirror reflectionPrepareInstall: entries ifFail: [^false].
+      |
+      (prepared at: 1) ifFalse: [^false].
+      ^(prepared at: 3) isEmpty not.
+    )
+
+    /// Asks for a full collection, which the return from this method, a
+    /// safepoint, serves before the sender goes on: what nothing reaches
+    /// is gone by then.
+    ///
+    /// @answers the receiver.
+    private collectGarbage = (
+      vmMirror garbageCollect: self ifFail: [self].
     )
 
     /// Refuses an install the VM cannot read: an edit whose text, after
@@ -1817,26 +1849,26 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// `<:` clauses gives every class object of the class the superclass
     /// its new clauses answer, evaluated when the builder installs, and a
     /// root's whose `:module:` declares another id or version gives the
-    /// module that identity, keeping its path. A root's header given without the `(* :module: … *)` it
-    /// had removes it: the module becomes undeclared, its id the class's
-    /// name and its version dropped. A module the project names with
-    /// `as` keeps that id, its last part the class's name, and takes the
-    /// version its text declares.
+    /// module that identity, keeping its path. A root's header given
+    /// without the `(* :module: … *)` it had removes it: the module
+    /// becomes undeclared, its id the class's name and its version
+    /// dropped. A module the project names with `as` keeps that id, its
+    /// last part the class's name, and takes the version its text
+    /// declares.
     ///
     /// @param aString the header's text, a String or a Symbol, sent
     /// `asString`.
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a
     /// header that does not parse or does not end where the members begin;
-    /// one whose slots collide
-    /// with a member staged or declared; one that renames the class to a
-    /// name its enclosing class already declares ('<enclosing name>
-    /// already has a member named <new name>'); and a root's whose
-    /// `:module:` the loader would refuse -- an id that does not end in the
-    /// class's name, a malformed version, an id under `newspeak.`, or an
-    /// id and version another module of the world has ('two modules are
-    /// `<id>@<version>`: <path> and <path>'), each with the loader's
-    /// message.
+    /// one whose slots collide with a member staged or declared; one that
+    /// renames the class to a name its enclosing class already declares
+    /// ('<enclosing name> already has a member named <new name>'); and a
+    /// root's whose `:module:` the loader would refuse -- an id that does
+    /// not end in the class's name, a malformed version, an id under
+    /// `newspeak.`, or an id and version another module of the world has
+    /// ('two modules are `<id>@<version>`: <path> and <path>'), each with
+    /// the loader's message.
     public source: aString = (
       staging value: aString asString.
     )

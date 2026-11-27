@@ -225,9 +225,8 @@ fn prepare_install<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Opti
             let mut pairs = Vec::new();
             for class in mutator.clause_class_objects(&prepared) {
                 let enclosing = mutator
-                    .heap
-                    .class_enclosing(class)
-                    .map_or(Value::nil(), Value::object);
+                    .clause_context(class)
+                    .map_or(Value::nil(), |(enclosing, _)| Value::object(enclosing));
                 pairs.push(Value::object(
                     mutator.new_array(vec![Value::object(class), enclosing]),
                 ));

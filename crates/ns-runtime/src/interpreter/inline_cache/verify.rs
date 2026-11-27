@@ -105,7 +105,7 @@ struct Receivers<'gc> {
 impl<'gc> Receivers<'gc> {
     fn walk(mutator: &Mutator<'gc>) -> Receivers<'gc> {
         let heap = &mutator.heap;
-        let (classes, objects) = heap.classes_and_instances_over(|_| true);
+        let (classes, objects) = heap.classes_and_instances_over(|_| true, |_| false);
         let mut by_guard: IdentityMap<DispatchId, Value<'gc>> = IdentityMap::default();
         // The immediates are in no space; their ids are in a table.
         let immediates = [

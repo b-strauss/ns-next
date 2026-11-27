@@ -7494,6 +7494,20 @@ impl<'gc> Heap<'gc> {
         self.set_class_field(class, class_field::VALUE_CLASS_REFUSAL, Value::nil())
     }
 
+    /// Writes the class a level's `<:` clause named: an install re-parents
+    /// a body-less declaration's class object, the level its last clause
+    /// adds, over the class its new last clause names. Answers whether the
+    /// write happened: `false` for a class object that is no level and for
+    /// a handle that is no class object.
+    pub(crate) fn class_set_named_class(
+        &mut self,
+        class: ClassReference<'gc>,
+        named: ClassReference<'gc>,
+    ) -> bool {
+        self.class_is_applied_level(class)
+            && self.set_class_field(class, class_field::NAMED_CLASS, Value::object(named))
+    }
+
     /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
     /// §6.2), right after the level is created: by
     /// `Mutator::new_applied_level` for a level built from source, and by
@@ -7614,9 +7628,14 @@ impl<'gc> Heap<'gc> {
     /// reaches any more is found as well, since only a collection tells
     /// the two apart, and none runs inside a leaf; a forwarder and a gap
     /// are no objects and are skipped.
+    ///
+    /// `reparented` names class objects an install re-parents whatever
+    /// mixin they apply -- a body-less declaration's, which applies its last
+    /// clause's mixin -- so that the chains over them are found too.
     pub(crate) fn classes_and_instances_over(
         &self,
         replaced: impl Fn(MixinId) -> bool,
+        reparented: impl Fn(ClassReference<'gc>) -> bool,
     ) -> (Vec<ClassReference<'gc>>, Vec<ObjectReference<'gc>>) {
         // Per class object, by offset, whether its chain holds a replaced
         // level: every instance of a class asks the same question.
@@ -7625,10 +7644,11 @@ impl<'gc> Heap<'gc> {
             *verdicts.entry(class.offset.get()).or_insert_with(|| {
                 let mut level = Some(class);
                 while let Some(current) = level {
-                    let holds = self
-                        .class_application_entry(current)
-                        .and_then(|application| self.known_mixin_id(&application.mixin))
-                        .is_some_and(&replaced);
+                    let holds = reparented(current)
+                        || self
+                            .class_application_entry(current)
+                            .and_then(|application| self.known_mixin_id(&application.mixin))
+                            .is_some_and(&replaced);
                     if holds {
                         return true;
                     }
