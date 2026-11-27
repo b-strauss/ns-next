@@ -198,9 +198,8 @@ no number: `Mutator::program_symbol` answers the object a second, weak table
 holds for the text, keyed by the text's hash, or makes one and records it
 there, and once something interns the text the canonical table adopts that very
 object ([memory.md](memory.md), "Weak references"). Those are the only ways to
-make a symbol, so a symbol literal, `asSymbol` and every selector handed to
-`doesNotUnderstand:` all reach the same object for the same text, which is what
-§5.1.6 and §3.1.1 make two equal symbols. The tables are per heap because a
+make a symbol, which is what §5.1.6 and §3.1.1 need of two equal symbols.
+The tables are per heap because a
 handle means nothing against another heap. Both are weak: the collector clears
 an entry whose symbol nothing else holds.
 This is what every reference does -- Primordial Soup's weak `symbolTable`
@@ -408,12 +407,10 @@ bucket index (the FxHash scheme rustc's own tables use).
 rather than on the class object, because a superclass contributes slots and can
 differ between instances of the same enclosing class.
 
-**A slot is reached through its accessors, which are method-table entries.**
-§6.3.2 has every slot declaration define a getter and, for a mutable slot, a
-setter, each with the slot's accessibility; they are entries of the declaring
-mixin's `methods` beside the compiled methods, found and overridden like any
-method ([dispatch.md](dispatch.md), "Slot accessors";
-`r[semantics.slot.accessors]`). An entry names its slot by
+**A slot is reached through its accessors, which are method-table entries**
+(`r[semantics.slot.accessors]`): they are entries of the declaring
+mixin's `methods` beside the compiled methods
+([dispatch.md](dispatch.md), "Slot accessors"). An entry names its slot by
 position among the mixin's *own* slots, so one entry serves every application:
 the absolute field is the defining application's `own_slot_base` plus that
 position — the same mixin-relative addressing `InitializeSlot` uses
@@ -487,10 +484,11 @@ every send.
 
 **Inherited nested declarations get their own slots.** §6 says a distinct nested
 class exists for each declaration given in the declaration of C *and its
-superclasses*, so the hidden slots are part of the absolute layout an application
-computes, contributed at the level that declares them, exactly like ordinary
-inherited slots. They are derived from a mixin's nested declarations
-(`Heap::nested_of`) rather than declared, so nothing stores them separately. The hidden slot is keyed by the
+superclasses*, so the hidden slots are part of the absolute layout an
+application computes, contributed at the level that declares them, exactly
+like ordinary inherited slots. They are derived from a mixin's nested
+declarations (`Heap::nested_of`) rather than declared, so nothing stores
+them separately. The hidden slot is keyed by the
 declaration's mixin, not by its name
 (`r[vm.dispatch.hidden-slot-by-declaration]`):
 keying by name would make an override and
@@ -590,8 +588,7 @@ kernel's.
   `r[semantics.builtin-names]`):
   `Kernel.ns`'s `Object` declares one protected method per nameable builtin,
   `protected String = ( ^outer Kernel String )`, and a bare `String` is
-  `self String` by §5.7, so a class that declares or inherits a member of
-  that name reaches its own, and `other String` from outside reaches
+  `self String` by §5.7, so `other String` from outside reaches
   `doesNotUnderstand:` ([core-library.md](core-library.md), "The
   predefined classes are accessors on `Object`", "`class` and the class
   accessors are protected").
@@ -623,7 +620,7 @@ kernel's.
   `AllocateInstance` runs), and the VM mirror's class is refused
   outright (`r[vm.mirror.not-instantiable]`), with a `CannotInstantiate`
   carrying nil rather than the class a
-  program must not be handed — there is exactly one mirror.
+  program must not be handed -- there is exactly one mirror.
 - **A user subclass of a builtin inherits its methods but not its payload.**
   `class MyArray = Array new` answers `Array`'s kernel methods, whose leaves
   decline on an instance that carries no array, and each method's failure
@@ -875,11 +872,9 @@ rebuilt from an image. Of the other two, the identity method is a property of
 the *application* and is decided once, where `Mutator::apply_mixin` builds
 it — before any class object exists, which is what covers a module's root
 class along with every nested one — and the enclosing objects are fixed per
-*class object*, decided once where one is created. **Every one of them is
-refused where an instance would come into being**. Every such refusal is an
-ordinary Newspeak error named under the primary factory of the class being
-instantiated, defaulted to `new`, raised at run time — a class nothing
-instantiates never fails, as a method nothing runs never does — and every
+*class object*, decided once where one is created. Every refusal is raised at
+run time — a class nothing instantiates never fails, as a method nothing
+runs never does — and every
 text lives in `interpreter/instantiate.rs`, so both lowerings raise the same
 errors. The root rule ("Mixin application", at its end), which decides what a
 module that declares itself a value may write, is not among them: a root that
@@ -1617,9 +1612,8 @@ own slots and initializer expressions ([compiler.md](compiler.md), "The
 three initializer bodies"). Every clause message is lowered in `C`'s
 factory scope and evaluated with `C`'s factory arguments (§6.3 makes the
 factory's parameters visible in the superclass clause), and each `mk` is
-evaluated just before `Mk`'s own part runs, so a `<:` clause's message runs
-with the applying class's factory arguments just before the initializer of
-the level it adds (`goldens/language/class/mixin/mixin_initializer_order.ns`).
+evaluated just before `Mk`'s own part runs
+(`goldens/language/class/mixin/mixin_initializer_order.ns`).
 An applied level's own part is checked against the arity of its mixin's
 own factory, for which its registers are laid out
 (`r[vm.activation.push-checks-arity]`). Because the `<:` clauses' selectors
@@ -1641,9 +1635,7 @@ class, it initializes as a class whose mixin is the applied mixin and whose
 superclass is the level's actual superclass: it runs its mixin's
 standalone body -- the mixin's *own* superclass clause, checked by §6.1
 against that superclass, then the mixin's own part -- and never the
-mixin's own `<:` clauses, whose levels are not above it. Only the full
-initializer of the declaration that applied it runs it the `<:` way, its
-clause's message then the mixin's own part. Squeak-Newspeak deletes such a
+mixin's own `<:` clauses, whose levels are not above it. Squeak-Newspeak deletes such a
 level's initializer (`prior-art/newspeak/squeak/KernelForSqueak.ns:1055-1065`), so both cases end in a
 `doesNotUnderstand:` or silently run a higher initializer; SOMns flattens
 the levels into one class, so none is reachable; Primordial Soup has no
@@ -1691,13 +1683,12 @@ usingPlatform: platform`, `UISessionManager`'s `= NewspeakObject new` — which
 the Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
 
 **Every root defect is a resolve error** (decided with the user on
-2026-09-30), for every module root, the shipped modules' included, before
-anything runs: `resolver::root_clause_defect` classifies the root's clauses
+2026-09-30; `r[semantics.module.root-rule]`):
+`resolver::root_clause_defect` classifies the root's clauses
 and the resolver reports the first defect at the offending clause's span, so
-the editor underlines exactly that clause. The specification would leave the
-failure to evaluation; checking it statically is a rule of the
-specification of ns-next, `r[semantics.module.root-rule]`, which its appendix
-lists as a difference from §6.1, taken because a module root is not an ordinary class and a program must not
+the editor underlines exactly that clause. The book's appendix
+lists it as a difference from §6.1, taken because a module root is not an
+ordinary class and a program must not
 run when its artifact cannot be built — deferring it to instantiation let a
 project module nothing instantiated run under `run` while `build` refused it.
 `run` and `build` print it alike. The
@@ -1796,8 +1787,7 @@ its own would send every `X new` site megamorphic.
 (`r[semantics.class-side]`). A metaclass's
 superclass is always `Class`, never the metaclass of `Foo`'s superclass, so
 the ordinary lookup from a class object walks its own class side, then
-`Class`, `Behavior` and `Object`, and a subclass answers a class-side message
-only if its own class side declares it
+`Class`, `Behavior` and `Object`
 (`goldens/language/class/class-side/class_side_is_not_inherited_by_a_subclass_with_none_of_its_own.ns`).
 §5.10 makes a `super` send's S the superclass of the activation's current
 class, which for a class-side method is `Class`: a class-side
@@ -1808,8 +1798,7 @@ metaclass declares a factory.
 
 **Every class object's class is its metaclass, and every metaclass's class is
 `Metaclass`** (`r[vm.heap.class-word-is-metaclass]`). `attach_metaclass`
-sets both headers: the class object becomes
-an instance of its metaclass, and the metaclass an instance of `Metaclass`.
+sets both headers.
 `Metaclass` is a kernel class with a metaclass of its own, whose class is
 `Metaclass` again, which closes the loop without a regress
 (`goldens/language/class/class-side/the_class_of_a_class_is_its_metaclass.ns`
@@ -2629,7 +2618,7 @@ A frame of a body past the register ceiling whose arguments leave no
 number above the header holds its arguments alone. Whether the
 divorce copies the registers into it is decided per activation from the
 block's `outer_reach` ([execution.md](execution.md), "Closure conversion").
-So no frame object ever grows, and suspension, the debugger and
+Suspension, the debugger and
 edit-and-continue find room for the registers in every reified frame.
 Edit-and-continue adding locals will divorce the affected activation into a
 newly allocated, larger frame object -- allocated old and born remembered by
@@ -2650,9 +2639,8 @@ forwarding table or register vector of its own.
 **Strings have two widths** (`r[vm.heap.string-canonical-width]`). A string
 holds one byte per code point while
 every code point fits Latin-1, 32 bits per code point otherwise -- the
-byte-indexed and 32-bit-indexed formats, eight or two units to a word, least
-significant first, the last word's unused units zero, so that equal texts
-have equal words (`object.rs`'s `pack_string` and `pack_code_points`, the
+byte-indexed and 32-bit-indexed formats, eight or two units to a word
+(`object.rs`'s `pack_string` and `pack_code_points`, the
 writers, and `PackedString`, the one reader of the layout). Either way the
 elements are code
 points, so `size` and `at:` are one access, read in place. §5.1.5 makes a
@@ -2781,10 +2769,8 @@ from. For each old level whose slot base and own slots, by name and in
 order, the edit keeps, it records the new application as the old one's
 successor (`Heap::record_successor`, into `Tables::successors`), pointing
 every earlier predecessor at the newest; the cold path of
-`Heap::receiver_has_level` accepts the entered level or its successor. So
-an initializer or a lazy getter entered before the install runs to its
-end when its level's slots did not change, and raises the error above
-when they did; the hot path is unchanged. A successor entry lives while
+`Heap::receiver_has_level` accepts the entered level or its successor; the
+hot path is unchanged. A successor entry lives while
 its old application does and keeps the new one alive; a full collection
 drops it with the old index ("An application has two ids" above).
 
@@ -2829,10 +2815,10 @@ location through every cached send and cost every program 2.5-7.4%.
 
 **The assumption** (`r[vm.dispatch.invalidation-after-change]`). A guard
 names one application, and an application's
-chain does not change while the caches persist. Whatever changes a class
-object's application or chain under an unchanged guard must invalidate the
-caches after it -- `Heap::class_set_application` on a superclass is the
-case -- which the atomic install does. Recorded guards follow the
+chain does not change while the caches persist:
+`Heap::class_set_application` on a superclass is the case that changes it
+under an unchanged guard, and the atomic install invalidates the caches
+after it. Recorded guards follow the
 guard id's reuse rule: an activation's recorded guard keeps its
 application, and so the guard, from being reclaimed, and a collection
 that frees a guard vacates every cache entry and the verified pair that
@@ -3061,13 +3047,11 @@ an ordinary instance (format `FixedPointers`) of a class that is no builtin
 and whose application's mixin is not shipped (read as the mirrors read it,
 so a class side whose instance side is shipped counts as shipped), and no
 reified mixin and no value a mirror withholds -- the VM mirror and the
-recorded shipped module instances (`may_be_forwarded`). So no immediate,
-class object, closure, frame object, `Array`, symbol, string, large integer
-or boxed float is ever forwarded, nothing whose layout the VM reads
-natively, and no object on a path from shipped code to the VM mirror: every
+recorded shipped module instances (`may_be_forwarded`). Every
 instance a platform path names is an instance of a shipped mixin, and so is
 every kernel-made object a program can reach, a VM error's `Error` or
-`MessageNotUnderstood` and its `Message` among them. The builtin and the
+`MessageNotUnderstood` and its `Message` among them, so no object on a path
+from shipped code to the VM mirror is forwarded. The builtin and the
 withheld tests are not belt and braces: the VM mirror's class is a builtin
 whose mixin is not marked shipped, so the shipped test alone would let it
 through, and forwarding a program object to the mirror would hand the
@@ -3093,12 +3077,8 @@ replaced under its id instead (`Mutator::replace_mixin`;
 replaces the mixin under its id"). When the slots change, the instances
 migrate (`r[vm.heap.migration-by-declared-name]`): the atomic install
 allocates each in the new shape, copies its
-fields by what they are named -- a slot by its declaring level's mixin id,
-that id's occurrence in the chain and its name, a hidden nested-class slot
-by its declaration's id and occurrence (`mixin.rs`'s `FieldName`) --
-leaves a slot the edit added, or moved to another level, `nil` without
-running its initializer, keeps its identity hash, and sends nothing to a
-user object while it does; then one bulk forward replaces all of them at
+fields by what they are named (`mixin.rs`'s `FieldName`) and sends nothing
+to a user object while it does; then one bulk forward replaces all of them at
 once ([liveness-and-reflection.md](liveness-and-reflection.md), "A
 MirrorBuilder and an atomic install"). The install touches no frame: a
 running activation finishes with the code it was running. Edit-and-continue,
