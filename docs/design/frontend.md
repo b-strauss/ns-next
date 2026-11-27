@@ -240,17 +240,13 @@ with the user on 2026-09-25; the specification's
 `r[lex.string.double-quoted]` and `r[lex.string.one-character]`): §5.1.4
 announces "doing away with character literals, and having people use string
 literals instead", so `"a"` is a one-character string and the `Character`
-class is gone. A single-quoted string doubles an embedded `'` (`'it''s'`). A
-double-quoted one has no escape and ends at the next `"`
-(`lex_double_quoted_string`), so each kind holds the other's quote freely —
-`'"'`, `"'"`. The one exception is the one-character form: any single
-character between two quotes is a one-character string, `"` included, so
-`"""` is the string holding a quote. That is how the corpus writes it, in
+class is gone. A double-quoted string ends at the next `"`
+(`lex_double_quoted_string`), but for the one-character form `"""`, the
+string holding a quote. That is how the corpus writes it, in
 seven modules (`corpus/modules/NewspeakGrammar.ns`, `(char: """)`), which the
 old character lexer read as one character whatever it was; §5.1.4's own
-doubling, `""""`, would have lexed those as an unterminated string. `""""`
-therefore reads as `"""` followed by the start of another string, and appears
-in the corpus only inside comments.
+doubling, `""""`, would have lexed those as an unterminated string, and
+`""""` appears in the corpus only inside comments.
 
 **A string literal is not normalized to NFC**, a rule of the specification
 of ns-next, `r[semantics.literal.string]`, which its appendix lists as a
@@ -281,8 +277,7 @@ whatever code points it is given and does not depend on it.
   not a `specialCharacter`: `+-4` is `+` and a negative four, `->` one
   selector. §5.6's asynchronous send token `<-:` is one token of its own,
   `EventualSendOperator`; `<:` is §6.2's `MixinOperator`.
-- *Radix numbers* (`r[lex.number.radix]`). Each optional part is taken only
-  when it is complete. The parser refuses a radix outside 2 to 36 and digits
+- *Radix numbers* (`r[lex.number.radix]`). The parser refuses a radix outside 2 to 36 and digits
   not below it (`2r12`, `37r1`), as the canonical parser does while it
   parses. A fraction or an exponent makes any number non-integral, a radix one
   included: `16r1.8` is 1.5 and `2r1e3` is 1000, its digits in its radix
@@ -291,9 +286,7 @@ whatever code points it is given and does not depend on it.
   (`goldens/language/syntax/spec_5_1_1_a_radix_number_may_have_a_fraction_and_an_exponent`).
 - *Symbols* (`r[lex.symbol]`). `sym → str | kws | binSel | id`, `kws → kw+`.
 - *No literal arrays* (`r[lex.literal-array-refused]`). `#( ... )` is refused
-  by name
-  (`` `#( ... )` is not Newspeak syntax; a tuple is written `{ element. element }` ``):
-  neither the specification nor the canonical grammar has Smalltalk's literal
+  by name: neither the specification nor the canonical grammar has Smalltalk's literal
   array, and the tuple is §5.1.7's array literal (decided with the user on
   2026-09-27). Its image literal tag, 7, is retired
   ([image-format.md](image-format.md)).
@@ -305,9 +298,8 @@ whitespace, so no token stands for one and the parser never sees one.
 
 - **`(* ... *)`** is §4.2's comment. It nests, and an unterminated one runs
   to the end of the source, beside its diagnostic.
-- **`///`** starts ns-next's line comment wherever it stands outside a
-  string or a comment, and the comment runs up to, not including, the next
-  `\n` or `\r` (or the end of the source); `////` is a comment too. A binary
+- **`///`** starts ns-next's line comment, to the end of its line
+  (`r[lex.comment.line]`); `////` is a comment too. A binary
   selector ends before `///` (`starts_line_comment`,
   `continues_binary_selector`): `a +/// x` is `a +` followed by a comment,
   `#+/// x` the symbol `#+`, and `#/// x` a `#` with nothing after it,
@@ -700,11 +692,9 @@ spells its two alternatives out for exactly this reason): an optional part
 is taken whenever it matches and never retried as absent, and of several
 alternatives the first that matches in full wins. So:
 
-- `slotDef` and `methodDecl` start with `[accessModifier]`. An access
-  modifier's word standing first is the modifier, so it names a slot, a
-  temporary or a method only behind one: `| public public = 1. |` and
-  `public private = ( ... )` are accepted, `| public |` and
-  `public = ( ... )` are refused. `class` and `lazy` need no modifier.
+- `slotDef` and `methodDecl` start with `[accessModifier]`, so an access
+  modifier's word standing first is the modifier (the cases are
+  `r[syntax.unreserved-word]`'s). `class` and `lazy` need no modifier.
 - `sideDecl` tries a nested class, then a lazy slot, then a method.
   `[accessModifier] class <name>` is a nested class, whatever the name;
   `public class = ( ... )` is a method named `class`. §6.3.3's
@@ -762,9 +752,7 @@ expression's head as an `ExpressionKind::Assign` ([dispatch.md](dispatch.md),
 "Setter sends"). Nothing in the specification grammar, the canonical grammar
 (`corpus/reference/NewspeakGrammar.ns`), Primordial Soup or SOMns accepts
 `:=`, Smalltalk's assignment. The lexer refuses it by name
-(`r[lex.assignment-refused]`) — one diagnostic,
-`` `:=` is not Newspeak syntax; a setter send is written `name:: expression` ``
-— rather than splitting it into `:` and `=` and letting the parser report
+(`r[lex.assignment-refused]`), one diagnostic, rather than splitting it into `:` and `=` and letting the parser report
 something unrelated further on. Until 2026-09-19 it was accepted as a synonym
 for the setter send, a deviation that only over-accepted; removing it
 converted every golden and test that spelled it, with no recorded outcome
