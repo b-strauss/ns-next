@@ -2108,9 +2108,7 @@ object was not reached. A full collection does so in
 forwarding table answers only marked objects
 (`r[vm.heap.weak-settled-before-compaction]`); a scavenge in
 `Scavenger::finish`, before the nursery is vacated, a young key surviving
-when it was copied, forwarding each surviving young referent's word to
-its copy, and remembering an old weak object or ephemeron that still names
-a young object afterwards, once
+when it was copied
 (`r[vm.heap.weak-settled-before-nursery-vacated]`). Writing `nil` stores no
 young object, so
 neither pass needs the write barrier; a program's store into a weak slot
@@ -3204,11 +3202,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 `doScavenge:` (`cointerp.c:53614`) and Strongtalk's `Universe::scavenge`
 (`universe_more.cpp:81-137`) are.
 
-- **The roots** are what a full collection marks from -- the `Activation`
-  class, every word of the activation stack, the side tables of
-  continuations and of suspended activations, the host roots, and the step
-  state's
-  `StepRoots` -- plus the remembered set. The whole
+- **The roots** are what a full collection marks from
+  (`r[vm.heap.roots-complete]`) plus the remembered set. The whole
   activation stack is a root, so a scavenge costs time in proportion to the
   recursion depth, up to the depth limit's 100,000 activations and its
   1,000 reserve; Spur bounds that with stack pages, and road step 7a's
@@ -3230,9 +3225,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   (`evacuate`), and the object at its end is copied only if it is young and
   not already in the future survivor space, as Spur's
   `scavengeReferentsOf:` decides (`cointerp.c:48090`, the
-  `isReallyYoungObject:` test at `:48132-48137`). A young object is copied
-  once per scavenge, and nothing names a bulk forward's forwarder once the
-  forward ends, so every chain a scavenge meets is one link of its own. A
+  `isReallyYoungObject:` test at `:48132-48137`). Every chain a scavenge
+  meets is one link of its own. A
   bulk forward's old forwarder that is remembered -- its class word names
   a young replacement -- stays in the set until its target is tenured or a
   full collection runs; its class word is the only word a scavenge reads
@@ -3413,9 +3407,8 @@ scavenge stress mode below is what finds a breach.
 
 `Heap::remembered` holds the offset of every old object that may name a
 young one (`r[vm.heap.remembered-set-exact]`), marked by its header's
-remembered bit, bit 31. A scavenge rebuilds it, a full collection
-empties it and clears every bit, and a move relocates every offset through
-the same shift, since no tracer reaches a raw offset. Past 8,192 entries
+remembered bit, bit 31. A move relocates every offset through the same
+shift itself, since no tracer reaches a raw offset. Past 8,192 entries
 (`REMEMBERED_SET_LIMIT`), Primordial Soup's `kRememberedSetOverflowSize`
 (`heap.h:112`, `heap.cc:279-283`), the barrier requests a scavenge that
 tenures everything, at the next safepoint, and the set keeps growing until
