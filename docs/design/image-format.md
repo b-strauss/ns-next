@@ -50,9 +50,8 @@ architecture-neutral serialization decoded on load — never `mmap`ed VM memory,
 which could not be cross-architecture. No native code, no JIT output, no raw
 pointers, no baked-in tagging or host endianness.
 
-**Canonical encodings.** Little-endian integers, IEEE-754 `binary64` for floats,
-UTF-8 for strings and symbols, an integer as an `i64` when it fits one and
-otherwise as a sign and its 64-bit digits, least significant first. Symbols are
+**Canonical encodings** (`r[image.encoding]`): little-endian integers,
+IEEE-754 `binary64` floats, UTF-8 strings and symbols. Symbols are
 re-interned on load rather than assumed to keep their ids. The decoder picks
 a `String`'s width, one byte or four per code point, from the code points it
 reads ([core-library.md](core-library.md), "Strings are code points in two
@@ -63,10 +62,9 @@ widths").
 hierarchy from Rust primitives, and the image describes only what the
 program's modules added.
 
-**An image is untrusted input.** No byte sequence may cause a panic or a process
-abort. Every id, tag, count and length is validated before it indexes, allocates
-or slices, and any recursion whose depth the input controls is bounded or made
-iterative.
+**An image is untrusted input** (`r[image.untrusted]`): no byte sequence may
+cause a panic or a process abort, and any recursion whose depth the input
+controls is bounded or made iterative.
 
 That guarantee is about **decoding**. `load` sends the packaged application
 `main: platform args:` with no flag at all, so starting one executes its code
@@ -171,12 +169,13 @@ since a stale artifact's module text would otherwise be read as the next
 fields of its module record. A stale binary's header now meets an unknown flag
 (`a_retired_stateless_flag_is_refused_as_unknown`,
 `a_header_flag_of_the_retired_module_text_layout_is_rejected`,
-`crates/ns-runtime/tests/image.rs`). `read_header`
-**refuses any flag this build does not implement** rather than masking it off: an
-unimplemented flag means a section the reader cannot see, and continuing would
-read the next field out of whatever that section occupies. A started image
-whose graph has any number of roots but one is refused
-(`DecodeError::StartedImageRootCount`), since it leaves the host nothing, or
+`crates/ns-runtime/tests/image.rs`). `read_header` **refuses any flag this
+build does not implement** rather than masking it off
+(`r[image.header.flags]`): an unimplemented flag means a section the reader
+cannot see, and continuing would read the next field out of whatever that
+section occupies. A started image whose graph has any number of roots but
+one is refused (`r[image.verify.started-image-roots]`,
+`DecodeError::StartedImageRootCount`), since it leaves the host nothing, or
 nothing certain, to start.
 
 `FORMAT_VERSION` is 1 and is not bumped. The project has no external users, so
@@ -184,9 +183,9 @@ images predating a change are disposable and no migration path is owed to them.
 The guarantee that still has to hold is the untrusted-input one, and that comes
 from validating ids and lengths, not from a version field. What the version
 cannot say -- that the image was written by a binary whose shipped world is
-the loading one's -- the fingerprint says: a load whose binary computes
-another refuses the image before it reads anything past the header
-(`DecodeError::ShippedWorldMismatch`).
+the loading one's -- the fingerprint says (`r[image.header.fingerprint]`): a
+load whose binary computes another refuses the image before it reads
+anything past the header (`DecodeError::ShippedWorldMismatch`).
 
 ## What is *not* serialized
 
@@ -198,8 +197,9 @@ surface is.
   `TimeFactory`, `CollectionsFactory`, `TypedArraysFactory`),
   each class its root declares, the builtins among them, their metaclasses
   and the levels their `<:` clauses add -- is named by its **shipped
-  name**, never structurally encoded: the module, the declaration and the
-  kind, listed once in a section of its own and resolved by table lookup
+  name**, never structurally encoded (`r[image.write.not-written]`): the
+  module, the declaration and the kind, listed once in a section of its own
+  and resolved by table lookup
   against the loading binary's own shipped world before the graph is
   decoded ("Shipped names" below). The binary's own code builds that world
   -- the boot `Kernel` and `PlatformFactory`, the loader every other
@@ -224,9 +224,10 @@ surface is.
   fills an empty slot on demand through the canonical `PlatformFactory`
   instance. A started image holds no platform: nothing before `main:args:`
   hands a program one ("Packaging" below).
-- **Mixin applications** are not serialized. Layout and lookup follow
-  deterministically from a mixin and its superclass application, so they are
-  rebuilt as class objects decode. This removes a section, a verification pass,
+- **Mixin applications** are not serialized (`r[image.load.applications]`).
+  Layout and lookup follow deterministically from a mixin and its
+  superclass application, so they are rebuilt as class objects decode. This
+  removes a section, a verification pass,
   and the possibility of loading an image whose stored layout disagrees with its
   mixins. It is also what proves two instances that shared an application before
   a snapshot still share one after it. A **metaclass** stores nothing twice:
@@ -241,11 +242,12 @@ surface is.
   shipped name. A class record applying some
   row's class side is refused (`ClassRecordAppliesAClassSide`)
   ([object-model.md](object-model.md), "The image format").
-- **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
-  global-cache entry or code family's range is written, and no activation's or
-  closure's `feedback_base`: a decoded closure carries "not assigned" and is
-  given a fresh range when it first runs, and a loaded artifact starts with
-  empty caches ([dispatch.md](dispatch.md), "3b — The caches"). The dispatch
+- **Inline-cache state and dispatch ids** (`r[image.load.caches]`). No cache
+  entry, polymorphic block, global-cache entry or code family's range is
+  written, and no activation's or closure's `feedback_base`: a decoded closure
+  carries "not assigned" and is given a fresh range when it first runs, and a
+  loaded artifact starts with empty caches ([dispatch.md](dispatch.md), "3b —
+  The caches"). The dispatch
   ids the caches guard on are minted per heap as the applications are
   rebuilt, so an id never comes from the bytes either; every decoded
   object's header is stamped from its class in one pass once they all are
@@ -257,7 +259,8 @@ surface is.
   exactly the load path that was removed.
 
 A hostile image therefore cannot replace a builtin or any other shipped
-class, because a shipped name resolves against the loading binary's own
+class (`r[image.load.shipped-world]`), because a shipped name resolves
+against the loading binary's own
 shipped world rather than against file content: the image chooses which of
 the binary's modules and classes the loader builds, never what they are.
 
@@ -312,8 +315,9 @@ instruction is one eight-byte slot, so a jump target, the statement map and
 a frame's `program_counter` are the same instruction index on the wire and
 in memory.
 
-**A tag is assigned once and never changes.** A new instruction takes the next
-free number; a removed one retires its number rather than freeing it for reuse.
+**A tag is assigned once and never changes**
+(`r[bytecode.wire.tag-assigned-once]`, `r[image.tags]`): a new instruction
+takes the next free number, a removed one retires its number.
 
 That is a stronger promise than the rest of this format makes, and it is
 deliberate. Images are disposable and `FORMAT_VERSION` is never bumped, so a
@@ -496,7 +500,7 @@ Literals:
   raises its error when it runs.
 
 **A count past its field refuses the image, never aborts it, except the
-count of heap objects.** A count a
+count of heap objects** (`r[image.write.limits]`). A count a
 program decides is written through a checked narrowing that answers an
 error, `image encoding cannot write a <what> of <n>: it does not fit the
 image format's 16-bit field` (or `32-bit`): in 16 bits a register list and
@@ -521,7 +525,8 @@ counts by source, whose `Span` offsets are 32-bit --
 `u32::MAX` bytes with a parse diagnostic before lexing it -- and the symbol
 table's count by the two together.
 
-**A call-site number is a property of the code, never a byte on the wire.** It
+**A call-site number is a property of the code, never a byte on the wire**
+(`r[bytecode.wire.call-sites]`). It
 is feedback-table bookkeeping, not program meaning: the decoder assigns every
 family's numbers itself, in the compiler's own emission order, once the whole
 code table is read (`decode::number_call_site_families`), rather than trusting a
@@ -574,19 +579,16 @@ how a viewer starts quietly disagreeing with the loader. A closure frame
 data sits inline in its object, so that the tracer can rewrite its two frame
 handles in place ([memory.md](memory.md), "What the collector traces").
 
-**A `LargeInteger` is a value on the wire, never a record.** Value tag 9,
-`VALUE_LARGE_INTEGER`, carries it inline wherever a value goes -- a field,
-an element, a register, a copied value -- as a sign byte (0 or 1), a `u32`
-digit count and that many `u64` digits, least significant first; literal
-tag 10 carries a literal in the same form. It has no identity (§3.1.1), so
-the graph walk gives it no object id and two references to one object load
-as two equal integers, which is all a value promises. Only the canonical
-encoding decodes: a count bounded against the bytes left before its digits
-are allocated, a sign byte of 0 or 1, no zero top digit, no negative zero,
-and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER` or
-`LITERAL_SMALL_INTEGER`; anything else is `DecodeError::NonCanonicalInteger`
-(or `InvalidTag` for the sign), so each integer has one encoding on the wire
-and one representation after a load (`a_non_canonical_large_integer_is_refused`,
+**A `LargeInteger` is a value on the wire, never a record**
+(`r[image.graph.value]`). Value tag 9, `VALUE_LARGE_INTEGER`, carries it
+inline wherever a value goes -- a field, an element, a register, a copied
+value; literal tag 10 carries a literal in the same form. It has no
+identity (§3.1.1), so the graph walk gives it no object id and two
+references to one object load as two equal integers, which is all a value
+promises. Only the canonical encoding decodes (`r[image.verify.numbers]`);
+anything else is `DecodeError::NonCanonicalInteger` (or `InvalidTag` for the
+sign), so each integer has one encoding on the wire and one representation
+after a load (`a_non_canonical_large_integer_is_refused`,
 `crates/ns-runtime/tests/image.rs`). The decoder makes the object through
 `Mutator::new_integer`, which counts toward a failed load's peak
 ([memory.md](memory.md), "The amplification bound of a rejected load").
@@ -610,8 +612,8 @@ the same at any length
 denominator, each a `VALUE_SMALL_INTEGER` or a `VALUE_LARGE_INTEGER` in its
 canonical form; it has no identity (§3.1.1), so the graph walk gives it no
 object id and its parts are no objects of the graph. Only a fraction in
-normal form decodes -- a denominator above 1, no factor the two parts
-share -- since `=` and `hash` compare the parts; anything else is
+normal form decodes (`r[image.verify.numbers]`), since `=` and `hash`
+compare the parts; anything else is
 `DecodeError::NonNormalFraction`, and a part under any other tag is
 `InvalidTag`, both refused by the first pass before anything is allocated
 (`a_fraction_outside_its_normal_form_is_refused`,
@@ -648,7 +650,8 @@ provenance span, and, in an image with source, the index of its
 declaration's text in the text table ("Source" below). This is what replaced
 the embedded source text and the re-parse on load.
 
-A factory's body is not on the wire. A metaclass row's factory entry is
+A factory's body is not on the wire
+(`r[vm.compiler.factory-body-synthesized]`). A metaclass row's factory entry is
 derived from its instance side's factory selector and arity
 (`mixins::metaclass_factory_entries`, once per decode, `mixin::factory_entry`),
 and gets `compiler::factory_body` of the arity, as every factory built from
@@ -657,12 +660,12 @@ three instructions whatever the arity, so a crafted arity on the wire
 amplifies nothing ([memory.md](memory.md), "The amplification bound of a
 rejected load").
 
-The table is a **forest**: one tree per module, each in `mixin::preorder`
-order, the trees in module order (`image/mixins.rs`). A tree's first row is
-its module's root declaration, so the module section's count must equal the
-number of trees the rows form (`DecodeError::ModuleCountMismatch`): a surplus
-tree would be declarations no module names, a missing one a module without a
-root. Row ids and the nesting ceiling cover the whole forest, and a row's
+The table is a **forest** (`r[image.mixins]`, `r[image.verify.mixin-tree]`),
+each tree in `mixin::preorder` order (`image/mixins.rs`). The module
+section's count must equal the number of trees the rows form
+(`DecodeError::ModuleCountMismatch`): a surplus tree would be declarations
+no module names, a missing one a module without a root. Row ids and the
+nesting ceiling cover the whole forest, and a row's
 nested declarations must lie in its own tree (`MixinTableNotATree`).
 
 A slot is its name, its kind and its accessibility (the access tags a method
@@ -676,15 +679,16 @@ initializer's compiled body, so it is written as one of the row's compiled
 methods -- a body that opens with `ReturnSlotIfFilled` (tag 34) and carries no
 fast path, so the decoder restores nothing from the slot record for it -- and
 a row whose lazy slot has no unary method of its name and accessibility among
-its methods is refused (`LazySlotWithoutGetter`). A method of the slot's
+its methods is refused (`LazySlotWithoutGetter`;
+`r[image.verify.mixin-rows]`). A method of the slot's
 name that takes an argument never reaches that check: its selector is
 unary, so its record is refused as it is read, as every method record
 whose argument count is not its selector's is (`MethodArityMismatch`,
 "Verification" below). A mutable
 lazy slot's setter is derived like any other. A row in which two members would
-share a name — a compiled method, an eager slot's getter, a mutable slot's
-setter, a nested declaration — is refused before any mixin is built, so a
-crafted row cannot make one member silently hide another.
+share a name is refused before any mixin is built
+(`r[image.verify.mixin-rows]`), so a crafted row cannot make one member
+silently hide another.
 
 A row also carries its `<:` clauses (`newspeak-spec.pdf` §6.2), in declaration
 order: each one's selector and whether its message takes arguments. A
@@ -702,7 +706,8 @@ After the clauses, one boolean says whether the declaration writes a body
 application itself, and its row has clauses and no member, no class side
 and no standalone body (`BodyLessWithoutClauses`, `BodyLessWithMembers`).
 
-**Class objects are ordinary objects in the graph** (object body tag 7),
+**Class objects are ordinary objects in the graph** (object body tag 7;
+`r[image.verify.class-records]`),
 encoded as `{MIXIN_ROW, row id, superclass, enclosing object, declaring
 class, applied clause and named class?}`. No class record applies a body-less
 row's mixin (`BodyLessMixinApplied`): such a declaration's class object is
@@ -760,7 +765,8 @@ on the declaration's enclosing object and the level's both
 trip.
 
 **A class record's header names its metaclass record** (object body tag 8,
-`OBJECT_METACLASS`): every class object's class is its metaclass (§3.2), so a
+`OBJECT_METACLASS`; `r[image.verify.metaclass-records]`): every class
+object's class is its metaclass (§3.2), so a
 class record's class tag is `CLASS_RECORD` with the id of a record whose own
 header is the builtin `Metaclass` and whose body is one class reference, back
 to its class record. Nothing else about a metaclass is written — its mixin,
@@ -783,7 +789,8 @@ amplification bound of a rejected load"); a shipped metaclass is no
 record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
-(`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
+(`image/modules.rs`, `r[image.modules]`): a `u32` count, equal to the mixin
+table's trees, then
 per module, in module order, its identity -- its path, id and version
 ([modules.md](modules.md), decision 10) -- and the `u32` object id of its
 root class's record in the graph; a module's text is no field of it,
@@ -810,8 +817,9 @@ retired (`opcodes::RETIRED_ORIGIN_TAGS`), so a stale image's record meets
 an unknown tag. The loader hands each identity to its module's root mixin
 (`Mixin::module_identity`) and to `LoadedModule::identity`, so that a tool
 names an image's module as `run` names it ("Verification" below holds them
-to the project's rules). Source travels for every
-module or for none, as the header's one flag says, so the encoder refuses a
+to the project's rules, `r[image.verify.module-identity]`). Source travels
+for every module or for none, as the header's one flag says, so the encoder
+refuses a
 set of modules of which only some ask for theirs rather than invent an empty
 text, and refuses a module asked for its source one of whose declarations
 was built without a text.
@@ -829,13 +837,12 @@ the loader holds the record each id names to its module
 as its outermost level -- a metaclass, a level, a class of another row, one
 with an enclosing object or a declaring class -- is
 `ModuleRootNotItsRecord`; a superclass chain the root rule does not build
-is `RootRule`. The root rule, as both sides check it
-(`modules::root_record_defect`, which the encoder and the decoder share, so
-the encoder never writes a root the loader refuses): a root row with no
-`<:` clause has `Kernel Object` or `Kernel Value` as its superclass, `Value
-new` included; a row with its one permitted clause has as its superclass
-the level that clause, index 0, added, applying `Kernel Value`'s mixin over
-`Kernel Object`; a row with more clauses is refused
+is `RootRule`. The root rule (`r[image.verify.root-rule]`), as both sides
+check it (`modules::root_record_defect`, which the encoder and the decoder
+share, so
+the encoder never writes a root the loader refuses): a root's superclass
+chain is the one its `<:` clauses allow, and a row with more than one is
+refused
 ([object-model.md](object-model.md), "Mixin application", "The root
 rule"). A module is named by its index and never by its name, which is why
 two modules may share one ("Packaging" below). The class tags 1
@@ -849,7 +856,8 @@ reference meets an unknown tag. A second class record applying a module's
 root row, beside the one the module section names, is not refused
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
-**Shipped names.** Immediately before the graph: a `u32` count, then per
+**Shipped names** (`r[image.shipped-names]`). Immediately before the graph:
+a `u32` count, then per
 name the module's symbol id, the declaration's symbol id -- for a module's
 root, the module's own name -- and a kind byte: 0 the module instance, 1
 the class, 2 its metaclass, 3 a level, followed by the `u32` index of the
@@ -857,12 +865,12 @@ clause that adds it, 4 that level's metaclass, followed the same way
 (`image::shipped_names`). The encoder lists each name the graph and its
 closing hash table use once, in the order they first use each, so one
 world encodes to one byte sequence; a reference in the graph is its tag and
-a `u32` index into the list. The section's reader refuses more than
-`MAX_SHIPPED_NAMES` (65,536) entries (`TooManyShippedNames`), a count past
-the bytes left at the 9 bytes of the smallest entry, a symbol id past the
-symbol table (`BadSymbolId`), a kind byte no kind has (`InvalidTag`) and a
-clause index at or past `CLAUSE_INDEX_LIMIT` (1,024), which no resolved
-declaration numbers (`UnknownShippedName`); it asks no world, so `inspect` reads the
+a `u32` index into the list. The section's reader refuses what
+`r[image.limit.shipped-names]` and `r[image.limit.clause-index]` bound
+(`MAX_SHIPPED_NAMES`, `TooManyShippedNames`; `CLAUSE_INDEX_LIMIT`,
+`UnknownShippedName`), a count past the bytes left at the 9 bytes of the
+smallest entry, a symbol id past the symbol table (`BadSymbolId`) and a kind
+byte no kind has (`InvalidTag`); it asks no world, so `inspect` reads the
 section the same way. How the loader resolves the names, and what a name
 may stand for where, is "Shipped names" below. A started image names only
 the kernel's classes and levels, never a module instance; an image
@@ -885,7 +893,8 @@ body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the record is 6.
 **Frames are object records.** A reified frame is an object of the frame
 format, an instance of the kernel-private `Activation`
 ([object-model.md](object-model.md), "The object layout"), and it is written
-as one: `OBJECT_FRAME` (body tag 15) under a header that names
+as one (`r[image.verify.frames]`): `OBJECT_FRAME` (body tag 15) under a
+header that names
 `Kernel Activation` by its shipped name (`CLASS_SHIPPED`) — the one record
 an image may give that class; a frame record under any other header is
 `FrameRecordUnderAnotherClass`, and `Kernel Activation` as the header of any
@@ -961,8 +970,8 @@ or removed, takes a method the decoder builds over the old body under the
 selector and access the record carries, which no dispatch finds -- a decoded
 frame is never entered again.
 
-**A `ByteArray` is a record of its own**, `OBJECT_BYTE_ARRAY` (body tag
-11): a `u32` length, then that
+**A `ByteArray` is a record of its own** (`r[image.verify.byte-arrays]`),
+`OBJECT_BYTE_ARRAY` (body tag 11): a `u32` length, then that
 many bytes, in order, under a header that names `Kernel ByteArray` by its
 shipped name. Only the bytes travel: the three reserve words ahead of the
 data are not written, since the decoder places the data at its own
@@ -981,13 +990,10 @@ an ordinary instance record of its shipped class, its slot holding the
 a `u32` count and that many values, its slots in order, under a header
 naming `Kernel WeakArray`; and `OBJECT_EPHEMERON` (13), a `u32` field count
 and that many values, the key first, under a header naming `Kernel
-Ephemeron`. **The encoder writes what a collection would keep**: a weak
-slot names its object only if the graph reaches that object strongly
-otherwise, and is `nil` if not; an ephemeron's value and finalizer are
-followed only once its key has been reached, to a fixpoint, and an
-ephemeron whose key never is is written with every field `nil`
-(`GraphTable::build`, `GraphTable::weakly_held` in `encode.rs`). The
-exception is what takes no record: a weak word holding an immediate, a
+Ephemeron`. **The encoder writes what a collection would keep**
+(`r[image.write.weak]`; `GraphTable::build`, `GraphTable::weakly_held` in
+`encode.rs`). The exception is what takes no record: a weak word holding an
+immediate, a
 shipped name or an object written by value -- a `LargeInteger`, a boxed
 `Float`, a `Fraction` -- is written as it is whether or not anything else
 reaches it, since a collection's timing is unspecified and keeping more
@@ -1001,21 +1007,17 @@ unnamed shipped class or the VM mirror there refuses the image as a
 strongly held one does; an ephemeron's value and finalizer are met only
 once its key is reached, so one that only a mourned ephemeron holds there
 refuses nothing, and nothing of it is written either way. The decoder
-refuses a weak-array body under any class but `WeakArray` and any body
-under `WeakArray`'s but a weak-array one and the slotless instance record
-its factory `withoutSlots` makes (`WeakArrayRecordMismatch`), that
-instance record held to the class's slot count, none
-(`WeakArrayInstanceFieldCount`);
-an ephemeron body under any class but `Ephemeron` and any other body under
-`Ephemeron`'s (`EphemeronRecordMismatch`), and an ephemeron record whose
-field count is not the class's (`EphemeronFieldCount`). Nothing is cleared
-at load, since the decoder never collects ("The image under
-generations"), and `inspect` prints the records as "weak array [...]" and
+holds each record to its header both ways (`r[image.verify.weak-records]`:
+`WeakArrayRecordMismatch`, `WeakArrayInstanceFieldCount`,
+`EphemeronRecordMismatch`, `EphemeronFieldCount`). Nothing is cleared
+at load (`r[image.load.weak]`), since the decoder never collects ("The image
+under generations"), and `inspect` prints the records as "weak array [...]" and
 "ephemeron {...}" ([core-library.md](core-library.md), "Weak
 references").
 
-**A reified mixin is a record of its own**, `OBJECT_MIXIN` (body tag 14),
-so that a program holding a mirror at a snapshot loads back holding one on
+**A reified mixin is a record of its own**, `OBJECT_MIXIN` (body tag 14;
+`r[image.verify.mixin-records]`), so that a program holding a mirror at a
+snapshot loads back holding one on
 the same mixin: the kernel-private `Mixin` object a `MixinMirror` reflects
 ([liveness-and-reflection.md](liveness-and-reflection.md), "A mixin is
 reified as a kernel-private object"), under a header naming `Kernel
@@ -1037,17 +1039,16 @@ builds it before the graph ("The loader builds before the graph" below).
 The encoder refuses the reified mixin of the VM mirror's class, which has
 no name, as it refuses the class itself (lock (5) of the mirror), and one
 of a mixin no module the image carries declares. The decoder's first pass
-reads each record's reference and side as the second will and refuses a
-row past the table (`BadMixinId`), a shipped name that is no class's
-(`MixinRecordNamesNoClass`) or not allowed there (`ShippedNameNotAllowed`),
-a class side's own row (`MixinRecordNamesAClassSide`), a side other than 0
-or 1 (`BadMixinSide`), and a mixin body under any class but `Mixin` or any
-other body under `Mixin`'s (`MixinRecordMismatch`) -- a stray `Mixin`
+reads each record's reference and side as the second will and refuses what
+that rule lists (`BadMixinId`, `MixinRecordNamesNoClass`,
+`ShippedNameNotAllowed`, `MixinRecordNamesAClassSide`, `BadMixinSide`,
+`MixinRecordMismatch`) -- a stray `Mixin`
 instance would stand for a mixin outside the table that keeps one object
 per mixin. After the pass, still before anything is allocated, it resolves
 every record's mixin, which may synthesize a class side as a Rust value,
 and refuses a second record for one mixin, or one for a mixin the heap has
-reified already (`DuplicateMixin`): the object is canonical, as a symbol
+reified already (`DuplicateMixin`; `r[vm.heap.reified-mixin-canonical]`):
+the object is canonical, as a symbol
 is, and `DuplicateSymbol` is the model. The second pass fills each
 placeholder's one field with the fresh id and enters the object into the
 heap's table at once, so the table holds it before anything reads it
@@ -1066,17 +1067,11 @@ shipped name held to the position it stands in, a symbol
 record naming a symbol-table entry already named refused (`DuplicateSymbol`),
 a `FutureImplementation` record of a field count other than two refused
 (`FutureRecord`), a record of a shipped class that is no builtin
-refused unless it is an instance record (`ShippedInstanceBody`), and a
-byte-array body and a `ByteArray` header refused unless they come together
-(`ByteArrayRecordMismatch`), a weak-array body under another class than
-`WeakArray` and any body under `WeakArray`'s but a weak-array one and an
-instance record (`WeakArrayRecordMismatch`), that instance record with
-the class's slot count, none (`WeakArrayInstanceFieldCount`), and an
-ephemeron body
-and an `Ephemeron` header refused unless they come together
-(`EphemeronRecordMismatch`) and with the class's field count
-(`EphemeronFieldCount`), and a mixin body and a `Mixin` header likewise
-(`MixinRecordMismatch`), each mixin record's mixin held to what it may name
+refused unless it is an instance record (`ShippedInstanceBody`), the
+byte-array, weak-array, ephemeron and mixin records held to their headers
+(`r[image.verify.byte-arrays]`, `r[image.verify.weak-records]`,
+`r[image.verify.mixin-records]`), each mixin record's mixin held to what it
+may name
 and, once every record is read, to being the only record of its mixin
 (`DuplicateMixin`; "A reified mixin is a record of its own" above); each
 record yields its object's size, read from its own
@@ -1101,14 +1096,17 @@ words at its placeholder's 32-byte alignment, the header's format becoming
 body-less declaration's class object's eleven) copied in
 (`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
 accessors), so no record is ever built beside its placeholder. A frame
-record's body is filled last, from its remembered position, once the
+record's body is filled last (`r[vm.image.code-runs-after-stamping]`), from
+its remembered position, once the
 applications are rebuilt and the headers stamped, since a method frame's
 code is found through its class's application. What that
-bounds a rejected load's peak at is "Verification" below.
+bounds a rejected load's peak at (`r[image.bound.linear]`) is "Verification"
+below.
 
-**Identity hashes are preserved verbatim** for every object the image carries
-as a record. A hash is 22 bits of the header word, so a hash of 2^22 or more
-is refused (`IdentityHashTooWide`). After a load the identity-hash counter is
+**Identity hashes are preserved verbatim** (`r[image.load.hashes]`) for every
+object the image carries as a record. A hash is 22 bits of the header word,
+so a hash of 2^22 or more is refused (`r[image.verify.hashes]`,
+`IdentityHashTooWide`). After a load the identity-hash counter is
 advanced past the largest hash the image contained, so a hash assigned
 afterwards does not collide with a loaded one until the counter wraps within
 its 22 bits, which a hash may ([object-model.md](object-model.md), "The
@@ -1119,7 +1117,8 @@ preserved the same way.
 object of the shipped world -- a module instance, a shipped class, its
 metaclass, a level and a level's metaclass. None of them is a record, so
 nothing about a record could carry its hash. Instead the graph section
-closes, after its roots, with a table of exactly the shipped objects whose
+closes, after its roots, with the table of `r[image.hashes]`, of exactly the
+shipped objects whose
 stored hash is not 0, in the shipped world's own order -- per module, the
 instance, the root class, its metaclass and levels, then every class the
 root declares in declaration order, each with its metaclass and levels --
@@ -1182,7 +1181,8 @@ value names, or the one a closure frame already in the table runs — as an
 `Activation` object a value names, or as the `sender` or `home` of a frame
 already in it. (A closure has no `home` field of its own to bring one in:
 `Heap::closure_home` derives it from the captured frame.) An image is written
-at a **quiesced** point — `build` writes one once the application's factory
+at a **quiesced** point (`r[image.write]`) — `build` writes one once the
+application's factory
 and initializers have returned and before `main:args:` is sent, and a host
 calling `image::snapshot` between sends, with the Rust call stack already
 unwound and the activation stack empty; the one writer refuses to
@@ -1227,7 +1227,8 @@ edited (`<name> has no source text to edit`) and every `source` answers
 **The host asks for the source; the encoder reads it from the heap.** A
 host hands the writer each module as an `image::ModuleSource` -- its root
 class, its identity and `with_source: bool` -- and no text: the encoder
-reads every declaration's text from the heap (`Mixin::text`), because
+reads every declaration's text from the heap (`Mixin::text`,
+`r[image.write.source]`), because
 after an edit the host's file is no longer the program's text. Source
 travels for every module or for none, as the header's one flag says, so
 the encoder refuses a mix (``image encoding carries source for every
@@ -1235,7 +1236,8 @@ module or for none: one module has none``), and refuses a module asked
 for its source one of whose declarations was built without a text.
 
 **The text is each declaration's own, in a table of its own** (decided
-with the user on 2026-10-19). Every declaration holds its own text, its
+with the user on 2026-10-19; `r[image.texts]`). Every declaration holds its
+own text, its
 nested declarations cut out as holes ([object-model.md](object-model.md),
 "Source retention and provenance"), and the image carries exactly those:
 the **text table**, written only under `FLAG_HAS_SOURCE`, after the code
@@ -1253,12 +1255,10 @@ pieces, and assembles to it byte for byte.
 
 **The decoder holds the table to the rows** before any mixin holds a text
 (`texts::decode`, `mixins::row_texts`). Each text is checked against
-itself as it is read (`DeclarationText::from_parts`): its holes in order,
-none empty -- a hole is a nested declaration, which is never empty --
-disjoint and within its range, its length the range's less the holes', and
-every piece boundary a character boundary, or `MalformedText`; every count
-is bounded by the bytes left before anything is reserved for it. Then the
-rows: a text index past the table is `TextIndexOutOfRange`; a text with
+itself as it is read (`DeclarationText::from_parts`, `MalformedText`;
+`r[image.verify.texts]`), every count bounded by the bytes left before
+anything is reserved for it. Then the rows: a text index past the table is
+`TextIndexOutOfRange`; a text with
 another number of holes than its row's instance side has nested
 declarations is `TextHolesMismatch` -- by count, never by span, since
 after an edit of a nested declaration the enclosing declaration's holes
@@ -1368,12 +1368,12 @@ version-matching image is an error there, never a panic in the VM later.
 limit of [compiler.md](compiler.md), "Limits": past one it compiles to a
 body that raises, and the encoder refuses a body whose arity is past the
 argument limit. So the decoder refuses a count past a limit where it reads
-the count, before it reserves anything for it. That covers a body's
-instruction count past 2^20 (`InstructionCountTooLarge`, read before any
-instruction), a body's arity past 255, and likewise a method record's,
-a factory's, a closure's parameter count and the argument list of a send or
-a clause message (`ArgumentCountTooLarge`, naming the record), and a
-mixin-table row of more than 1,024 `<:` clauses (`ClauseCountTooLarge`).
+the count, before it reserves anything for it. The limits are
+`r[bytecode.limit.instructions]`, `r[bytecode.limit.arguments]` and
+`r[image.limit.clauses]`: a body's instruction count
+(`InstructionCountTooLarge`, read before any instruction), every arity and
+argument list (`ArgumentCountTooLarge`, naming the record) and a row's `<:`
+clauses (`ClauseCountTooLarge`).
 Every decoded body is then one a compiler could have written, and a pass
 over one is bounded by the limits as a compiled one is
 (`an_image_with_a_body_past_the_instruction_limit_is_refused`,
@@ -1388,9 +1388,8 @@ arguments its selector takes without counting them, so a send of fewer
 would have it read past them -- `Object`'s identity leaf panics on a `==`
 without its argument -- and a send of more would answer as though the
 surplus were not there. `verify_code_table` therefore holds every send
-of every body to its selector's arity (`verify_send_arities`,
-`SendArityMismatch`): none for a unary selector, one for a binary one and
-one a colon for a keyword one (`symbol::selector_arity`). Which
+of every body to its selector's arity (`r[bytecode.verify.send-arity]`;
+`verify_send_arities`, `SendArityMismatch`, `symbol::selector_arity`). Which
 instructions deliver a message by selector is one exhaustive match,
 `Instruction::sent_message`, which the decoder and both lowerings'
 `debug_assert_send_arity` read, so that no lowering emits a send the
@@ -1407,7 +1406,8 @@ count (`a_send_whose_argument_count_is_not_its_selectors_is_refused`,
 `r[bytecode.verify.send-arity]`, `r[bytecode.verify.attachment]`). `inspect`
 runs no `verify_code_table`, so it shows such a send.
 
-**A program class's instances hold to its layout.** Every object of a
+**A program class's instances hold to its layout**
+(`r[image.verify.program-instances]`). Every object of a
 class that is no builtin and whose chain does not reach `Behavior` --
 whose instances are class objects, which the class-reference checks
 hold -- must be an instance record (`ProgramInstanceBody`) of exactly
@@ -1451,16 +1451,19 @@ when there are copied values (checked in `decode_code`, in `u32` arithmetic,
 once the arity itself fits). Every register
 a `MakeClosure` copies, and every register operand of `MakeVector`,
 `LoadVector` and `StoreVector`, is inside its own body's register file, like
-every other register operand; a vector slot is not a register and is checked at
+every other register operand (`r[bytecode.verify.registers]`); a vector slot
+is not a register and is checked at
 run time, since a vector's size is a run-time value. A send's argument base
 and each of its sources are register operands too, and so is every slot from
 the base on, since the send writes a source into its slot: a body whose last
 slot runs past its register file is refused (`ArgumentSlotsOutOfRange`) even
-when the base and the sources are inside it.
+when the base and the sources are inside it
+(`r[bytecode.verify.argument-windows]`).
 
 **The statement map stays within its body.** Every statement's range of
 instructions starts at most where it ends and ends at most at the body's
-instruction count (`StatementMapOutOfRange`), because the debugger's stops
+instruction count (`StatementMapOutOfRange`,
+`r[bytecode.verify.statement-map]`), because the debugger's stops
 and lines and the trace's descriptions place a frame's instruction index
 by it (`a_statement_map_leaving_its_body_is_refused`).
 
@@ -1469,12 +1472,14 @@ numbers `argument_count .. argument_count + HEADER_REGISTERS` are its frame
 header's words, which the register numbering skips ([compiler.md](compiler.md),
 "Registers"): a register operand there, or an outer local's index there in the
 body that declares it, would read or write that frame's caller word or
-register count, so it is refused (`HeaderRegister`). A send's callee is laid on
+register count, so it is refused (`HeaderRegister`;
+`r[bytecode.verify.registers]`). A send's callee is laid on
 its argument slots, its header where they end
 ([execution.md](execution.md), "Overlapping register windows"), so a
 send whose slots start below the end of its own body's header's numbers --
 among its arguments or on the header itself -- is refused too
-(`ArgumentSlotsBelowTheHeader`), even with no argument.
+(`ArgumentSlotsBelowTheHeader`; `r[bytecode.verify.argument-windows]`), even
+with no argument.
 
 **No instruction reaches another frame's live callee.** Through the overlap,
 a register of a sender's above its slots is its callee's header while the
@@ -1487,7 +1492,8 @@ below it is refused (`ArgumentSlotsBelowTheScratch`), so every callee's
 header lies at or above it, and an outer load or store whose index is at or
 past the `local_count` of the body `depth` levels out -- found through the
 `MakeClosure` nesting, as the bound on its register file is -- is refused
-(`OuterLocalInScratch`). Compiled code never names such a register: an outer
+(`OuterLocalInScratch`; `r[bytecode.verify.outer-locals]`). Compiled code
+never names such a register: an outer
 local is a named local, a copied value or the vector register of the body
 that declares it, all below its scratch. Without the refusal a crafted block
 run by a callee lying on its home's slots could store over that callee's
@@ -1499,7 +1505,8 @@ caller word or register count, which its pop reads
 sender's slot, which a setter's sender reads back after the send: a
 destination or a `StoreLocal` slot below its body's `argument_count`, or an
 outer store below the `argument_count` of the body it addresses, is refused
-(`ArgumentRegisterWritten`). A read is not. One destination there is no
+(`ArgumentRegisterWritten`; `r[bytecode.register.arguments]`). A read is not.
+One destination there is no
 write: the load of `Literal::BodyTooLarge`, which raises before it writes,
 into the last argument -- the body a body past the register ceiling
 compiles to names that register when its arguments leave none above the
@@ -1509,7 +1516,8 @@ than the lowering moving it, since no number above the header exists there.
 **No send reads a source from another of its slots.** A send's sources are
 copied into its slots on the push path, one after another, so a source that
 is another of its own slots would answer whatever the earlier copies left
-there: refused (`SourceIsAnotherSlot`). Neither lowering emits one: the
+there: refused (`SourceIsAnotherSlot`; `r[bytecode.verify.argument-windows]`).
+Neither lowering emits one: the
 reference lowering's sources are their own slots, and the optimized one's
 are their own slots or registers outside the slots -- named locals, copied
 values, or scratch the value was produced in.
@@ -1523,7 +1531,8 @@ there. No compiled body reads either ([compiler.md](compiler.md), "What a
 callee leaves"), so `verify_body` runs the leftover analysis
 (`bytecode::leftovers::check`) last, on a body whose every register and
 target it has found in range, and refuses a read of a register the body may
-not have written (`LeftoverRead`). Without it a crafted method sending to a
+not have written (`LeftoverRead`; `r[bytecode.verify.leftovers]`). Without it
+a crafted method sending to a
 shipped method that holds the mirror in its scratch could read the register
 the mirror was in
 (`an_image_reading_the_mirror_a_kernel_method_left_is_refused`,
@@ -1545,7 +1554,8 @@ writes every register it has, `nil` where its activation copied none
 ([execution.md](execution.md), "Lifecycle"), so `verify_graph` refuses a
 frame record whose register count is anything but its body's
 `argument_count` plus its registers above the header
-(`CompiledCode::frame_register_count`; `FrameRegisterFile`; a frame record
+(`r[image.verify.frames]`; `CompiledCode::frame_register_count`;
+`FrameRegisterFile`; a frame record
 with no registers for a body that has some is refused,
 `a_frame_with_no_registers_for_a_body_that_has_some_is_refused`). A crafted
 image therefore cannot pair a by-reference closure with a frame too small
@@ -1625,12 +1635,12 @@ they enter against the arguments they hand it -- and raise a Newspeak
 error rather than indexing past them.
 
 **A class record and its metaclass record are held to each other both ways.**
-A class record's header must name a metaclass record whose reference back is
-that class record, a metaclass record's reference back must name a class
-record, every metaclass record must be named by exactly one class record's
-header, and a metaclass record's own header must be `Metaclass` — anything
-else is `MetaclassPairing` (`rebuild_metaclasses` and `pair_metaclasses` in
-`decode.rs`). A live class has exactly one metaclass (§3.2, "unique"), so this
+A class record and its metaclass record must name each other, each
+metaclass record being named by exactly one class record's header, and a
+metaclass record's own header must be `Metaclass` — anything
+else is `MetaclassPairing` (`r[image.verify.metaclass-records]`;
+`rebuild_metaclasses` and `pair_metaclasses` in `decode.rs`). A live class has
+exactly one metaclass (§3.2, "unique"), so this
 refuses nothing a snapshot writes, and it is what keeps a metaclass's identity
 across a round trip: the metaclass a slot holds is the one its class answers.
 Metaclass records are applied before the class records, since each needs only
@@ -1642,7 +1652,8 @@ application refuses instantiation as a class object — an instance of `Class`,
 `InstanceOfAClassClass`.
 
 **A root the root rule forbids is refused on both sides.** The encoder refuses
-a module whose root mixin carries a root defect, in `image::package` and
+a module whose root mixin carries a root defect
+(`r[image.verify.root-rule]`), in `image::package` and
 `image::snapshot` alike, with "image encoding cannot serialize `M`: a
 module's root class may inherit only Object or Value, or write Object <:
 Value, and …" — the reason the instantiation refusal gives: such a root can
@@ -1659,10 +1670,7 @@ rule allows"), and refuses a root
 that is shipped. The loader holds the record the module section names to the
 same check and refuses what the encoder cannot write: a record that is not
 the module's own root class, as `ModuleRootNotItsRecord`, and a superclass
-chain the rule does not build -- a superclass other than `Kernel Object` or
-`Kernel Value`, a level applying anything but `Kernel Value`, a level over
-anything but `Kernel Object`, a level its root's clause did not add -- as
-`RootRule`, each naming its module
+chain the rule does not build as `RootRule`, each naming its module
 (`a_root_record_over_kernel_array_breaks_the_root_rule`,
 `the_root_rule_holds_a_root_classs_superclass_chain`). So a crafted artifact
 cannot bring back a root the rule refuses, and no decoded mixin carries a
@@ -1733,10 +1741,12 @@ longer fits misses, and a mismatch gives wrong but safe behaviour.
 and the retired tags.
 
 **A symbol is one record per text, of the builtin `Symbol` class.** Symbols
-are canonical per heap ([object-model.md](object-model.md), "Values and
+are canonical per heap (`r[vm.heap.symbol-canonical]`;
+[object-model.md](object-model.md), "Values and
 objects"), so no encoder writes two symbol records of the same text; a graph
 section that holds two is corrupt or crafted, and `decode_graph_section`'s
-first pass refuses it with `DecodeError::DuplicateSymbol`, before anything is
+first pass refuses it with `DecodeError::DuplicateSymbol`
+(`r[image.verify.symbols]`), before anything is
 allocated, rather than merging them,
 which would mean rewriting every reference to the second
 (`a_symbol_recorded_twice_is_refused` in `crates/ns-runtime/tests/image.rs`).
@@ -1767,7 +1777,8 @@ boundary"). **Its class has no declaration in any shipped module, and so no
 shipped name**: no byte sequence can name it, as a value, a superclass, a
 record's class or anywhere else, so an artifact cannot instantiate a second
 mirror or reach the one there is and claim every primitive, which no source
-module can. The encoder refuses the other direction: an image whose graph
+module can. The encoder refuses the other direction (`r[image.verify.mirror]`,
+`r[image.write.refusals]`): an image whose graph
 reaches the mirror object is not written at all, since it would hand the
 capability to whatever loaded it (`a_snapshot_that_reaches_the_mirror_is_refused`,
 `interpreter/mirror.rs`) -- that refusal is checked ahead of every other --
@@ -1778,7 +1789,8 @@ source, which cannot obtain the mirror; both are there for the day
 something could.
 
 **Every other shipped class is held to what may be named where** ("Shipped
-names" below), by the encoder and the decoder alike: the decoder refuses a
+names" below; `r[image.shipped.positions]`), by the encoder and the decoder
+alike: the decoder refuses a
 name in a position the rule does not allow as `ShippedNameNotAllowed`, and
 the encoder refuses to write one ("image encoding refuses *name* as
 *position*: no program may name it there, and the loader refuses an image
@@ -1932,27 +1944,23 @@ a stale image from loading against the new binary
 code and the layout of a shipped class that is no builtin -- a `List`, a
 `Stopwatch`, the platform -- come from the loading binary, not from the
 image, so a record whose header names one must be an instance record
-(`ShippedInstanceBody` otherwise, refused by the first pass before anything
+(`r[image.verify.shipped-instances]`; `ShippedInstanceBody` otherwise,
+refused by the first pass before anything
 is allocated, `a_record_of_a_shipped_class_with_another_body_is_refused`)
 carrying exactly the class's slot count of fields
 (`ShippedInstanceFieldCount`, `a_record_of_a_shipped_class_carries_exactly_its_layout`).
-A builtin's record is held to its own format instead, as above; for a
+A builtin's record is held to its own format instead, as above
+(`r[image.verify.byte-arrays]`, `r[image.verify.weak-records]`): a
 `ByteArray` both ways, since its format is the one no other class may
-have: a byte-array body under any header but `Kernel ByteArray`, and a
-`Kernel ByteArray` header over any other body, are
-`ByteArrayRecordMismatch`, refused by the first pass and the second alike;
-an `Ephemeron`'s both ways too (`EphemeronRecordMismatch`), and a
-`WeakArray`'s both ways (`WeakArrayRecordMismatch`) but that its header
-carries an instance record as well, the slotless one of its factory
-`withoutSlots`, held to the class's slot count, none
-(`WeakArrayInstanceFieldCount`).
+have, refused by the first pass and the second alike.
 A view's or a `StringBuilder`'s record is an ordinary instance record of
 its shipped class; what its slots hold is the program's to check, and the
 kernel refuses a crafted one with an `ArgumentError`
 ([core-library.md](core-library.md), "The bootstrap and the image take
 them").
 
-**Trailing bytes are refused, not ignored.** `load` checks that the byte stream
+**Trailing bytes are refused, not ignored** (`r[image.trailing-bytes]`).
+`load` checks that the byte stream
 is exhausted once the last section has been read and returns
 `DecodeError::TrailingBytes` if not. An unchecked tail would let an image
 with bytes appended — or a truncated, then padded, one — load as something
@@ -2409,7 +2417,8 @@ verifies it as "Verification" describes, and refuses one that is not started
 -- an image without `FLAG_START`, which only a host's `image::snapshot`
 writes (`load_refuses_an_image_that_is_not_started`,
 `crates/ns-cli/tests/build_load.rs`). It sends the application `main:
-platform args:` with the loading interpreter's platform. The factory and the
+platform args:` with the loading interpreter's platform
+(`r[image.load.start]`). The factory and the
 initializers do not run again: they ran at build time, and their effects are
 in the graph (`a_loaded_application_does_not_rerun_its_initializers`). The
 send stays in the CLI rather than in `image::load`: deciding that a
@@ -2499,9 +2508,11 @@ old space's bytes relocated on load, is the model this does not take.
   its objects are not born remembered; a debug build asserts at every fill
   that the word it stores names no young object
   ([memory.md](memory.md), "Generations").
-- **The graph pass never collects.** It never polls a safepoint, so nothing
-  moves while its placeholders exist, and the transient peak of a rejected
-  load is unchanged by the generations ([memory.md](memory.md), "The
+- **The graph pass never collects**
+  (`r[vm.image.nothing-collects-while-placeholders]`). It never polls a
+  safepoint, so nothing moves while its placeholders exist, and the transient
+  peak of a rejected load is unchanged by the generations
+  ([memory.md](memory.md), "The
   amplification bound of a rejected load").
 
 ## Shipped names
@@ -2575,8 +2586,10 @@ instance, the class, its metaclass, the level a clause adds by the clause's
 index, or that level's metaclass (`ShippedKind`) -- with the positions it may
 stand in (`Positions`), recorded in the order the objects are built, so the
 encoder walks them in an order that is a function of the program and its run.
-Every name resolves to the object the binary built, so no comparison by
-identity in Rust changes. No build draws an identity hash, so every hash a
+Every name resolves to the object the binary built
+(`r[image.load.shipped-world]`), so no comparison by
+identity in Rust changes. No build draws an identity hash
+(`r[vm.heap.shipped-world-draws-no-hash]`), so every hash a
 run draws is the same under `run` and `load`
 (`goldens/library/object/identity_hash.ns`;
 `building_a_module_on_demand_draws_no_identity_hash`). The world costs a
@@ -2597,13 +2610,15 @@ declaration's symbol (for the root, the module's own name), the kind as a
 `u8` and, for a level or a level's metaclass, the clause's `u32` index
 ("Shipped names" in "Sections" above). Each name the image uses appears once,
 in the order of first use. The loader checks the whole section against the
-binary's declarations before it builds anything (`shipped_names.rs`'s
-`check_names`): a name the binary does not have -- an unknown module or
+binary's declarations before it builds anything
+(`r[image.verify.shipped-names]`; `shipped_names.rs`'s `check_names`): a name
+the binary does not have -- an unknown module or
 declaration, a level past the declaration's clauses -- is
 `UnknownShippedName`, a name given twice `DuplicateShippedName`, and in a
 started image a name of a module other than the kernel, or of a module
 instance, `ShippedNameInStartedImage`
-(`building_the_shipped_names_refuses_a_name_before_it_builds_anything`). It
+(`r[image.verify.started-image-names]`;
+`building_the_shipped_names_refuses_a_name_before_it_builds_anything`). It
 then builds what the section names that the boot did not
 (`Interpreter::build_shipped_names`) and resolves the whole section before
 the graph by table lookup alone (`shipped_names::resolve`), which sends
@@ -2645,8 +2660,9 @@ class's layout ("A record of a shipped class carries exactly that class's
 layout", "Verification" above). The program's module roots and the levels
 their clauses add are class records ("Module section" above).
 
-**The header carries the shipped world's fingerprint**, a `u64` after the
-flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the shipped
+**The header carries the shipped world's fingerprint**
+(`r[image.header.fingerprint]`), a `u64` after the flag byte
+(`fingerprint::shipped_world_fingerprint`): FNV-1a over the shipped
 sources' fingerprint, which `crates/ns-runtime/build.rs` takes over the six
 shipped modules' sources -- `Kernel.ns`, `PlatformFactory.ns` and every `.ns`
 under `core-library/platform/` (`CORE_LIBRARY_FINGERPRINT`) -- the names in
@@ -2664,7 +2680,8 @@ nothing else checks: a frame of a kernel method is reconciled against the
 loading binary's body of that method. `FORMAT_VERSION` stays 1; images are
 disposable ("Layout"). `inspect` prints it (`shipped world …`).
 
-**What may be named where** is a static rule, computed from the declarations
+**What may be named where** (`r[image.shipped.positions]`) is a static rule,
+computed from the declarations
 when a module is recorded and kept with each name (`Positions`, recorded by
 `record_shipped_module` and `record_shipped_class`) and checked per position
 by the encoder and the decoder alike (`shipped_names::NamePosition`):
@@ -2712,7 +2729,7 @@ declaration; `indexed_collection_as_a_value_or_a_superclass_is_refused`).
 `main:args:` a program can reach nothing of `PlatformFactory` or the
 modules under `platform/`, so the decoder refuses an image with `FLAG_START`
 whose shipped-name section names another module
-(`ShippedNameInStartedImage`,
+(`r[image.verify.started-image-names]`; `ShippedNameInStartedImage`,
 `a_started_image_naming_another_module_is_refused`). No program reaches a
 module's instance either, the kernel's included, and a started image may
 hold frames -- a block in a slot brings its frame along -- whose registers
@@ -2773,13 +2790,15 @@ that** (decided with the user on 2026-10-24; [execution.md](execution.md),
 "Planned: JIT tiers"). The runtime resumes a frame only while it is
 suspended, which its married word records and the decoder never writes, so
 a decoded frame is never married or resumed, and a `^` into a decoded home
-is `cannotReturn` whatever its record says (`tests/image.rs`,
+is `cannotReturn` whatever its record says
+(`r[semantics.block.cannot-return]`; `tests/image.rs`,
 `a_return_into_a_decoded_home_is_cannot_return`). An image is written only
 when no activation runs -- no run outlives its suspended frames, and the
 encoder debug-asserts that no frame it writes is suspended -- so every
 frame in one belongs to an activation that has returned and is marked
 uncontinuable; a frame that is not can only come from a crafted image.
-The decoder refuses one (`DecodeError::ContinuableFrame`) in both passes,
+The decoder refuses one (`r[image.verify.frames]`,
+`DecodeError::ContinuableFrame`) in both passes,
 the sizing pass before it allocates any placeholder, so every frame a
 load builds is marked uncontinuable. `verify_graph`
 holds a frame's `home` to its `kind` (`DecodeError::FrameHomeMismatch`: a
@@ -2804,7 +2823,8 @@ under `goldens/library/mirror-builder/` included, goes through `build` then
 
 **The rows are the mixins the program names now.** An edit installs a fresh
 mixin under the old one's id ([liveness-and-reflection.md](liveness-and-reflection.md),
-"An edit replaces the mixin under its id"), so the encoder plans one tree
+"An edit replaces the mixin under its id"), so the encoder
+(`r[image.write.edited]`) plans one tree
 per module by walking each module's declarations through their ids to their
 current versions (`mixins::plan`): an edited declaration is the row of the
 declaration it replaced, in the same place of the same tree, with its code,
