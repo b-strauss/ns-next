@@ -270,6 +270,9 @@ r[runtime.install]
 The install of a list of builders' edits: `installAtomically:` given the
 list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 ([`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)).
+A builder `fromSource:` in the list declares a module
+([`runtime.install.module`](#r-runtime.install.module)), prepared in step
+2 after the edits and committed with them in step 5.
 
 1. If two builders of the list edit one class, signal `two builders edit
    Inner` and change nothing. If a builder edits a class another builder
@@ -369,6 +372,33 @@ still reaches at the commit, whose own clauses were never evaluated: signal `a c
 superclass clauses were evaluated; nothing was installed`. Either way
 nothing changes. An install of no builders installs nothing and moves
 nothing, so it fails no install it runs within.
+
+r[runtime.install.module]
+`ClassDeclarationBuilder fromSource:` given a module's text checks it as
+the install would, and the builder's install declares the module:
+
+1. If the text is not one class declaration -- none, two, or one followed
+   by a member -- signal `fromSource: takes one class declaration`; if it
+   does not parse, signal `the module's source does not parse: <message>
+   (line <n>)`; if it does not resolve, signal `the module's source does
+   not resolve: <message> (line <n>)`; and change nothing.
+2. Its identity is what its `:module:` declares, held to the loader's
+   rules ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)),
+   or without one its class's name and no version; it has no path. A
+   malformed declaration and an id under `newspeak.` signal the loader's
+   message; so do an id and version another module of the world or of the
+   same install has, or an id another has where either has no version,
+   the module without a path named by its id: ``two modules are
+   `com.acme.Util@1.0.0`: v1/Util.ns and com.acme.Util@1.0.0``. Either way
+   nothing changes.
+3. The commit makes the module one of the world's, its text, every
+   character of it, its current text, and the builder stands for its
+   declaration from then on; it moves the install epoch, as a module's load
+   does. The manifest a program holds does not answer it.
+
+Before its install the builder stages nothing: its sides and its header
+signal `a ClassDeclarationBuilder from source stages nothing before its
+install`, and its declaration is `nil`.
 
 ## Capabilities and limits
 

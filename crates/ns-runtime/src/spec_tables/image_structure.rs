@@ -624,7 +624,7 @@ fn class_reference<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ClassReference<'
 
 fn identity(path: &str, id: &str, class_name: &str, version: Option<&str>) -> ModuleIdentity {
     ModuleIdentity {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         id: ModuleId::parse(id, class_name).unwrap_or_else(|error| panic!("{error}")),
         version: version.map(|text| Version::parse(text).unwrap_or_else(|error| panic!("{error}"))),
     }
@@ -1027,7 +1027,8 @@ fn everything() -> Sample {
 
 /// A level a nested class's `<:` clause added over a shipped class, whose
 /// record names its mixin by the shipped name, in a snapshot without
-/// source.
+/// source of a module without a path, as a module a program declared from
+/// source is written.
 fn level_over_a_shipped_class() -> Sample {
     let source = indoc! {"
         class Host usingPlatform: p = Object <: Value () (
@@ -1048,7 +1049,10 @@ fn level_over_a_shipped_class() -> Sample {
         "Point",
     );
     let point = expect_ok(interpreter.instantiate(&point_class, &[]), "Point new");
-    let identities = vec![identity("Host.ns", "Host", "Host", None)];
+    let identities = vec![ModuleIdentity {
+        path: None,
+        ..identity("Host.ns", "Host", "Host", None)
+    }];
     let bytes = interpreter.enter(|mutator| {
         let modules = [ModuleSource {
             class: class_reference(mutator, &class),
@@ -1425,26 +1429,26 @@ fn every_image_is_laid_out_as_the_book_gives() {
                 Some(Field::Text(origin)) => origin.clone(),
                 _ => panic!("{name}: `{module}` has an origin"),
             };
-            let (origin_field, path) = match expected.path.strip_prefix("core:") {
-                Some(file) => ("file", file),
-                None => ("path", expected.path.as_str()),
-            };
-            assert_eq!(
-                origin,
-                if origin_field == "file" {
-                    "core"
-                } else {
-                    "project"
+            let (expected_origin, field) = match expected.path.as_deref() {
+                None => ("none", None),
+                Some(path) => match path.strip_prefix("core:") {
+                    Some(file) => ("core", Some(("file", file))),
+                    None => ("project", Some(("path", path))),
                 },
-                "{name}: `{module}`'s origin"
-            );
-            assert_eq!(
-                walker
-                    .by_path
-                    .get(&format!("{module}.origin.{origin_field}")),
-                Some(&Field::Text(path.to_string())),
-                "{name}: `{module}`'s path"
-            );
+            };
+            assert_eq!(origin, expected_origin, "{name}: `{module}`'s origin");
+            for origin_field in ["file", "path"] {
+                assert_eq!(
+                    walker
+                        .by_path
+                        .get(&format!("{module}.origin.{origin_field}")),
+                    field
+                        .filter(|(named, _)| *named == origin_field)
+                        .map(|(_, path)| Field::Text(path.to_string()))
+                        .as_ref(),
+                    "{name}: `{module}`'s path"
+                );
+            }
             assert_eq!(
                 walker.by_path.get(&format!("{module}.id")),
                 Some(&Field::Text(expected.id.as_str().to_string())),

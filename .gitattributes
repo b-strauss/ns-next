@@ -8,3 +8,6 @@ crates/ns-runtime/core-library/** -text
 # A golden whose string literal spans two lines counts the line break in its
 # recorded size: keep its line feeds as committed on every platform.
 goldens/language/slot/local/a_multi_line_string_a_bare_local_takes_keeps_its_lines.ns -text
+# A golden that prints a module text its string literal spans several lines
+# of: keep its line feeds as committed on every platform.
+goldens/library/mirror-builder/a_module_is_declared_from_source.ns -text

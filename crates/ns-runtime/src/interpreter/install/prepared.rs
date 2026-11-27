@@ -1,7 +1,8 @@
 //! Preparing an install of several builders' entries as one: the entries
 //! refused together before any text is touched, grouped by module, each
 //! module's entries spliced into one text in their order and compiled
-//! once (`Mutator::prepare_module`); the install epoch that tells a
+//! once (`Mutator::prepare_module`), and each module declared from source
+//! compiled on its own (`Mutator::prepare_source_module`); the install epoch that tells a
 //! commit whether anything was installed since its preparation; and the
 //! one prepared install kept between the leaves that prepare and commit
 //! it (`docs/design/liveness-and-reflection.md`, "Planned: the complete
@@ -33,6 +34,10 @@ pub(crate) struct PreparedInstall {
     /// Every nested declaration removed, module by module
     /// (`PreparedModule::removed`).
     pub(crate) removed: Vec<MixinId>,
+    /// Every module declared from source, its root mixin with the
+    /// position of its entry, in entry order, which the commit registers
+    /// with its tree of ids.
+    pub(crate) modules: Vec<(usize, Rc<Mixin>)>,
     /// Every declaration whose superclass clause or `<:` clauses the
     /// install changes, module by module (`PreparedModule::clauses_changed`):
     /// a nested one's class objects each have their new clause evaluated
@@ -103,27 +108,35 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The name a diagnostic gives the entry: its declaration's reflected
-    /// name.
+    /// name, a module's from source the name its text gives its class.
     fn entry_name(&self, entry: &InstallEntry) -> String {
         match entry {
             InstallEntry::Edit(id, _) => self
                 .heap
                 .mixin(*id)
                 .map_or_else(String::new, |mixin| mixin.reflected_name()),
-            InstallEntry::Module(_) => String::new(),
+            InstallEntry::Module(text) => ns_syntax::parse(text).map_or_else(
+                |_| "a module from source".to_string(),
+                |module| module.root_class.name.name,
+            ),
         }
     }
 
     /// Prepares `entries` without the cache. Every entry is checked, and
     /// two of one declaration refused, before any text is touched; then
     /// the entries are grouped by the module they edit, in the order each
-    /// module is first named, and each module prepared once.
+    /// module is first named, and each module prepared once; then each
+    /// module declared from source is compiled; and last every identity
+    /// the install makes or changes is held to the world's.
     pub(crate) fn prepare_entries(
         &mut self,
         entries: &[InstallEntry],
     ) -> Result<PreparedInstall, String> {
         let mut edits: Vec<(MixinId, &Edit)> = Vec::with_capacity(entries.len());
-        for entry in entries {
+        // The position in `entries` of each edit and of each module text.
+        let mut edit_positions: Vec<usize> = Vec::with_capacity(entries.len());
+        let mut source_modules: Vec<(usize, &str)> = Vec::new();
+        for (position, entry) in entries.iter().enumerate() {
             match entry {
                 InstallEntry::Edit(id, edit) => {
                     let (_, name) = self.editable_declaration(*id)?;
@@ -131,10 +144,9 @@ impl<'gc> Mutator<'gc> {
                         return Err(format!("two builders edit {name}"));
                     }
                     edits.push((*id, edit));
+                    edit_positions.push(position);
                 }
-                InstallEntry::Module(_) => {
-                    return Err("a module declared from source is not installed yet".to_string());
-                }
+                InstallEntry::Module(text) => source_modules.push((position, text)),
             }
         }
         // Each module with the positions of its entries, in the order the
@@ -147,20 +159,20 @@ impl<'gc> Mutator<'gc> {
                 None => modules.push((module_root, vec![position])),
             }
         }
-        let mut texts: Vec<Option<EditedTexts>> = vec![None; edits.len()];
+        let mut texts: Vec<Option<EditedTexts>> = vec![None; entries.len()];
         let mut replacements = Vec::new();
         let mut synthesized = Vec::new();
         let mut added = Vec::new();
         let mut removed = Vec::new();
         let mut clauses_changed = Vec::new();
         #[cfg(test)]
-        let mut module_texts = Vec::new();
+        let mut edited_texts = Vec::new();
         for (module_root, positions) in modules {
             let module_entries: Vec<(MixinId, &Edit)> =
                 positions.iter().map(|position| edits[*position]).collect();
             let prepared = self.prepare_module(module_root, &module_entries)?;
             for (position, edited) in positions.into_iter().zip(prepared.texts) {
-                texts[position] = Some(edited);
+                texts[edit_positions[position]] = Some(edited);
             }
             replacements.extend(prepared.replacements);
             synthesized.extend(prepared.synthesized);
@@ -168,12 +180,18 @@ impl<'gc> Mutator<'gc> {
             removed.extend(prepared.removed);
             clauses_changed.extend(prepared.clauses_changed);
             #[cfg(test)]
-            module_texts.push(prepared.module_text);
+            edited_texts.push(prepared.module_text);
+        }
+        let mut modules = Vec::with_capacity(source_modules.len());
+        for (position, text) in source_modules {
+            let prepared = self.prepare_source_module(text)?;
+            texts[position] = Some(prepared.texts);
+            modules.push((position, prepared.root));
         }
         // Before the commit, and before a check answers, so that a new id
         // or version two modules would share is refused as the loader
         // refuses it.
-        self.refuse_a_colliding_identity(&replacements)?;
+        self.refuse_a_colliding_identity(&replacements, &modules)?;
         Ok(PreparedInstall {
             epoch: self.install_epoch,
             texts: texts
@@ -184,9 +202,10 @@ impl<'gc> Mutator<'gc> {
             synthesized,
             added,
             removed,
+            modules,
             clauses_changed,
             #[cfg(test)]
-            module_texts,
+            module_texts: edited_texts,
         })
     }
 

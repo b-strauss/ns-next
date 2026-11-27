@@ -1,0 +1,47 @@
+/// `fromSource:` takes one class declaration: a text of two, or of a
+/// member after the class, is refused, and so is one that does not parse
+/// or does not resolve, each with its line, declaring nothing; a text with
+/// non-ASCII characters keeps every one of them.
+class AModuleTextOfTwoDeclarationsIsRefused = Object new () (
+  outcome: action = (
+    ^[
+      action value.
+      'declared'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Builder = platform mirrors ClassDeclarationBuilder.
+      builder
+    |
+    transcript
+        show: (outcome: [
+          Builder fromSource: 'class First = Object new () () class Second = Object new () ()'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          Builder fromSource: 'class First = Object new () () public extra = ( ^1 )'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [Builder fromSource: 'class First = Object new () (']);
+        newLine.
+    transcript
+        show: (outcome: [
+          Builder fromSource: 'class First = Object new () (
+  public twice = ( ^1 )
+  public twice = ( ^2 )
+)'.
+        ]);
+        newLine.
+    builder:: Builder fromSource: '/// Grüße, «Welt».
+class First = Object new () ( public greeting = ( ^''ünïcödé'' ) )'.
+    builder install.
+    transcript
+        show: builder declaration source;
+        newLine.
+  )
+)

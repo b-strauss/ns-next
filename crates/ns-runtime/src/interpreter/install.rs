@@ -18,6 +18,14 @@ use crate::types::Value;
 use prepared::PreparedInstall;
 use superclasses::Reparenting;
 
+/// What the commit answers for one entry: the texts its builder reads
+/// afterwards and, for a module declared from source, the module's root
+/// mixin, registered, which the builder stands for from then on.
+pub(crate) struct Installed {
+    pub(crate) texts: EditedTexts,
+    pub(crate) module: Option<Rc<Mixin>>,
+}
+
 /// What the migration answers: the instances it replaced, their copies in
 /// the new layout at the same positions, and the instances it kept.
 struct Migration<'gc> {
@@ -27,8 +35,9 @@ struct Migration<'gc> {
 }
 
 impl<'gc> Mutator<'gc> {
-    /// Answers each entry's edited declaration's texts, in order, or a
-    /// diagnostic with nothing changed.
+    /// Answers each entry's edited declaration's texts, in order, with a
+    /// module's from source its root mixin, or a diagnostic with nothing
+    /// changed.
     ///
     /// Refuses an `epoch` an install or a module load has moved since the
     /// preparation that answered it; takes the prepared install the
@@ -44,7 +53,8 @@ impl<'gc> Mutator<'gc> {
     /// does, a class object whose superclass clause changed over what the
     /// new clause answered -- the instances whose layout changed copied
     /// into the new one by name and forwarded in one bulk forward, the
-    /// others restamped; and raises the epoch.
+    /// others restamped, every module declared from source registered
+    /// with its tree of ids; and raises the epoch.
     ///
     /// `superclasses` pairs each class object whose new superclass clause
     /// the preparation asked to evaluate (`Mutator::clause_class_objects`)
@@ -60,7 +70,7 @@ impl<'gc> Mutator<'gc> {
         entries: &[InstallEntry],
         epoch: u64,
         superclasses: &[(ClassReference<'gc>, Value<'gc>)],
-    ) -> Result<Vec<EditedTexts>, String> {
+    ) -> Result<Vec<Installed>, String> {
         if entries.is_empty() {
             return Ok(Vec::new());
         }
@@ -106,6 +116,11 @@ impl<'gc> Mutator<'gc> {
             .collect();
         let stale = self.stale_after(&prepared, &old_applications);
         self.replace_versions(&prepared);
+        // Each module declared from source joins the heap with its tree of
+        // ids, its text its current text, as a module's load registers it.
+        for (_, root) in &prepared.modules {
+            self.heap.mixin_id(root);
+        }
         // Every module text an agent holds may be this edit's.
         self.breakpoints.raise_text_revision();
         let new_applications =
@@ -157,6 +172,8 @@ impl<'gc> Mutator<'gc> {
         self.breakpoints.forget_filter_decisions();
         // The edited classes' breakpoints stand on bodies the install
         // replaced: each is set again by its offset on the new ones.
+        // A breakpoint set before a module from source joined resolves now,
+        // as one set before a module's load does.
         if !self.has_no_breakpoints() {
             let mut module_roots: Vec<MixinId> = Vec::new();
             for entry in entries {
@@ -166,6 +183,9 @@ impl<'gc> Mutator<'gc> {
                         module_roots.push(module_root);
                     }
                 }
+            }
+            for (_, root) in &prepared.modules {
+                module_roots.extend(self.heap.known_mixin_id(root));
             }
             for module_root in module_roots {
                 if let Some(root) = self.heap.mixin(module_root) {
@@ -189,7 +209,19 @@ impl<'gc> Mutator<'gc> {
                 panic!("internal: after an install, {problem}");
             }
         }
-        Ok(prepared.texts.clone())
+        Ok(prepared
+            .texts
+            .iter()
+            .enumerate()
+            .map(|(position, texts)| Installed {
+                texts: texts.clone(),
+                module: prepared
+                    .modules
+                    .iter()
+                    .find(|(entry, _)| *entry == position)
+                    .map(|(_, root)| Rc::clone(root)),
+            })
+            .collect())
     }
 
     /// Prepares and commits `entries`, as the install leaves do between
@@ -199,11 +231,16 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         entries: &[InstallEntry],
     ) -> Result<Vec<EditedTexts>, String> {
-        if entries.is_empty() {
-            return self.commit_install(entries, self.install_epoch, &[]);
-        }
-        let epoch = self.prepare_install(entries)?.epoch;
-        self.commit_install(entries, epoch, &[])
+        let epoch = if entries.is_empty() {
+            self.install_epoch
+        } else {
+            self.prepare_install(entries)?.epoch
+        };
+        let installed = self.commit_install(entries, epoch, &[])?;
+        Ok(installed
+            .into_iter()
+            .map(|installed| installed.texts)
+            .collect())
     }
 
     /// Installs `edit` of the declaration `id` alone, as a builder's
@@ -220,14 +257,18 @@ impl<'gc> Mutator<'gc> {
 
     /// Refuses `replacements` when a module root's new version carries an
     /// identity the loader would refuse beside the world's other modules
-    /// (`docs/design/modules.md`, decision 5): two of one id and one
-    /// version, or two of one id where either has none, with the loader's
-    /// message naming both paths, earlier row first. Only the ids an
-    /// install changes are compared, so an install never answers for a
-    /// pair of modules it did not touch.
+    /// (`docs/design/modules.md`, decision 5), and `modules`, the roots of
+    /// the modules the install declares from source, likewise: two of one
+    /// id and one version, or two of one id where either has none, with
+    /// the loader's message naming both paths, earlier row first and the
+    /// modules from source last, in entry order, each named by its id for
+    /// want of a path. Only the ids an install changes or adds are
+    /// compared, so an install never answers for a pair of modules it did
+    /// not touch.
     pub(super) fn refuse_a_colliding_identity(
         &self,
         replacements: &[(MixinId, Rc<Mixin>)],
+        modules: &[(usize, Rc<Mixin>)],
     ) -> Result<(), String> {
         use crate::modules::ModuleIdentity;
         let changed: Vec<(Rc<ModuleIdentity>, Rc<ModuleIdentity>)> = replacements
@@ -239,9 +280,17 @@ impl<'gc> Mutator<'gc> {
                 (!Rc::ptr_eq(&old, &new)).then_some((old, new))
             })
             .collect();
-        if changed.is_empty() {
+        let added: Vec<Rc<ModuleIdentity>> = modules
+            .iter()
+            .filter_map(|(_, root)| root.module_identity.clone())
+            .collect();
+        if changed.is_empty() && added.is_empty() {
             return Ok(());
         }
+        let touched = |identity: &ModuleIdentity| {
+            changed.iter().any(|(_, new)| new.id == identity.id)
+                || added.iter().any(|new| new.id == identity.id)
+        };
         let identities: Vec<Rc<ModuleIdentity>> = self
             .heap
             .module_identities()
@@ -252,7 +301,8 @@ impl<'gc> Mutator<'gc> {
                     .find(|(old, _)| Rc::ptr_eq(old, &identity))
                     .map_or(identity, |(_, new)| Rc::clone(new))
             })
-            .filter(|identity| changed.iter().any(|(_, new)| new.id == identity.id))
+            .chain(added.iter().cloned())
+            .filter(|identity| touched(identity))
             .collect();
         crate::modules::check_distinct(identities.iter().map(Rc::as_ref))
     }
@@ -858,7 +908,7 @@ mod tests {
         )
         .expect("resolve");
         let identity = Rc::new(crate::modules::ModuleIdentity {
-            path: "libs/Outer.ns".to_string(),
+            path: Some("libs/Outer.ns".to_string()),
             id: crate::modules::ModuleId::parse("com.acme.Outer", "Outer").expect("an id"),
             version: Some(crate::modules::Version::parse("1.2.0").expect("a version")),
         });
@@ -896,7 +946,7 @@ mod tests {
         )
         .expect("resolve");
         resolved.identity = Some(Rc::new(crate::modules::ModuleIdentity {
-            path: path.to_string(),
+            path: Some(path.to_string()),
             id,
             version,
         }));
@@ -949,7 +999,7 @@ mod tests {
             "(* :module: com.acme.JsonCodec@1.2.0 *)\nclass JsonCodec = Object new () "
         );
         let identity = identity_of(&mut interpreter, &json);
-        assert_eq!(identity.path, "libs/Json.ns");
+        assert_eq!(identity.path.as_deref(), Some("libs/Json.ns"));
         assert_eq!(identity.display_name(), "com.acme.JsonCodec@1.2.0");
         interpreter.enter(|mutator| {
             let mixin = mixin_of(mutator, &json);
@@ -3694,5 +3744,297 @@ mod tests {
         assert!(second_stamp < first_stamp, "the image keeps the order");
         let made_after = send(&mut image.interpreter, &first, "Other");
         assert!(stamp_of(&mut image.interpreter, &made_after) > first_stamp);
+    }
+
+    // Modules declared from source
+
+    /// A module text with a doc comment above its `:module:` and trailing
+    /// whitespace, as a program's `fromSource:` hands it over.
+    const FRESH: &str = indoc! {"
+        /// A module declared from source.
+        (* :module: com.acme.Fresh@1.0.0 *)
+        class Fresh = Object new () (
+          public class Inner = () ()
+          public answer = ( ^42 )
+        )
+
+    "};
+
+    /// Installs `entries`, answering what the commit answers per entry.
+    fn installed(interpreter: &mut Interpreter, entries: &[InstallEntry]) -> Vec<Installed> {
+        match interpreter.enter(|mutator| {
+            let epoch = mutator.prepare_install(entries)?.epoch;
+            mutator.commit_install(entries, epoch, &[])
+        }) {
+            Ok(installed) => installed,
+            Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
+        }
+    }
+
+    /// The root mixin the module entry of `installed` registered.
+    fn module_of(installed: &Installed) -> Rc<Mixin> {
+        installed
+            .module
+            .clone()
+            .expect("a module entry answers its root mixin")
+    }
+
+    /// A module declared from source joins the heap with its tree of ids,
+    /// under the identity its `:module:` declares and without a path, its
+    /// text, every character of it, its current text; and the install
+    /// epoch moves, as at a module's load.
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_from_source_is_registered_with_its_identity() {
+        let mut interpreter = Interpreter::bootstrap();
+        let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+        let entries = [InstallEntry::Module(FRESH.to_string())];
+        let installed = installed(&mut interpreter, &entries);
+        let [entry] = installed.as_slice() else {
+            panic!("one entry answers one result");
+        };
+        assert_eq!(
+            entry.texts.header,
+            "(* :module: com.acme.Fresh@1.0.0 *)\nclass Fresh = Object new () "
+        );
+        assert!(entry.texts.declaration.starts_with("class Fresh"));
+        assert!(
+            entry
+                .texts
+                .declaration
+                .ends_with("public answer = ( ^42 )\n)")
+        );
+        let module = module_of(entry);
+        interpreter.enter(|mutator| {
+            let id = mutator
+                .heap
+                .known_mixin_id(&module)
+                .expect("the module is registered");
+            assert_eq!(mutator.heap.enclosing_mixin_id(id), None);
+            assert_eq!(mutator.heap.module_source(id).as_deref(), Some(FRESH));
+            assert_eq!(mutator.heap.nested_mixins(&module).len(), 1);
+            let identity = module
+                .module_identity
+                .clone()
+                .expect("the module has an identity");
+            assert_eq!(identity.path, None);
+            assert_eq!(identity.display_name(), "com.acme.Fresh@1.0.0");
+            assert!(
+                mutator
+                    .heap
+                    .module_identities()
+                    .iter()
+                    .any(|each| Rc::ptr_eq(each, &identity))
+            );
+            assert!(!module.shipped);
+            assert_eq!(mutator.install_epoch, epoch + 1);
+        });
+    }
+
+    /// A module without `:module:` is named by its class, without a
+    /// version or a path.
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_from_source_without_metadata_is_its_class() {
+        let mut interpreter = Interpreter::bootstrap();
+        let entries = [InstallEntry::Module(
+            "class Plain = Object new () ()".to_string(),
+        )];
+        let module = module_of(&installed(&mut interpreter, &entries)[0]);
+        let identity = module.module_identity.clone().expect("an identity");
+        assert_eq!(identity.path, None);
+        assert_eq!(identity.display_name(), "Plain");
+    }
+
+    /// The diagnostic an install of `entries` answers, which must change
+    /// nothing: no module joins the heap and the epoch stays.
+    fn module_refusal(interpreter: &mut Interpreter, entries: &[InstallEntry]) -> String {
+        let count_and_epoch = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                (
+                    mutator.heap.module_identities().len(),
+                    mutator.install_epoch,
+                )
+            })
+        };
+        let before = count_and_epoch(interpreter);
+        let refused = interpreter.enter(|mutator| mutator.install_entries(entries));
+        assert_eq!(
+            before,
+            count_and_epoch(interpreter),
+            "a refused install changes nothing"
+        );
+        match refused {
+            Ok(_) => panic!("the install was accepted"),
+            Err(diagnostic) => diagnostic,
+        }
+    }
+
+    /// A module from source under `newspeak.` is refused with the loader's
+    /// message: the namespace is the binary's alone.
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_from_source_under_newspeak_is_refused() {
+        let mut interpreter = Interpreter::bootstrap();
+        let entries = [InstallEntry::Module(
+            "(* :module: newspeak.core.Kernel *)\nclass Kernel = Object new () ()".to_string(),
+        )];
+        assert_eq!(
+            module_refusal(&mut interpreter, &entries),
+            "`newspeak.core.Kernel` lies in the namespace `newspeak.`, which belongs to the \
+             modules ns-next ships"
+        );
+    }
+
+    /// A module text that is not one class declaration, that does not
+    /// parse or that does not resolve, and a `:module:` the loader refuses,
+    /// are refused with their diagnostics.
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_text_the_loader_would_refuse_is_refused() {
+        let mut interpreter = Interpreter::bootstrap();
+        let refusal = |interpreter: &mut Interpreter, text: &str| {
+            module_refusal(interpreter, &[InstallEntry::Module(text.to_string())])
+        };
+        assert_eq!(
+            refusal(&mut interpreter, "class A = () ()\nclass B = () ()\n"),
+            "fromSource: takes one class declaration"
+        );
+        assert_eq!(
+            refusal(&mut interpreter, "class A = () ()\npublic b = ( ^1 )\n"),
+            "fromSource: takes one class declaration"
+        );
+        let unparsed = refusal(&mut interpreter, "class A = (");
+        assert!(
+            unparsed.starts_with("the module's source does not parse: "),
+            "{unparsed}"
+        );
+        assert!(unparsed.ends_with("(line 1)"), "{unparsed}");
+        let unresolved = refusal(
+            &mut interpreter,
+            "class A = () (\n  public b = ( ^1 )\n  public b = ( ^2 )\n)",
+        );
+        assert!(
+            unresolved.starts_with("the module's source does not resolve: "),
+            "{unresolved}"
+        );
+        assert_eq!(
+            refusal(
+                &mut interpreter,
+                "(* :module: com.acme.Other *)\nclass A = () ()"
+            ),
+            "`com.acme.Other` does not end in the class's name `A`"
+        );
+        let malformed = refusal(
+            &mut interpreter,
+            "(* :module: com.acme.A@1.0 *)\nclass A = () ()",
+        );
+        assert!(
+            malformed.starts_with("`1.0` is no version: "),
+            "{malformed}"
+        );
+    }
+
+    /// A module from source whose id and version another module of the
+    /// world has, or another module of the same install, is refused with
+    /// the loader's message, the module without a path named by its id;
+    /// one of another version installs.
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_from_source_with_a_taken_identity_is_refused() {
+        let mut interpreter = Interpreter::bootstrap();
+        load_identified(
+            &mut interpreter,
+            indoc! {"
+                (* :module: com.acme.Util@1.0.0 *)
+                class Util = Object new () ()
+            "},
+            "v1/Util.ns",
+        );
+        let taken = InstallEntry::Module(
+            "(* :module: com.acme.Util@1.0.0 *)\nclass Util = Object new () ()".to_string(),
+        );
+        assert_eq!(
+            module_refusal(&mut interpreter, &[taken]),
+            "two modules are `com.acme.Util@1.0.0`: v1/Util.ns and com.acme.Util@1.0.0"
+        );
+        let fresh = InstallEntry::Module("class Fresh = Object new () ()".to_string());
+        assert_eq!(
+            module_refusal(&mut interpreter, &[fresh.clone(), fresh]),
+            "two modules are `Fresh` and one of them has no version: Fresh and Fresh"
+        );
+        let other = InstallEntry::Module(
+            "(* :module: com.acme.Util@2.0.0 *)\nclass Util = Object new () ()".to_string(),
+        );
+        let module = module_of(&installed(&mut interpreter, &[other])[0]);
+        assert_eq!(
+            module
+                .module_identity
+                .as_ref()
+                .map(|identity| identity.display_name()),
+            Some("com.acme.Util@2.0.0".to_string())
+        );
+    }
+
+    /// A module from source and an edit install as one: the edit's class
+    /// answers its new method and the module joins the heap, each entry
+    /// answered in order.
+    // spec: runtime.install.module
+    // spec: runtime.install
+    #[test]
+    fn a_module_and_an_edit_install_as_one() {
+        let (mut interpreter, _outer, _inner_class, inner, inner_id) = module_and_inner(OUTER);
+        let entries = [
+            InstallEntry::Module(FRESH.to_string()),
+            InstallEntry::Edit(inner_id, add_method("public added = ( ^5 )")),
+        ];
+        let installed = installed(&mut interpreter, &entries);
+        assert_eq!(installed.len(), 2);
+        assert!(installed[0].module.is_some());
+        assert!(installed[1].module.is_none());
+        assert!(
+            installed[1]
+                .texts
+                .declaration
+                .contains("public added = ( ^5 )")
+        );
+        let answer = send(&mut interpreter, &inner, "added");
+        assert_eq!(integer(&mut interpreter, &answer), Some(5));
+    }
+
+    /// A module from source whose root class is made is written into an
+    /// image without a path and loads with its identity, its text and its
+    /// code.
+    // spec: image.modules
+    // spec: runtime.install.module
+    #[test]
+    fn a_module_from_source_is_written_and_loaded_without_a_path() {
+        let mut interpreter = Interpreter::bootstrap();
+        let entries = [InstallEntry::Module(FRESH.to_string())];
+        let module = module_of(&installed(&mut interpreter, &entries)[0]);
+        let identity = module.module_identity.clone().expect("an identity");
+        let bytes = interpreter.enter(|mutator| {
+            let class = mutator.root_class_of_mixin(&module);
+            let modules = [crate::image::ModuleSource {
+                class,
+                identity: &identity,
+                with_source: true,
+            }];
+            crate::image::snapshot(mutator, &modules, &[]).expect("snapshot")
+        });
+        let mut image = loaded(&bytes);
+        let [loaded_module] = image.modules.as_slice() else {
+            panic!("one module");
+        };
+        assert_eq!(loaded_module.identity.path, None);
+        assert_eq!(
+            loaded_module.identity.display_name(),
+            "com.acme.Fresh@1.0.0"
+        );
+        assert_eq!(loaded_module.source.as_deref(), Some(FRESH));
+        let class = loaded_module.class.clone();
+        let instance = expect_ok(image.interpreter.instantiate(&class, &[]), "a Fresh");
+        let answer = send(&mut image.interpreter, &instance, "answer");
+        assert_eq!(integer(&mut image.interpreter, &answer), Some(42));
     }
 }

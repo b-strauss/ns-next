@@ -259,7 +259,11 @@ fn program_identity(
     // that is more than `.ns`, and the rest of a project's path.
     let path = path_in_project(directory, file)?;
     modules::check_project_path(&path).map_err(in_file)?;
-    Ok(ModuleIdentity { path, id, version })
+    Ok(ModuleIdentity {
+        path: Some(path),
+        id,
+        version,
+    })
 }
 
 /// The manifest's identity: the id its `:module:` declares, in the
@@ -268,7 +272,7 @@ fn program_identity(
 fn manifest_identity(manifest: &source::LoadedSource) -> ModuleIdentity {
     match modules::declared_identity(&manifest.resolved.module, &manifest.source) {
         Ok((id, None)) if id.is_reserved() => ModuleIdentity {
-            path: modules::core_path(MANIFEST_FILE),
+            path: Some(modules::core_path(MANIFEST_FILE)),
             id,
             version: None,
         },
@@ -427,7 +431,7 @@ pub(crate) fn kept_manifests(image: &mut ns_runtime::image::LoadedImage) -> Kept
     let Some(module) = image
         .modules
         .iter()
-        .find(|module| module.identity.path == manifest_path)
+        .find(|module| module.identity.path.as_deref() == Some(manifest_path.as_str()))
     else {
         return KeptManifests(Vec::new());
     };

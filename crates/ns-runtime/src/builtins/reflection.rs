@@ -298,9 +298,12 @@ fn commit_install<'gc>(
     let answer = match mutator.commit_install(&entries, epoch, &superclasses) {
         Ok(installed) => {
             let mut results = Vec::with_capacity(installed.len());
-            for texts in installed {
-                let pair = texts_values(mutator, texts);
-                results.push(Value::object(mutator.new_array(pair.to_vec())));
+            for installed in installed {
+                let mut result = texts_values(mutator, installed.texts).to_vec();
+                if let Some(module) = &installed.module {
+                    result.insert(0, Value::object(mutator.reified_mixin(module)));
+                }
+                results.push(Value::object(mutator.new_array(result)));
             }
             let results = Value::object(mutator.new_array(results));
             vec![Value::boolean(true), results]

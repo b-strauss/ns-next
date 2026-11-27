@@ -1,0 +1,62 @@
+/// `ClassDeclarationBuilder fromSource:` declares a module. Before its
+/// install the builder answers the text it was given, reflects no
+/// declaration and stages nothing; its install declares the module, a doc
+/// comment, its `:module:` and trailing whitespace in its text, and from
+/// then on the builder stands for the module's declaration: its
+/// declaration mirror answers the class's name and its text, its header
+/// begins at the `:module:`, and a method staged on it installs.
+class AModuleIsDeclaredFromSource = Object new () (
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      text = '/// A module declared from source.
+(* :module: com.acme.Fresh@1.0.0 *)
+class Fresh = Object new () (
+  public answer = ( ^42 )
+)
+
+'.
+      builder = platform mirrors ClassDeclarationBuilder fromSource: text.
+      declaration
+    |
+    transcript
+        print: builder declaration;
+        show: ' ';
+        print: builder source = text;
+        newLine.
+    transcript
+        show: (outcome: [builder instanceSide]);
+        newLine.
+    transcript
+        show: (outcome: [builder header source: 'class Fresh = Object new () ']);
+        newLine.
+    builder install.
+    declaration:: builder declaration.
+    transcript
+        show: declaration name;
+        show: ' ';
+        print: declaration = builder declaration;
+        show: ' ';
+        print: declaration enclosingClass;
+        newLine.
+    transcript
+        show: '[';
+        show: declaration source;
+        show: ']';
+        newLine.
+    transcript
+        show: '[';
+        show: builder header source;
+        show: ']';
+        newLine.
+    builder instanceSide methods addFromSource: 'public other = ( ^7 )'.
+    builder install.
+    transcript
+        print: (builder declaration source indexOf: 'public other = ( ^7 )') > 0;
+        newLine.
+  )
+)

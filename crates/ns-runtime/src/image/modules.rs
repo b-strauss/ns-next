@@ -12,7 +12,9 @@ use std::rc::Rc;
 use super::decode::{self, DecodeError, Reader};
 use super::encode::{self, Writer};
 use super::mixins;
-use super::opcodes::{MODULE_UNVERSIONED, MODULE_VERSIONED, ORIGIN_CORE, ORIGIN_PROJECT};
+use super::opcodes::{
+    MODULE_UNVERSIONED, MODULE_VERSIONED, ORIGIN_CORE, ORIGIN_NONE, ORIGIN_PROJECT,
+};
 use crate::Mutator;
 use crate::heap::Heap;
 use crate::mixin::Mixin;
@@ -46,8 +48,9 @@ const NOT_THE_MANIFEST: &str = "`{name}` at `{path}` is no module an image carri
 /// Why `identity` cannot name the module whose root class is named
 /// `root_name`, if it cannot: the one check of a single module the encoder
 /// and the decoder share, so that the encoder never writes a record the
-/// loader refuses. Its path is relative to the project or a `core:` file
-/// name, its id ends in the root's name, and the namespace `newspeak.` is
+/// loader refuses. Its path, when it has one, is relative to the project or
+/// a `core:` file name -- a module a program declared from source has none
+/// -- its id ends in the root's name, and the namespace `newspeak.` is
 /// the binary's modules' and theirs alone (decisions 1, 2 and 9). A
 /// `core:` path is the manifest's, `newspeak.core.Manifest` without a
 /// version, and nothing else: every module an image carries is program
@@ -55,16 +58,20 @@ const NOT_THE_MANIFEST: &str = "`{name}` at `{path}` is no module an image carri
 /// program's module in the reserved namespace, where a tool's name would
 /// meet the shipped module's.
 pub fn identity_defect(identity: &ModuleIdentity, root_name: &str) -> Result<(), String> {
-    identities::check_relative_path(&identity.path)?;
+    if let Some(path) = &identity.path {
+        identities::check_relative_path(path)?;
+    }
     ModuleId::parse(identity.id.as_str(), root_name)?;
-    let is_core = identities::core_file(&identity.path).is_some();
-    let is_the_manifest = identity.path == MANIFEST_PATH
-        && identity.id.as_str() == MANIFEST_ID
-        && identity.version.is_none();
-    if is_core && !is_the_manifest {
-        return Err(NOT_THE_MANIFEST
-            .replace("{name}", &identity.display_name())
-            .replace("{path}", &identity.path));
+    if let Some(path) = &identity.path {
+        let is_core = identities::core_file(path).is_some();
+        let is_the_manifest = path == MANIFEST_PATH
+            && identity.id.as_str() == MANIFEST_ID
+            && identity.version.is_none();
+        if is_core && !is_the_manifest {
+            return Err(NOT_THE_MANIFEST
+                .replace("{name}", &identity.display_name())
+                .replace("{path}", path));
+        }
     }
     identities::check_namespace(identity)
 }
@@ -75,22 +82,25 @@ pub fn identity_defect(identity: &ModuleIdentity, root_name: &str) -> Result<(),
 /// its declarations' (`texts`), from which it is assembled.
 ///
 /// A record is an origin tag and its path -- `ORIGIN_PROJECT` and the path
-/// relative to the project, or `ORIGIN_CORE` and the file name of a
-/// `core:` path -- the id, `MODULE_UNVERSIONED` or `MODULE_VERSIONED` and
+/// relative to the project, `ORIGIN_CORE` and the file name of a `core:`
+/// path, or `ORIGIN_NONE` alone for a module without a path -- the id, `MODULE_UNVERSIONED` or `MODULE_VERSIONED` and
 /// the version's text, and the root's object id.
 pub fn encode_modules(writer: &mut Writer, modules: &[ModuleSource<'_, '_>], root_ids: &[u32]) {
     writer.write_u32(encode::u32_field("module count", modules.len()));
     for (module, root_id) in modules.iter().zip(root_ids) {
         let identity = module.identity;
-        match identities::core_file(&identity.path) {
-            Some(file) => {
-                writer.write_u8(ORIGIN_CORE);
-                writer.write_str(file);
-            }
-            None => {
-                writer.write_u8(ORIGIN_PROJECT);
-                writer.write_str(&identity.path);
-            }
+        match identity.path.as_deref() {
+            None => writer.write_u8(ORIGIN_NONE),
+            Some(path) => match identities::core_file(path) {
+                Some(file) => {
+                    writer.write_u8(ORIGIN_CORE);
+                    writer.write_str(file);
+                }
+                None => {
+                    writer.write_u8(ORIGIN_PROJECT);
+                    writer.write_str(path);
+                }
+            },
         }
         writer.write_str(identity.id.as_str());
         match &identity.version {
@@ -104,9 +114,9 @@ pub fn encode_modules(writer: &mut Writer, modules: &[ModuleSource<'_, '_>], roo
     }
 }
 
-/// The smallest a module record can be: an origin tag, an empty path's
-/// length, an empty id's length, a version tag, and the root's object id.
-const MIN_MODULE_BYTES: usize = 1 + 4 + 4 + 1 + 4;
+/// The smallest a module record can be: an origin tag without a path, an
+/// empty id's length, a version tag, and the root's object id.
+const MIN_MODULE_BYTES: usize = 1 + 4 + 1 + 4;
 
 /// One module as the module section describes it.
 pub struct DecodedModule {
@@ -179,16 +189,17 @@ impl From<DecodeError> for RecordDefect {
 /// rules of one module (`identity_defect`) against `root_name`, its root
 /// declaration's name. A project's path is held to a project's rules
 /// before it is joined into the identity, so that a `core:` path cannot
-/// pass as a project's; the origin and version tags are read before
-/// anything they introduce.
+/// pass as a project's, and `ORIGIN_NONE` introduces no path at all; the
+/// origin and version tags are read before anything they introduce.
 fn decode_record(reader: &mut Reader, root_name: &str) -> Result<ModuleIdentity, RecordDefect> {
     let path = match reader.read_u8()? {
         ORIGIN_PROJECT => {
             let path = reader.read_text()?;
             identities::check_project_path(path).map_err(RecordDefect::Refused)?;
-            path.to_string()
+            Some(path.to_string())
         }
-        ORIGIN_CORE => identities::core_path(reader.read_text()?),
+        ORIGIN_CORE => Some(identities::core_path(reader.read_text()?)),
+        ORIGIN_NONE => None,
         tag => {
             return Err(RecordDefect::Malformed(DecodeError::InvalidTag {
                 what: "module origin",

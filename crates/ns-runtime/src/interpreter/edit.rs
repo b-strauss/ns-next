@@ -34,11 +34,8 @@ pub(crate) struct Edit {
 pub(crate) enum InstallEntry {
     /// An edit of the declaration whose mixin id this is.
     Edit(MixinId, Edit),
-    /// A module declared from source, its text.
-    #[expect(
-        dead_code,
-        reason = "no builder declares a module from source yet: `entries_from_value` declines a nil subject"
-    )]
+    /// A module declared from source, its text
+    /// (`ClassDeclarationBuilder fromSource:`).
     Module(String),
 }
 
@@ -46,7 +43,8 @@ pub(crate) enum InstallEntry {
 /// in the order the builders were given; `None` for anything else, which
 /// the install leaves decline. A subject is a reified mixin of either side
 /// of the edited declaration, a class side standing for its instance
-/// side's.
+/// side's, or `nil` for a module declared from source, whose edit is the
+/// module's text, a String.
 pub(crate) fn entries_from_value<'gc>(
     mutator: &Mutator<'gc>,
     value: Value<'gc>,
@@ -59,6 +57,9 @@ pub(crate) fn entries_from_value<'gc>(
             let [subject, edit] = pair.as_slice() else {
                 return None;
             };
+            if subject.is_nil() {
+                return Some(InstallEntry::Module(string_of(heap, *edit)?));
+            }
             let id = heap.mixin_object_id(subject.as_object()?)?;
             let id = crate::builtins::reflection::instance_side_id(heap, id)?;
             Some(InstallEntry::Edit(id, Edit::from_value(heap, *edit)?))
@@ -110,6 +111,14 @@ pub(crate) struct SplicedEdit {
     /// Whether the edit renames a nested class or changes its access, so
     /// that its enclosing declaration is compiled again with it.
     pub(crate) widens: bool,
+}
+
+/// What preparing a module declared from source answers: its root mixin,
+/// built and registered nowhere, with its identity, and the texts its
+/// builder reads once it is installed.
+pub(crate) struct PreparedSourceModule {
+    pub(crate) root: Rc<Mixin>,
+    pub(crate) texts: EditedTexts,
 }
 
 /// What preparing the edits of one module answers: everything the install
@@ -547,6 +556,65 @@ impl<'gc> Mutator<'gc> {
         })
     }
 
+    /// The module `text` declares, compiled as the loader compiles a
+    /// program's module, or the diagnostic that refuses it
+    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// install", decision 7): a text that is not one class declaration,
+    /// one that does not parse or resolve, and an id or version the
+    /// loader's own rules refuse -- a malformed `:module:` and an id under
+    /// `newspeak.` -- with the loader's messages. Its identity is what its
+    /// `:module:` declares, its class's name without one, and it has no
+    /// path, since no file holds it. Whether another module of the world
+    /// has its identity is the install's question
+    /// (`Mutator::refuse_a_colliding_identity`).
+    ///
+    /// Changes nothing a program observes. Registers nothing.
+    pub(crate) fn prepare_source_module(
+        &mut self,
+        text: &str,
+    ) -> Result<PreparedSourceModule, String> {
+        let module = ns_syntax::parse(text)
+            .map_err(|diagnostics| source_module_parse_refusal(text, &diagnostics))?;
+        let (id, version) = crate::modules::declared_identity(&module, text)?;
+        crate::modules::check_unreserved(&id)?;
+        let text: Rc<str> = Rc::from(text);
+        // Never `resolve_kernel`: only shipped source records mirror sends,
+        // and a module a program declares is no shipped one.
+        let resolved = crate::resolver::resolve(
+            module,
+            Rc::clone(&text),
+            SourceOrigin::Embedded("<fromSource:>".into()),
+        )
+        .map_err(|errors| {
+            let (message, start) = errors.first().map_or_else(
+                || ("the resolver refused it".to_string(), 0),
+                |error| (error.message.clone(), error.span.start),
+            );
+            format!(
+                "the module's source does not resolve: {message} (line {})",
+                line_of(&text, start)
+            )
+        })?;
+        let identity = crate::modules::ModuleIdentity {
+            path: None,
+            id,
+            version,
+        };
+        let root = self.build_root_mixin(
+            &resolved.module.root_class,
+            &resolved.bindings,
+            ModuleSource::User,
+            &text,
+            Some(Rc::new(identity)),
+        );
+        debug_assert!(
+            self.nothing_registers(&root),
+            "internal: a prepared module is registered under no id"
+        );
+        let texts = declaration_texts(&resolved.module, &text, &resolved.module.root_class);
+        Ok(PreparedSourceModule { root, texts })
+    }
+
     /// The ids among `replacements` whose fresh declaration, in `text`,
     /// writes another superclass clause or other `<:` clauses than its
     /// current version does in `original_text`, its module's current text:
@@ -818,6 +886,31 @@ fn declaration_texts(
         declaration: declaration_text,
         header: header_text,
     }
+}
+
+/// The diagnostic of a module text `ns_syntax::parse` refused with
+/// `diagnostics`: a text whose part before its first error is a whole
+/// module -- a class declaration followed by a second one, or by a member
+/// -- is not one class declaration; any other does not parse.
+fn source_module_parse_refusal(text: &str, diagnostics: &[ns_syntax::Diagnostic]) -> String {
+    let first_error = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ns_syntax::Severity::Error)
+        .min_by_key(|diagnostic| diagnostic.span.start);
+    let whole_before = first_error
+        .and_then(|error| text.get(..error.span.start as usize))
+        .is_some_and(|before| ns_syntax::parse(before).is_ok());
+    if whole_before {
+        return "fromSource: takes one class declaration".to_string();
+    }
+    let (message, start) = first_error.or(diagnostics.first()).map_or_else(
+        || ("the parser refused it".to_string(), 0),
+        |diagnostic| (diagnostic.message.clone(), diagnostic.span.start),
+    );
+    format!(
+        "the module's source does not parse: {message} (line {})",
+        line_of(text, start)
+    )
 }
 
 /// `text` parsed, or the syntax diagnostic of `name`'s edit.

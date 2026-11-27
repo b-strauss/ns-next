@@ -1,0 +1,8 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install.module"]
+stdout = '''
+fromSource: takes one class declaration
+fromSource: takes one class declaration
+the module's source does not parse: expected RightParenthesis, found EndOfInput (line 1)
+the module's source does not resolve: class `First` has multiple definitions of `twice` (line 1)
+class First = Object new () ( public greeting = ( ^'ünïcödé' ) )
+'''

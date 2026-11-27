@@ -673,14 +673,11 @@ keeping its identity, its instances migrated by slot name. Several
 builders' edits are one change: each is
 spliced into its module's text in the order the builders are given, and
 two builders of one class, or one of a class another removes or
-replaces, are refused. A failed install changes nothing,
-and the core library's classes cannot be edited.
-
-r[semantics.gap.reflection.several-builders]
-A class declared from source with no predecessor cannot be installed.
-The complete install closes this gap
-(`docs/design/liveness-and-reflection.md`, "Planned: the complete
-install").
+replaces, are refused. A class declared from source with no
+predecessor, `ClassDeclarationBuilder fromSource:`, is a module, its
+`:module:` held to the loader's rules, and installs with the others. A
+failed install changes nothing, and the core library's classes cannot be
+edited.
 
 r[semantics.gap.reflection.object-class]
 Bracha §8.2 lets a program change the class of an individual object. No

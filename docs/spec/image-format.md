@@ -171,6 +171,7 @@ origin           retired                  0
 origin           retired                  1
 origin           project                  2
 origin           core                     3
+origin           none                     4
 module-version   unversioned              0
 module-version   versioned                1
 shipped-kind     module-instance          0
@@ -300,7 +301,8 @@ r[image.modules]
 The module section holds one record per module, in module order, the
 application's module first: its origin and path -- a path relative to
 the project for a module of the program, the file's name for the
-binary's own manifest -- its id, its version when it declares one, and
+binary's own manifest, and no path for a module a program declared from
+source, which no file holds -- its id, its version when it declares one, and
 the object id of its root class's record in the graph, a record of the
 class whose row is the root of the module's tree in the mixin table.
 
@@ -388,6 +390,7 @@ module                                     origin:origin  id:text  version:modul
 origin/origin
 origin/origin/project                      path:text
 origin/origin/core                         file:text
+origin/origin/none
 module-version/module-version
 module-version/module-version/unversioned
 module-version/module-version/versioned    version:text
@@ -556,7 +559,8 @@ r[image.verify.module-identity]
     lies outside the namespace `newspeak.`; a `core` record's file is a
     name ending in `.ns`, naming more than `.ns` and holding no `/`, `\`
     or `:`, and the record is the manifest's alone, `newspeak.core.Manifest`
-    at `core:Manifest.ns` without a version; every id is identifiers
+    at `core:Manifest.ns` without a version; a `none` record has no path,
+    and its id lies outside the namespace `newspeak.`; every id is identifiers
     separated by dots, the last the name of its module's root
     declaration, the first row of the module's tree; every version is a
     semantic version without build metadata; and no path, id or version

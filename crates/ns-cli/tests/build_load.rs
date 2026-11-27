@@ -517,7 +517,7 @@ fn load_names_modules_by_their_identity() {
         Ok(loaded) => loaded,
         Err(error) => panic!("{error}"),
     };
-    let names: Vec<(String, String)> = loaded
+    let names: Vec<(Option<String>, String)> = loaded
         .modules
         .iter()
         .map(|module| {
@@ -539,9 +539,9 @@ fn load_names_modules_by_their_identity() {
         ("Plain.ns", "org.example.Plain"),
         ("core:Manifest.ns", "newspeak.core.Manifest"),
     ];
-    let expected: Vec<(String, String)> = expected
+    let expected: Vec<(Option<String>, String)> = expected
         .iter()
-        .map(|(path, name)| ((*path).to_string(), (*name).to_string()))
+        .map(|(path, name)| (Some((*path).to_string()), (*name).to_string()))
         .collect();
     assert_eq!(names, expected);
     let written = root.to_string_lossy();

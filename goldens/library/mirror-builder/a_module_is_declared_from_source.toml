@@ -1,0 +1,13 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install.module"]
+stdout = '''
+nil true
+a ClassDeclarationBuilder from source stages nothing before its install
+a ClassDeclarationBuilder from source stages nothing before its install
+Fresh true nil
+[class Fresh = Object new () (
+  public answer = ( ^42 )
+)]
+[(* :module: com.acme.Fresh@1.0.0 *)
+class Fresh = Object new () ]
+true
+'''

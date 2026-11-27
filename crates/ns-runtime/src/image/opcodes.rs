@@ -526,11 +526,15 @@ pub const SLOT_LAZY_IMMUTABLE: u8 = 2;
 pub const SLOT_LAZY_MUTABLE: u8 = 3;
 
 /// Where a module record's path lies (`image::modules`): `ORIGIN_PROJECT`,
-/// followed by the module's path relative to its project, or `ORIGIN_CORE`,
+/// followed by the module's path relative to its project, `ORIGIN_CORE`,
 /// followed by the file name of a module the binary holds -- `Manifest.ns`
-/// -- whose path is `core:` and that name. Next free number: 4.
+/// -- whose path is `core:` and that name, or `ORIGIN_NONE`, followed by
+/// nothing, for a module a program declared from source, which has no path
+/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// install", decision 7). Next free number: 5.
 pub const ORIGIN_PROJECT: u8 = 2;
 pub const ORIGIN_CORE: u8 = 3;
+pub const ORIGIN_NONE: u8 = 4;
 
 /// Origins that no longer name anything and are never reused: 0 was
 /// `ORIGIN_FILE`, the path a module was read from on the building machine,
@@ -538,7 +542,7 @@ pub const ORIGIN_CORE: u8 = 3;
 /// file. A module record came to carry the module's identity on
 /// 2026-11-19 -- its path relative to the project, its id and its version
 /// (`docs/design/modules.md`, decision 10) -- so a stale record meets an
-/// unknown tag instead of being read as a path. Next free number: 4.
+/// unknown tag instead of being read as a path. Next free number: 5.
 pub const RETIRED_ORIGIN_TAGS: [u8; 2] = [0, 1];
 
 /// Whether a module record carries a version after its id: none, or one,

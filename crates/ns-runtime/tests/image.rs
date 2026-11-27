@@ -7900,7 +7900,7 @@ const MANIFEST_MODULE: &str = indoc! {"
 /// `class_name` as the decoder parses them.
 fn identity(path: &str, id: &str, class_name: &str, version: Option<&str>) -> ModuleIdentity {
     ModuleIdentity {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         id: ModuleId::parse(id, class_name).unwrap_or_else(|error| panic!("{error}")),
         version: version.map(|text| Version::parse(text).unwrap_or_else(|error| panic!("{error}"))),
     }
@@ -8157,7 +8157,8 @@ fn the_encoder_refuses_source_for_some_modules_only() {
 }
 
 /// One module record as `image::modules` writes it, its parts given
-/// verbatim, so that a test can write one the encoder never would.
+/// verbatim, so that a test can write one the encoder never would; a
+/// record of the origin `ORIGIN_NONE` is written without its path.
 #[derive(Clone, Copy)]
 struct Record<'a> {
     origin: u8,
@@ -8180,7 +8181,9 @@ fn with_module_records(bytes: &[u8], records: &[Record<'_>]) -> Vec<u8> {
     writer.write_u32(u32::try_from(records.len()).expect("a count"));
     for (index, record) in records.iter().enumerate() {
         writer.write_u8(record.origin);
-        writer.write_str(record.path);
+        if record.origin != ORIGIN_NONE {
+            writer.write_str(record.path);
+        }
         writer.write_str(record.id);
         match record.version {
             Some(version) => {
@@ -8247,7 +8250,10 @@ fn a_module_record_is_held_to_the_project_rules() {
     );
     let loaded = image::load(&valid).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(loaded.modules[1].identity.display_name(), "Util@1.0.1");
-    assert_eq!(loaded.modules[2].identity.path, "core:Manifest.ns");
+    assert_eq!(
+        loaded.modules[2].identity.path.as_deref(),
+        Some("core:Manifest.ns")
+    );
 
     let refused = [
         (
@@ -8481,6 +8487,78 @@ fn a_module_record_is_held_to_the_project_rules() {
     );
 }
 
+/// A module a program declared from source has no path: the encoder
+/// writes its record with the origin `none` and nothing after it, and the
+/// loader reads it back without one, its id and version kept; a record
+/// of that origin is held to the rules of a program's module, so that one
+/// in the namespace `newspeak.` is refused.
+// spec: image.modules
+// spec: image.verify.module-identity
+#[test]
+fn a_module_from_source_loads_without_a_path() {
+    let (mut interpreter, class) = load(UTIL_ONE);
+    let identity = ModuleIdentity {
+        path: None,
+        ..identity("Util.ns", "com.acme.Util", "Util", Some("1.0.0"))
+    };
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                identity: &identity,
+                with_source: true,
+            }];
+            image::snapshot(mutator, &modules, &[])
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(bytes[module_section_start(&bytes) + 4], ORIGIN_NONE);
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(*loaded.modules[0].identity, identity);
+    assert_eq!(
+        loaded.modules[0].declaration.module_identity.as_deref(),
+        Some(&identity)
+    );
+    assert_eq!(loaded.modules[0].source.as_deref(), Some(UTIL_ONE));
+
+    let bytes = util_image(&util_identities(), false);
+    let pathless = |id: &'static str| Record {
+        origin: ORIGIN_NONE,
+        path: "",
+        id,
+        version: Some("1.0.0"),
+    };
+    let crafted = with_module_records(
+        &bytes,
+        &[
+            pathless("com.acme.Util"),
+            project("b/Util.ns", "Util", Some("2.0.0")),
+            MANIFEST_RECORD,
+        ],
+    );
+    let loaded = image::load(&crafted).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.modules[0].identity.path, None);
+    assert_eq!(
+        loaded.modules[0].identity.display_name(),
+        "com.acme.Util@1.0.0"
+    );
+    let reserved = with_module_records(
+        &bytes,
+        &[
+            pathless("newspeak.Util"),
+            project("b/Util.ns", "Util", Some("2.0.0")),
+            MANIFEST_RECORD,
+        ],
+    );
+    assert_eq!(
+        load_error(&reserved),
+        module_error(
+            0,
+            "`newspeak.Util` lies in the namespace `newspeak.`, which belongs to the modules \
+             ns-next ships"
+        )
+    );
+}
+
 /// A module record's tags are read before anything else of it: the retired
 /// origins -- the building machine's file and an embedded source -- an
 /// origin past the last, and a version tag past the last are each an
@@ -8489,7 +8567,7 @@ fn a_module_record_is_held_to_the_project_rules() {
 #[test]
 fn a_module_record_s_unknown_tags_are_refused() {
     let bytes = util_image(&util_identities(), false);
-    for origin in RETIRED_ORIGIN_TAGS.into_iter().chain([ORIGIN_CORE + 1]) {
+    for origin in RETIRED_ORIGIN_TAGS.into_iter().chain([ORIGIN_NONE + 1]) {
         let crafted = with_module_records(
             &bytes,
             &[
@@ -12100,8 +12178,9 @@ fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
 /// Reads past a module record's identity: its origin and path, its id, and
 /// its version.
 fn skip_module_identity(reader: &mut decode::Reader) {
-    reader.read_u8().expect("the origin tag");
-    reader.read_str().expect("the path");
+    if reader.read_u8().expect("the origin tag") != ORIGIN_NONE {
+        reader.read_str().expect("the path");
+    }
     reader.read_str().expect("the id");
     if reader.read_u8().expect("the version tag") == MODULE_VERSIONED {
         reader.read_str().expect("the version");

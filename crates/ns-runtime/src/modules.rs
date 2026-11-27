@@ -329,13 +329,17 @@ impl VersionRange {
     }
 }
 
-/// What tells one module from another: the path of its source, its id and
-/// its version, if it declares one.
+/// What tells one module from another: the path of its source, if a file
+/// holds it, its id and its version, if it declares one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleIdentity {
     /// Relative to the project with `/` separators, `core:<File>.ns` for a
-    /// shipped module and `core:Manifest.ns` for the manifest.
-    pub path: String,
+    /// shipped module and `core:Manifest.ns` for the manifest; `None` for a
+    /// module a program declared from source (`ClassDeclarationBuilder
+    /// fromSource:`), which no file holds
+    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// install", decision 7).
+    pub path: Option<String>,
     pub id: ModuleId,
     pub version: Option<Version>,
 }
@@ -345,9 +349,18 @@ impl ModuleIdentity {
     /// a version: its class's name, `class_name`, without a version.
     pub fn undeclared(path: impl Into<String>, class_name: &str) -> ModuleIdentity {
         ModuleIdentity {
-            path: path.into(),
+            path: Some(path.into()),
             id: ModuleId::of_class(class_name),
             version: None,
+        }
+    }
+
+    /// How a message names the module: by its path, or, without one, by
+    /// its `display_name`, the one name such a module has.
+    pub fn described(&self) -> String {
+        match &self.path {
+            Some(path) => path.clone(),
+            None => self.display_name(),
         }
     }
 
@@ -431,7 +444,7 @@ pub fn check_unreserved(id: &ModuleId) -> Result<(), String> {
 /// Refuses two modules no request could pick between (decision 5): two of
 /// one id and one version, and two of one id where either has no version.
 /// Names the first such pair in the order given, the earlier module first,
-/// by their paths. Linear in the count, each id's modules grouped as they
+/// by their paths, a module without one by its `display_name`. Linear in the count, each id's modules grouped as they
 /// come, since an image's module section is input of any size.
 pub fn check_distinct<'identity>(
     identities: impl IntoIterator<Item = &'identity ModuleIdentity>,
@@ -479,8 +492,8 @@ pub fn check_distinct<'identity>(
         if let Some((earlier, message)) = message {
             return Err(message
                 .replace("{id}", later.id.as_str())
-                .replace("{first}", &earlier.path)
-                .replace("{second}", &later.path));
+                .replace("{first}", &earlier.described())
+                .replace("{second}", &later.described()));
         }
     }
     Ok(())
@@ -526,13 +539,17 @@ const OUTSIDE_RESERVED_NAMESPACE: &str = "`{id}` at `{path}` lies outside the na
 /// for them alone, so that no program's module claims the binary's
 /// namespace and no module of the binary's is named as a program's.
 pub fn check_namespace(identity: &ModuleIdentity) -> Result<(), String> {
-    if core_file(&identity.path).is_none() {
+    let Some(path) = identity
+        .path
+        .as_deref()
+        .filter(|path| core_file(path).is_some())
+    else {
         return check_unreserved(&identity.id);
-    }
+    };
     if !identity.id.is_reserved() {
         return Err(OUTSIDE_RESERVED_NAMESPACE
             .replace("{id}", identity.id.as_str())
-            .replace("{path}", &identity.path));
+            .replace("{path}", path));
     }
     Ok(())
 }
@@ -824,7 +841,7 @@ mod tests {
     #[test]
     fn the_namespace_goes_with_the_core_path() {
         let core = |id: &str| ModuleIdentity {
-            path: "core:Registry.ns".to_string(),
+            path: Some("core:Registry.ns".to_string()),
             id: ModuleId::parse(id, "Registry").unwrap(),
             version: None,
         };
@@ -838,7 +855,7 @@ mod tests {
             )
         );
         let project = ModuleIdentity {
-            path: "Registry.ns".to_string(),
+            path: Some("Registry.ns".to_string()),
             ..core("newspeak.core.Registry")
         };
         assert_eq!(
@@ -866,7 +883,7 @@ mod tests {
         assert_eq!(ModuleId::of_class("Json").class_name(), "Json");
         let undeclared = ModuleIdentity::undeclared("Json.ns", "Json");
         assert_eq!(undeclared.display_name(), "Json");
-        assert_eq!(undeclared.path, "Json.ns");
+        assert_eq!(undeclared.path.as_deref(), Some("Json.ns"));
     }
 
     fn identity_of(source: &str) -> Result<(ModuleId, Option<Version>), String> {
@@ -988,7 +1005,7 @@ mod tests {
     fn identity(path: &str, id: &str, version_text: Option<&str>) -> ModuleIdentity {
         let class_name = id.rsplit('.').next().unwrap_or(id);
         ModuleIdentity {
-            path: path.to_string(),
+            path: Some(path.to_string()),
             id: ModuleId::parse(id, class_name).unwrap(),
             version: version_text.map(version),
         }
@@ -1038,7 +1055,7 @@ mod tests {
     #[test]
     fn an_identity_displays_its_id_and_version() {
         let identity = ModuleIdentity {
-            path: "libs/Json.ns".to_string(),
+            path: Some("libs/Json.ns".to_string()),
             id: ModuleId::of_class("Json"),
             version: Some(version("2.1.0")),
         };

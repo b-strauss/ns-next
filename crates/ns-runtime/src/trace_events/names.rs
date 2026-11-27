@@ -547,7 +547,7 @@ mod tests {
         if let Some((id, version)) = identity {
             let class = id.rsplit('.').next().expect("a class");
             resolved.identity = Some(Rc::new(crate::modules::ModuleIdentity {
-                path: "t.ns".to_string(),
+                path: Some("t.ns".to_string()),
                 id: crate::modules::ModuleId::parse(id, class).expect("an id"),
                 version: Some(crate::modules::Version::parse(version).expect("a version")),
             }));

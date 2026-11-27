@@ -834,11 +834,10 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         .map(|module| {
             let root = format!("root object {}", module.root);
             ModuleReport {
-                identity: format!(
-                    "{} at {}",
-                    module.identity.display_name(),
-                    module.identity.path
-                ),
+                identity: match &module.identity.path {
+                    Some(path) => format!("{} at {path}", module.identity.display_name()),
+                    None => format!("{}, without a path", module.identity.display_name()),
+                },
                 root,
             }
         })
