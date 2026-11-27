@@ -381,11 +381,10 @@ the superclass's, with no case of its own ([object-model.md](object-model.md),
 **`lookupPublic(selector, class)`** — ordinary sends with an explicit receiver
 (§5.5; `r[runtime.lookup]`, `r[semantics.access.public]`): "m, if the mixin
 of C defines a method m with selector n and public access. Undefined, if ...
-protected access. lookupPublic(n, superclass(C)) otherwise." A `public`
-declaration is the answer; a `protected` one **stops the search and fails**
-— it *shadows* a public implementation further up the chain rather than
-merely hiding the name locally; a `private` one is **passed over**, falling
-to §5.5's "otherwise". Primordial Soup's `OrdinarySendMiss` does exactly
+protected access. lookupPublic(n, superclass(C)) otherwise." A `protected`
+declaration **stops the search and fails** — it *shadows* a public
+implementation further up the chain rather than merely hiding the name
+locally. Primordial Soup's `OrdinarySendMiss` does exactly
 this.
 
 **`lookupProtected(selector, class)`** — the run-time half of a `LexicalSend`
@@ -701,8 +700,7 @@ failure block, the `[^super …]` every kernel method writes:
 **A leaf that declines or raises has changed nothing**
 (`r[vm.dispatch.declining-leaf-changes-nothing]`). Each one checks its
 operands before it writes anything — a register, a slot, an array element, the
-transcript — so running it again, or running again the instruction that sent
-it, is running it once. The search for §6.3.2's futures rests on this: once a
+transcript. The search for §6.3.2's futures rests on this: once a
 program has made one, the three ways a leaf runs — `mirror::execute_sent`,
 `send_inlined` and `execute_method` — look for a future among the operands on
 the path where the leaf could not answer, it declined or raised
