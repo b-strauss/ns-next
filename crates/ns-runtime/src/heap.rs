@@ -19786,12 +19786,39 @@ mod tests {
         }
     }
 
+    /// A byte array is told by its own format, whatever its class: every
+    /// decision made by format alone takes it for a byte array, and none
+    /// for a string.
+    // spec: vm.heap.byte-array-own-format
     #[test]
     fn describe_names_a_byte_array_by_its_size() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let object = heap.allocate_byte_array(class, &[1, 2, 3]);
         assert_eq!(heap.describe(Value::object(object)), "a ByteArray of 3");
+        assert!(heap.is_byte_array(object));
+        assert!(!heap.is_string(object));
+        assert_eq!(heap.string_size(object), None);
+        assert!(matches!(heap.object_shape(object), ObjectShape::ByteArray));
+        let string = heap.allocate_string(class, crate::CodePoints::from("abc"));
+        assert!(!heap.is_byte_array(string));
+    }
+
+    /// Whether an object is a class object is its header's format, never
+    /// what its class word names: an instance of a class object, and an
+    /// object that is its own class without a class object's format -- the
+    /// shape a crafted image can give a class reference -- are none.
+    // spec: vm.heap.class-by-format
+    #[test]
+    fn whether_an_object_is_a_class_is_read_from_its_format() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Point");
+        assert!(heap.is_class(class));
+        let instance = heap.allocate_instance(class, 2);
+        assert!(!heap.is_class(instance));
+        let own_class = heap.allocate_self_referential(0);
+        assert!(!heap.is_class(own_class));
+        assert!(heap.class_metaclass(own_class).is_none());
     }
 
     // ---------- The bulk forward ----------

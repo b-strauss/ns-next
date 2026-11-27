@@ -1543,6 +1543,71 @@ fn an_array_past_two_hundred_and_fifty_four_elements_round_trips() {
     }
 }
 
+/// The small integer `root` holds, read on the host side.
+fn small_integer_of(interpreter: &mut Interpreter, root: &Root) -> i64 {
+    interpreter
+        .enter(|mutator| mutator.fetch(root).as_small_integer())
+        .expect("a SmallInteger")
+}
+
+/// A symbol's hash is its text's: a symbol a program made answers the same
+/// hash before its text is interned, once it is, once the canonical table
+/// has adopted it, in another interpreter, and loaded from an image. The
+/// text is joined at run time, so that no compile interns it first.
+// spec: vm.heap.symbol-hash-from-text
+#[test]
+fn a_symbols_hash_is_its_texts_wherever_it_is_asked() {
+    let text = "a_symbol_whose_hash_is_its_text";
+    let source = indoc! {"
+        class X = Object new (
+          | held = ('a_symbol_whose_' , 'hash_is_its_text') asSymbol. |
+        ) (
+          public heldHash = ( ^held hash )
+        ) : ()
+    "};
+    let selector = Symbol::intern("heldHash");
+    assert!(
+        Symbol::lookup(text).is_none(),
+        "nothing interned the text yet"
+    );
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let before = expect_ok(interpreter.send(&instance, selector, &[]), "before");
+    let before = small_integer_of(&mut interpreter, &before);
+    let (mut other, other_class) = load(source);
+    let other_instance = expect_ok(other.instantiate(&other_class, &[]), "instantiate");
+    let in_another = expect_ok(other.send(&other_instance, selector, &[]), "another");
+    assert_eq!(small_integer_of(&mut other, &in_another), before);
+    assert!(
+        Symbol::lookup(text).is_none(),
+        "neither run interned the text"
+    );
+
+    let interned = Symbol::intern(text);
+    let after_interning = expect_ok(interpreter.send(&instance, selector, &[]), "interned");
+    assert_eq!(small_integer_of(&mut interpreter, &after_interning), before);
+    interpreter.enter(|mutator| {
+        mutator.new_symbol(interned);
+    });
+    let adopted = expect_ok(interpreter.send(&instance, selector, &[]), "adopted");
+    assert_eq!(small_integer_of(&mut interpreter, &adopted), before);
+
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(mutator, true, "t.ns", class, &[instance]).expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let loaded_hash = expect_ok(
+        loaded.interpreter.send(&loaded.roots[0], selector, &[]),
+        "loaded",
+    );
+    assert_eq!(
+        small_integer_of(&mut loaded.interpreter, &loaded_hash),
+        before
+    );
+}
+
 /// A body past the register ceiling travels as the raising body it compiled
 /// to, `Literal::BodyTooLarge` and all: once loaded it raises the same
 /// error, and its sibling, which never needed the ceiling, still answers.
@@ -5395,6 +5460,7 @@ fn a_crafted_byte_array_record_decodes_to_its_bytes() {
 /// under `ByteArray`'s header one whose leaves find no bytes. Both are
 /// refused by the first pass, before anything is allocated.
 // spec: image.verify.byte-arrays
+// spec: vm.heap.byte-array-own-format
 #[test]
 fn a_byte_array_record_and_the_byte_array_class_go_together() {
     let byte_array_under = |header: u32| {

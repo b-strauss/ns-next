@@ -344,7 +344,6 @@ mod tests {
         assert_eq!(forwarded.age(), 3);
     }
 
-    // spec: vm.heap.mark-bit-clear-outside-collection
     #[test]
     fn the_mark_bit_is_bit_thirty_three_and_disturbs_no_other_field() {
         let header = Header::new(DispatchId::NONE, Format::Closure, 0, 7).with_identity_hash(5);
@@ -366,6 +365,22 @@ mod tests {
     fn the_poison_is_a_free_header_of_no_words() {
         assert_eq!(Header(POISON).format(), Format::Free);
         assert_eq!(Header(POISON).word_count(), 0);
+    }
+
+    /// A code no format uses never comes from a header this heap wrote,
+    /// but a crafted image can write one: it reads as a free gap, never as
+    /// a class object or a format with words to trace.
+    // spec: vm.heap.class-by-format
+    #[test]
+    fn a_format_code_no_format_uses_reads_as_a_free_gap() {
+        for code in [6_u64, 12, 13, 14, 15] {
+            let header = Header(code << FORMAT_SHIFT);
+            assert_eq!(header.format(), Format::Free, "code {code}");
+        }
+        assert_eq!(
+            Header((Format::Class as u64) << FORMAT_SHIFT).format(),
+            Format::Class
+        );
     }
 
     #[test]
