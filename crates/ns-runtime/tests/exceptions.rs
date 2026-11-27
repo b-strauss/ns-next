@@ -393,6 +393,7 @@ ns_runtime::for_each_lowering! {
     /// A block's `^` whose home has returned -- its frame no longer married
     /// to a stack frame, nor suspended -- is still §7.2's `cannotReturn`:
     /// only a running home, live or suspended, is unwound to.
+    // spec: vm.activation.unwind-target-is-frame
     fn a_return_into_a_returned_home_is_still_cannot_return(lowering) {
         let module = ns_syntax::parse(ESCAPER).expect("parse");
         let resolved = ns_runtime::resolve(
@@ -568,6 +569,7 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// An `on:do:` whose handler is running is disabled, so a signal its
     /// handler raises passes it and reaches the one outside.
+    // spec: vm.activation.unwind-marker-from-code
     fn a_handler_search_skips_a_disabled_handler(lowering) {
         let (mut interpreter, signaller) = a_signaller(lowering);
         let result = expect_ok(
@@ -587,6 +589,7 @@ ns_runtime::for_each_lowering! {
     /// one lives in its frame at the safepoints the schedule picks, so the
     /// handler search walks from a live frame into suspended ones and
     /// finds its handler there, an enabled one and past a disabled one.
+    // spec: vm.activation.sender-walks-reach-suspended
     fn a_handler_search_finds_a_handler_in_a_suspended_frame(lowering) {
         let (mut interpreter, signaller) = a_signaller(lowering);
         // The stress modes exist only in a debug build; a release build

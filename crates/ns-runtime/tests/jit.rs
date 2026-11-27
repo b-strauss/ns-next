@@ -282,6 +282,7 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.machine.body-entered-in-its-zone
     fn a_second_interpreter_takes_up_its_own_bodies(lowering) {
         let (mut first, first_class) = load_with(THREE_ANSWERS, lowering);
         let (mut second, second_class) = load_with(THREE_ANSWERS, lowering);
@@ -498,6 +499,7 @@ ns_runtime::for_each_lowering! {
     /// `goldens/runtime/jit/overflow.ns` in brief: the largest
     /// `SmallInteger` plus one, inside a loop body run compiled, declines
     /// to the send, which answers the `LargeInteger`.
+    // spec: vm.machine.decline-before-write
     fn integer_overflow_in_machine_code_answers_a_large_integer(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -528,6 +530,7 @@ ns_runtime::for_each_lowering! {
     /// more moves, which the interpreter runs: the frame the exit hands
     /// over is the interpreter's own, so every local the program reads
     /// afterwards is what the interpreter alone computes.
+    // spec: vm.machine.baseline-frame-current
     fn a_body_exiting_mid_way_matches_the_interpreter(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -591,6 +594,7 @@ ns_runtime::for_each_lowering! {
     /// requested, the interpreter takes the safepoint, and the frame goes
     /// back into the machine code at the loop's head, where the rest of
     /// the loop runs.
+    // spec: vm.machine.safepoint-request-bits
     fn a_back_edge_poll_takes_the_safepoint(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
         interpreter.set_jit_stress(true);
@@ -645,6 +649,7 @@ ns_runtime::for_each_lowering! {
     /// A compiled call made while a scavenge is requested is refused by
     /// its callee's one depth compare, the request having lowered the
     /// depth limit word, and the interpreter takes the push.
+    // spec: vm.machine.decline-before-write
     fn a_compiled_call_at_a_requested_safepoint_is_refused(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATING_LOOP_WITH_A_CALL, lowering);
         interpreter.set_jit_stress(true);
@@ -672,6 +677,7 @@ ns_runtime::for_each_lowering! {
     /// switch, is the safepoint's. The allocating loop, with no request
     /// held, switches at its first backward jump, its scavenges' requests
     /// found by machine code's polls.
+    // spec: vm.machine.switch-is-safepoint
     fn an_interpreted_back_jump_at_a_safepoint_switches_after_it(lowering) {
         let (mut interpreter, class) = load_with(ALLOCATING_LOOP, lowering);
         interpreter.set_jit_compile_at_back_jump(1);
@@ -763,6 +769,7 @@ const ALLOCATING_CALLEE: &str = indoc! {"
 /// left standing stops the frame again for another way back to take it.
 /// Only the optimized lowering: the reference lowering's sends exit, and
 /// its answer is the same.
+// spec: vm.machine.switch-is-safepoint
 #[test]
 fn a_called_body_goes_back_into_machine_code_after_its_safepoint() {
     let (mut interpreter, class) = load_with(ALLOCATING_CALLEE, Lowering::Optimized);
@@ -949,6 +956,7 @@ fn run_stepping(interpreter: &mut Interpreter, instance: &Root, before: JitStati
 /// lowering every body `STEPPING` runs would exit at once, so that none
 /// is compiled and none spends. A debug build's, as `collect_now` is.
 #[cfg(debug_assertions)]
+// spec: vm.machine.budget-words-name-own-row
 #[test]
 fn a_full_collection_keeps_what_is_left_of_a_budget() {
     let lowering = Lowering::Optimized;
@@ -1222,6 +1230,7 @@ ns_runtime::for_each_lowering! {
     /// each: its key is the receiver's application and the one it was
     /// entered at, and the copy made for an `A` is never entered for a
     /// `B`, which runs the baseline code until its own copy is made.
+    // spec: vm.machine.copy-per-receiver-and-level
     fn a_method_run_on_two_applications_has_two_copies(lowering) {
         let (mut interpreter, class) = load_customizing(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -1298,6 +1307,7 @@ ns_runtime::for_each_lowering! {
     /// reads its slot at the field its copy's level fixes, so a level that
     /// ran the other's copy would read the other's slot: the sum of 100
     /// tens and 100 ones holds at every run only if each runs its own.
+    // spec: vm.machine.copy-per-receiver-and-level
     fn a_mixin_applied_twice_has_a_copy_per_level(lowering) {
         let (mut interpreter, class) = load_customizing(ONE_MIXIN_APPLIED_TWICE, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -1364,6 +1374,7 @@ ns_runtime::for_each_lowering! {
     /// slot at a fixed field with no guard, computes the slot once and
     /// answers its value from then on: a hundred reads of 7, one
     /// evaluation.
+    // spec: vm.machine.unguarded-slot-reads-verified
     fn a_lazy_slot_read_by_a_copy_answers_its_value_once_filled(lowering) {
         let (mut interpreter, class) = load_customizing(A_LAZY_SLOT_READ_IN_A_LOOP, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -1458,6 +1469,7 @@ ns_runtime::for_each_lowering! {
     /// An install frees the copies keyed on the applications it rebuilds,
     /// and only those: `A`'s `total` has its copy freed, `D`'s keeps its
     /// own, and the program answers what the edit says.
+    // spec: vm.machine.stale-copies-freed
     fn an_edit_frees_the_copies_of_the_applications_it_rebuilds(lowering) {
         let (mut interpreter, class) = load_customizing(AN_EDIT_OF_ONE_OF_TWO_CLASSES, lowering);
         let platform = interpreter.platform();
@@ -1822,6 +1834,7 @@ ns_runtime::for_each_lowering! {
     /// `A>>helper:`'s `super` send reaches, each replaced in turn, the
     /// copy compiled again between them, after a collection run while it
     /// lives. The program answers what each edit says.
+    // spec: vm.machine.stale-copies-freed
     fn an_edit_of_a_super_or_private_inline_inside_an_inlined_callee_frees_the_copy(lowering) {
         let (mut interpreter, class) = load_customizing(NESTED_INLINES, lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
@@ -1860,6 +1873,7 @@ ns_runtime::for_each_lowering! {
     /// definer, `Base`, or adds an override below it, in `A`: both
     /// rebuild the receiver's application the copy's type-case relied
     /// on. The program answers what each edit says.
+    // spec: vm.machine.stale-copies-freed
     fn an_edit_of_an_inlined_callee_frees_the_copy(lowering) {
         let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
@@ -1916,6 +1930,7 @@ ns_runtime::for_each_lowering! {
     /// `Base`'s -- no copy names an id any more, and the next collection
     /// may free them. A debug build checks at every collection that no id
     /// a live copy names was freed (`jit::verify_inlined_code_ids`).
+    // spec: vm.machine.code-ids-kept-with-code
     fn a_full_collection_keeps_an_inlining_copy_and_its_inlined_code_ids(lowering) {
         let (mut interpreter, class) = load_customizing(AN_INLINED_CALLEE_AND_ITS_EDITS, lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
@@ -1979,6 +1994,8 @@ ns_runtime::for_each_lowering! {
     /// `helper:`'s down and leaves `run:`'s. The copy keeps `helper:`'s
     /// code id named across the collection (`jit::inlined_code_ids`), so
     /// that only the slide can free it.
+    // spec: vm.machine.stale-copies-freed
+    // spec: vm.machine.moved-base-frees-code
     fn a_slide_of_an_inlined_callee_s_feedback_base_frees_the_copy(lowering) {
         let (mut interpreter, class) = load_customizing(&an_inlined_callee_and_a_victim(), lowering);
         let subject = subject_using_platform(&mut interpreter, &class);
@@ -2015,6 +2032,7 @@ ns_runtime::for_each_lowering! {
     /// the copies before it installs what was requested since, and the
     /// bodies are optimized afresh at their next run-out: copies are
     /// installed and freed run after run, and the answers hold.
+    // spec: vm.machine.stale-copies-freed
     fn under_the_invalidate_stress_copies_are_freed_and_the_answer_holds(lowering) {
         let (mut interpreter, class) = load_with(ONE_METHOD_ON_TWO_APPLICATIONS, lowering);
         interpreter.set_jit_stress(true);
@@ -2113,6 +2131,7 @@ ns_runtime::for_each_lowering! {
     /// frees its id, and `Cell` over `Wide` is minted it again -- a copy
     /// left keyed on it would answer `Wide`'s first slot, 100, for
     /// `Cell`'s 2.
+    // spec: vm.machine.stale-copies-freed
     fn a_copy_keyed_on_a_reclaimed_id_is_freed(lowering) {
         let (mut interpreter, class) = load_customizing(ONE_MIXIN_OVER_TWO_BASES, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -2188,6 +2207,7 @@ ns_runtime::for_each_lowering! {
     /// receivers: it is never customized, so that the block `total`
     /// makes, run by an `A`'s closure and a `B`'s, is optimized once and
     /// has no copies.
+    // spec: vm.machine.copy-per-receiver-and-level
     fn a_block_has_one_copy_whatever_its_receivers(lowering) {
         let (mut interpreter, class) = load_customizing(ONE_BLOCK_ON_TWO_RECEIVERS, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -2276,6 +2296,7 @@ ns_runtime::for_each_lowering! {
     /// site's cell, guarded by `A`'s application word, names the body's
     /// dispatching entry once it has a copy, whose rows hold the copy of
     /// an `A`'s and of a `B`'s.
+    // spec: vm.machine.dispatching-rows
     fn a_private_method_reaches_each_receiver_s_copy(lowering) {
         let (mut interpreter, class) =
             load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
@@ -2359,6 +2380,7 @@ ns_runtime::for_each_lowering! {
     /// A `super` send reaches its copy: `A`'s `total` run on a `B` by
     /// `B`'s `super total` has the copy for a `B` entered at `A`, which the
     /// body's dispatching rows name, as they name an `A`'s own.
+    // spec: vm.machine.dispatching-rows
     fn a_super_send_reaches_its_copy(lowering) {
         let (mut interpreter, class) = load_customizing(A_SUPER_SEND_ON_A_SUBCLASS, lowering);
         interpreter.set_jit_counting(true);
@@ -2494,6 +2516,7 @@ fn stop_customizing(interpreter: &mut Interpreter) {
 /// An interpreted send into a body with a copy for its receiver enters
 /// the body's dispatching entry, whose rows find the copy: the answer
 /// holds, and the calls through the entry are counted.
+// spec: vm.machine.copy-per-receiver-and-level
 #[test]
 fn an_interpreted_send_reaches_its_copy_through_the_dispatching_entry() {
     let (mut interpreter, class) = load_customizing(PICK_ON_NINE_APPLICATIONS, Lowering::Reference);
@@ -2566,6 +2589,7 @@ fn an_interpreted_send_without_a_copy_runs_the_baseline_code() {
 /// second trap at the `other` site makes the copy that takes it not
 /// entrant: the copy runs to its trap there, which the baseline code a
 /// send past the rows would run does not take.
+// spec: vm.machine.dispatching-rows
 #[test]
 fn an_interpreted_send_reaches_a_copy_past_the_dispatching_rows() {
     for index in 1..=9 {
@@ -2612,6 +2636,8 @@ ns_runtime::for_each_lowering! {
     /// still name exactly the copies the zone holds. Debug builds only,
     /// where the zone stress mode exists.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.dispatching-rows
+    // spec: vm.machine.compaction-remaps-every-holder
     fn a_compaction_remaps_the_dispatching_rows(lowering) {
         let (mut interpreter, class) =
             load_customizing(A_PRIVATE_METHOD_ON_TWO_APPLICATIONS, lowering);
@@ -3095,6 +3121,8 @@ ns_runtime::for_each_lowering! {
     /// materializes frames that stood in optimized code, and the frames
     /// returned to are those of bodies with optimized code, which go on in
     /// their baseline code.
+    // spec: vm.machine.exited-frame-returns-through-loop
+    // spec: vm.machine.entered-only-at-entries
     fn a_frame_returned_to_resumes_in_baseline_code(lowering) {
         let (answers, statistics, last) = run_optimizing(SIGNAL_IN_A_HOT_LOOP, lowering, 2);
         assert_eq!(answers, vec![10_000; 2]);
@@ -3155,6 +3183,7 @@ ns_runtime::for_each_lowering! {
     /// twin leaf, which compiles the baseline body's twin -- once, the
     /// second run's transfers finding it -- and the answer is the
     /// interpreter's.
+    // spec: vm.machine.reify-only-in-twin
     fn a_closure_made_in_optimized_code_transfers_into_the_twin(lowering) {
         let (answers, statistics, last) = run_optimizing(CLOSURE_IN_A_HOT_LOOP, lowering, 2);
         assert_eq!(answers, vec![50_005_000; 2]);
@@ -3267,6 +3296,7 @@ fn run_the_loop_on_a_thread_of(stack_bytes: usize) -> (i64, u64) {
 /// take (`jit::NATIVE_STACK_NEED`, about 0.86 MB): a thread of 512 KiB
 /// runs the same program interpreted, with the same answer, where one of
 /// 8 MiB, the size `ns-next` runs programs on, enters machine code.
+// spec: vm.machine.native-stack-room
 #[test]
 fn a_thread_with_too_little_stack_runs_interpreted() {
     let (answer, entries) = run_the_loop_on_a_thread_of(512 << 10);
@@ -3283,6 +3313,7 @@ ns_runtime::for_each_lowering! {
     /// it, so the loop's calls reach machine code by `call` and come back
     /// by `ret`, and the sum is the interpreter's. The reference
     /// lowering's sends are uncached and exit.
+    // spec: vm.machine.return-address-slot
     fn a_compiled_send_calls_compiled_code(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -3430,6 +3461,7 @@ fn called_then_closure_stack(lowering: Lowering, jit: bool) -> (Vec<String>, Jit
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.machine.observers-after-exit
     fn an_exit_in_a_called_body_materializes_it_above_its_interpreted_sender(lowering) {
         let (compiled, statistics) = called_then_closure_stack(lowering, true);
         let (interpreted, _) = called_then_closure_stack(lowering, false);
@@ -3584,6 +3616,8 @@ fn three_deep_stack(lowering: Lowering, jit: bool) -> (Vec<String>, JitStatistic
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.machine.observers-after-exit
+    // spec: vm.machine.return-address-slot
     fn an_exit_in_a_callee_materializes_every_frame(lowering) {
         // The suspension stress mode suspends the frames below a
         // safepoint into their frame objects, which the trace
@@ -3620,6 +3654,7 @@ ns_runtime::for_each_lowering! {
     /// `loop:`'s frame too, and once `step:` returns, `loop:` is resumed in
     /// its machine code, so that its loop goes on there rather than in the
     /// interpreter.
+    // spec: vm.machine.exited-frame-returns-through-loop
     fn a_returned_to_frame_resumes_in_machine_code(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -3680,6 +3715,7 @@ ns_runtime::for_each_lowering! {
     /// installs it from inside the entry, and the send calls it; every
     /// later send of the loop calls it through the cell the miss rewrote,
     /// and the interpreter enters no other body but at its two pushes.
+    // spec: vm.machine.install-appends
     fn a_callee_the_miss_compiles_is_entered_at_its_next_call(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -3834,6 +3870,7 @@ ns_runtime::for_each_lowering! {
     /// A setter's call stores in the setter stub, which writes the field
     /// through the inline barrier and answers the receiver, so that the
     /// next message sent to the setter's answer goes to it.
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_setter_runs_in_the_setter_stub(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -4029,6 +4066,8 @@ ns_runtime::for_each_lowering! {
     /// its site's cell once the miss leaf has decided its first send --
     /// seven sends an iteration, two thousand iterations -- and the sum is
     /// the interpreter's.
+    // spec: vm.dispatch.unguarded-sends-receiver-independent
+    // spec: vm.machine.call-writes-receiver-and-class
     fn a_lexical_send_in_machine_code_matches_the_interpreter_at_every_depth(lowering) {
         let (compiled, statistics) = run_compiled(LEXICAL_DEPTHS, lowering, true);
         let (interpreted, _) = run_compiled(LEXICAL_DEPTHS, lowering, false);
@@ -4091,6 +4130,7 @@ ns_runtime::for_each_lowering! {
     /// `super` site of `Marker`, which sees two superclasses, is
     /// polymorphic and decided by the miss leaf at every send. The sum is
     /// the interpreter's.
+    // spec: vm.machine.call-writes-receiver-and-class
     fn a_super_send_in_machine_code_matches_the_interpreter_at_both_levels(lowering) {
         let (compiled, statistics) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, true);
         let (interpreted, _) = run_compiled(SUPER_AT_TWO_LEVELS, lowering, false);
@@ -4172,6 +4212,8 @@ fn collected_deep(lowering: Lowering, jit: bool) -> (i64, JitStatistics) {
 
 #[cfg(debug_assertions)]
 ns_runtime::for_each_lowering! {
+    // spec: vm.machine.observers-after-exit
+    // spec: vm.machine.class-words-rewritten
     fn a_scavenge_inside_a_three_deep_compiled_stretch_matches_the_interpreter(lowering) {
         let (compiled, statistics) = collected_deep(lowering, true);
         let (interpreted, _) = collected_deep(lowering, false);
@@ -4330,6 +4372,7 @@ ns_runtime::for_each_lowering! {
     /// are the interpreter's, and once the resized cache is filled a run
     /// meets the miss leaf nowhere, which a stale mask probing the wrong
     /// group would not.
+    // spec: vm.machine.entry-block-current
     fn the_entry_block_follows_a_resized_global_cache(lowering) {
         let source = polymorphic_source(6);
         let (mut interpreter, class) = load_with(&source, lowering);
@@ -4434,6 +4477,7 @@ ns_runtime::for_each_lowering! {
     /// megamorphic, hit in machine code: the megamorphic stub finds S's
     /// and N's dispatch ids from their application words, and the second
     /// run meets the miss leaf nowhere.
+    // spec: vm.dispatch.unguarded-sends-receiver-independent
     fn a_megamorphic_super_or_lexical_site_hits_in_machine_code(lowering) {
         let (compiled, statistics) = run_twice_compiled(MARKED_SIX, lowering, true);
         let (interpreted, _) = run_twice_compiled(MARKED_SIX, lowering, false);
@@ -4530,6 +4574,7 @@ ns_runtime::for_each_lowering! {
     /// A public getter runs in its stub: the third run's thousand sends of
     /// `count` and `yourself` leave machine code for nothing and call no
     /// leaf, and the sum is the interpreter's.
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_getter_runs_in_its_stub(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(GETTERS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(GETTERS, lowering, false);
@@ -4628,6 +4673,7 @@ ns_runtime::for_each_lowering! {
     /// `Float`'s arithmetic and orderings run in their rows' stubs: the
     /// third run's sends leave machine code for nothing and call no leaf,
     /// and the count is the interpreter's.
+    // spec: vm.machine.float-rows-as-leaf
     fn float_arithmetic_calls_no_leaf(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(FLOAT_ARITHMETIC, lowering, false);
@@ -4725,6 +4771,7 @@ ns_runtime::for_each_lowering! {
     /// and its `asFloat`, run in their rows' stubs: the third run's sends
     /// leave machine code for nothing and call no leaf, and the answer is
     /// the interpreter's.
+    // spec: vm.machine.float-rows-as-leaf
     fn mixed_arithmetic_calls_no_leaf(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(MIXED_ARITHMETIC, lowering, false);
@@ -4772,6 +4819,7 @@ const FLOAT_BOXES: &str = indoc! {"
 /// the leaf. Debug builds only, where a test sets the scavenge
 /// threshold.
 #[cfg(debug_assertions)]
+// spec: vm.machine.allocation-as-interpreter
 #[test]
 fn a_float_boxed_with_eden_full_is_the_leaf_s() {
     let small_eden = |interpreter: &mut Interpreter| interpreter.set_scavenge_threshold(4096);
@@ -4912,6 +4960,7 @@ ns_runtime::for_each_lowering! {
     /// A float operation whose operand turns into one it does not take
     /// traps, running its send again in the interpreter, whose leaf
     /// decides: every run answers what the interpreter's does.
+    // spec: vm.machine.float-rows-as-leaf
     fn a_float_node_s_trap_deoptimizes_exactly(lowering) {
         let (compiled, statistics, _) =
             run_optimize_stressed(FLOATS_TURNING_INTO_STRINGS, lowering, true, 3);
@@ -5167,6 +5216,8 @@ fn out_of_range_message(selector: &str, jit: bool) -> String {
 /// raises the interpreter's error: the stub hands every index it does not
 /// store at to the row's leaf, which refuses, and the interpreter runs
 /// the send again and raises it.
+// spec: vm.dispatch.declining-leaf-changes-nothing
+// spec: vm.machine.decline-before-write
 #[test]
 fn at_put_out_of_range_fails_as_the_interpreter_does() {
     for selector in ["storePastArray", "storePastBytes"] {
@@ -5266,6 +5317,7 @@ fn identity_with_a_future(jit: bool) -> (i64, u64) {
 /// for its receiver: it traps, and the interpreter's leaf declines, sees
 /// through the future and answers what it stands for -- `true` here, the
 /// interpreter's answer.
+// spec: vm.dispatch.future-seen-through
 #[test]
 fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result() {
     let (compiled, traps) = identity_with_a_future(true);
@@ -5283,6 +5335,7 @@ fn an_inlined_identity_with_a_future_traps_and_answers_the_interpreter_s_result(
 /// stub of their own -- are exactly those this list names, each with why
 /// its leaf is leaf-safe: a row marked without being read
 /// fails here, and so does one the list names that is not marked.
+// spec: vm.machine.leaf-contract
 #[test]
 fn every_leaf_row_is_audited() {
     use ns_runtime::builtins::primitive::{MIRROR, MachineCall, ROW_STUB_COUNT, row_stub_index};
@@ -5621,6 +5674,7 @@ ns_runtime::for_each_lowering! {
     /// the body's family, never site 0. Two subjects with private slots at
     /// different fields share no site, so a stub or a leaf that read
     /// another site's cell or entry would answer the other's field.
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_private_accessor_runs_from_its_own_sites_entry(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -5750,6 +5804,7 @@ ns_runtime::for_each_lowering! {
     /// afresh from its entry, so that every cell still agrees with its
     /// entry afterwards (`Interpreter::verify_cells`, which reads every
     /// site's cell, every block's cells and every global row).
+    // spec: vm.machine.cells-follow-entries
     fn abandoned_bodies_leave_no_cell_naming_them(lowering) {
         for (count, polymorphic) in [(3, true), (5, false)] {
             let source = leaving_through(count);
@@ -6027,6 +6082,7 @@ fn run_vectors(jit: bool) -> (i64, JitStatistics, ns_runtime::HeapStatistics, us
 /// and taken at the same safepoints, the same counts. The optimized
 /// lowering only: the reference one sends `ifTrue:` with a closure, whose
 /// creation leaves machine code.
+// spec: vm.machine.allocation-as-interpreter
 #[test]
 fn machine_code_allocates_past_eden_as_the_interpreter_does() {
     let (compiled, statistics, compiled_heap, compiled_scavenges) = run_vectors(true);
@@ -6159,6 +6215,7 @@ fn assert_ran_in_machine_code(statistics: &JitStatistics, what: &str) {
 /// they read back as written. A store that missed the barrier leaves the
 /// vector naming nursery memory the scavenge vacated.
 #[cfg(debug_assertions)]
+// spec: vm.heap.barrier
 #[test]
 fn an_inline_store_of_a_young_value_into_an_old_object_remembers_it() {
     let (mut interpreter, subject, writer) = tenured_writer();
@@ -6237,6 +6294,7 @@ const OLD_HOLDERS: &str = indoc! {"
 /// A store that missed the barrier leaves a holder naming nursery memory
 /// the scavenge vacated.
 #[cfg(debug_assertions)]
+// spec: vm.heap.barrier
 #[test]
 fn a_stub_storing_into_an_old_holder_remembers_it() {
     let (mut interpreter, class) = load_with(OLD_HOLDERS, Lowering::Optimized);
@@ -6304,6 +6362,7 @@ ns_runtime::for_each_lowering! {
     /// leave machine code for nothing and call no leaf, since the prologue
     /// verified each receiver against the getter's level, and the sum is
     /// the interpreter's.
+    // spec: vm.machine.own-slot-access-guarded
     fn own_slot_access_runs_without_an_exit(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(OWN_SLOTS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(OWN_SLOTS, lowering, false);
@@ -6360,6 +6419,7 @@ ns_runtime::for_each_lowering! {
     /// on a `Derived`, which the prologue does not verify, the first
     /// own-slot instruction's cold check as well, and the second, after
     /// the literal's leaf, hits.
+    // spec: vm.machine.own-slot-access-guarded
     fn an_own_slot_guard_survives_a_leaf_call(lowering) {
         let (compiled, statistics) =
             run_thrice_on_one_instance(INHERITED_OWN_SLOTS, lowering, true);
@@ -6499,6 +6559,7 @@ ns_runtime::for_each_lowering! {
     /// getter, run on a `Derived` in machine code, write and read `seed`
     /// and `doubled` where `Base`'s layout has them, and `Derived`'s
     /// initializer its own slots past them.
+    // spec: vm.compiler.mixin-relative-slot-index
     fn a_superclass_levels_slots_are_at_its_own_slot_base(lowering) {
         let (compiled, statistics) =
             run_thrice_on_one_instance(SUPERCLASS_SLOT_BASE, lowering, true);
@@ -6582,6 +6643,7 @@ ns_runtime::for_each_lowering! {
     /// the interpreter -- and back in machine code, at each frame it
     /// returns to -- and the stack its unhandled exception ends on reads
     /// as the interpreter's.
+    // spec: vm.machine.frame-records-kind
     fn an_exit_in_a_compiled_initializer_materializes_its_frames(lowering) {
         // The suspension stress mode suspends the frames below a
         // safepoint into their frame objects, which the trace
@@ -6738,6 +6800,7 @@ ns_runtime::for_each_lowering! {
     /// exits there so that the interpreter raises the refusal; a class
     /// whose levels run no code is answered by the stub answering its
     /// receiver, a fresh instance each time; all as with the JIT off.
+    // spec: vm.dispatch.key-covers-every-dependency
     fn instantiations_the_inline_bump_does_not_make_answer_as_interpreted(lowering) {
         let (compiled, statistics, compiled_errors) = builtins_and_refusals(lowering, true);
         let (interpreted, _, interpreted_errors) = builtins_and_refusals(lowering, false);
@@ -6801,6 +6864,7 @@ ns_runtime::for_each_lowering! {
     /// The nested class accessor's stub: in the third run every `Point`
     /// and `Point3` send answers the cached class in machine code, and
     /// nothing leaves it but a safepoint.
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_nested_class_accessor_answers_its_cached_class_in_its_stub(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, false);
@@ -6941,6 +7005,7 @@ ns_runtime::for_each_lowering! {
     /// through the closure stub its cell names, and runs as a compiled
     /// call: by the third run the loop over the elements leaves machine
     /// code at no send.
+    // spec: vm.machine.machine-entry-rows
     fn a_closure_value_runs_without_an_exit(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(SUMMED, lowering);
@@ -7012,6 +7077,7 @@ ns_runtime::for_each_lowering! {
     /// code: by the third run every one of the hundred returns pops `do:`
     /// and the block and returns from `find:` into `run` with no exit,
     /// each a cut, and the depth count ends where it began.
+    // spec: vm.machine.cut-pops-as-returns-pop
     fn a_non_local_return_out_of_do_cuts_without_an_exit(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(FOUND, lowering);
@@ -7048,6 +7114,8 @@ ns_runtime::for_each_lowering! {
 /// entry, through the call stub, so that each later `^` out of `do:` is
 /// cut into the call stub, which hands the value to `run`'s send as
 /// `find:`'s return would.
+// spec: vm.machine.return-address-slot
+// spec: vm.machine.cut-pops-as-returns-pop
 #[test]
 fn a_non_local_return_into_an_interpreted_caller_cuts_into_the_call_stub() {
     let (mut interpreter, class) = load_with(FOUND, Lowering::Optimized);
@@ -7098,6 +7166,7 @@ const SEVEN: &str = indoc! {"
 /// divorces it and takes its count off as its return would, the entry
 /// stub adds the count back for the run loop's pop, and the depth count
 /// ends where it began.
+// spec: vm.machine.cut-pops-as-returns-pop
 #[test]
 fn a_non_local_return_to_the_entry_frame_is_cut() {
     let (mut interpreter, class) = load_with(SEVEN, Lowering::Optimized);
@@ -7186,6 +7255,7 @@ const LOOP_OF_EXEMPT_BLOCKS: &str = indoc! {"
 /// exempt from the depth count, and whose code leaves machine code at
 /// its first send, is materialized exempt: the interpreter's pop of its frame takes
 /// nothing off the count, which ends where it began.
+// spec: vm.machine.depth-count-agrees
 #[test]
 fn an_exit_inside_an_exempt_closure_call_materializes_it_exempt() {
     let (mut interpreter, class) = load_with(LOOP_OF_EXEMPT_BLOCKS, Lowering::Reference);
@@ -7304,6 +7374,7 @@ const CULLED: &str = indoc! {"
 /// row, records the block's machine entry under the new id, so that the
 /// run after it calls the block in machine code at every send.
 #[cfg(debug_assertions)]
+// spec: vm.machine.code-ids-read-from-sites
 #[test]
 fn a_culled_blocks_row_is_recorded_again_after_a_full_collection() {
     let (mut interpreter, class) = load_with(CULLED, Lowering::Optimized);
@@ -7438,6 +7509,8 @@ ns_runtime::for_each_lowering! {
     /// first filled: a full collection frees the ids nothing names, and
     /// the bodies `churn` runs take them, but the closures `run` makes
     /// after it still run `make:`'s block.
+    // spec: vm.compiler.code-id-cache-current
+    // spec: vm.machine.code-ids-kept-with-code
     fn a_full_collection_keeps_a_compiled_closures_code_id(lowering) {
         let (mut interpreter, class) = load_with(CODE_IDS, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -7554,6 +7627,7 @@ ns_runtime::for_each_lowering! {
     /// program counter the interpreter stored last, uncontinuable, married
     /// to nothing and without a sender; and a block's frame, reified in
     /// machine code too, has the home the interpreter's has.
+    // spec: vm.machine.exited-frame-returns-through-loop
     fn a_compiled_closures_frame_is_divorced_as_the_interpreter_divorces_it(lowering) {
         let (compiled, statistics) = divorced_frames(lowering, true);
         let (interpreted, _) = divorced_frames(lowering, false);
@@ -7667,6 +7741,7 @@ ns_runtime::for_each_lowering! {
     /// machine code under the optimized lowering, whose fallback blocks
     /// are the only ones reading by reference, and both lowerings answer
     /// what the interpreter does.
+    // spec: vm.machine.outer-local-at-its-frame
     fn outer_locals_run_without_an_exit(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
@@ -7746,6 +7821,7 @@ ns_runtime::for_each_lowering! {
     /// compiled once, at the first transfer, the later runs make no exit
     /// but a safepoint's, and both lowerings answer what the interpreter
     /// does.
+    // spec: vm.machine.no-fallback-closure
     fn a_conditional_sent_to_a_non_boolean_runs_in_the_twin(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
@@ -7811,6 +7887,7 @@ ns_runtime::for_each_lowering! {
     /// divorces the frame as the interpreter's pop would: the twin is
     /// compiled once, the frame is resumed in machine code, no body is
     /// abandoned, and both lowerings answer what the interpreter does.
+    // spec: vm.machine.reify-only-in-twin
     fn a_frame_the_handler_search_reified_resumes_in_the_twin(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(RESUMED_HANDLER, lowering);
@@ -8125,6 +8202,8 @@ const DIVORCED_HOLDER: &str = indoc! {"
 /// store that missed the barrier leaves the frame naming nursery memory
 /// the scavenge vacated.
 #[cfg(debug_assertions)]
+// spec: vm.heap.frame-copies-remembered
+// spec: vm.machine.outer-local-at-its-frame
 #[test]
 fn an_outer_store_into_an_old_divorced_frame_remembers_it() {
     let (mut interpreter, class) = load_with(DIVORCED_HOLDER, Lowering::Optimized);
@@ -8161,6 +8240,7 @@ ns_runtime::for_each_lowering! {
     /// registers lie in its frame object, where the outer-local templates
     /// read and write them as the interpreter's `frame_local` does --
     /// never on the activation stack the word does not name.
+    // spec: vm.machine.outer-local-at-its-frame
     fn outer_locals_reach_a_suspended_creator(lowering) {
         let run = |jit: bool| {
             let (mut interpreter, class) = load_with(OUTER_LOCALS, lowering);
@@ -8242,6 +8322,7 @@ ns_runtime::for_each_lowering! {
     /// frees the methods no longer sent, and every method is compiled once
     /// it is hot, none refused for want of room, the output the
     /// interpreter's.
+    // spec: vm.machine.zone-compacted-at-safepoint
     fn a_full_zone_compacts_and_compiles_again(lowering) {
         let count = 200;
         let source = hot_in_turn(count);
@@ -8344,6 +8425,7 @@ ns_runtime::for_each_lowering! {
     /// A compaction slides a body down over one freed below it, and the
     /// cell a compiled send calls it through, and an interpreter's send,
     /// still reach its machine code at its new place: no exit, no miss.
+    // spec: vm.machine.cells-follow-entries
     fn a_compaction_moves_a_body_its_cells_call(lowering) {
         let (mut interpreter, class) = load_with(MOVING, lowering);
         interpreter.set_jit_counting(true);
@@ -8403,6 +8485,7 @@ ns_runtime::for_each_lowering! {
 /// new place: no optimization again, the same answer. `a`, compiled
 /// first, is abandoned for its exits; `spin`, compiled after it, is
 /// optimized after it is abandoned, its budget armed only then.
+// spec: vm.machine.no-return-address-at-safepoint
 #[test]
 fn a_compaction_slides_optimized_code() {
     let (mut interpreter, class) = load_with(MOVING, Lowering::Optimized);
@@ -8446,6 +8529,7 @@ ns_runtime::for_each_lowering! {
     /// made: `a`, which leaves at every call, is abandoned at its
     /// sixty-fourth exit, though forty of them came before the compaction,
     /// so that how often the zone fills never resets the exit budget.
+    // spec: vm.machine.compaction-remaps-every-holder
     fn a_compaction_keeps_the_exits_of_a_surviving_body(lowering) {
         let (mut interpreter, class) = load_with(MOVING, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -8489,6 +8573,8 @@ ns_runtime::for_each_lowering! {
     /// A compaction slides a block's body down, and its machine entry row
     /// moves with it: the closure stub, and an interpreter's `value:`,
     /// enter its machine code at its new place.
+    // spec: vm.machine.compaction-remaps-every-holder
+    // spec: vm.machine.machine-entry-rows
     fn a_moved_block_body_is_called_through_its_row(lowering) {
         let (mut interpreter, class) = load_with(MOVING, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -8546,6 +8632,7 @@ ns_runtime::for_each_lowering! {
     /// compaction, it is not filled again after it -- its words, the code
     /// table's epoch among them, are what they were -- and the body still
     /// makes the closure right.
+    // spec: vm.machine.code-ids-read-from-sites
     fn a_moved_body_keeps_its_closure_sites(lowering) {
         let (mut interpreter, class) = load_with(MOVING, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -8588,6 +8675,8 @@ ns_runtime::for_each_lowering! {
     /// code freed below it, and writes the lean body's transfer word
     /// afresh: the next transfer reaches the twin at its new place, with
     /// no exit and no twin compiled again.
+    // spec: vm.machine.reify-only-in-twin
+    // spec: vm.machine.compaction-remaps-every-holder
     fn a_compaction_moves_a_body_and_its_twin(lowering) {
         let (mut interpreter, class) = load_with(MOVING, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -8676,6 +8765,7 @@ ns_runtime::for_each_lowering! {
     /// the held compiles the last one did, so the compactions grow with
     /// the logarithm of the entries, not with them -- and a full
     /// collection lets it try once more.
+    // spec: vm.machine.zone-compacted-at-safepoint
     fn a_zone_full_of_active_code_does_not_compact_at_every_safepoint(lowering) {
         let count = 300;
         let source = chain_of(count);
@@ -8720,6 +8810,7 @@ ns_runtime::for_each_lowering! {
     /// answers what it answers without it: the mode the goldens run under
     /// (`NS_NEXT_STRESS_ZONE`) does what it says.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.frame-names-body-by-code
     fn the_zone_stress_mode_frees_and_moves_bodies(lowering) {
         let source = hot_in_turn(20);
         let (mut interpreter, class) = load_with(&source, lowering);
@@ -8891,6 +8982,7 @@ ns_runtime::for_each_lowering! {
     /// rises by the collection, which compacts nothing. Counted from
     /// before the edit, so that a collection a stress mode makes inside
     /// the edit, which frees the body first, counts as well.
+    // spec: vm.machine.zone-keeps-no-body-alive
     fn a_full_collection_frees_the_code_of_a_dead_body(lowering) {
         let (mut interpreter, subject, edited) = edited_answer(lowering);
         for _ in 0..3 {
@@ -9065,6 +9157,7 @@ ns_runtime::for_each_lowering! {
     /// method hot only afterwards is compiled and runs in machine code,
     /// every call of it counted (`Interpreter::set_jit_counting`), whether
     /// its caller calls it from machine code or from the interpreter.
+    // spec: vm.machine.zone-compacted-at-safepoint
     fn an_exhausted_zone_compiles_again_without_a_collection(lowering) {
         let count = 300;
         let source = chain_of(count).replacen(
@@ -9546,6 +9639,7 @@ ns_runtime::for_each_lowering! {
     /// `make`'s cell names the refusing stub. `makeAgain:`'s site, never
     /// run before its body is compiled, misses: that entry revives the
     /// factory, and `make`'s cell must name the miss stub again.
+    // spec: vm.machine.cells-follow-entries
     fn a_revival_by_a_miss_writes_every_cell_afresh(lowering) {
         let (mut interpreter, class) = load_with(LEAVING_FACTORY, lowering);
         let subject = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -9637,6 +9731,7 @@ ns_runtime::for_each_lowering! {
     /// is compiled against the new base at its second entry after it, and
     /// runs in machine code from then on. `collect_now` is a debug build's.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.moved-base-frees-code
     fn machine_code_of_a_moved_family_compiles_again(lowering) {
         let (mut interpreter, class) = load_with(&moved_family_source(), lowering);
         let platform = interpreter.platform();
@@ -9733,6 +9828,7 @@ ns_runtime::for_each_lowering! {
     /// pages went, finds no row, and leaves the call to the interpreter,
     /// which answers right; a read past the bound would fault on a page
     /// given back.
+    // spec: vm.machine.bounds-lowered-before-decommit
     fn a_machine_entry_row_past_the_lowered_bound_reads_as_none(lowering) {
         // The rows are committed by the page, a row 32 bytes, and lowered
         // to no less than one page: twice a page's rows keep the code ids
@@ -9789,6 +9885,7 @@ ns_runtime::for_each_lowering! {
     /// back past their end and the headroom, the code zone's shrink pair
     /// lowered to 64 KiB and 16 KiB (`heap::limits::Shrink`). The next
     /// compile commits them again, and every run answers right.
+    // spec: vm.machine.bounds-lowered-before-decommit
     fn the_zone_gives_back_its_pages_after_a_compaction(lowering) {
         let threshold = 64 << 10;
         let headroom = 16 << 10;
@@ -9870,6 +9967,7 @@ ns_runtime::for_each_lowering! {
     /// machine code at the loop's head, where the rest of the loop runs.
     /// The reference lowering sends `whileTrue:`, so its loop has no
     /// backward jump.
+    // spec: vm.machine.on-stack-replacement-at-loops
     fn a_loop_in_a_method_entered_once_runs_in_machine_code(lowering) {
         let (mut interpreter, class) = load_with(LOOP_ENTERED_ONCE, lowering);
         interpreter.set_jit_counting(true);
@@ -9971,6 +10069,8 @@ ns_runtime::for_each_lowering! {
     /// A frame the interpreter reified -- its loop makes a block that
     /// reads `index` on every turn -- switches into the body's twin, which
     /// stores its sends' program counters and divorces it at its return.
+    // spec: vm.machine.on-stack-replacement-at-loops
+    // spec: vm.machine.reify-only-in-twin
     fn a_reified_frame_switches_into_the_twin(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -10006,6 +10106,7 @@ ns_runtime::for_each_lowering! {
     /// A block's loop switches as a method's does: the block is entered
     /// once, its 40th backward jump compiles it, records its machine entry
     /// row and switches.
+    // spec: vm.machine.on-stack-replacement-at-loops
     fn a_block_with_a_loop_entered_once_switches(lowering) {
         let source = indoc! {"
             class Subject = Object new () (
@@ -10220,6 +10321,7 @@ ns_runtime::for_each_lowering! {
     /// `total:`'s sum, optimized on `SmallInteger`s, given a `Float`:
     /// the fast path's failure traps, and the interpreter, running the
     /// operation again, sends it, so that the sum is right.
+    // spec: vm.machine.scope-resumes-at-boundary
     fn a_float_after_warm_up_traps_once_and_answers_right(lowering) {
         let (answer, statistics) = after_warm_up(lowering, "withFloat");
         assert_eq!(answer, 100);
@@ -10231,6 +10333,7 @@ ns_runtime::for_each_lowering! {
     /// `double:`, optimized on `SmallInteger`s that never overflowed,
     /// given the largest: the overflow traps, and the interpreter's
     /// send answers the `LargeInteger`.
+    // spec: vm.machine.scope-resumes-at-boundary
     fn an_overflow_after_warm_up_traps_once_and_answers_right(lowering) {
         let (answer, statistics) = after_warm_up(lowering, "withOverflow");
         assert_eq!(answer, 7);
@@ -10242,6 +10345,7 @@ ns_runtime::for_each_lowering! {
     /// `choose:`, optimized on Booleans, given an object with an
     /// `ifTrue:ifFalse:` of its own: the conditional traps, and the
     /// interpreter sends it.
+    // spec: vm.machine.no-fallback-closure
     fn a_non_boolean_after_warm_up_traps_once_and_answers_right(lowering) {
         let (answer, statistics) = after_warm_up(lowering, "withNonBoolean");
         assert_eq!(answer, 3);
@@ -10601,6 +10705,7 @@ fn a_minted_dispatch_id_answers_its_application() {
 /// so that an id minted again never answers the application it named
 /// before. A debug build's, as `collect_now` is.
 #[cfg(debug_assertions)]
+// spec: vm.dispatch.freed-ids-scrubbed
 #[test]
 fn a_reclaimed_dispatch_id_answers_none() {
     let (mut interpreter, class) = load_with(DISPATCH_ID_TABLE, Lowering::Optimized);
@@ -12279,6 +12384,7 @@ ns_runtime::for_each_lowering! {
     /// interpreter's sum. Debug builds only, where the zone stress mode
     /// exists.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.back-into-optimized-code
     fn a_poll_re_enters_moved_code(lowering) {
         let (mut interpreter, subject, pinned) = an_allocating_inlined_loop(lowering);
         interpreter.set_stress_zone(true);
@@ -12309,6 +12415,7 @@ ns_runtime::for_each_lowering! {
     /// interpreter's sum. Debug builds only, where the suspend stress mode
     /// exists.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.observers-after-exit
     fn the_suspend_stress_mode_deoptimizes_at_a_poll(lowering) {
         let (mut interpreter, subject, pinned) = an_allocating_inlined_loop(lowering);
         interpreter.set_stress_suspend(true);

@@ -1,4 +1,4 @@
-rules = ["semantics.mixin.application", "semantics.outer.lexical"]
+rules = ["semantics.mixin.application", "semantics.outer.lexical", "vm.dispatch.lexical-origin-from-code"]
 stdout = '''
 the holder helper
 x and the holder helper

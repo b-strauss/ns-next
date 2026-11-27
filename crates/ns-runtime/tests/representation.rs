@@ -193,6 +193,7 @@ fn a_class_object_cannot_be_made_by_instantiation() {
 /// Metaclass": two metaclasses have one class, a metaclass's class is the
 /// class of `Metaclass`'s own metaclass, and `3`'s metaclass's class is
 /// the same `Metaclass`.
+// spec: vm.heap.class-word-is-metaclass
 #[test]
 fn the_class_of_a_class_is_its_metaclass_and_every_metaclass_is_a_metaclass() {
     let (mut interpreter, instance) = instantiate(FOO_AND_BAR);
@@ -384,6 +385,7 @@ fn integer_protocol_parses_a_large_integer() {
 /// a result past the immediate range is a `LargeInteger`, `i64`'s largest
 /// value already is one, and a result that fits 61 bits again is an
 /// `Integer`.
+// spec: vm.heap.number-one-representation
 #[test]
 fn an_overflowing_integer_operation_answers_a_large_integer() {
     let cases = [

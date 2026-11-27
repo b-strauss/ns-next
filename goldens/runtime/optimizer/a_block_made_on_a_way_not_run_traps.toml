@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.eliminated-block-made-once"]
 stdout = '''
 15015000
 15015000

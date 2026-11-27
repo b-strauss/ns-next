@@ -249,18 +249,21 @@ fn assert_built_once_on_first_demand(module: &str, member: &str) {
     });
 }
 
+// spec: vm.mirror.one-instance-per-shipped-module
 #[test]
 fn the_collections_module_is_built_once_on_first_demand() {
     assert_built_once_on_first_demand("CollectionsFactory", "collections");
 }
 
 /// The typed arrays module, like the collections module.
+// spec: vm.mirror.one-instance-per-shipped-module
 #[test]
 fn the_typed_arrays_module_is_built_once_on_first_demand() {
     assert_built_once_on_first_demand("TypedArraysFactory", "typedArrays");
 }
 
 /// The mirrors module, like the collections module.
+// spec: vm.mirror.one-instance-per-shipped-module
 #[test]
 fn the_mirrors_module_is_built_once_on_first_demand() {
     assert_built_once_on_first_demand("MirrorsFactory", "mirrors");
@@ -727,6 +730,7 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
 /// instance finds nothing, even for a host that holds it, while `build`
 /// makes a platform. A second line of defence behind the factory instance
 /// being unreachable.
+// spec: vm.mirror.root-instance-unreachable
 #[test]
 fn the_platform_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
@@ -772,6 +776,7 @@ fn the_platform_factory_answers_only_build() {
 /// nothing, while `build` makes a facet whose `List` answers a
 /// class. A second line of defence behind the factory instance being
 /// unreachable, as for `PlatformFactory`.
+// spec: vm.mirror.root-instance-unreachable
 #[test]
 fn the_collections_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
@@ -827,6 +832,7 @@ fn the_collections_factory_answers_only_build() {
 /// enclosing object of the facet's class; even then the classes' names
 /// find nothing, while `build` makes a facet whose `ObjectMirror` and
 /// `ClassMirror` answer classes.
+// spec: vm.mirror.root-instance-unreachable
 #[test]
 fn the_mirrors_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
@@ -889,6 +895,8 @@ fn the_mirrors_factory_answers_only_build() {
 /// nothing, and none of them may stand as a value in an image, since no program
 /// reaches one. A module's class is named once it is built, so each module
 /// is demanded first, and `Stopwatch` through the facet that hands it out.
+// spec: vm.mirror.root-instance-unreachable
+// spec: vm.mirror.facet-classes-private
 #[test]
 fn the_platform_hands_out_none_of_its_modules_classes() {
     let mut interpreter = Interpreter::bootstrap();
@@ -1036,6 +1044,8 @@ fn a_mirror_answers_a_method_and_a_class_declaration_source() {
 /// it reached through a shipped level"). The facets and their classes are
 /// found through mirrors too: the platform class's public lazy slots, and
 /// each facet class's public unary methods whose answer is a class.
+// spec: vm.mirror.facet-classes-private
+// spec: vm.mirror.mirrors-withhold-shipped-values
 #[test]
 fn no_mirror_answers_a_withheld_value() {
     let source = indoc! {"

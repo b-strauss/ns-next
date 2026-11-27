@@ -354,6 +354,7 @@ fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
 /// corpus rather than the six modules that run, under both lowerings -- which
 /// also runs the reference lowering's shape check on every body it compiles.
 /// Loading compiles every method and every per-mixin body, nothing runs.
+// spec: vm.compiler.total
 #[test]
 fn every_resolvable_corpus_module_compiles_under_both_lowerings() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/modules");

@@ -1,4 +1,4 @@
-rules = ["runtime.memory.ephemeron"]
+rules = ["runtime.memory.ephemeron", "vm.heap.ephemeron-key-first"]
 stdout = '''
 false
 'kept value'

@@ -4,7 +4,7 @@ ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
-decided and in which order it is built. The first four batches are
+decided and in which order it is built. All five batches are
 built. The first: the book under `docs/spec/`, its title page and introduction followed by an
 informal overview of the language that states no rule
 (`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
@@ -39,8 +39,18 @@ checks on an image, numbered; the bounds of a load; and the operations
 *LoadImage* and *WriteImage*, every refusal of the writer stated with its
 text -- all normative (below, "The fourth batch's decisions"), and the
 decoder refusing a send and a method record whose argument count is not
-their selector's. The VM invariants say what they will cover and are
-not written yet.
+their selector's. The fifth: the VM invariants
+(`docs/spec/vm-invariants.md`) -- 227 `vm.*` rules in eight sections, the
+heap and the collector, handles and the brand, activations and frames,
+the compiler, dispatch and the caches, machine code, the VM mirror and
+the image loader, after a section of the terms they are stated in, each
+rule naming no code, with a `Protects:` line linking the rules of the
+first four parts it keeps true, and named by tests, by a detector of the
+table of detectors (a stress mode, a check of a debug build, a check of
+the compiler) or by an `Undetected:` line with its reason; `cargo xtask
+spec` checks all of it (below, "The fifth batch's decisions";
+`xtask/src/spec/invariants.rs`), and `CLAUDE.md` and the documents
+under `docs/` point at the rules by their identifiers in backticks.
 
 ## Why
 
@@ -98,7 +108,7 @@ Each decided with the user on 2026-11-23.
 5. **Markdown, rendered by mdBook, each rule named as the Rust Reference
    names its rules.** The source is Markdown under `docs/spec/`, a chapter
    per part and the appendix, readable on GitHub as it is. Every normative
-   rule is preceded by an identifier line, `r[runtime.lookup.public]`, as
+   rule is preceded by an identifier line, `r[runtime.lookup]`, as
    the Rust Reference's `mdbook-spec` has it
    ([its dev guide](https://rust-lang.github.io/reference/dev-guide/tooling/mdbook-spec.html)).
    A preprocessor of `xtask`'s own, in Rust, checks the identifiers --
@@ -107,7 +117,7 @@ Each decided with the user on 2026-11-23.
    test in a comment, as a test of `rust-lang/rust` names its rule in a
    `//@ reference:` header. The book shows each rule's tests, as a
    list folded shut beneath the rule's anchor, and an appendix the rules
-   no test names yet. The grammar, the instruction
+   no golden, no Rust test and no detector names. The grammar, the instruction
    table and the tag table stand in marked, machine-readable blocks that
    Rust tests hold to the code -- `opcodes.rs` to the tag table among
    them. `cargo xtask spec` builds the HTML into `target/spec/`, to be
@@ -151,12 +161,103 @@ end-of-batch gates:
 4. **The image format**, built: the structure, the tags, the validation
    rules, the bounds of a load, and the load and the write as abstract
    operations.
-5. **The VM invariants**, and the design documents and `CLAUDE.md`
+5. **The VM invariants**, built, and the design documents and `CLAUDE.md`
    pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install") resumes after the fifth, and changes the
+"Planned: the complete install") is the next batch, and changes the
 specification as it changes the runtime.
+
+## The fifth batch's decisions
+
+Decided with the user on 2026-11-26:
+
+1. **Every invariant, found by reading the design documents section by
+   section.** The chapter "VM invariants" holds every internal rule whose
+   breach makes a rule of the first four parts false without a program
+   seeing why -- not only the ones `CLAUDE.md` lists because each has
+   already produced a defect. [memory.md](memory.md),
+   [execution.md](execution.md), [compiler.md](compiler.md),
+   [dispatch.md](dispatch.md), [object-model.md](object-model.md),
+   [image-format.md](image-format.md) and the rest are read section by
+   section for them. The alternatives weighed: `CLAUDE.md`'s internal
+   invariants alone, which leaves the collector's safepoints, the tracing
+   of weak objects and an optimized copy's dependencies without a rule,
+   though their breach is as silent; and those plus what the design
+   documents state as a rule in so many words, a boundary no reader can
+   draw.
+2. **An abstract machine, no Rust names.** The chapter opens with the
+   terms it states its rules in -- the object space, an object and its
+   words, a handle, the activation stack, an activation and a frame
+   object, the nursery and the old space, the remembered set, a
+   safepoint, a cache entry, a body and its copies, the code zone, a
+   cell, an entry table -- as WebAssembly's specification defines its
+   store and its frames, and names no Rust type, function or file, as
+   the other four parts name none. Where a rule is enforced in the code
+   is the design documents' to say, which point at it. The alternatives
+   weighed: the Rust names in the rules, as `CLAUDE.md` gives them, which
+   a rename makes false unseen; and the abstract rule with an informative
+   line naming the code, a second copy of what the design documents say
+   that no test holds.
+3. **A rule says what it protects, and the check holds it.** Every
+   `vm.*` rule has a line `Protects:` linking the rules it protects;
+   `cargo xtask spec` refuses a `vm.*` rule without one, and one whose
+   links, followed through other `vm.*` rules, reach no rule of the
+   first four parts. The chapter's sections follow the subsystems: the
+   model, the heap and the collector, handles and the brand, activations
+   and frames, the compiler, dispatch and the caches, machine code, the
+   VM mirror and the image loader. Each
+   rule's reasoning and the defects it has produced stay in the design
+   documents. The alternatives weighed: the same line as a convention no
+   check holds, and judgements over the store and the frames as
+   WebAssembly's appendix "Soundness" writes them, which would need a
+   formal model of the interpreter the book has nowhere.
+4. **What finds a breach is named, and every rule has something or says
+   it has nothing.** The stress modes and the debug build's checks are
+   what finds most breaches, and no `#[test]` names them, so the chapter
+   holds a table of detectors -- each stress mode, each check of a debug
+   build and each check the Rust compiler makes, with the `vm.*` rules
+   whose breach it finds -- whose stress modes a test holds to the
+   modes the stress gate runs; the book lists a rule's detectors beside
+   its tests. Every `vm.*` rule is named by a test or a detector; where
+   neither is possible the rule says so in a line `Undetected:` with the
+   reason, and `cargo xtask spec` refuses a rule with none of the three.
+   The alternatives weighed: Rust tests alone, which would list nearly
+   every `vm.*` rule as untested though the stress gate checks it; and
+   the table without the obligation, which leaves a rule nothing checks
+   unmarked.
+5. **`CLAUDE.md` keeps each invariant short, with its identifiers and
+   where the code enforces it.** Each entry of "Invariants that are easy
+   to break" keeps its rule in one to three sentences, the identifiers of
+   the book's rules, the Rust names of the places that enforce it and the
+   section of the design document with its mechanism and history; what
+   the book states in full leaves it. The entries that are rules of the
+   repository's work rather than of the VM -- the goldens pinned, no
+   `{:?}` of a `Value`, a chain walked link by link -- stay as they are.
+   The alternatives weighed: a list of identifiers with a line each,
+   which takes the rule and its place in the code out of every session's
+   context, and today's text with identifiers added, which keeps every
+   rule twice.
+6. **The design documents point at every rule they state, and say it no
+   more.** Wherever a design document states a rule of the book -- of
+   any part -- it points at the rule by identifier, and its own
+   statement of the rule shrinks to a sentence beside the pointer; the
+   reasoning, the alternatives, the prior art, the measurements and the
+   mechanism stay whole. The alternatives weighed: pointers added beside
+   the prose as it is, which keeps every rule twice, and a block of
+   pointers at each section's head, which loses which sentence is which
+   rule.
+7. **A pointer is the rule's line in backticks, and the check holds it.**
+   A design document, `CLAUDE.md` and every other document under `docs/`
+   name a rule as `` `r[image.bound.sizing]` ``, the form the book
+   declares it in, and `cargo xtask spec` refuses one that names no rule
+   of the book. The bare identifiers in backticks the
+   design documents used are rewritten so. The alternatives weighed: a
+   link into the published book, clickable but showing `master`'s state
+   and too long for `CLAUDE.md`, and the bare identifier, which a check
+   cannot tell from a file name -- `vm.rs` is a well-formed identifier.
+   A relative link to the chapter's Markdown lands at the chapter's head,
+   since the anchor exists only in the rendered book.
 
 ## The fourth batch's decisions
 
@@ -181,7 +282,7 @@ Decided with the user on 2026-11-26:
    the factors as the rule, which depend on the build and which no test
    holds, and no memory bound at all.
 3. **A send passes as many arguments as its selector takes, and the
-   decoder refuses one that does not** (`bytecode.verify.send-arity`).
+   decoder refuses one that does not** (`r[bytecode.verify.send-arity]`).
    Writing the image chapter showed that a decoded image could make the
    process panic. A crafted `==` with no argument reached `Object`'s
    identity leaf, which reads its argument through a checked access that
@@ -191,14 +292,14 @@ Decided with the user on 2026-11-26:
    With it, a decoded image's code runs as compiled code would. The
    decision covers every message a run delivers by selector, so the
    decoder also refuses a method record whose argument count is not its
-   selector's (`bytecode.verify.attachment`), whose body every send of
+   selector's (`r[bytecode.verify.attachment]`), whose body every send of
    the selector would otherwise run over arguments it was not given. The
    alternatives weighed:
    - a run-time error in place of the leaves' assertion, which leaves a
      surplus argument a silent wrong answer and puts a check on the send
      path;
    - writing today's abort down as the rule, which would break
-     `image.untrusted`'s promise for the code a load runs.
+     `r[image.untrusted]`'s promise for the code a load runs.
 
 ## The third batch's decision
 

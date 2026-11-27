@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.inlined-scope-current-class"]
 stdout = '''
 240600000
 '''

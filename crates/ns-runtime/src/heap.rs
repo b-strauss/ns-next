@@ -13142,9 +13142,10 @@ mod tests {
     /// failure offsets introduce and the one they cannot answer correctly:
     /// the offset names a different, perfectly valid object. Debug builds
     /// must refuse it rather than answer.
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
+    // spec: vm.handle.space-relative
+    #[test]
     fn reading_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
         let class = origin.allocate_self_referential(0);
@@ -13258,9 +13259,10 @@ mod tests {
     /// `image::encode::GraphTable` would give one object the other's id.
     /// Requiring the `Heap` is what makes the check possible, and the
     /// compiler is what requires it.
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
+    // spec: vm.handle.space-relative
+    #[test]
     fn keying_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
         let class = origin.allocate_self_referential(0);
@@ -13551,11 +13553,48 @@ mod tests {
         assert!(heap.mixin_object(id).is_none());
     }
 
+    /// A program chooses how deep its objects nest, so marking walks a
+    /// chain with a work list of its own and the compaction slides it in
+    /// address order: a chain a million arrays deep is collected whole on
+    /// a thread whose stack holds a few thousand frames at most.
+    // spec: vm.heap.no-recursion-over-input-depth
+    #[test]
+    fn a_chain_of_objects_deeper_than_the_stack_is_collected_on_a_small_thread() {
+        const DEPTH: usize = 1_000_000;
+        const STACK_BYTES: usize = 256 * 1024;
+        let collector = std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(|| {
+                let mut heap = Heap::new();
+                let array_class = named_class(&mut heap, "Array");
+                let mut head = Value::nil();
+                for _ in 0..DEPTH {
+                    head = Value::object(heap.allocate_array(array_class, &[head]));
+                }
+                heap.collect_for_test(&mut [&mut head]);
+                let mut length = 0;
+                let mut link = head;
+                while let Some(object) = link.as_object() {
+                    length += 1;
+                    link = heap
+                        .array_element(object, 0)
+                        .expect("each link is a one-element array");
+                }
+                length
+            })
+            .expect("the collecting thread starts");
+        let length = collector
+            .join()
+            .unwrap_or_else(|_| panic!("the collecting thread panicked"));
+        assert_eq!(length, DEPTH, "the collection kept every link");
+    }
+
     /// A full collection whose eden is shorter than the last one's, over
     /// the forwarding table the last one gave back, compacts to what it
     /// compacts to over a fresh table: the live bits the long eden left
     /// are cleared, or they would count as live words and leave holes in
     /// the old space.
+    // spec: vm.heap.forwarding-table-exact
     #[test]
     fn a_collection_after_a_longer_eden_compacts_as_over_a_fresh_table() {
         let run = |recycle: bool| {
@@ -13715,6 +13754,7 @@ mod tests {
     /// program-made object counts as the text's object though the
     /// canonical table holds none, until the prune or `new_symbol` adopts
     /// it.
+    // spec: vm.heap.symbol-canonical
     #[test]
     fn a_living_program_made_symbol_makes_its_interned_text_a_duplicate() {
         let mut heap = Heap::new();
@@ -13779,6 +13819,7 @@ mod tests {
     /// `symbol_value` is a probe of the canonical table's inverse, keyed by
     /// offset, so it must follow a symbol across every compaction and
     /// every move, and forget one the collector pruned.
+    // spec: vm.heap.symbol-canonical
     #[test]
     fn a_symbol_answers_its_symbol_across_collections_and_moves_and_a_pruned_one_leaves_no_entry() {
         let mut heap = Heap::new();
@@ -13840,6 +13881,7 @@ mod tests {
 
     /// A collection keeps what something else holds strongly, forgets an
     /// object only the weak array holds, and leaves an immediate alone.
+    // spec: vm.heap.weak-settled-before-compaction
     #[test]
     fn a_weak_array_keeps_a_strongly_held_object_and_forgets_the_rest() {
         let mut heap = Heap::new();
@@ -13920,6 +13962,7 @@ mod tests {
 
     /// A key nothing but the ephemeron reaches is collected, and the
     /// ephemeron is mourned: every field reads nil.
+    // spec: vm.heap.weak-settled-before-compaction
     #[test]
     fn an_ephemeron_with_a_dead_key_is_mourned() {
         let mut heap = Heap::new();
@@ -14470,6 +14513,7 @@ mod tests {
     /// names stands for its value, which something else holds: the
     /// collection keeps the entry for the value's sake, and the word reads
     /// the value afterwards. The proxy is collected.
+    // spec: vm.heap.resolved-future-judged-by-value
     #[test]
     fn a_resolved_future_held_weakly_is_judged_by_its_value_in_a_collection() {
         let mut heap = Heap::new();
@@ -14525,8 +14569,9 @@ mod tests {
 
     /// A move rewrites a weak word and an ephemeron's guarded fields like
     /// any other: forwarding reads every word, marking only the strong.
-    #[test]
     #[cfg(debug_assertions)]
+    // spec: vm.heap.format-decides-pointer-words
+    #[test]
     fn a_move_forwards_every_weak_word() {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "Object");
@@ -14588,6 +14633,7 @@ mod tests {
     /// says so: a digit shaped like an object word -- the low three bits
     /// clear, the offset of a live object -- must come through a collection
     /// and a move as it went in, not forwarded as though it named one.
+    // spec: vm.heap.non-pointer-words-untraced
     #[test]
     fn a_digit_shaped_like_an_object_word_is_never_forwarded() {
         let mut heap = Heap::new();
@@ -14772,6 +14818,7 @@ mod tests {
 
     /// Two live activations share one reservation of words; neither may see the
     /// other's registers, whichever is written first.
+    // spec: vm.activation.register-in-window
     #[test]
     fn nested_activations_keep_separate_register_windows() {
         let mut heap = Heap::new();
@@ -15035,6 +15082,8 @@ mod tests {
     /// meanwhile nils them rather than leaving them untraced, and the pop
     /// writes none of them in a release build -- the top goes back to the
     /// sender's window end and nothing else changes.
+    // spec: vm.activation.dead-registers-nilled
+    // spec: vm.activation.top-at-window-end
     #[test]
     fn a_pop_leaves_the_senders_dead_registers_above_a_shorter_callee() {
         let mut heap = frame_heap();
@@ -15235,8 +15284,9 @@ mod tests {
     /// The dynamic net under the leftover analysis: a debug build refuses
     /// an instruction's read of a register nothing wrote since the push.
     #[cfg(debug_assertions)]
-    #[test]
     #[should_panic(expected = "internal: the frame at stack word")]
+    // spec: vm.activation.dead-registers-nilled
+    #[test]
     fn a_debug_read_of_a_dead_register_panics() {
         let mut heap = frame_heap();
         let first = first_above_header(0);
@@ -15258,6 +15308,7 @@ mod tests {
     /// registers below the callee's header only, the rest nil; the slots'
     /// values the callee shared come back intact in both once each is
     /// resumed, the callee above whatever is on the stack.
+    // spec: vm.activation.suspension-copies-registers
     #[test]
     fn suspending_a_sender_under_an_overlapped_callee_keeps_the_shared_slots() {
         let mut heap = frame_heap();
@@ -15366,6 +15417,7 @@ mod tests {
         assert_eq!(heap.activation_depth(), 0);
     }
 
+    // spec: vm.activation.reify-once
     #[test]
     fn reifying_an_activation_twice_answers_the_same_frame() {
         let mut heap = frame_heap();
@@ -15669,6 +15721,7 @@ mod tests {
     /// Unmarked is
     /// `a_returning_activation_keeps_its_registers_only_when_it_was_marked`
     /// in `tests/heap.rs`.
+    // spec: vm.activation.divorce-on-pop
     #[test]
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = frame_heap();
@@ -15718,6 +15771,7 @@ mod tests {
     /// A pop leaves its frame's words above the top, and no pass of either
     /// collector reads them: what only the popped frames held is reclaimed,
     /// what the frame still running holds survives.
+    // spec: vm.activation.top-at-window-end
     #[test]
     fn a_collection_after_a_deep_pop_reads_nothing_above_the_top() {
         let mut heap = Heap::new();
@@ -15773,6 +15827,7 @@ mod tests {
     /// space -- whatever kind of activation pushed it, which is what lets
     /// the collector trace every word of `[0, top)` with no stack map
     /// (`Heap::trace_stack`).
+    // spec: vm.activation.frame-words-tagged
     #[test]
     fn every_word_of_the_stack_is_a_tagged_value() {
         let mut heap = frame_heap();
@@ -16133,6 +16188,7 @@ mod tests {
     /// What a closure answers is what it was built with: a conversion of its
     /// representation keeps the code, the captured frame, the feedback base
     /// and the copied values.
+    // spec: vm.handle.only-where-rewritable
     #[test]
     fn a_closure_keeps_its_code_frame_feedback_base_and_copied_values_in_its_words() {
         let mut heap = frame_heap();
@@ -16166,6 +16222,7 @@ mod tests {
     /// into the activation below: an image, not the compiler, is what can
     /// present one.
     // spec: bytecode.instruction.make-closure
+    // spec: vm.compiler.copied-values-order
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = frame_heap();
@@ -16206,6 +16263,7 @@ mod tests {
 
     /// The next activation at the same depth reuses the stack slots. A
     /// divorced frame owns its own copy, so that reuse cannot reach it.
+    // spec: vm.activation.divorce-on-pop
     #[test]
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
         let mut heap = frame_heap();
@@ -16257,9 +16315,10 @@ mod tests {
     /// A base kept past its activation's pop names whatever activation
     /// reuses the window next -- a different, valid window, so a release
     /// build would read the wrong register. Debug builds refuse it.
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale activation handle")]
+    // spec: vm.handle.activation-never-stored
+    #[test]
     fn reading_through_a_stale_register_base_panics() {
         let mut heap = Heap::new();
         let first = heap
@@ -16319,9 +16378,10 @@ mod tests {
         let _ = heap.activation_local(first, 0);
     }
 
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
+    // spec: vm.handle.space-relative
+    #[test]
     fn reading_an_activation_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
         let mine = origin
@@ -16660,9 +16720,10 @@ mod tests {
 
     /// `same` reads no heap, so a stale handle compared with a fresh one
     /// must be refused there too, or the two could answer "identical".
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
+    // spec: vm.handle.stored-only-when-current
+    #[test]
     fn comparing_a_stale_handle_with_a_fresh_one_panics() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
@@ -16678,8 +16739,9 @@ mod tests {
     /// kept past a run -- is refused by the store itself: a stored word
     /// carries no epoch, so the next move could no longer tell it is stale.
     #[cfg(debug_assertions)]
-    #[test]
     #[should_panic(expected = "stale handle")]
+    // spec: vm.handle.stored-only-when-current
+    #[test]
     fn a_stale_handle_is_caught_where_it_is_stored() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
@@ -16705,6 +16767,66 @@ mod tests {
             &heap.mixin(first_id).expect("registered"),
             &first
         ));
+    }
+
+    /// `Outer`, declaring `Inner`, declaring `Innermost`: three mixins no
+    /// heap has registered yet, each linked to the one it is declared in.
+    fn three_nested_mixins() -> [Rc<Mixin>; 3] {
+        let innermost = Rc::new(Mixin::empty(Symbol::intern("Innermost")));
+        let inner = Rc::new(
+            Mixin::empty(Symbol::intern("Inner")).with_declared_nested(vec![innermost.clone()]),
+        );
+        Mixin::set_enclosing_of_children(&inner);
+        let outer = Rc::new(
+            Mixin::empty(Symbol::intern("Outer")).with_declared_nested(vec![inner.clone()]),
+        );
+        Mixin::set_enclosing_of_children(&outer);
+        [outer, inner, innermost]
+    }
+
+    /// Asked for the innermost of three nested declarations first, a heap
+    /// registers the whole tree, the outermost first, so that every row
+    /// names the row of the mixin it is declared in and answers the mixin
+    /// it was minted for.
+    // spec: vm.handle.mixin-registered-in-one-heap
+    #[test]
+    fn asking_for_an_inner_mixin_registers_its_whole_tree_enclosing_first() {
+        let [outer, inner, innermost] = three_nested_mixins();
+        let mut heap = Heap::new();
+        let rows_before = heap.mixin_ids().len();
+        let innermost_id = heap.mixin_id(&innermost);
+        let ids = [&outer, &inner, &innermost].map(|mixin| {
+            heap.known_mixin_id(mixin)
+                .expect("registering the innermost registered its whole tree")
+        });
+        assert_eq!(ids[2], innermost_id);
+        assert_eq!(heap.mixin_ids().len(), rows_before + 3);
+        assert!(
+            ids[0].index() < ids[1].index() && ids[1].index() < ids[2].index(),
+            "the enclosing mixins are registered first"
+        );
+        assert_eq!(heap.enclosing_mixin_id(ids[0]), None);
+        assert_eq!(heap.enclosing_mixin_id(ids[1]), Some(ids[0]));
+        assert_eq!(heap.enclosing_mixin_id(ids[2]), Some(ids[1]));
+        for (mixin, id) in [&outer, &inner, &innermost].into_iter().zip(ids) {
+            let registered = heap.mixin(id).expect("a live row");
+            assert!(Rc::ptr_eq(&registered, mixin), "each row answers its mixin");
+        }
+    }
+
+    /// A heap that registered a tree took its nested declarations, so a
+    /// second heap asked for one of its mixins is refused, rather than
+    /// minting an id whose row lacks the tree or answering another heap's.
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a mixin is registered in at most one heap")]
+    // spec: vm.handle.mixin-registered-in-one-heap
+    #[test]
+    fn a_second_heap_asked_for_a_registered_mixin_is_refused() {
+        let [_outer, inner, innermost] = three_nested_mixins();
+        let mut first = Heap::new();
+        first.mixin_id(&innermost);
+        let mut second = Heap::new();
+        second.mixin_id(&inner);
     }
 
     #[test]
@@ -16811,6 +16933,7 @@ mod tests {
         marked
     }
 
+    // spec: vm.heap.mark-bit-clear-outside-collection
     #[test]
     fn a_collection_leaves_no_mark_bit_set() {
         let mut heap = Heap::new();
@@ -16830,6 +16953,7 @@ mod tests {
     /// heap holds, not what a Rust local happens to name. `unreachable` is a
     /// perfectly valid object that nothing can get to, which is exactly the
     /// case the collector exists for.
+    // spec: vm.heap.roots-complete
     #[test]
     fn marking_reaches_what_a_root_reaches_and_nothing_else() {
         let mut heap = Heap::new();
@@ -16981,6 +17105,7 @@ mod tests {
     /// and an unretained one's stay nil, which `frame_registers_kept` tells
     /// apart from a register holding nil. Both frames are moved, by the
     /// garbage below them.
+    // spec: vm.activation.divorce-on-pop
     #[test]
     fn a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained() {
         let mut heap = frame_heap();
@@ -17063,8 +17188,9 @@ mod tests {
     /// marriage alone: found again through a host root, it reads and writes
     /// the live registers and answers its activation, and the divorce after
     /// the move copies the retained registers into the moved object.
-    #[test]
     #[cfg(debug_assertions)]
+    // spec: vm.activation.marriage
+    #[test]
     fn a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Moved");
@@ -17138,6 +17264,7 @@ mod tests {
 
     /// The point of the step: an object nothing can reach is given back, and
     /// the space holds fewer objects afterwards.
+    // spec: vm.heap.roots-complete
     #[test]
     fn collecting_reclaims_what_no_root_reaches() {
         let mut heap = Heap::new();
@@ -17388,6 +17515,7 @@ mod tests {
         heap.allocate_instance(class, LARGE_OBJECT_BYTES / 8)
     }
 
+    // spec: vm.heap.old-allocations-born-remembered
     #[test]
     fn a_small_object_is_young_and_a_large_one_old_and_born_remembered() {
         let mut heap = Heap::new();
@@ -17500,6 +17628,8 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.old-allocations-born-remembered
+    // spec: vm.image.nothing-collects-while-placeholders
     #[test]
     fn the_decoder_s_allocations_go_old_and_are_not_remembered() {
         let mut heap = Heap::new();
@@ -17515,6 +17645,8 @@ mod tests {
         assert!(space::is_young(heap.allocate_instance(class, 0).offset));
     }
 
+    // spec: vm.heap.collection-only-at-safepoint
+    // spec: vm.heap.bump-limit-within-committed
     #[test]
     fn a_fast_bump_up_to_the_threshold_asks_for_nothing_and_the_next_asks_for_a_scavenge() {
         let mut heap = Heap::new();
@@ -17788,6 +17920,8 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.collection-only-at-safepoint
+    // spec: vm.heap.old-allocations-born-remembered
     #[test]
     fn an_allocation_that_finds_eden_spent_goes_old_born_remembered_and_asks_for_a_scavenge() {
         let mut heap = Heap::new();
@@ -17879,9 +18013,10 @@ mod tests {
         class
     }
 
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "missed the write barrier")]
+    // spec: vm.heap.barrier
+    #[test]
     fn the_verification_finds_an_old_object_naming_a_young_one_unremembered() {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
@@ -17894,9 +18029,10 @@ mod tests {
         heap.verify_remembered_set();
     }
 
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "the remembered set lacks its offset")]
+    // spec: vm.heap.remembered-set-exact
+    #[test]
     fn the_verification_finds_a_remembered_set_entry_at_a_wrong_offset() {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
@@ -17949,6 +18085,7 @@ mod tests {
         object
     }
 
+    // spec: vm.heap.roots-complete
     #[test]
     fn a_scavenge_copies_what_a_root_reaches_and_reclaims_eden() {
         let mut heap = Heap::new();
@@ -17981,6 +18118,7 @@ mod tests {
         assert_eq!(heap.scavenges, 1);
     }
 
+    // spec: vm.heap.barrier
     #[test]
     fn an_object_reachable_only_through_the_remembered_set_survives_until_it_is_tenured() {
         let mut heap = Heap::new();
@@ -18012,6 +18150,7 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.remembered-set-exact
     #[test]
     fn a_promoted_object_naming_a_survivor_is_remembered_by_the_scavenge_that_promoted_it() {
         let mut heap = Heap::new();
@@ -18156,6 +18295,7 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.frame-copies-remembered
     #[test]
     fn the_divorce_into_a_tenured_frame_keeps_its_young_registers() {
         let mut heap = frame_heap();
@@ -18188,6 +18328,7 @@ mod tests {
         assert_eq!(heap.str_value(string), Some("register".to_string()));
     }
 
+    // spec: vm.heap.symbol-canonical
     #[test]
     fn a_symbol_held_only_by_young_garbage_is_pruned_and_a_kept_one_keeps_its_identity() {
         let mut heap = Heap::new();
@@ -18389,6 +18530,7 @@ mod tests {
     /// listed, and once the key survives, the rescan keeps its young value
     /// and remembers it -- once, though one of a young class was remembered
     /// already for its class word.
+    // spec: vm.heap.weak-settled-before-nursery-vacated
     #[test]
     fn an_old_ephemeron_whose_young_key_survives_later_keeps_its_value_and_is_remembered_once() {
         for class_is_young in [false, true] {
@@ -18441,6 +18583,7 @@ mod tests {
     /// A weak array and an ephemeron promoted by age, not by `tenure_all`,
     /// still name a young survivor afterwards: each is remembered, once,
     /// and its words name the copies.
+    // spec: vm.heap.weak-settled-before-nursery-vacated
     #[test]
     fn a_weak_object_promoted_by_age_that_names_a_young_survivor_is_remembered() {
         let mut heap = Heap::new();
@@ -19073,6 +19216,7 @@ mod tests {
     /// objects, the proxy through nothing, and each word then names the
     /// value's copy -- in an old weak object too, which stays remembered
     /// for it. An unresolved future held only weakly is judged as itself.
+    // spec: vm.heap.resolved-future-judged-by-value
     #[test]
     fn a_resolved_future_held_weakly_is_judged_by_its_value_in_a_scavenge() {
         for holders_are_old in [false, true] {
@@ -19160,6 +19304,7 @@ mod tests {
     /// word holds, and cleared -- in a scavenge too, where the inner future
     /// a root holds has already been copied and its old place is a
     /// forwarder, which must still be recognised as a future.
+    // spec: vm.heap.resolved-future-replaced-in-fields
     #[test]
     fn a_malformed_resolved_future_held_weakly_is_not_seen_through_by_either_collector() {
         for collection in [false, true] {
@@ -19209,8 +19354,10 @@ mod tests {
     /// young class so that the scan of their strong words remembers them
     /// before their weak words are settled: after each of three scavenges
     /// every old object naming a young one is remembered, and none twice.
-    #[test]
     #[cfg(debug_assertions)]
+    // spec: vm.heap.format-decides-pointer-words
+    // spec: vm.heap.weak-settled-before-nursery-vacated
+    #[test]
     fn the_remembered_set_verifies_after_a_scavenge_of_weak_objects() {
         let mut heap = Heap::new();
         let old_class = old_instance_class(&mut heap);
@@ -19262,6 +19409,7 @@ mod tests {
         assert!(heap.remembered.is_empty());
     }
 
+    // spec: vm.heap.remembered-set-exact
     #[test]
     fn a_scavenge_that_tenures_everything_empties_the_nursery_and_the_remembered_set() {
         let mut heap = Heap::new();
@@ -19343,9 +19491,10 @@ mod tests {
         assert!(heap.header(holder).remembered());
     }
 
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
+    // spec: vm.handle.stored-only-when-current
+    #[test]
     fn a_handle_kept_across_a_scavenge_is_stale() {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
@@ -19438,9 +19587,10 @@ mod tests {
         assert_eq!(heap.heap_statistics().live_objects, 3);
     }
 
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
+    // spec: vm.handle.stored-only-when-current
+    #[test]
     fn a_young_handle_kept_across_a_full_collection_is_stale() {
         let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
@@ -19564,6 +19714,7 @@ mod tests {
     /// live one of `leader` fields ahead of it moves it at the destination
     /// too, so that the scavenger and the slide meet every pair of old and
     /// new positions within a 32-byte line.
+    // spec: vm.heap.every-mover-realigns
     #[test]
     fn an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position() {
         let expected: Vec<u8> = (0..37).collect();
@@ -19635,12 +19786,39 @@ mod tests {
         }
     }
 
+    /// A byte array is told by its own format, whatever its class: every
+    /// decision made by format alone takes it for a byte array, and none
+    /// for a string.
+    // spec: vm.heap.byte-array-own-format
     #[test]
     fn describe_names_a_byte_array_by_its_size() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let object = heap.allocate_byte_array(class, &[1, 2, 3]);
         assert_eq!(heap.describe(Value::object(object)), "a ByteArray of 3");
+        assert!(heap.is_byte_array(object));
+        assert!(!heap.is_string(object));
+        assert_eq!(heap.string_size(object), None);
+        assert!(matches!(heap.object_shape(object), ObjectShape::ByteArray));
+        let string = heap.allocate_string(class, crate::CodePoints::from("abc"));
+        assert!(!heap.is_byte_array(string));
+    }
+
+    /// Whether an object is a class object is its header's format, never
+    /// what its class word names: an instance of a class object, and an
+    /// object that is its own class without a class object's format -- the
+    /// shape a crafted image can give a class reference -- are none.
+    // spec: vm.heap.class-by-format
+    #[test]
+    fn whether_an_object_is_a_class_is_read_from_its_format() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Point");
+        assert!(heap.is_class(class));
+        let instance = heap.allocate_instance(class, 2);
+        assert!(!heap.is_class(instance));
+        let own_class = heap.allocate_self_referential(0);
+        assert!(!heap.is_class(own_class));
+        assert!(heap.class_metaclass(own_class).is_none());
     }
 
     // ---------- The bulk forward ----------
@@ -19662,6 +19840,9 @@ mod tests {
         Header(heap.space.words()[header_index(object.offset)]).format()
     }
 
+    // spec: vm.heap.barrier
+    // spec: vm.heap.no-forwarder-reached
+    // spec: vm.heap.bulk-forward-atomic
     #[test]
     fn the_forward_rewrites_every_holder_of_an_old_object() {
         let mut heap = Heap::new();
@@ -19796,6 +19977,7 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.no-forwarder-reached
     #[test]
     fn a_forwarder_is_garbage_after_the_forward() {
         let mut heap = Heap::new();
@@ -20098,6 +20280,7 @@ mod tests {
     /// arguments and three temporaries has five, and its first temporary,
     /// register `2 + HEADER_REGISTERS`, is its third field once the
     /// activation returned.
+    // spec: vm.activation.frame-object-full-register-file
     #[test]
     fn a_reified_frame_leaves_the_header_numbers_out() {
         let mut heap = frame_heap();
@@ -20167,6 +20350,8 @@ mod tests {
     /// Suspended, the same activation's frame holds its five registers
     /// without the header's numbers, and resuming it gives every register
     /// back where its code numbers it.
+    // spec: vm.activation.suspension-copies-registers
+    // spec: vm.activation.register-base-from-argument-count
     #[test]
     fn suspending_and_resuming_round_trips_every_register_past_the_header() {
         let mut heap = frame_heap();
@@ -20208,6 +20393,8 @@ mod tests {
         assert_eq!(heap.activation_depth(), 0);
     }
 
+    // spec: vm.activation.marriage
+    // spec: vm.activation.program-counter-before-observation
     #[test]
     fn suspending_and_resuming_an_activation_keeps_its_registers_and_program_counter() {
         let mut heap = frame_heap();
@@ -20429,6 +20616,7 @@ mod tests {
         assert!(matches!(popped.then, Continuation::Deliver));
     }
 
+    // spec: vm.activation.sender-walks-reach-suspended
     #[test]
     fn a_resumed_activation_returns_to_its_suspended_sender() {
         let mut heap = frame_heap();
@@ -20718,6 +20906,7 @@ mod tests {
     /// into the limit. Without the fence, the VM's read may miss the bit
     /// while its store lands after the agent's 0, and the pause is lost to
     /// every compiled push.
+    // spec: vm.machine.safepoint-request-bits
     #[test]
     fn no_pause_is_lost_to_a_racing_depth_limit_write() {
         use crate::interpreter::MAX_ACTIVATION_DEPTH;
@@ -20751,6 +20940,7 @@ mod tests {
         assert!(agent.join().is_ok());
     }
 
+    // spec: vm.activation.depth-count-exact
     #[test]
     fn suspended_activations_still_count_against_the_depth_limit() {
         let mut heap = frame_heap();
@@ -20793,8 +20983,9 @@ mod tests {
     /// A suspended frame's registers are the only copy of its values, so
     /// every collector traces them, and the side table keeps the frame
     /// itself alive and forwarded.
-    #[test]
     #[cfg(debug_assertions)]
+    // spec: vm.heap.roots-complete
+    #[test]
     fn a_suspended_frame_survives_a_move_a_scavenge_and_a_collection_with_its_registers() {
         let mut heap = frame_heap();
         let class = old_instance_class(&mut heap);
@@ -20853,6 +21044,7 @@ mod tests {
     /// suspension that copies a young register into it, and a store into
     /// one of its registers while it is suspended, both remember it, and
     /// the scavenge after them rewrites the registers it moved.
+    // spec: vm.heap.frame-copies-remembered
     #[test]
     fn a_young_value_written_into_a_suspended_old_frame_is_remembered() {
         let mut heap = frame_heap();
@@ -20897,8 +21089,9 @@ mod tests {
     /// was, and an own-slot access after it resumes reads that level's
     /// layout: the reclaim keeps the application while the activation is
     /// suspended, and frees it once nothing runs at it any more.
-    #[test]
     #[cfg(debug_assertions)]
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
+    #[test]
     fn the_reclaim_keeps_the_entered_level_of_a_suspended_activation() {
         let source = indoc::indoc! {"
             Newspeak3
@@ -21768,6 +21961,7 @@ mod tests {
         /// reclaims it -- is never forwarded, which a debug build's
         /// forwarding table would refuse, while the claimed word is
         /// forwarded to its object's new place.
+        // spec: vm.activation.dead-registers-nilled
         #[test]
         fn a_forward_traces_no_tainted_register_and_forwards_a_claimed_one() {
             let mut heap = Heap::new();
@@ -21813,6 +22007,7 @@ mod tests {
         /// every set missing and defers the frames: it nils their tainted
         /// registers all the same, and forwards the claimed word. Then
         /// again with every set kept.
+        // spec: vm.activation.dead-registers-nilled
         #[test]
         fn a_forward_with_every_set_missing_nils_the_deferred_frames() {
             let mut heap = Heap::new();

@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure", "bytecode.instruction.store-outer-local"]
+rules = ["semantics.block.closure", "bytecode.instruction.store-outer-local", "vm.compiler.value-register"]
 stdout = '''
 10
 10

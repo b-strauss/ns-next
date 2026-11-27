@@ -215,6 +215,8 @@ fn an_allocated_literal_past_sixteen_bits_loads_from_the_wide_form() {
 /// can lay `run` out, so under both it compiles to the raising body. The
 /// class still loads, and `answer`, which never needed the ceiling, runs --
 /// a body never run never fails.
+// spec: vm.compiler.total
+// spec: vm.compiler.register-count-checked
 #[test]
 fn a_body_with_more_temporaries_than_registers_raises_when_it_runs() {
     let temporaries: String = (0..=usize::from(u16::MAX))
@@ -268,6 +270,7 @@ fn make_error(nested: &str, make: &str, lowering: Lowering) -> String {
 /// instance initializer: a slot initialized to a tuple of 65,535 values,
 /// each in a register of its own.
 // spec: bytecode.limit.too-large
+// spec: vm.compiler.register-count-checked
 #[test]
 fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -283,6 +286,7 @@ fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
 /// A clause message's arguments, one tuple of 65,535 values, which the
 /// class's initializer evaluates: the initializer is past the ceiling.
 // spec: bytecode.limit.too-large
+// spec: vm.compiler.register-count-checked
 #[test]
 fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
     let elements = repeated("1", usize::from(u16::MAX));
@@ -351,6 +355,7 @@ fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
 /// program's own `doesNotUnderstand:`; the host fills in its selector and
 /// its arguments, which no body under the ceiling could build.
 // spec: bytecode.limit.too-large
+// spec: vm.compiler.register-count-checked
 #[test]
 fn a_message_of_more_arguments_than_registers_raises_the_too_large_error() {
     let pattern: String = (0..=usize::from(u16::MAX))
@@ -402,6 +407,7 @@ fn keyword_pattern(count: usize) -> String {
 /// the raising body, which the host's send of 256 arguments runs, with the
 /// limit in its message.
 // spec: bytecode.limit.arguments
+// spec: vm.compiler.total
 #[test]
 fn a_method_of_256_parameters_raises_when_run() {
     let pattern = keyword_pattern(256);

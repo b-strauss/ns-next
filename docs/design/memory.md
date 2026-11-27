@@ -121,9 +121,11 @@ rather than something the representation forecloses. Layout lives on
 
 **Identity is stable and hashed from a counter.** Every object's identity
 hash, 22 bits of its header word, is drawn from a counter the first time it
-is asked for, never derived from its address; the counter wraps within the
-22 bits and skips 0 ([object-model.md](object-model.md), "The identity hash
-is 22 bits wide"). This is required by identity-keyed
+is asked for, never derived from its address
+(`r[runtime.memory.identity-hash]`,
+`r[vm.heap.identity-hash-moves-with-object]`;
+[object-model.md](object-model.md), "The identity hash is 22 bits wide").
+This is required by identity-keyed
 collections, by image roots, and by `become:`; an address-derived hash would
 break the moment an object moved or an identity was swapped.
 
@@ -207,8 +209,9 @@ below says why it needs none); the space's own `unsafe` is in
 **A handle is only meaningful against the heap that minted it.** See "A handle
 is space-relative" below.
 
-The image format writes ids, not offsets, so where an object sits never
-reaches an artifact: images are architecture-neutral by construction, which
+The image format writes ids, not offsets (`r[image.graph]`), so where an
+object sits never reaches an artifact: images are architecture-neutral by
+construction, which
 is requirement 4 in [liveness-and-reflection.md](liveness-and-reflection.md),
 and identity hashes come from a counter rather than an address, so nothing
 about identity depends on where an object sits.
@@ -216,7 +219,7 @@ about identity depends on where an object sits.
 ### A handle is space-relative
 
 An offset is meaningful only against the `Heap` whose space it was minted
-in: not globally unique, space-relative.
+in: not globally unique, space-relative (`r[vm.handle.space-relative]`).
 
 Reading a handle through the wrong heap is silent — an offset minted by
 another heap may lie inside this heap's space and name a different,
@@ -231,8 +234,8 @@ move epoch, which the same check compares ("The move stress mode" below). In
 a release build neither the fields nor the checks exist, and a handle is
 exactly its 64-bit offset, a `NonZeroU64`, so an `Option` of a handle is one
 word too (`a_handle_and_an_optional_handle_are_one_word`, `heap.rs`, a
-release-build test). The offset is never 0: the first object starts at
-byte 16 ("The object space").
+release-build test). The offset is never 0 (`r[vm.handle.never-zero]`): the
+first object starts at byte 16 ("The object space").
 
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
@@ -457,7 +460,8 @@ checks.
 
 An allocation never collects. Past a threshold it *requests* a collection
 instead — "The trigger and the growth policy" below — which runs at the next
-safepoint of the run loop. `vm::run` polls one at every switch
+safepoint of the run loop (`r[vm.heap.collection-only-at-safepoint]`).
+`vm::run` polls one at every switch
 to another activation — a push, or a caller resumed — and at every backward
 jump, so every call and every loop iteration passes one, a loop that makes no
 send included; a forward jump does not poll. Across a safepoint `run`
@@ -514,7 +518,8 @@ own bytes ([execution.md](execution.md), "The machine words"). The
 machine words are `AtomicU64`s behind an `Arc`, so that an attached
 debugger's agent can arm the request from its own thread; the poll's load
 is `Relaxed`, the plain load it was before, so the poll costs what it
-did. The request word is a set of bits, each set by a `fetch_or` and
+did. The request word is a set of bits (`r[vm.machine.safepoint-request-bits]`),
+each set by a `fetch_or` and
 cleared by a `fetch_and` so that no writer erases another's: the VM's own
 request (`REAL_REQUEST`, which a collection's, a scavenge's and a full
 code zone's trigger set through `Heap::request_safepoint`), a stress
@@ -546,7 +551,8 @@ catches a missed mark ([execution.md](execution.md), "The entry at a
 send"). The machine words' one handle-like word is an immediate's
 class, a stored word the collector does not trace, so
 `Mutator::rewrite_machine_classes` writes them afresh after every
-scavenge, compaction, move and bulk forward; the hand-over words are read
+scavenge, compaction, move and bulk forward
+(`r[vm.machine.class-words-rewritten]`); the hand-over words are read
 only right after they are written, and no collection runs between. When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
@@ -598,7 +604,8 @@ anyway.
 ### No Rust frame is live below a safepoint
 
 Rust enters the run loop only as the host, its outermost caller
-(`Interpreter::run_from_host`). The nested-class accessor, which once ran
+(`Interpreter::run_from_host`; `r[vm.heap.no-native-frame-below-safepoint]`).
+The nested-class accessor, which once ran
 Newspeak code in a nested run of the loop, is a trampoline step with a
 continuation (step 2a, built); `do:`, which did too, is a Newspeak loop, as
 `whileTrue:` is; and instantiation is compiled code that runs in the loop
@@ -721,7 +728,8 @@ the protocol).
 
 ### Host roots
 
-A host keeps values across runs: `ns-next bench` keeps a program's module
+A host keeps values across runs (`r[vm.handle.host-holds-only-roots]`):
+`ns-next bench` keeps a program's module
 classes and `main:args:`'s arguments across its 22 samples, assembling and
 sending to a fresh application each time, and `build` encodes the
 application its factory and initializers assembled. A run may move every object, so
@@ -770,7 +778,8 @@ mode checks.
 
 ### What the collector traces
 
-`trace.rs` enumerates the roots, type by type: a `Trace` impl hands every
+The roots are complete (`r[vm.heap.roots-complete]`). `trace.rs` enumerates
+them, type by type: a `Trace` impl hands every
 field that holds an `ObjectReference`, a `ClassReference`, a `FrameReference`
 or a `Word` to a `Tracer`, one `&mut` at a time. An object is no Rust type
 with an impl: `heap/object.rs`'s `pointer_ranges` names the indices of its
@@ -779,7 +788,8 @@ pointer words by the format in its header
 enumeration of an object's pointer words, which marking reads the words
 through (`Heap::drain_marking`) and forwarding rewrites them through
 (`trace_block`), so a field one of the two must reach cannot be missed by
-the other. Marking and the scavenger read it by way of
+the other (`r[vm.heap.format-decides-pointer-words]`). Marking and the
+scavenger read it by way of
 `strong_pointer_ranges`, which leaves out only the weak words of a
 `WeakArray` and of an `Ephemeron` whose key is not yet known to survive
 ("Weak references"). A
@@ -819,7 +829,9 @@ check").
   shorter callee stay below it ([execution.md](execution.md),
   "Representation"). A word below the top may so be one a callee or a
   popped frame left, and the pre-pass below nils each before the trace
-  reads it, so that it neither keeps an object alive nor names one a
+  reads it (`r[vm.activation.dead-registers-nilled]`,
+  `r[vm.activation.top-at-window-end]`), so that it neither keeps an object
+  alive nor names one a
   collection moved meanwhile. The trace is `Heap::trace_stack`, in
   `heap.rs`, where `ActivationStack`'s fields are private.
 
@@ -922,7 +934,7 @@ check").
   values, so they are traced like a returned frame's. The digits of a
   `LargeInteger`, a boxed `Float`'s bits, a string's code points and a
   `ByteArray`'s reserve and bytes are never handed to the tracer, since they
-  would read as handles.
+  would read as handles (`r[vm.heap.non-pointer-words-untraced]`).
 - The host root table.
 - The kernel-private `Activation` class, every frame object's class, which
   the heap holds (`Heap::activation_class`).
@@ -970,7 +982,8 @@ class being created is marked in its own cache slot by a primitive (`false`),
 while the enclosing object stays in the continuation of the clause's
 activation, in the side table of continuations, which is traced anyway.
 
-**A handle lives only where the tracer can rewrite it in place**: in an
+**A handle lives only where the tracer can rewrite it in place**
+(`r[vm.handle.only-where-rewritable]`): in an
 object's words, in a word of a stack frame, in a continuation that one
 activation's row of the side tables owns, or in the step state's own roots
 — never behind a
@@ -987,7 +1000,8 @@ words. A continuation's state is boxed in it (`Box<NestedClassCreation>`,
 The inline caches ([dispatch.md](dispatch.md), "3b — The caches") add
 nothing to this list, by design, and are not traced: an entry holds a
 dispatch id and a target — an `Rc` to a method or a mixin, a field index, a
-primitive, a level count, a family's `feedback_base` — and never a handle,
+primitive, a level count, a family's `feedback_base` — and never a handle
+(`r[vm.dispatch.caches-hold-no-handle]`),
 the defining class included, which a hit recomputes from the receiver. The
 polymorphic pool and the global cache hold the same entries, and the family
 map holds `Rc`s to code, which hold no handle. The table lives in the step
@@ -1001,7 +1015,8 @@ id"). The ids a cache guards on are per heap and never serialized. The
 header's id is a number, not a handle: the tracer does not visit the header
 word, and a move carries it along with the rest of the object.
 
-**A resolved future is traced as its value.** Before it marks, a collection
+**A resolved future is traced as its value**
+(`r[vm.heap.resolved-future-replaced-in-fields]`). Before it marks, a collection
 (`World::collect`) rewrites every object field that holds a resolved future
 of a simultaneous slot clause to hold its value instead
 (`Heap::replace_resolved_futures`, with the test
@@ -1034,12 +1049,14 @@ every object of both generations, which a scavenge exists not to do, so a
 resolved future stays until the next full collection. Only where nothing
 else keeps one -- in a weak word or an ephemeron's key -- does a scavenge
 judge it by its value and rewrite the word to it, with the same test
-([core-library.md](core-library.md), "The heap and the collectors").
+(`r[vm.heap.resolved-future-judged-by-value]`;
+[core-library.md](core-library.md), "The heap and the collectors").
 
 ### The move stress mode
 
 The brand checks what Rust locals hold; it cannot check that the list above
-is complete, and nothing checks that at compile time. A debug-build
+is complete (`r[vm.heap.roots-complete]`), and nothing checks that at compile
+time. A debug-build
 stress mode checks it by running. With `NS_NEXT_STRESS_MOVES` set to anything
 but empty or `0`, every interpreter the process bootstraps — the `ns-next`
 binary the CLI tests spawn included — keeps the safepoint flag set and moves
@@ -1064,7 +1081,8 @@ no tracer reaches, so the move relocates each through the same shift
 before the next scavenge reads it as a header. Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
 the heap's move epoch when it was minted or last forwarded, and every accessor
-compares the two, so a handle the tracer missed panics at its first read
+compares the two (`r[vm.handle.stored-only-when-current]`), so a handle the
+tracer missed panics at its first read
 ("stale handle") instead of perhaps printing a wrong answer. The shift
 checks the forwarding; the epoch checks the completeness. The `Forwarder`
 checks each handle it rewrites as well — its origin, and that its epoch is the
@@ -1344,9 +1362,9 @@ that peak is what the collector's design and the image format's guarantee
 need, stated carefully because the careless version is wrong. The rules
 are the specification's (`docs/spec/image-format.md`, "Bounds"): a load
 sizes every record before it allocates any and refuses past eight words
-a byte of the input left (`image.bound.sizing`), and what a rejected load
+a byte of the input left (`r[image.bound.sizing]`), and what a rejected load
 allocates is bounded by a constant multiple of the image's length plus a
-constant (`image.bound.linear`), the bound normative as a property and
+constant (`r[image.bound.linear]`), the bound normative as a property and
 its factors informative (decided with the user on 2026-11-26,
 [specification.md](specification.md), "The fourth batch's decisions").
 The factors are this section's derivation, and depend on the build.
@@ -1359,7 +1377,8 @@ declarations, refusing an unknown one before it builds anything, builds
 the modules and classes the section names that the boot did not, and
 resolves each name by table lookup. Nothing allocates between the tenure
 and the graph pass, which allocates every placeholder old and never polls
-a safepoint, so nothing collects while the placeholders exist and a
+a safepoint, so nothing collects while the placeholders exist
+(`r[vm.image.nothing-collects-while-placeholders]`) and a
 rejected image cannot give them back part-way through ("Generations"). It is
 not retained past that: `image::load` owns its `Interpreter` in a local, so
 every `Err` path drops it and the space with it -- the cost is a transient
@@ -1600,8 +1619,9 @@ compaction does not leave.
 The mark bit is bit 33 of each object's header word
 ([object-model.md](object-model.md), "The object layout"), set while a
 collection runs and cleared as compaction moves each survivor, so that
-outside a collection no object is marked; a debug build checks that at the
-start of every marking. A bit in the header needs no side table and is read
+outside a collection no object is marked
+(`r[vm.heap.mark-bit-clear-outside-collection]`); a debug build checks that at
+the start of every marking. A bit in the header needs no side table and is read
 in the cache line of the object's own header; Spur and Primordial Soup keep
 theirs there too.
 
@@ -1619,7 +1639,8 @@ reached twice before its visit is popped twice and visited once, which also
 ends the traversal on a cycle. The traversal is iterative because the
 graph's depth is the program's to choose — the reasoning that already made
 `MixinApplication`'s `Drop` iterative. Sharing one edge enumeration between
-marking and forwarding is what keeps the two from drifting: a field a later
+marking and forwarding (`r[vm.heap.format-decides-pointer-words]`) is what
+keeps the two from drifting: a field a later
 change adds is named in exactly one place, and the compiler refuses that
 place until it is named.
 
@@ -1631,7 +1652,8 @@ so one arm of that match records those rows in the marker's bit sets
 (`heap/reclaim.rs`'s `GatheredIds`), the ephemeron fixpoint's visits
 included, and `World::collect` hands them to `Mutator::reclaim_ids` after
 the prune, while the mark bits still say what lives
-([object-model.md](object-model.md), "An application has two ids"). A
+(`r[vm.heap.id-reclaimed-only-when-unnamed]`;
+[object-model.md](object-model.md), "An application has two ids"). A
 second walk of the heap would cost what the marking already reads.
 
 The roots are the ones a move forwards -- the heap's own, which
@@ -1706,7 +1728,8 @@ roots, and the table clears the chunks it covered as it goes
 whenever a collection begins -- including a chunk a longer eden covered
 last time, whose live bits would otherwise count as live words and leave
 holes in the old space, and would make a word in a gap read as live to the
-debug build's check that every forwarded handle names a survivor. A table
+debug build's check that every forwarded handle names a survivor
+(`r[vm.heap.forwarding-table-exact]`). A table
 not handed back takes its buffer with it, and the next collection starts
 from an empty, and so clear, one. The buffer is kept to the chunks of the
 committed memory, so its footprint follows the space a collection gives
@@ -1741,8 +1764,8 @@ the stress mode, the forwarding table for the collector.
 ### The trigger and the growth policy
 
 A scavenge and a full collection happen only at a safepoint of the run
-loop, as decided on 2026-09-13, or between entries. An allocation sets the
-request at most; it never collects.
+loop (`r[vm.heap.collection-only-at-safepoint]`), as decided on 2026-09-13, or
+between entries. An allocation sets the request at most; it never collects.
 
 The tests are comparisons, not counters, in `allocate_block`, through which
 every allocation that can reach a trigger enters the space -- the fast
@@ -2004,7 +2027,8 @@ and the stress runs check that each bound is lowered before its pages go:
 | the application id table | 1 MiB / 512 KiB | the rows recorded after the application rows' truncation | nothing: machine code's bound, `ApplicationIdRows`, is the rows recorded, which the truncation lowered |
 | the code zone (16 MiB by default) | 2 MiB / 1 MiB | the zone's next offset, after its compaction slid the survivors down ([execution.md](execution.md), "The code zone") | the writer's committed end (`CodeWriter::decommit_above`) |
 
-Every bound machine code compares against is lowered before a page goes,
+Every bound machine code compares against is lowered before a page goes
+(`r[vm.machine.bounds-lowered-before-decommit]`),
 so machine code reads only committed memory: an id past the lowered
 machine entry rows reads as no machine entry, and the interpreter calls
 the block. The code table's length counts every body with machine code,
@@ -2046,14 +2070,16 @@ less than the system still holds.
 ### Weak references
 
 In the space, four things are weak: the canonical symbol table, the table
-of reified mixins, a `WeakArray`'s slots, and an `Ephemeron`'s fields while
-its key is reached by nothing but ephemerons. Beside it, the per-heap tables
+of reified mixins, a `WeakArray`'s slots (`r[runtime.memory.weak]`), and an
+`Ephemeron`'s fields while its key is reached by nothing but ephemerons
+(`r[runtime.memory.ephemeron]`). Beside it, the per-heap tables
 of mixins, applications and compiled code, and the caches keyed by them,
 hold an entry only while something live names its id.
 
 **A `WeakArray` and an `Ephemeron` have formats of their own**, codes 10
 and 11 (`heap/header.rs`): `WeakPointers`, whose fields are a `WeakArray`'s
-slots, and `Ephemeron`, whose first field is the key and whose others, the
+slots, and `Ephemeron`, whose first field is the key
+(`r[vm.heap.ephemeron-key-first]`) and whose others, the
 value and the finalizer, are reached only through a live key
 ([core-library.md](core-library.md), "Weak references", has the classes,
 their protocol and the image's records). Their words are stored words
@@ -2079,18 +2105,20 @@ by nothing but
 ephemerons); and sets to `nil` every word of a listed weak object whose
 object was not reached. A full collection does so in
 `Heap::finish_marking`, between `drain_marking` and `prune_canonical_symbols`, before compaction, whose
-forwarding table answers only marked objects; a scavenge in
+forwarding table answers only marked objects
+(`r[vm.heap.weak-settled-before-compaction]`); a scavenge in
 `Scavenger::finish`, before the nursery is vacated, a young key surviving
-when it was copied, forwarding each surviving young referent's word to
-its copy, and remembering an old weak object or ephemeron that still names
-a young object afterwards, once. Writing `nil` stores no young object, so
+when it was copied
+(`r[vm.heap.weak-settled-before-nursery-vacated]`). Writing `nil` stores no
+young object, so
 neither pass needs the write barrier; a program's store into a weak slot
 takes it like every store (`Heap::weak_array_set_element`). The finalizer
 is held and never run until the actors' event loop gives it a turn to run
 in ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **The canonical symbol table is weak** (`canonical_symbols`,
-`Heap::prune_canonical_symbols`). As a strong root every symbol object a
+`Heap::prune_canonical_symbols`; `r[vm.heap.symbol-canonical]`). As a strong
+root every symbol object a
 program ever made would outlive the process, since a selector literal makes
 one. It is not a root for marking; after marking and before compaction, an
 entry whose object is unmarked becomes `None`, and the rest are forwarded like
@@ -2111,7 +2139,8 @@ The inverse map follows each moved entry to its new offset. Every entry is
 checked for its heap and its epoch as the scavenger checks a handle it
 traces, and rebranded into the scavenge's epoch.
 
-This does not weaken §5.1.6. Equal symbols are one object as long as
+This does not weaken §5.1.6 (`r[semantics.literal.symbol]`). Equal symbols are
+one object as long as
 `Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to
 make one. If a symbol object is collected then nothing held it — anything that did would have been a root and
 kept it live — so the next `new_symbol` mints a fresh one whose identity is
@@ -2120,7 +2149,8 @@ belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
 
-**A program-made symbol takes no number and dies with its object.** A
+**A program-made symbol takes no number and dies with its object**
+(`r[vm.compiler.symbol-numbers-permanent]`). A
 symbol a program makes from a string -- `asSymbol` and its kin -- does not
 intern its text, so a run that makes a million distinct symbols and keeps
 none leaves the interner as it was
@@ -2194,7 +2224,8 @@ answers with the Ephemeron's refusal of a value as its key).
   (`Heap::adopt_program_symbol`), and the prune adopts every surviving
   program-made symbol whose text has since been interned, so its
   `symbol_value` is one probe again. The image decoder refuses a record
-  whose text a living program-made symbol spells, as it refuses a second
+  whose text a living program-made symbol spells (`r[image.verify.symbols]`),
+  as it refuses a second
   record of one text (`Heap::has_symbol_object`): the record is an object
   of its own the decoder already built, and `load` decodes into an
   interpreter that has run nothing of a program's, so no such symbol
@@ -2211,7 +2242,8 @@ answers with the Ephemeron's refusal of a value as its key).
   reaches `doesNotUnderstand:` with the symbol object in the `Message`
   (`Mutator::decide_unnamed_send`), and a mirror's lookup by name
   declines to its not-found result. A reader of the text reads the
-  object's own (`Heap::symbol_text`). A symbol's `hash` is its text's,
+  object's own (`Heap::symbol_text`). A symbol's `hash` is its text's
+  (`r[vm.heap.symbol-hash-from-text]`),
   told apart from a String's of the same text, so it does not change when
   the canonical table adopts the object: the interner stores it with each
   text it interns (`Symbol::text_hash`), so an interned symbol's `hash` is
@@ -2223,12 +2255,13 @@ answers with the Ephemeron's refusal of a value as its key).
 - **The image format is unchanged.** A symbol's record carries its text,
   never a number, so no tag is added, and the decoder interns every text
   of an image's symbol table: a program-made symbol an image carries
-  becomes permanent at load, bounded by the images loaded
-  ([OPEN-WORK.md](../OPEN-WORK.md); `tests/image.rs`'s
+  becomes permanent at load (`r[image.load.symbols]`), bounded by the images
+  loaded ([OPEN-WORK.md](../OPEN-WORK.md); `tests/image.rs`'s
   `an_image_keeps_a_program_made_symbol`).
 
 **The table of reified mixins is weak** (`mixin_objects`,
-`Heap::prune_mixin_objects`), as the symbol table is, for the same
+`Heap::prune_mixin_objects`; `r[vm.heap.reified-mixin-canonical]`), as the
+symbol table is, for the same
 reason: as a root it would keep every mixin a mirror ever reached, and with
 it the mixin's id. It is not a root for marking; after marking and before
 compaction, beside `prune_canonical_symbols`, an entry whose object is
@@ -2239,7 +2272,8 @@ fresh one. A marked entry keeps its mixin's id alive. A scavenge traces the
 table strongly, since a scavenge reclaims no id
 (`goldens/library/mirror/a_reachable_reified_mixin_keeps_its_identity.ns`).
 
-**The application cache and the id tables are weak.** The cache's key is a
+**The application cache and the id tables are weak.** The cache's key
+(`r[vm.dispatch.application-cache-key]`) is a
 pair of the heap's ids -- the mixin's `MixinId` and the superclass
 application's `ApplicationIndex` (`heap/tables.rs`) -- not two addresses,
 so a freed `Rc<Mixin>` handing its address to a newly allocated one cannot
@@ -2249,7 +2283,9 @@ prevent. A full collection reclaims every application, every module's tree
 of mixins, every compiled body and every cache range nothing live names
 any more (`Mutator::reclaim_ids`), and drops every application-cache entry
 whose application or superclass key it freed, so the cache's size follows
-the live applications, edits or not ([object-model.md](object-model.md),
+the live applications, edits or not
+(`r[vm.heap.id-reclaimed-only-when-unnamed]`,
+`r[vm.dispatch.freed-ids-scrubbed]`; [object-model.md](object-model.md),
 "An application has two ids", which has the reuse rule of each id). The
 heap's tables still map a mixin's and a body's address to its id
 (`Rc::as_ptr`), which is sound because each table holds the strong `Rc`
@@ -2258,7 +2294,8 @@ and a version or a body leaves its map when the table lets go of it. The
 same per-mixin id serves dispatch's open option of guarding a private
 lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions").
 
-The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
+The cache holds no handle at all (`r[vm.dispatch.caches-hold-no-handle]`) — a
+pair of numbers for a key, an `Rc` for a
 value — so it is neither a root nor a forwarding target.
 
 An inline-cache entry holds no handle by construction, so
@@ -2280,9 +2317,11 @@ A frame object is collected exactly as every other object is, with the same
 mark bit and the same forwarding table: there is no separate store for
 frames.
 
-**A married frame cannot be collected, and that needs no rule of its own.**
-The stack's trace reads its frames' `reified` words, so a frame whose activation is still
-running is reachable from the stack and is marked. Leaving that to the root set
+**A married frame cannot be collected, and that needs no rule of its own**
+(the states are the book's `r[vm.activation.marriage]`; the marriage needs no
+rule beyond it). The stack's trace reads its frames' `reified` words, so a
+frame whose activation is still running is reachable from the stack and is
+marked. Leaving that to the root set
 rather than to a special case is what keeps a later change from silently
 freeing a running activation's frame.
 
@@ -2290,7 +2329,8 @@ The marriage survives compaction in both directions: the frame object's
 married field holds a *stack* offset as a `SmallInteger`, and no stack frame
 moves, and the stack frame's `reified` word is forwarded like any other
 word. While it is married the frame's own registers are nil and skipped by
-the trace, since the live ones are the stack's. The divorce on pop writes the program
+the trace, since the live ones are the stack's. The divorce on pop
+(`r[vm.activation.divorce-on-pop]`) writes the program
 counter and the uncontinuable flag, ends the marriage, and copies the
 registers into the frame object only when the activation retains them,
 leaving `true` in the married field when it did and nil when it did not,
@@ -2306,7 +2346,8 @@ copy, in the survivor space or the old space; the married field still holds
 the stack offset. While it is married an old frame needs no remembering: its
 live registers are on the activation stack, which every scavenge traces as
 a root. The divorce is a store into an existing object, so it takes the
-barrier's rule: when it copies the registers into an old frame and one of
+barrier's rule (`r[vm.heap.frame-copies-remembered]`): when it copies the
+registers into an old frame and one of
 them names a young object, it remembers the frame (`Heap::pop_activation`),
 since from then on the stack no longer covers them. A later
 `StoreOuterLocal` into the divorced frame goes through
@@ -2321,14 +2362,16 @@ negative `SmallInteger` naming its row in the heap's side table
 ([execution.md](execution.md), "Suspending and resuming"). The side table is
 a root and each row holds its frame, so a suspended frame is marked,
 forwarded and scavenged whatever else reaches it, and its registers, the
-only copy of its values, are traced. The suspension is a store into an
+only copy of its values, are traced. The suspension
+(`r[vm.activation.suspension-copies-registers]`) is a store into an
 existing object and takes the barrier's rule as the divorce does: it copies
 every register and the sender into the frame and remembers an old frame
 that now names a young object (`Heap::suspend_activations`); the resume
 copies the registers back onto the stack and nils the frame's own, so a
 married frame's registers are skipped again. A `frame_set_local` into a
 suspended frame, a handler leaf's write, goes through the barrier like any
-other. Suspended activations still count against the depth limit, in the
+other. Suspended activations still count against the depth limit
+(`r[runtime.depth-limit]`), in the
 heap's one running count, which suspending and resuming leave alone.
 Pinned by `heap.rs`'s
 `a_suspended_frame_survives_a_move_a_scavenge_and_a_collection_with_its_registers`,
@@ -2346,7 +2389,8 @@ What keeps a frame alive past its return is a closure's captured frame, or
 another reified frame's `sender`/`home`. Closure conversion shrank what a
 frame retains -- a body nothing reaches by reference keeps its registers nil
 -- but did not remove the frame: a closure still names its captured frame,
-because the home of a non-local return hangs on it. A surviving closure
+because the home of a non-local return hangs on it
+(`r[semantics.block.non-local-return]`). A surviving closure
 therefore retains its frame and, through that frame's `sender`/`home`,
 possibly a chain. That is the semantics rather than a defect, and it is what
 `bench_block.ns` measures.
@@ -2582,8 +2626,8 @@ Soup's `List` (`prior-art/primordialsoup/newspeak/Collections.ns`) holds
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
 and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every object is fixed-size once allocated: no block grows in
-place** -- a frame object is allocated with its code's full register file
-but the header's numbers,
+place** (`r[vm.heap.objects-never-grow]`) -- a frame object is allocated with
+its code's full register file but the header's numbers,
 and an image's frame record carries exactly that many registers
 ([image-format.md](image-format.md), "Verification") -- so the object
 space needs no growth-in-place case. What changes an
@@ -2724,7 +2768,8 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   `&mut [u64; COUNT]`, so a caller's stores carry no index check;
   `bump_up_to` is the cold bump of any size up to a ceiling inside the
   prefix, and lends nothing. Every change of the page map clamps the
-  limit to the prefix (`record`), so no `decommit` or `protect` leaves a
+  limit to the prefix (`record`; `r[vm.heap.bump-limit-within-committed]`), so
+  no `decommit` or `protect` leaves a
   bump able to lend memory that is no longer committed. The `unsafe` the
   lending takes stays here, beside `words_mut` and `prefix_mut`.
 - **Two implementations behind one interface**: Windows (`VirtualAlloc`,
@@ -2787,7 +2832,8 @@ machine code reads them between two leaf calls ([execution.md](execution.md),
 "The machine words"): the global mirror's 64 MiB at its base, room for
 2^20 rows of 64 bytes; the site cells' 192 MiB, 6,291,456 cells of 32
 bytes (`MAXIMUM_SITES`); the block cells' 768 MiB, one block of four per
-site. A cell's address is fixed for the reservation's life -- the region's
+site. A cell's address is fixed for the reservation's life
+(`r[vm.machine.cell-addresses-fixed]`) -- the region's
 base plus its index times its size -- while the `Vec`s of entries beside
 it move as they grow. Each region is committed as it grows, doubling what
 it has and at least 64 KiB, or exactly what it needs where the system
@@ -2803,7 +2849,8 @@ no handle, so nothing traces it.
 ### The application id table
 
 Machine code reads what it needs of an application by its index
-(`heap/application_ids.rs`): one `Reservation` of 2^22 rows of four words,
+(`r[vm.machine.application-id-table]`; `heap/application_ids.rs`): one
+`Reservation` of 2^22 rows of four words,
 its address and the number of rows recorded in the machine words
 (`ApplicationIds`, `ApplicationIdRows`). Row `index` holds, of application
 `index`:
@@ -2923,14 +2970,16 @@ objects lie end to end from the region's start up to its top.
   `Space::allocate_young` and `allocate_old` through `Heap::allocate_block`
   on the cold one; "Generations") -- as Soup's `Heap::Allocate`
   (`prior-art/primordialsoup/vm/heap.h:373-387`), and every allocation
-  writes its object's header, class word and fields in place, so no object
+  writes its object's header, class word and fields in place
+  (`r[vm.heap.allocation-initialized-before-read]`), so no object
   is built beside the space and copied in. Objects are 8-byte aligned and at
   least 16 bytes, a header and a class word.
 - **A handle is a 64-bit byte offset from the reservation's base** to the
   object's header, a `NonZeroU64`, so an `Option` of a handle is one word
   too, and base plus handle is the object's address, the form generated code
   will use. The first allocation starts at offset 16 (`FIRST_OBJECT`), not
-  0, so an all-zero word -- a missed initialization -- is never a live
+  0 (`r[vm.handle.never-zero]`), so an all-zero word -- a missed
+  initialization -- is never a live
   reference. There is no 32 GB ceiling: HotSpot's compressed oops save
   memory because a Java reference field is 32 bits, while every field here
   is a full `Value` word able to hold any value, so the offset can be as
@@ -2977,7 +3026,8 @@ objects lie end to end from the region's start up to its top.
   reads a wrong object at worst, never undefined behaviour and never memory
   outside the objects. `Heap::block` ends where the header's count says, so
   no field, element or register accessor reaches the next object's header
-  -- the guarantee the arena's separate blocks gave. The access path is
+  (`r[vm.heap.access-within-object]`) -- the guarantee the arena's separate
+  blocks gave. The access path is
   forced inline (`#[inline(always)]` on `pointer_words`, `pointer_words_mut`
   and `pointer_word`, `#[inline]` on `Reservation::prefix`): the space made
   `Heap::block` larger, LLVM then outlined `pointer_words`, and the call
@@ -3139,7 +3189,8 @@ generations moved".
   its initializing stores take no barrier -- the fields `allocate_block`
   writes, a closure's copied values, a self-referential class word -- and
   an old one may be filled with young values. `allocate_block` therefore
-  adds every object it allocates old to the remembered set, and the next
+  adds every object it allocates old to the remembered set
+  (`r[vm.heap.old-allocations-born-remembered]`), and the next
   scavenge scans it. The decoder's graph pass allocates old
   (`Heap::set_allocating_old`) and its objects are not remembered: the load
   tenured everything they name before the pass began, which a debug build
@@ -3151,11 +3202,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
 `doScavenge:` (`cointerp.c:53614`) and Strongtalk's `Universe::scavenge`
 (`universe_more.cpp:81-137`) are.
 
-- **The roots** are what a full collection marks from -- the `Activation`
-  class, every word of the activation stack, the side tables of
-  continuations and of suspended activations, the host roots, and the step
-  state's
-  `StepRoots` -- plus the remembered set. The whole
+- **The roots** are what a full collection marks from
+  (`r[vm.heap.roots-complete]`) plus the remembered set. The whole
   activation stack is a root, so a scavenge costs time in proportion to the
   recursion depth, up to the depth limit's 100,000 activations and its
   1,000 reserve; Spur bounds that with stack pages, and road step 7a's
@@ -3168,7 +3216,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   space and in the old space from where each top stood when the scavenge
   began, until neither grew; a promoted object that still names a young
   one joins the remembered set.
-- **Forwarders.** A copied object's old place becomes a forwarder: its
+- **Forwarders** (`r[vm.heap.no-forwarder-reached]`). A copied object's old
+  place becomes a forwarder: its
   header's format the forwarded one, its class word naming the copy, the
   format the bulk forward writes too, with the guard `FORWARDED`
   ([object-model.md](object-model.md), "`become:` is an eager bulk
@@ -3176,9 +3225,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   (`evacuate`), and the object at its end is copied only if it is young and
   not already in the future survivor space, as Spur's
   `scavengeReferentsOf:` decides (`cointerp.c:48090`, the
-  `isReallyYoungObject:` test at `:48132-48137`). A young object is copied
-  once per scavenge, and nothing names a bulk forward's forwarder once the
-  forward ends, so every chain a scavenge meets is one link of its own. A
+  `isReallyYoungObject:` test at `:48132-48137`). Every chain a scavenge
+  meets is one link of its own. A
   bulk forward's old forwarder that is remembered -- its class word names
   a young replacement -- stays in the set until its target is tenured or a
   full collection runs; its class word is the only word a scavenge reads
@@ -3195,7 +3243,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   eden promoted, so a promotion never meets a refused commit halfway
   through; a commit the operating system refuses aborts the process as
   running out of memory before the scavenge begins.
-- **Then the weak objects are settled** (`Scavenger::finish`): the
+- **Then the weak objects are settled** (`Scavenger::finish`;
+  `r[vm.heap.weak-settled-before-nursery-vacated]`): the
   ephemerons whose key was copied meanwhile are scanned and the Cheney
   loop runs again, until no copy waits to be scanned -- the first two
   checks scanning every unresolved ephemeron, the rest of the fixpoint
@@ -3238,7 +3287,8 @@ page-aligned, so a word index that is a multiple of four is a 32-byte
 address), so no header bit records it and the object's size never changes
 when it moves: the compaction's forwarding counts words.
 
-The price is that **every mover that copies an `AlignedBytes` object to
+The rule is `r[vm.heap.every-mover-realigns]`. The price is that **every mover
+that copies an `AlignedBytes` object to
 another address moves its data within the new block to the new block's
 aligned position** (`object::realign`, a `copy_within`, since the old and
 the new offset can overlap): the scavenger's `copy` (`heap/scavenge.rs`),
@@ -3287,7 +3337,8 @@ is the one decision 3 states, and the scavenger's own test pins it.
 ### The write barrier
 
 An old object that comes to name a young one sets its remembered bit and
-joins the remembered set (`Heap::write_barrier`, then `Heap::remember`),
+joins the remembered set (`Heap::write_barrier`, then `Heap::remember`;
+`r[vm.heap.barrier]`),
 per object, as Spur's `storePointer:ofObject:withValue:`
 (`cointerp.c:65922`; `remember:`, `:47466`) and Primordial Soup's
 `HeapObject::Store` (`prior-art/primordialsoup/vm/object.h:257-273`)
@@ -3313,7 +3364,8 @@ of them:
   that one of them makes name a young object ("Frames, the activation
   stack and the marriage").
 
-Machine code makes the same decision inline. A store into an object it
+Machine code makes the same decision inline (the rule is `r[vm.heap.barrier]`
+there too). A store into an object it
 did not allocate in the same template -- `StoreVector`'s, a setter
 stub's, a private or `super` setter's, an Array's `at:put:` stub's,
 `InitializeSlot`'s and `InitializeSlotProvisionally`'s, and an outer
@@ -3332,7 +3384,8 @@ generic leaf place one old, through `allocate_block`. An outer local in
 a married frame lies on the activation stack and takes none either.
 
 `allocate_block` remembers every old object it allocates outside the
-decoder, as above. A married frame's registers live on the activation
+decoder, as above (`r[vm.heap.old-allocations-born-remembered]`). A married
+frame's registers live on the activation
 stack, which is a root, and take no barrier; nor does a store into a young
 object. The collector's own rewrites -- the scavenge, the compaction, the
 move -- keep the remembered set themselves, and so does the bulk forward
@@ -3353,10 +3406,9 @@ scavenge stress mode below is what finds a breach.
 ### The remembered set and its limit
 
 `Heap::remembered` holds the offset of every old object that may name a
-young one, each once, its header's remembered bit, bit 31, set; a young
-object never carries the bit. A scavenge rebuilds it, a full collection
-empties it and clears every bit, and a move relocates every offset through
-the same shift, since no tracer reaches a raw offset. Past 8,192 entries
+young one (`r[vm.heap.remembered-set-exact]`), marked by its header's
+remembered bit, bit 31. A move relocates every offset through the same
+shift itself, since no tracer reaches a raw offset. Past 8,192 entries
 (`REMEMBERED_SET_LIMIT`), Primordial Soup's `kRememberedSetOverflowSize`
 (`heap.h:112`, `heap.cc:279-283`), the barrier requests a scavenge that
 tenures everything, at the next safepoint, and the set keeps growing until
@@ -3541,7 +3593,8 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   into the reserve would need a second comparison and the request inline,
   and inlining `allocate_block` itself would keep its branches and could
   not precompute the header.
-- **Machine code bumps the same cursor, against the same limit.** The
+- **Machine code bumps the same cursor, against the same limit**
+  (`r[vm.machine.allocation-as-interpreter]`). The
   cursor's two words, the top then the limit, lie in an allocation of
   their own (`ns_memory::SharedCursor`, "The memory layer"), whose
   address the entry block names (`BlockWord::EdenCursor`), so machine
@@ -3589,8 +3642,11 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   object: a closure's fixed fields and its copied values, a frame's fixed
   fields and its body's register count, a float's two words. A debug
   build asserts that each precomputed guard is the one
-  `Heap::header_dispatch_id` would have looked up.
-- **What the fast path writes**: the header word and the class word,
+  `Heap::header_dispatch_id` would have looked up
+  (`r[vm.heap.precomputed-header-matches]`).
+- **What the fast path writes**
+  (`r[vm.heap.allocation-initialized-before-read]`): the header word and
+  the class word,
   always. An instance, an `Array` and every object made through
   `allocate_object` are nil-filled. A closure, a frame and a float store
   every field explicitly and are not filled first, as Cog's `ee`
@@ -3613,7 +3669,8 @@ unique in the process (a process-wide `AtomicU64`,
 `next_code_table_epoch`), and a heap renews its own whenever a full
 collection frees a code row (`Heap::free_unnamed_codes`). A hit of the
 current epoch skips the map; a miss runs it and refills the cache. An id
-from another heap, or one since freed, is therefore never answered -- the
+from another heap, or one since freed, is therefore never answered
+(`r[vm.compiler.code-id-cache-current]`) -- the
 rule that a handle means nothing against a heap that did not mint it
 ("A handle is space-relative"), applied to ids -- and a debug build
 asserts that a hit names the body's own row. A copy of a body is another
@@ -3670,7 +3727,8 @@ moved".
   now, the hash of an object an image names by tag rather than by record
   ([image-format.md](image-format.md), "Identity hashes are preserved
   verbatim").
-- **A handle is a space-relative offset, not a globally unique name**, and a
+- **A handle is a space-relative offset, not a globally unique name**
+  (`r[vm.handle.space-relative]`), and a
   `debug_assertions`-only origin guard says so at every accessor rather than
   leaving it to convention. It exists because the failure it catches is silent:
   a handle from another heap is in range and names a valid object, so the read
@@ -3690,12 +3748,14 @@ moved".
   the right answer and `image/mixins.rs` uses one. Objects and activations need
   neither: an object's words hold offsets, so there is nothing to unwind.
 - **A collection happens only at a safepoint in the run loop, or between
-  entries where only roots hold values** (as `Interpreter::collect_now` does
+  entries where only roots hold values**
+  (`r[vm.heap.collection-only-at-safepoint]`; as `Interpreter::collect_now` does
   for tests), never inside an allocation (decided 2026-09-13), so no
   allocating Rust path roots anything and a JIT keeps its freedom across
   allocations. Cog, Nova, CPython and piccolo put it there; V8 and HotSpot's
   runtime pay for the alternative with handles and verifiers.
-- **No Rust frame is live below a safepoint**: nothing re-enters the run loop
+- **No Rust frame is live below a safepoint**
+  (`r[vm.heap.no-native-frame-below-safepoint]`): nothing re-enters the run loop
   from Rust, so there is nothing to root but what the host keeps. Chosen over
   rooting those frames with Nova's `Scoped` values, because the re-entries were
   to go anyway, and have (step 2a).

@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.allocation-as-interpreter"]
 stdout = '''
 46 1 11
 298

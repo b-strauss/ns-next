@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.exit-writes-every-scope"]
 stdout = '''
 420000
 16.0

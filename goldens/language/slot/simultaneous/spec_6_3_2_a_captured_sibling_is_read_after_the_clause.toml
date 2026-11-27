@@ -1,4 +1,4 @@
-rules = ["semantics.slot.simultaneous"]
+rules = ["semantics.slot.simultaneous", "vm.compiler.simultaneous-temporary-writable"]
 stdout = '''
 3
 '''

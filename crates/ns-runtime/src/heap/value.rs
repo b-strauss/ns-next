@@ -728,6 +728,7 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.value-tags
     #[test]
     fn the_words_are_spurs() {
         assert_eq!(Value::<'static>::small_integer(5).word, (5 << 3) | 1);
@@ -737,7 +738,17 @@ mod tests {
         assert_eq!(Value::<'static>::boolean(true).word, (2 << 3) | 0b010);
         assert_eq!(Value::<'static>::small_float(0.0).word, 0b100);
         assert_eq!(Value::<'static>::small_float(-0.0).word, (1 << 3) | 0b100);
-        assert_ne!(Value::<'static>::small_float(1.0).word & 0b111, 0);
+        assert_eq!(Value::<'static>::small_float(1.0).word & 0b111, 0b100);
+        // One bit tells a small integer: no other kind's word sets it.
+        for value in [
+            Value::<'static>::nil(),
+            Value::<'static>::boolean(false),
+            Value::<'static>::boolean(true),
+            Value::<'static>::small_float(-2.5),
+        ] {
+            assert_eq!(value.word & 1, 0);
+            assert!(value.as_small_integer().is_none());
+        }
     }
 
     /// The zero word is never stored, so it names no object: an object word

@@ -1,4 +1,4 @@
-rules = ["runtime.memory.weak"]
+rules = ["runtime.memory.weak", "vm.activation.dead-registers-nilled"]
 stdout = '''
 a loop's condition answered nil, which is no Boolean
 nil

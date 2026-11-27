@@ -4,6 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
+mod invariants;
+
+#[cfg(test)]
+use invariants::DetectorKind;
+pub use invariants::{Detector, check_detectors, check_invariants, detectors_in};
+use invariants::{VM_CHAPTER, detectors_of, undetected_in};
+
 /// A rule of the book: its identifier and where it is declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
@@ -66,10 +73,32 @@ fn fence_of(line: &str) -> Option<(char, usize)> {
     opens.then_some((character, length))
 }
 
+/// Where a line of Markdown stands with respect to the fenced code blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Place<'a> {
+    /// Outside every fenced block.
+    Outside,
+    /// The line that opens a fenced block, with its info string.
+    Opens(&'a str),
+    /// A line inside a fenced block.
+    Inside,
+    /// The line that closes a fenced block.
+    Closes,
+}
+
+impl Place<'_> {
+    fn is_outside(self) -> bool {
+        self == Place::Outside
+    }
+}
+
 /// Calls `visit` with each line of `markdown`, its 1-based number, and
-/// whether it stands outside every fenced code block; answers the line of a
-/// fence still open at the end, which hides every line after it.
-fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Option<usize> {
+/// where it stands with respect to the fenced code blocks; answers the
+/// line of a fence still open at the end, which hides every line after it.
+fn walk_markdown<'a>(
+    markdown: &'a str,
+    mut visit: impl FnMut(usize, &'a str, Place<'a>),
+) -> Option<usize> {
     let mut open: Option<(char, usize)> = None;
     let mut opened_at = 0;
     for (index, line) in lines_of(markdown).enumerate() {
@@ -77,7 +106,11 @@ fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Op
             (None, Some(fence)) => {
                 open = Some(fence);
                 opened_at = index + 1;
-                visit(index + 1, line, false);
+                let info = line
+                    .trim_start_matches(' ')
+                    .trim_start_matches(fence.0)
+                    .trim();
+                visit(index + 1, line, Place::Opens(info));
             }
             (Some((character, length)), Some((closing, closing_length)))
                 if closing == character
@@ -85,10 +118,10 @@ fn walk_markdown(markdown: &str, mut visit: impl FnMut(usize, &str, bool)) -> Op
                     && line.trim().chars().all(|next| next == character) =>
             {
                 open = None;
-                visit(index + 1, line, false);
+                visit(index + 1, line, Place::Closes);
             }
-            (Some(_), _) => visit(index + 1, line, false),
-            (None, None) => visit(index + 1, line, true),
+            (Some(_), _) => visit(index + 1, line, Place::Inside),
+            (None, None) => visit(index + 1, line, Place::Outside),
         }
     }
     open.map(|_| opened_at)
@@ -111,8 +144,8 @@ fn display(path: &Path) -> String {
 pub fn rules_in(markdown: &str, chapter: &Path) -> Result<Vec<Rule>, String> {
     let mut rules = Vec::new();
     let mut refusals = Vec::new();
-    let unclosed = walk_markdown(markdown, |line, text, outside| {
-        if !outside {
+    let unclosed = walk_markdown(markdown, |line, text, place| {
+        if !place.is_outside() {
             return;
         }
         if text.starts_with("r[") && rule_line(text).is_none() {
@@ -301,8 +334,8 @@ pub fn check_links(book: &Path) -> Result<(), String> {
     let mut refusals = Vec::new();
     for chapter in book_chapters(book)? {
         let markdown = read(&book.join(&chapter))?;
-        let _ = walk_markdown(&markdown, |line, text, outside| {
-            if !outside {
+        let _ = walk_markdown(&markdown, |line, text, place| {
+            if !place.is_outside() {
                 return;
             }
             let mut rest = text;
@@ -384,19 +417,42 @@ fn golden_references(
     Ok(())
 }
 
+/// The macro that makes a test of its one function for each lowering, the
+/// `#[test]` attributes its expansion writes.
+const LOWERING_MACRO: &str = "for_each_lowering! {";
+
 /// The name of the test whose `#[test]` follows the run of `// spec:` lines
-/// at `index`, or `None` when no test follows it directly.
+/// at `index` -- or whose function follows it inside `for_each_lowering!`,
+/// which writes its `#[test]` -- or `None` when no test follows it directly.
 fn test_below(lines: &[&str], index: usize) -> Option<String> {
     let mut below = index;
     while lines.get(below)?.trim().starts_with(RUST_REFERENCE) {
         below += 1;
     }
-    if lines.get(below)?.trim() != "#[test]" {
+    let signature = if lines.get(below)?.trim() == "#[test]" {
+        lines.get(below + 1)?.trim()
+    } else if within_lowering_macro(lines, below) {
+        lines.get(below)?.trim()
+    } else {
         return None;
-    }
-    let signature = lines.get(below + 1)?.trim();
+    };
     let name = signature.strip_prefix("fn ")?.split('(').next()?;
     Some(name.to_string())
+}
+
+/// Whether the line at `index` stands directly inside a `for_each_lowering!`
+/// invocation: the first line above it indented less opens one.
+fn within_lowering_macro(lines: &[&str], index: usize) -> bool {
+    let indentation = |line: &str| line.len() - line.trim_start().len();
+    let Some(line) = lines.get(index) else {
+        return false;
+    };
+    let own = indentation(line);
+    lines[..index]
+        .iter()
+        .rev()
+        .find(|above| !above.trim().is_empty() && indentation(above) < own)
+        .is_some_and(|opening| opening.trim_end().ends_with(LOWERING_MACRO))
 }
 
 /// Every reference the tests below `root` make to a rule.
@@ -482,6 +538,115 @@ pub fn check_references(rules: &[Rule], references: &[Reference]) -> Result<(), 
     }
 }
 
+/// A design document's pointer at a rule of the book: `r[<identifier>]` in
+/// a code span, which the documents write so that a renamed rule breaks the
+/// check instead of leaving a stale name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pointer {
+    pub identifier: String,
+    pub document: PathBuf,
+    pub line: usize,
+}
+
+/// The Markdown files directly in `directory`, sorted; none when it does
+/// not exist.
+fn markdown_files_in(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut found = Vec::new();
+    if !directory.is_dir() {
+        return Ok(found);
+    }
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("{}: cannot be read: {error}", display(directory)))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|error| format!("{}: cannot be read: {error}", display(directory)))?
+            .path();
+        if path.is_file() && path.extension().is_some_and(|extension| extension == "md") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Every pointer `CLAUDE.md`, the documents directly in `docs/` -- the
+/// open work and the progress among them -- and the design documents
+/// directly below `docs/design/` make to a rule. Only a span that is a
+/// backtick, `r[`, the identifier, `]` and a backtick is one, so that
+/// `` `ns-next-analyzer[.exe]` `` is not; a fenced block holds samples and
+/// is skipped. A pointer is no test's reference, so the rendered book lists
+/// it nowhere.
+pub fn pointers_in(root: &Path) -> Result<Vec<Pointer>, String> {
+    let mut documents = vec![root.join("CLAUDE.md")];
+    documents.extend(markdown_files_in(&root.join("docs"))?);
+    documents.extend(markdown_files_in(&root.join("docs/design"))?);
+    let mut pointers = Vec::new();
+    let mut refusals = Vec::new();
+    for path in documents {
+        if !path.is_file() {
+            continue;
+        }
+        let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let text = read(&path)?;
+        walk_markdown(&text, |line, content, place| {
+            if !place.is_outside() {
+                return;
+            }
+            let mut rest = content;
+            while let Some(start) = rest.find("`r[") {
+                let after = &rest[start + 3..];
+                let Some(end) = after.find("]`") else {
+                    break;
+                };
+                let identifier = &after[..end];
+                if is_identifier(identifier) {
+                    pointers.push(Pointer {
+                        identifier: identifier.to_string(),
+                        document: relative.clone(),
+                        line,
+                    });
+                } else {
+                    refusals.push(format!(
+                        "{}:{line}: `r[{identifier}]` is no rule identifier",
+                        display(&relative)
+                    ));
+                }
+                rest = &after[end + 2..];
+            }
+        });
+    }
+    if refusals.is_empty() {
+        Ok(pointers)
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
+/// Checks that every pointer names one of `rules`.
+pub fn check_pointers(rules: &[Rule], pointers: &[Pointer]) -> Result<(), String> {
+    let refusals: Vec<String> = pointers
+        .iter()
+        .filter(|pointer| {
+            !rules
+                .iter()
+                .any(|rule| rule.identifier == pointer.identifier)
+        })
+        .map(|pointer| {
+            format!(
+                "{}:{}: `r[{}]` names no rule of the specification",
+                display(&pointer.document),
+                pointer.line,
+                pointer.identifier
+            )
+        })
+        .collect();
+    if refusals.is_empty() {
+        Ok(())
+    } else {
+        Err(refusals.join("\n"))
+    }
+}
+
 /// `text` with the characters HTML gives a meaning escaped.
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -503,17 +668,34 @@ fn tests_of(identifier: &str, references: &[Reference]) -> Vec<(String, String)>
     tests
 }
 
-/// A rule's tests as its anchor shows them: a list folded shut by default,
-/// since a rule may name dozens of tests and the prose around it is what a
-/// reader reads first, or `none yet`. A Rust test shows its name and, beneath
-/// it, its file; a golden its file alone. The HTML stays on one line, so that
-/// Markdown takes it as one HTML block.
-fn listed_tests(tests: &[(String, String)]) -> String {
-    if tests.is_empty() {
-        return "<span class=\"rule-tests\">tests: none yet</span>".to_string();
+/// A rule's tests and detectors as its anchor shows them: a list folded
+/// shut by default, since a rule may name dozens of tests and the prose
+/// around it is what a reader reads first, or `none yet`, or, for a rule
+/// marked undetected, `none, undetected`. A Rust test shows its name and,
+/// beneath it, its file; a golden its file alone; a detector its name and
+/// its kind. The HTML stays on one line, so that Markdown takes it as one
+/// HTML block.
+fn listed_checks(tests: &[(String, String)], detectors: &[&Detector], undetected: bool) -> String {
+    if tests.is_empty() && detectors.is_empty() {
+        let text = if undetected {
+            "none, undetected"
+        } else {
+            "none yet"
+        };
+        return format!("<span class=\"rule-tests\">tests: {text}</span>");
     }
-    let noun = if tests.len() == 1 { "test" } else { "tests" };
-    let items: String = tests
+    let count = |number: usize, noun: &str| {
+        let plural = if number == 1 { "" } else { "s" };
+        format!("{number} {noun}{plural}")
+    };
+    let mut counts = Vec::new();
+    if !tests.is_empty() {
+        counts.push(count(tests.len(), "test"));
+    }
+    if !detectors.is_empty() {
+        counts.push(count(detectors.len(), "detector"));
+    }
+    let mut items: String = tests
         .iter()
         .map(|(file, name)| {
             if name.is_empty() {
@@ -527,22 +709,49 @@ fn listed_tests(tests: &[(String, String)]) -> String {
             }
         })
         .collect();
+    for detector in detectors {
+        items.push_str(&format!(
+            "<li><code>{}</code><span class=\"test-file\">{}</span></li>",
+            escape(&detector.name),
+            detector.kind.caption()
+        ));
+    }
     format!(
-        "<details class=\"rule-tests\"><summary>{} {noun}</summary><ul>{items}</ul></details>",
-        tests.len()
+        "<details class=\"rule-tests\"><summary>{}</summary><ul>{items}</ul></details>",
+        counts.join(", ")
     )
 }
 
-/// A chapter with each rule line made an anchor that lists the rule's tests.
-fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
+/// The rules of `chapter` marked `Undetected:`: only the VM invariants
+/// take that line, so in any other chapter it is text and marks nothing.
+fn undetected_of(markdown: &str, chapter: &Path) -> Vec<String> {
+    if chapter == Path::new(VM_CHAPTER) {
+        undetected_in(markdown)
+    } else {
+        Vec::new()
+    }
+}
+
+/// A chapter with each rule line made an anchor that lists the rule's checks.
+fn processed_chapter(
+    markdown: &str,
+    chapter: &Path,
+    references: &[Reference],
+    detectors: &[Detector],
+) -> String {
+    let undetected = undetected_of(markdown, chapter);
     let mut processed = String::new();
-    let _ = walk_markdown(markdown, |_, line, outside| {
-        match rule_line(line).filter(|_| outside) {
+    let _ = walk_markdown(markdown, |_, line, place| {
+        match rule_line(line).filter(|_| place.is_outside()) {
             Some(identifier) => {
                 processed.push_str(&format!(
                     "<div class=\"rule\" id=\"r-{identifier}\"><a href=\"#r-{identifier}\">[{identifier}]</a> \
                      {}</div>\n\n",
-                    listed_tests(&tests_of(identifier, references))
+                    listed_checks(
+                        &tests_of(identifier, references),
+                        &detectors_of(identifier, detectors),
+                        undetected.iter().any(|known| known == identifier)
+                    )
                 ));
             }
             None => {
@@ -554,17 +763,26 @@ fn processed_chapter(markdown: &str, references: &[Reference]) -> String {
     processed
 }
 
-/// The appendix of the rules no test names, chapter by chapter.
-fn untested_rules(rules: &[Rule], references: &[Reference], chapters: &[PathBuf]) -> String {
+/// The appendix of the rules nothing checks, chapter by chapter: no test and
+/// no detector names them. A rule marked `Undetected:` stays, and says so.
+fn untested_rules(
+    rules: &[Rule],
+    references: &[Reference],
+    detectors: &[Detector],
+    undetected: &[String],
+    chapters: &[PathBuf],
+) -> String {
     let mut text = String::from(
-        "# Untested rules\n\nThe rules no golden and no Rust test names yet, chapter by chapter.\n",
+        "# Untested rules\n\nThe rules no golden, no Rust test and no detector names yet, chapter by chapter.\n",
     );
     let mut any = false;
     for chapter in chapters {
         let untested: Vec<&Rule> = rules
             .iter()
             .filter(|rule| {
-                &rule.chapter == chapter && tests_of(&rule.identifier, references).is_empty()
+                &rule.chapter == chapter
+                    && tests_of(&rule.identifier, references).is_empty()
+                    && detectors_of(&rule.identifier, detectors).is_empty()
             })
             .collect();
         if untested.is_empty() {
@@ -574,8 +792,13 @@ fn untested_rules(rules: &[Rule], references: &[Reference], chapters: &[PathBuf]
         text.push_str(&format!("\n## {}\n\n", display(chapter)));
         for rule in untested {
             let page = display(chapter).replace(".md", ".html");
+            let note = if undetected.contains(&rule.identifier) {
+                " (undetected)"
+            } else {
+                ""
+            };
             text.push_str(&format!(
-                "- [`{}`]({page}#r-{})\n",
+                "- [`{}`]({page}#r-{}){note}\n",
                 rule.identifier, rule.identifier
             ));
         }
@@ -628,10 +851,18 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     let rules = book_rules(&book)?;
     let references = references_in(root)?;
     check_references(&rules, &references)?;
+    check_pointers(&rules, &pointers_in(root)?)?;
+    let detectors = detectors_in(&read(&book.join(VM_CHAPTER))?, Path::new(VM_CHAPTER))?;
+    check_detectors(&rules, &detectors, &crate::STRESS_MODES)?;
+    check_invariants(&book, &rules, &references, &detectors)?;
     check_links(&book)?;
     check_mdbook()?;
     let chapters = book_chapters(&book)?;
     let source = output.join("src");
+    let mut undetected = Vec::new();
+    for chapter in &chapters {
+        undetected.extend(undetected_of(&read(&book.join(chapter))?, chapter));
+    }
     let _ = std::fs::remove_dir_all(output);
     let write = |path: &Path, contents: &str| -> Result<(), String> {
         if let Some(parent) = path.parent() {
@@ -645,7 +876,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
         let markdown = read(&book.join(chapter))?;
         write(
             &source.join(chapter),
-            &processed_chapter(&markdown, &references),
+            &processed_chapter(&markdown, chapter, &references, &detectors),
         )?;
     }
     let mut summary = read(&book.join("SUMMARY.md"))?.replace("\r\n", "\n");
@@ -656,7 +887,7 @@ pub fn render(root: &Path, output: &Path) -> Result<(), String> {
     write(&source.join("SUMMARY.md"), &summary)?;
     write(
         &source.join("untested-rules.md"),
-        &untested_rules(&rules, &references, &chapters),
+        &untested_rules(&rules, &references, &detectors, &undetected, &chapters),
     )?;
     let configuration = output_configuration(&read(&book.join("book.toml"))?)?;
     write(&output.join("book.toml"), &configuration)?;
@@ -680,10 +911,10 @@ mod tests {
 
     /// A scratch directory of the test's own below the system's temporary
     /// directory, removed when it is dropped.
-    struct Scratch(PathBuf);
+    pub(super) struct Scratch(pub(super) PathBuf);
 
     impl Scratch {
-        fn new(name: &str) -> Scratch {
+        pub(super) fn new(name: &str) -> Scratch {
             let path = std::env::temp_dir()
                 .join(format!("ns-next-xtask-spec-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&path);
@@ -691,7 +922,7 @@ mod tests {
             Scratch(path)
         }
 
-        fn write(&self, relative: &str, contents: &str) {
+        pub(super) fn write(&self, relative: &str, contents: &str) {
             let path = self.0.join(relative);
             std::fs::create_dir_all(path.parent().expect("a parent"))
                 .expect("create the directory");
@@ -705,7 +936,7 @@ mod tests {
         }
     }
 
-    fn repository_root() -> PathBuf {
+    pub(super) fn repository_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask lies inside the repository")
@@ -990,6 +1221,27 @@ mod tests {
     }
 
     #[test]
+    fn a_spec_line_above_a_test_of_both_lowerings_names_it() {
+        let scratch = Scratch::new("lowering-references");
+        scratch.write(
+            "crates/a/tests/b.rs",
+            "ns_runtime::for_each_lowering! {\n    /// Doc.\n    #[cfg(debug_assertions)]\n    // spec: lex.a\n    fn both(lowering) {\n        let _ = lowering;\n    }\n}\n",
+        );
+        let references = references_in(&scratch.0).expect("readable");
+        let found: Vec<(&str, &str)> = references
+            .iter()
+            .map(|reference| (reference.identifier.as_str(), reference.name.as_str()))
+            .collect();
+        assert_eq!(found, [("lex.a", "both")]);
+        scratch.write(
+            "crates/a/tests/b.rs",
+            "other_macro! {\n    // spec: lex.a\n    fn both(lowering) {}\n}\n",
+        );
+        let refusal = references_in(&scratch.0).expect_err("no test below");
+        assert!(refusal.contains("b.rs:2"), "{refusal}");
+    }
+
+    #[test]
     fn a_rules_tests_are_a_list_folded_shut() {
         let reference = |identifier: &str, name: &str| Reference {
             identifier: identifier.to_string(),
@@ -1002,7 +1254,12 @@ mod tests {
             reference("lex.a", "second<T>"),
             reference("lex.b", ""),
         ];
-        let processed = processed_chapter("r[lex.a]\nr[lex.b]\nr[lex.c]\n", &references);
+        let processed = processed_chapter(
+            "r[lex.a]\nr[lex.b]\nr[lex.c]\n",
+            Path::new("lexical.md"),
+            &references,
+            &[],
+        );
         let lines: Vec<&str> = processed.lines().filter(|line| !line.is_empty()).collect();
         assert_eq!(
             lines,
@@ -1046,5 +1303,198 @@ mod tests {
         let rules = book_rules(&root.join("docs/spec")).expect("the book's rules");
         let references = references_in(&root).expect("the tests' references");
         check_references(&rules, &references).expect("every reference names a rule");
+    }
+
+    /// A scratch repository with a one-rule book and `contents` as the
+    /// design document `docs/design/a.md`.
+    fn pointer_scratch(name: &str, document: &str, contents: &str) -> Scratch {
+        let scratch = Scratch::new(name);
+        scratch.write("docs/spec/SUMMARY.md", "# Summary\n\n- [A](a.md)\n");
+        scratch.write("docs/spec/a.md", "r[vm.sample]\nA rule.\n");
+        scratch.write(document, contents);
+        scratch
+    }
+
+    #[test]
+    fn a_pointer_to_a_rule_of_the_book_is_accepted() {
+        let scratch = pointer_scratch("pointer-ok", "docs/design/a.md", "see `r[vm.sample]`\n");
+        let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        assert_eq!(pointers.len(), 1);
+        assert_eq!(pointers[0].identifier, "vm.sample");
+        assert_eq!(pointers[0].line, 1);
+        check_pointers(&rules, &pointers).expect("a rule of the book");
+    }
+
+    #[test]
+    fn a_pointer_to_no_rule_is_refused() {
+        let scratch = pointer_scratch(
+            "pointer-none",
+            "docs/design/a.md",
+            "one\ntwo\n`r[vm.none]`\n",
+        );
+        let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        let refusal = check_pointers(&rules, &pointers).expect_err("no such rule");
+        assert_eq!(
+            refusal,
+            "docs/design/a.md:3: `r[vm.none]` names no rule of the specification"
+        );
+    }
+
+    #[test]
+    fn a_pointer_in_a_fenced_block_is_a_sample() {
+        let scratch = pointer_scratch(
+            "pointer-fence",
+            "docs/design/a.md",
+            "```\n`r[vm.none]`\n```\n",
+        );
+        assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
+    }
+
+    #[test]
+    fn a_bare_identifier_is_no_pointer() {
+        let scratch = pointer_scratch(
+            "pointer-bare",
+            "docs/design/a.md",
+            "`vm.rs` and `image.bound.sizing` and `ns-next-analyzer[.exe]`\n",
+        );
+        assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
+    }
+
+    #[test]
+    fn a_malformed_pointer_is_refused() {
+        let scratch = pointer_scratch("pointer-bad", "CLAUDE.md", "`r[Vm.X]`\n");
+        let refusal = pointers_in(&scratch.0).expect_err("malformed");
+        assert_eq!(refusal, "CLAUDE.md:1: `r[Vm.X]` is no rule identifier");
+    }
+
+    /// The documents of `docs/` itself -- the open work, the progress --
+    /// point at rules as the design documents do.
+    #[test]
+    fn a_pointer_in_a_document_of_docs_is_read() {
+        let scratch = pointer_scratch("pointer-docs", "docs/OPEN-WORK.md", "`r[vm.none]`\n");
+        let pointers = pointers_in(&scratch.0).expect("the pointers");
+        assert_eq!(pointers.len(), 1);
+        assert_eq!(pointers[0].document, Path::new("docs/OPEN-WORK.md"));
+    }
+
+    #[test]
+    fn every_pointer_names_a_rule_of_the_book() {
+        let root = repository_root();
+        let rules = book_rules(&root.join("docs/spec")).expect("the book's rules");
+        let pointers = pointers_in(&root).expect("the documents' pointers");
+        check_pointers(&rules, &pointers).expect("every pointer names a rule");
+    }
+
+    fn detector(name: &str, kind: DetectorKind) -> Detector {
+        Detector {
+            name: name.to_string(),
+            kind,
+            rules: vec!["vm.a".to_string()],
+            line: 1,
+        }
+    }
+
+    #[test]
+    fn a_rules_detectors_are_listed_beside_its_tests() {
+        let references = [Reference {
+            identifier: "vm.a".to_string(),
+            test: PathBuf::from("crates/a/tests/b.rs"),
+            name: "first".to_string(),
+            line: 1,
+        }];
+        let one = processed_chapter(
+            "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
+            &references,
+            &[detector("SCAVENGE", DetectorKind::Stress)],
+        );
+        assert!(
+            one.contains("<summary>1 test, 1 detector</summary>"),
+            "{one}"
+        );
+        assert!(
+            one.contains(
+                "<li><code>SCAVENGE</code><span class=\"test-file\">stress mode</span></li>"
+            ),
+            "{one}"
+        );
+        let several = processed_chapter(
+            "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
+            &references,
+            &[
+                detector("SCAVENGE", DetectorKind::Stress),
+                detector("poison", DetectorKind::Debug),
+                detector("borrow", DetectorKind::Compiler),
+            ],
+        );
+        assert!(
+            several.contains("<summary>1 test, 3 detectors</summary>"),
+            "{several}"
+        );
+        assert!(
+            several.contains("<span class=\"test-file\">debug build</span>"),
+            "{several}"
+        );
+        assert!(
+            several.contains("<span class=\"test-file\">Rust compiler</span>"),
+            "{several}"
+        );
+        let alone = processed_chapter(
+            "r[vm.a]\n",
+            Path::new(VM_CHAPTER),
+            &[],
+            &[detector("SCAVENGE", DetectorKind::Stress)],
+        );
+        assert!(alone.contains("<summary>1 detector</summary>"), "{alone}");
+    }
+
+    #[test]
+    fn an_undetected_rule_shows_so() {
+        let processed = processed_chapter(
+            "r[vm.a]\nProtects: x.\nUndetected: none.\n",
+            Path::new(VM_CHAPTER),
+            &[],
+            &[],
+        );
+        assert!(
+            processed.contains("<span class=\"rule-tests\">tests: none, undetected</span>"),
+            "{processed}"
+        );
+    }
+
+    /// `Undetected:` is the VM invariants' convention; in another chapter
+    /// it is text, and the rule is untested as any other.
+    #[test]
+    fn only_a_vm_invariant_shows_undetected() {
+        let markdown = "r[lex.a]\nUndetected: none.\n";
+        let processed = processed_chapter(markdown, Path::new("lexical.md"), &[], &[]);
+        assert!(
+            processed.contains("<span class=\"rule-tests\">tests: none yet</span>"),
+            "{processed}"
+        );
+        assert!(undetected_of(markdown, Path::new("lexical.md")).is_empty());
+    }
+
+    #[test]
+    fn a_rule_with_a_detector_is_not_untested() {
+        let rule = |identifier: &str| Rule {
+            identifier: identifier.to_string(),
+            chapter: PathBuf::from("vm-invariants.md"),
+            line: 1,
+        };
+        let rules = [rule("vm.a"), rule("vm.b"), rule("vm.c")];
+        let text = untested_rules(
+            &rules,
+            &[],
+            &[detector("SCAVENGE", DetectorKind::Stress)],
+            &["vm.b".to_string()],
+            &[PathBuf::from("vm-invariants.md")],
+        );
+        assert!(!text.contains("[`vm.a`]"), "{text}");
+        assert!(text.contains("#r-vm.b) (undetected)\n"), "{text}");
+        assert!(text.contains("[`vm.c`]"), "{text}");
     }
 }

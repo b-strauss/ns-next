@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.mirrors"]
+rules = ["semantics.reflection.mirrors", "vm.heap.reified-mixin-canonical"]
 status = 0
 stdout = '''
 true

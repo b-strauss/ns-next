@@ -15,19 +15,17 @@ when they were written.
 
 ## Next
 
-**The specification of ns-next, its fifth batch: the VM invariants, and
-the design documents pointing at the rules** (decided with the user on
-2026-11-23, before the debugger's stage 6 goes on;
-[specification.md](design/specification.md), decision 2 and "The order
-of building it", item 5): the internal rules no program sees whose
-breach is silent wrong output -- the write barrier, handles and the
-brand, what the collector traces, the rules of machine code -- each
-naming the rule of the language, the run-time semantics, the bytecode or
-the image format it protects, written into the book's last part; and
-the design documents and `CLAUDE.md` pointing at the rules by
-identifier. The first four batches, the book with the syntax, the
-semantics with the run-time semantics, the bytecode and the image
-format, are built. The complete install resumes after the fifth.
+**The complete install, the first of hot swap's three batches** (decisions
+taken with the user on 2026-11-22 but for one, the change of a module's
+identity; the branch `feature/complete-install` is parked with batch A's
+decisions; [liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"): the install that changes everything --
+a superclass, a class added or removed, a method added, changed or
+removed, the factory and the initializer -- atomically through the
+MirrorBuilder. It is the next batch; the specification of the current
+state it waited for is built ([specification.md](design/specification.md),
+"The order of building it"), and it changes the book as it changes the
+runtime.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
@@ -51,8 +49,7 @@ Hot swap is split into three batches, the complete install, hot swap in
 the debugger and developing in an empty world, and the first one's
 decisions are taken but for one, the change of a module's identity
 ([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: the complete install"); it waits for the specification of the
-current state, which comes first (decided with the user on 2026-11-23).
+"Planned: the complete install"); the first of the three is the complete install, the item above.
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
 at the safepoint", "Launching, the start and the end", "The MCP
 server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
@@ -278,6 +275,23 @@ benchmarks", describes.
   and the image chapter's `image.limit.clauses` explains its own limit as
   "the most a resolved declaration has", but no rule of
   `docs/spec/language/` states it.
+- **The book has no chapter on the core library** (2026-11-27, with the VM
+  invariants). The behaviour of `ByteArray`, its contents and its format, of
+  a symbol's hash, and of `=` and `hash` for numbers across representations,
+  for fractions and for strings has no rule of the first four parts. The
+  invariants that keep it true -- `r[vm.heap.every-mover-realigns]`,
+  `r[vm.heap.byte-array-own-format]`, `r[vm.heap.symbol-hash-from-text]`,
+  `r[vm.heap.number-one-representation]`, `r[vm.heap.fraction-normal-form]`
+  and `r[vm.heap.string-canonical-width]` -- protect the closest rules
+  instead. Whether the book gets a part on the core library is undecided.
+- **Many VM invariants bundle several clauses under one identifier**
+  (2026-11-27, with the VM invariants). A rule such as
+  `r[vm.heap.id-reclaimed-only-when-unnamed]` or
+  `r[vm.machine.safepoint-request-bits]` states several independent
+  clauses, so a test or a detector that names it may check one clause of
+  it and leave the others unchecked, while the book lists the rule as
+  tested. Splitting each such rule into one rule a clause, each clause
+  with a test or a detector of its own, is future work.
 
 ## The road to a high-performance VM
 

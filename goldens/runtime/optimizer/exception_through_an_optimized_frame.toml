@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.exit-writes-every-scope", "vm.machine.observed-never-inlined"]
 stdout = '''
 1782659400
 6049

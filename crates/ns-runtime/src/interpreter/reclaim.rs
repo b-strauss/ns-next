@@ -598,6 +598,7 @@ mod tests {
     /// the guards the collection after the first freed, so neither count
     /// grows.
     #[cfg(debug_assertions)]
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
     #[test]
     fn dead_applications_are_reclaimed_and_their_guards_minted_again() {
         let (mut interpreter, churn) = load(CHURN);
@@ -667,6 +668,7 @@ mod tests {
     /// trailing ones given back, and their minting again.
     // `collect_now` is a debug build's.
     #[cfg(debug_assertions)]
+    // spec: vm.machine.application-id-table
     #[test]
     fn the_application_id_table_follows_the_application_table() {
         let (mut interpreter, churn) = load(CHURN);
@@ -889,6 +891,7 @@ mod tests {
     /// mixin answers its id after a collection nothing else survives, and
     /// its nested declaration the same one as before.
     #[cfg(debug_assertions)]
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
     #[test]
     fn a_host_held_mixin_keeps_its_id() {
         let (mut interpreter, outer) = load(OUTER);
@@ -940,6 +943,7 @@ mod tests {
     /// a collection: its body lives on with the closure, though no
     /// superseded version is kept for it.
     #[cfg(debug_assertions)]
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
     #[test]
     fn a_closure_of_a_superseded_version_runs_after_a_collection() {
         let (mut interpreter, outer) = load(OUTER);
@@ -1003,6 +1007,9 @@ mod tests {
     /// id the heap has for it now, or nothing once it died -- never another
     /// body, though ids are minted again.
     #[cfg(all(ns_jit, debug_assertions))]
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
+    // spec: vm.machine.code-ids-kept-with-code
+    // spec: vm.machine.frame-names-body-by-code
     #[test]
     fn a_return_address_never_names_a_body_that_took_a_freed_id() {
         let (mut interpreter, outer) = load(OUTER);
@@ -1210,6 +1217,7 @@ mod tests {
         /// behind the megamorphic site all send the new class's `value`.
         /// The reference lowering, which caches nothing, is the oracle.
         #[cfg(debug_assertions)]
+        // spec: vm.dispatch.freed-ids-scrubbed
         fn a_reused_guard_misses_every_cache_entry_of_its_old_application(lowering) {
             let (mut interpreter, class) = load_with(lowering, GUARDS);
             let instance = expect_ok(interpreter.instantiate(&class, &[]), "a Guards");

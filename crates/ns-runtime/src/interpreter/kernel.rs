@@ -2446,6 +2446,7 @@ mod tests {
     /// `PlatformFactory.ns`'s class names are listed too: `Object` must
     /// never grow an accessor for one of them, since a program reaches them
     /// through the platform it is handed.
+    // spec: vm.mirror.class-unnameable
     #[test]
     fn objects_class_accessors_are_exactly_the_nameable_builtins() {
         let mut interpreter = Interpreter::bootstrap();

@@ -4713,6 +4713,7 @@ mod tests {
 
     /// A limit below the top refuses every bump, as `Reservation::bump`'s
     /// does.
+    // spec: vm.heap.bump-limit-within-committed
     #[test]
     fn a_limit_below_the_top_refuses_the_inline_bump() {
         let mut eden = FakeEden::new(16, 16);

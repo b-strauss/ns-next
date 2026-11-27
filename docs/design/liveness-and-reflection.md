@@ -146,23 +146,25 @@ them itself when it migrated nothing; nothing else mutates a method table
 at run time. Scoping an invalidation to the applications a change affects
 is deferred beyond road step 5b2a. A full collection that reclaims a guard
 id or an application index vacates exactly the entries that name it and
-leaves every other one warm (`InlineCaches::forget_freed`;
-[dispatch.md](dispatch.md), "Invalidation"), so an id minted again never
-meets an entry filled for the application it named before. The dispatch id a cache guards on is a copy in the
-object header ([dispatch.md](dispatch.md), "The dispatch id"), so `become:`
-must not let a stale guard hit, and a class change must restamp it, as
-`Heap::class_set_application` already does when a class's application changes;
-otherwise a cache hit would run the old class's method on the object. The
-bulk forward meets the first by construction: it is eager, so nothing names
-a forwarder once it ends and every reference names the new object, which
-keeps its own id, and every inline cache is flushed after it
+leaves every other one warm (`r[vm.dispatch.freed-ids-scrubbed]`;
+`InlineCaches::forget_freed`; [dispatch.md](dispatch.md), "Invalidation"), so
+an id minted again never meets an entry filled for the application it named
+before. The dispatch id a cache guards on is a copy in the object header
+(`r[vm.dispatch.header-guard-stamped]`; [dispatch.md](dispatch.md), "The
+dispatch id"), so `become:` must not let a stale guard hit, and a class
+change must restamp it, as `Heap::class_set_application` already does when a
+class's application changes; otherwise a cache hit would run the old class's
+method on the object. The bulk forward meets the first by construction: it
+is eager, so nothing names a forwarder once it ends and every reference names
+the new object, which keeps its own id, and every inline cache is flushed
+after it
 ([object-model.md](object-model.md), "`become:` is an eager bulk forward").
 The caches also rest on a guard naming one application whose chain does
 not change while they persist -- the private and super slot accessors'
 verified pair most directly ([object-model.md](object-model.md), "What a
 slot access checks") -- so whatever changes a class object's application
 or chain under an unchanged guard, as the install does, invalidates the
-caches after it.
+caches after it (`r[vm.dispatch.invalidation-after-change]`).
 
 ## Debugger
 
@@ -341,7 +343,8 @@ capability is the access check. Not in this step, each an item of
 lazy slot's value through `getSlot:`, and the indexed elements of an
 `Array` or a `String` in `slots`.
 
-**A mirror sends its reflectee nothing.** An object mirror's `getClass`,
+**A mirror sends its reflectee nothing** (`r[semantics.reflection.mirrors]`).
+An object mirror's `getClass`,
 `=` and `hash`, a class mirror's whole walk, and a mixin mirror's reads ask
 the VM mirror, so a reflectee that overrides `=`, `hash` or `class`, or is
 a proxy, reflects as itself; refusing a slot name reads the name's text
@@ -377,9 +380,10 @@ object; the canonical platform even hands its VM mirror out through
 `TranscriptFactory`'s `vmMirror` slot holds it -- and the shipped roots:
 a facet class's enclosing object is its module's root instance, and a
 private shipped class carries its enclosing object's authority. So the
-rule is structural, by level: a mirror reads a value only through a level
-whose mixin is not shipped (`Mixin::shipped`, a class side's that of its
-instance side).
+rule (`r[vm.mirror.mirrors-withhold-shipped-values]`) is structural, by
+level: a mirror reads a value only through a level whose mixin is not
+shipped (`Mixin::shipped`, a class side's that of its instance side;
+`r[vm.mirror.shipped-decided-by-root]`).
 
 - **A mirror reads only the slot a name names.** An object mirror's
   `slots` lists each name once, under the slot the object's own code sees
@@ -482,7 +486,8 @@ That object is an instance of `Kernel.ns`'s private class `Mixin`
 `MixinId` as a `SmallInteger`. There is one per mixin per heap, made on
 first demand by `Mutator::reified_mixin` and kept in a table on the heap
 indexed by the id (`Heap`'s `mixin_objects`, forwarded by every move),
-weak in a full collection: while anything reaches the object it stays the
+weak in a full collection (`r[vm.heap.reified-mixin-canonical]`): while
+anything reaches the object it stays the
 one object of its mixin and keeps the mixin's id, so `==` is the mixin's
 identity for every comparison a program can make and the object survives
 an edit that installs a new mixin under the id; once nothing reaches it,
@@ -577,7 +582,8 @@ its behaviour from their `MirrorBuilderTesting.ns` and
 `AtomicInstallTesting.ns`; no code is copied. The specification asks only
 that several reflective changes apply "simultaneously and atomically ...
 if any change fails, none take place" (§8.2, `newspeak-spec.pdf` p. 47)
-and that a change to a mixin affect all of its applications (§6.2); what
+and that a change to a mixin affect all of its applications (§6.2;
+`r[semantics.reflection.atomic-install]`); what
 happens to existing instances and running activations it leaves to the
 implementation.
 
@@ -677,7 +683,8 @@ sends are bound late
 an implicit selector whose declaring class changed would send at the
 wrong depth, silently. So `Mutator::prepare_edit` (`interpreter/edit.rs`)
 recompiles the edited declaration and everything nested in it, and it
-does so from the module's text:
+does so from the module's text
+(`r[vm.compiler.edit-recompiles-from-current-text]`):
 
 1. Every module has a *current text*, assembled from the texts of its
    declarations' current versions, each hole filled by the declaration
@@ -761,12 +768,11 @@ the edited module text:
 | a resolver error | `<name>'s edited source does not resolve: <message> (line <n>)` |
 | an instance whose layout would change that the forward refuses | `cannot migrate an instance of <name>, which is not an ordinary object` |
 
-**The install is one leaf, and its commit has no safepoint.**
+**The install is one leaf, and its commit has no safepoint**
+(`r[vm.heap.install-commit-runs-nothing]`).
 `Mutator::install_edit` (`interpreter/install.rs`) prepares, then
-commits, and never runs Newspeak code, sends to a user object or polls a
-safepoint between the two or during the commit, so no program observes a
-half-installed edit, not even a mourned ephemeron's handler at a
-safepoint:
+commits, so no program observes a half-installed edit, not even a mourned
+ephemeron's handler at a safepoint:
 
 - *Prepare*: the compilation above.
 - *Find*: one walk of the object space (`Heap::classes_and_instances_over`)
@@ -803,7 +809,8 @@ safepoint:
   before the install does next" below).
 - *Migrate*: each instance of a class object whose fields changed is
   allocated in the new shape, and its fields are copied by what they are
-  named (`mixin.rs`'s `FieldName`, `MixinApplication::field_names`): a
+  named (`r[vm.heap.migration-by-declared-name]`; `mixin.rs`'s `FieldName`,
+  `MixinApplication::field_names`): a
   slot by the id of the level declaring it, that id's occurrence counted
   from the chain's root -- one chain may apply a mixin twice through `<:`
   clauses, and an install evaluates no clause again, so an occurrence is
@@ -821,8 +828,10 @@ safepoint:
   every class object whose metaclass was re-applied -- are restamped with
   their class's new guard in the same pass (`Heap::stamp_dispatch_ids`),
   rather than by a walk per class as `Heap::class_set_application` does.
-- *Forward*: one bulk forward, `heap::forward_identity`, replaces every
-  migrated instance by its new-shape copy, keeping its identity hash, and
+- *Forward*: one bulk forward, `heap::forward_identity`
+  (`r[runtime.forward-identity]`), replaces every
+  migrated instance by its new-shape copy, keeping its identity hash
+  (`r[runtime.memory.identity-hash]`), and
   invalidates the caches; when nothing migrated the caches are
   invalidated all the same, since class objects' applications changed
   under unchanged guards ("Caches and their dependency keys" above). Only
@@ -833,7 +842,8 @@ safepoint:
   classes and the forward, in which a safepoint could run a program's
   code against classes whose instances have not migrated.
 
-**What an activation entered before the install does next.** A method's
+**What an activation entered before the install does next**
+(`r[vm.dispatch.entered-level-successor]`). A method's
 body and a closure keep the code they were running and finish with it,
 as in both prior arts, whose installers touch neither; their sends after
 the install find the new code. Code that addresses its own slots -- an
@@ -922,8 +932,8 @@ changed or removed, the factory and the initializer. The Newspeak
 implementations are the models (`prior-art/newspeak/AtomicInstaller.ns`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns`); JVMTI's
 `RedefineClasses`, which permits only method bodies to change, is not.
-Batch A waits for the specification of the current state, which comes
-first (decided with the user on 2026-11-23). Its decisions so far, each
+The specification of the current state is built, and batch A is the next
+batch to build. Its decisions so far, each
 taken with the user on 2026-11-22:
 
 1. **A superclass change re-evaluates the clause for every existing
@@ -1073,7 +1083,8 @@ that the mirror's class and table are fixed at bootstrap
 replaced a method there would be seen by a sent mirror send and bypassed by
 both, so the two paths would disagree; the MirrorBuilder's refusal of
 every edit to a shipped mixin, in `asBuilder` and again in
-`Mutator::prepare_edit`, is what seals it. **Open:** how a replaced *kernel*
+`Mutator::prepare_edit`, is what seals it
+(`r[vm.mirror.shipped-mixins-never-edited]`). **Open:** how a replaced *kernel*
 method is compiled, should editing kernel methods ever be offered. Its
 primitive-method mark and its `SendMirror` rest on
 `Binding::MirrorSend`, which only shipped core-library source's
@@ -1094,7 +1105,8 @@ is built by road step 5b1 (2026-10-18,
 the install that edits a live class through it by road step 5b2a ("A
 MirrorBuilder and an atomic install" above).
 
-**Every version answers one id.** `Heap::mixin_id` answers the id a mixin
+**Every version answers one id** (`r[vm.dispatch.mixin-id-one-per-mixin]`).
+`Heap::mixin_id` answers the id a mixin
 -- any version of it -- was first registered under, registering the
 enclosing mixins not registered yet first, outermost first; the row holds
 the current version (`Heap::mixin`) and the id of the mixin it is declared
@@ -1183,7 +1195,8 @@ nested declarations are the tree its builder declared
 (`Mixin::declared_nested`), which the compiler, the shipped-code decoder,
 the image's mixin builder and an edit's pairing read; registering a mixin
 registers its whole declared tree, and a mixin is registered in at most
-one heap. A full collection reclaims what live editing leaves behind by
+one heap (`r[vm.handle.mixin-registered-in-one-heap]`). A full collection
+reclaims what live editing leaves behind by
 the ids the live objects name, gathered while marking, as HotSpot unloads
 classes (decided with the user on 2026-10-03; built by road step 5b2c on
 2026-10-20, [its plan](../superpowers/plans/2026-10-20-1318-reclaiming-ids.md);
@@ -1263,14 +1276,11 @@ boundary by copy rather than by far reference (§3.7).
 
 The notion itself is built. `Kernel.ns` declares `Value` with the value classes
 beneath it; `Value` derives `=` and `hash` from an instance's state and declares
-§3.1.1's identity method as a send of `=`, so a copy of a value is equal to, and
-hashes like, its original — a value has no observable identity
-([core-library.md](core-library.md)). All of §3.1.1's second bullet is
-enforced, each condition refused where an instance would come into being: a
-mutable slot anywhere in the class chain, a slot initialized with anything but
-a value, a class that defines `==` below `Value`, and an enclosing object, at
-any level of the class chain, that is not a value
-([object-model.md](object-model.md), "A value object's four conditions"). So
+§3.1.1's identity method as a send of `=`, so a value has no observable
+identity (`r[semantics.value.identity]`; [core-library.md](core-library.md)).
+All of §3.1.1's second bullet is enforced (`r[semantics.value]`,
+`r[semantics.value.conditions]`;
+[object-model.md](object-model.md), "A value object's four conditions"). So
 a value class lives in a module that declares itself a value, `= Value` as
 `Kernel.ns` does, or with §6.2's mixin application, `= Object <: Value`.
 
@@ -1280,8 +1290,8 @@ value; such a class has no identity either, its `=` and `hash` derived from
 its state ([object-model.md](object-model.md), "Class sides and
 metaclasses").
 
-What is missing is the boundary: there are no actors, so nothing copies a value
-across one. Neither is
+What is missing is the boundary: there are no actors
+(`r[semantics.gap.actors]`), so nothing copies a value across one. Neither is
 a looser "provably non-aliased or frozen data" notion to be substituted when
 concurrency arrives — the vocabulary above is the specification's own.
 
@@ -1308,7 +1318,8 @@ layout, generations and inline allocation that compiled code builds on.
 - **Deopt metadata** — safepoint ↔ machine-code position ↔ abstract interpreter
   state, under the contract of [execution.md](execution.md), "Planned: the
   deoptimization contract": every observer runs after machine code's exit to
-  the run loop, which materializes every compiled frame as interpreted ones.
+  the run loop (`r[vm.machine.observers-after-exit]`), which materializes every
+  compiled frame as interpreted ones.
 - **A snapshot discards all JIT state**; warm-up re-happens after load, which is
   acceptable because snapshotting is rare. No native code ever enters an image.
 

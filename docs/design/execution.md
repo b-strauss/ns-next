@@ -247,26 +247,27 @@ pub struct ActivationReference {
   that stores activations, and because it is half of the collector's root set
   ([memory.md](memory.md)).
 - **One reservation of words holds every running activation**, header and
-  registers together: a `Reservation` of `ns-memory`, the heap's second
-  beside its object space ([memory.md](memory.md), "The memory layer"),
-  16 GiB on a 64-bit target and 256 MiB otherwise (`STACK_RESERVATION`,
-  `heap/frames.rs`). Where the operating system limits address space, it
-  falls back as the object space's reservation does, halving the request
-  down to no less than 1 GiB (`reserve_falling_back`, `heap/space.rs`).
-  It is committed from its base as the stack deepens -- doubling what is
-  committed, by at least 64 KiB and at most 16 MiB at a time unless a push
-  needs more (`FrameStack::grow`) -- and given back above its top and a
-  headroom of 2 MiB by full collections that find more than 4 MiB, and
-  more than twice what they would keep, committed above the top, damped
-  over successive collections ([memory.md](memory.md), "Giving committed
-  memory back"). A frame is its arguments, the header -- `frame_header::COUNT`
-  words, 13 in every build, a debug build's generation riding in the flags
-  word -- then the rest of its registers, innermost highest; a send's own
-  callee lies on its sender's argument slots, which are its arguments,
-  every other frame above its sender's whole window. An
+  registers together: a `Reservation` of `ns-memory`, the heap's second beside
+  its object space ([memory.md](memory.md), "The memory layer"), 16 GiB on a
+  64-bit target and 256 MiB otherwise (`STACK_RESERVATION`, `heap/frames.rs`).
+  Where the operating system limits address space, it falls back as the object
+  space's reservation does, halving the request down to no less than 1 GiB
+  (`reserve_falling_back`, `heap/space.rs`). It is committed from its base as
+  the stack deepens -- doubling what is committed, by at least 64 KiB and at
+  most 16 MiB at a time unless a push needs more (`FrameStack::grow`) -- and
+  given back above its top and a headroom of 2 MiB by full collections that
+  find more than 4 MiB, and more than twice what they would keep, committed
+  above the top, damped over successive collections ([memory.md](memory.md),
+  "Giving committed memory back"). A frame is its arguments, the header --
+  `frame_header::COUNT` words, 13 in every build
+  (`r[vm.activation.header-one-size]`), a debug build's generation riding in
+  the flags word -- then the rest of its registers, innermost highest; a
+  send's own callee lies on its sender's argument slots, which are its
+  arguments, every other frame above its sender's whole window. An
   `ActivationReference` is the word offset of its frame's header, and a
   married frame object's married word holds the same offset.
-- **Every word of a frame is a valid tagged value**: a number a
+- **Every word of a frame is a valid tagged value**
+  (`r[vm.activation.frame-words-tagged]`): a number a
   `SmallInteger`, an absent handle nil. Cog's and Primordial Soup's frames
   are the model: a flags word that reads as a `SmallInteger` (Cog's
   `1 + (numArgs << 8)`,
@@ -302,97 +303,93 @@ pub struct ActivationReference {
   its method, so `reify` rebuilds `FrameKind::Method` from the code row.
 - **A push** comes in two kinds. A send's own callee
   (`Heap::push_overlapped_activation`) takes the header and the registers
-  above it from the end of the send's argument slots, which are its
-  arguments and are copied nowhere, writes every word of the header and
-  fills its named locals above it with nil -- those below its body's
-  `local_count` -- and no scratch register. Every other push
-  (`Heap::push_activation`) -- a host's, a `doesNotUnderstand:` handler's,
-  `Message>>sendTo:`'s, a control-flow step's block, an unwind block, the
-  initializer a factory enters, a resumed or forcing activation -- takes
-  its arguments, the header and the registers above from the top, above
-  the sender's whole window: the frame stack answers the frame's words and
-  every word below it, and the push copies the arguments into the first
-  registers -- out of their window in the frame below, or from the values
-  a decision or the host built (`interpreter::Arguments`); one or two word
-  by word, more by a loop kept inline -- writes the header and fills the
-  named locals with nil, never indexing the whole stack once the frame is
+  above it from the end of the send's argument slots, which are its arguments
+  and are copied nowhere, writes every word of the header and fills its named
+  locals above it with nil -- those below its body's `local_count` -- and no
+  scratch register. Every other push (`Heap::push_activation`) -- a host's, a
+  `doesNotUnderstand:` handler's, `Message>>sendTo:`'s, a control-flow step's
+  block, an unwind block, the initializer a factory enters, a resumed or
+  forcing activation -- takes its arguments, the header and the registers
+  above from the top, above the sender's whole window
+  (`r[vm.activation.only-senders-callee-on-slots]`): the frame stack answers
+  the frame's words and every word below it, and the push copies the arguments
+  into the first registers -- out of their window in the frame below, or from
+  the values a decision or the host built (`interpreter::Arguments`); one or
+  two word by word, more by a loop kept inline -- writes the header and fills
+  the named locals with nil, never indexing the whole stack once the frame is
   pushed. No push writes a scratch register: no body reads one before it
-  writes it (`bytecode::leftovers`, which both lowerings check and the
-  decoder holds an image to; [compiler.md](compiler.md), "What a callee
-  leaves"), and the collector's pre-pass nils what the stack held there
-  before every trace (`Heap::trace_stack`).
-  The frame names its body by its code id, found through the
-  body's one-entry cache ([memory.md](memory.md), "A closure's code id
-  without the map") and kept by a full collection while the activation
-  runs ([object-model.md](object-model.md), "An application has two ids");
-  only for code that addresses its own slots
-  (`CompiledCode::addresses_own_slots`) does it record the receiver's
-  guard and the full-width index of `current_class`'s application, which
-  every own-slot instruction checks and takes its slot base from, so any
-  other push pays one flag test ([object-model.md](object-model.md), "What
-  a slot access checks"). Taking the frame is one comparison of its end
-  against what may be used without committing more, and the reservation
-  stays committed across pops, so once it has grown to the program's depth
-  a push commits nothing. The heap's pushes refuse a frame the
-  reservation cannot hold with `PushRefused`, and the public
-  `Heap::push_activation` with `StackExhausted`; `Mutator::push_placed`
+  writes it (`bytecode::leftovers`, which both lowerings check and the decoder
+  holds an image to; [compiler.md](compiler.md), "What a callee leaves"), and
+  the collector's pre-pass nils what the stack held there before every trace
+  (`Heap::trace_stack`; `r[vm.activation.dead-registers-nilled]`). The frame
+  names its body by its code id, found through the body's one-entry cache
+  ([memory.md](memory.md), "A closure's code id without the map") and kept by
+  a full collection while the activation runs
+  ([object-model.md](object-model.md), "An application has two ids"); only for
+  code that addresses its own slots (`CompiledCode::addresses_own_slots`) does
+  it record the receiver's guard and the full-width index of `current_class`'s
+  application, which every own-slot instruction checks and takes its slot base
+  from, so any other push pays one flag test
+  ([object-model.md](object-model.md), "What a slot access checks"). Taking
+  the frame is one comparison of its end against what may be used without
+  committing more, and the reservation stays committed across pops, so once it
+  has grown to the program's depth a push commits nothing. The heap's pushes
+  refuse a frame the reservation cannot hold with `PushRefused`, and the
+  public `Heap::push_activation` with `StackExhausted`; `Mutator::push_placed`
   raises either as the depth limit's `stack overflow: recursion too deep`
-  ("The depth limit" below). Every activation the runtime pushes goes
-  through that one function, which `Mutator::push` calls for a push above
-  the sender's window. It refuses a push past the depth limit before it
-  reaches the heap -- the compare sits in `Mutator::push_above` and
-  `Mutator::push_on_slots`, the two placements it chooses between -- so no
-  new push site can skip the check. It is called from
-  `Mutator::push_step`, for the method, block or body a decision
-  answered, and for the initializer a factory entered past its first
-  instructions decides (`Mutator::enter_factory_body`). It lends the
-  header to the heap's push rather than moving it, and hands it on whole
-  only to a refusal's cold path, `Mutator::push_refused`. Moved through
-  the push's inlined layers, the header, built by narrow stores, was
-  copied into each layer's own place sixteen bytes at a time and so read
-  back wide right after it was written, a store-forwarding stall on every
-  send. Every word is computed before the frame is taken, so a refused
-  push changes nothing; the header is then written in place, every word
-  once. The caller word packs the caller's offset with the top the frame
-  was pushed at -- its caller's window end or past it -- as a distance
-  from the frame's start (`frames::caller_link_word`), so that a pop finds the top
-  it gives back without reading the caller's header. A push laid on its
-  sender's slots never lowers the top (`FrameStack::push_from`), so the
-  top stays at a live window end: the sender's registers past a shorter
-  callee's window stay below it, traced, and no word comes below the top
-  again that a collection never saw. A pop reads the words it needs and
-  sets the top back to the one it was pushed at -- the caller's window
-  end, or past it where the caller lies on a longer frame's slots -- or,
-  for the bottom frame, to its start, and writes nothing: the caller's
-  registers above its slots are its own again, dead, and whatever the
-  callee or a frame above it left there the collector's pre-pass nils
-  before the next trace, which would otherwise keep alive what nothing
-  reaches -- a `WeakArray` would not forget it -- or meet a handle to an
-  object a collection moved or reclaimed ([memory.md](memory.md), "What
-  the collector traces"). A debug build writes `Word::DEAD_REGISTER` --
-  under the tag no value carries, so that it cannot be told from a
-  program's number -- into every scratch register a push hands out and
-  every register a pop gives back (`FrameStack::give_back_dead_registers`),
-  and the pre-pass writes it into what it nils; `Heap::register` and every
-  other register read an instruction makes refuse it, the dynamic net
-  under the analysis that says nothing reads such a register. Bulk copies
-  -- a reification's, a suspension's, a divorce's, a trace -- are no such
-  reads: a suspension nils the registers the pre-pass would, a divorce
-  every scratch register, and the tracers pass over the word as naming no
-  object. The registers above the header are
-  recorded in their own word rather than read off the code, and the
-  arguments in the flags, since a factory is handed as many arguments as
-  its send has keywords whatever its register count. An activation nothing
-  reifies leaves nothing behind; only a block the compiler did not inline
-  reifies one, since an inlined `ifTrue:`/`and:`/`whileTrue:` argument
-  creates no closure.
+  ("The depth limit" below). Every activation the runtime pushes goes through
+  that one function (`r[vm.activation.every-push-checks-depth]`), which
+  `Mutator::push` calls for a push above the sender's window. It refuses a
+  push past the depth limit before it reaches the heap -- the compare sits in
+  `Mutator::push_above` and `Mutator::push_on_slots`, the two placements it
+  chooses between -- so no new push site can skip the check. It is called from
+  `Mutator::push_step`, for the method, block or body a decision answered, and
+  for the initializer a factory entered past its first instructions decides
+  (`Mutator::enter_factory_body`). It lends the header to the heap's push
+  rather than moving it, and hands it on whole only to a refusal's cold path,
+  `Mutator::push_refused`. Moved through the push's inlined layers, the
+  header, built by narrow stores, was copied into each layer's own place
+  sixteen bytes at a time and so read back wide right after it was written, a
+  store-forwarding stall on every send. Every word is computed before the
+  frame is taken, so a refused push changes nothing
+  (`r[vm.activation.refused-push-changes-nothing]`); the header is then
+  written in place, every word once. The caller word packs the caller's offset
+  with the top the frame was pushed at -- its caller's window end or past it
+  -- as a distance from the frame's start (`frames::caller_link_word`), so
+  that a pop finds the top it gives back without reading the caller's header.
+  A push laid on its sender's slots never lowers the top
+  (`FrameStack::push_from`; `r[vm.activation.top-at-window-end]`). A pop reads
+  the words it needs and sets the top back to the one it was pushed at -- the
+  caller's window end, or past it where the caller lies on a longer frame's
+  slots -- or, for the bottom frame, to its start, and writes nothing: the
+  caller's registers above its slots are its own again, dead, and whatever the
+  callee or a frame above it left there the collector's pre-pass nils before
+  the next trace, which would otherwise keep alive what nothing reaches -- a
+  `WeakArray` would not forget it -- or meet a handle to an object a
+  collection moved or reclaimed ([memory.md](memory.md), "What the collector
+  traces"). A debug build writes `Word::DEAD_REGISTER` -- under the tag no
+  value carries, so that it cannot be told from a program's number -- into
+  every scratch register a push hands out and every register a pop gives back
+  (`FrameStack::give_back_dead_registers`), and the pre-pass writes it into
+  what it nils; `Heap::register` and every other register read an instruction
+  makes refuse it, the dynamic net under the analysis that says nothing reads
+  such a register. Bulk copies -- a reification's, a suspension's, a
+  divorce's, a trace -- are no such reads: a suspension nils the registers the
+  pre-pass would, a divorce every scratch register, and the tracers pass over
+  the word as naming no object. The registers above the header are recorded in
+  their own word rather than read off the code, and the arguments in the
+  flags, since a factory is handed as many arguments as its send has keywords
+  whatever its register count. An activation nothing reifies leaves nothing
+  behind; only a block the compiler did not inline reifies one, since an
+  inlined `ifTrue:`/`and:`/`whileTrue:` argument creates no closure.
 - **A send's arguments are not copied** when its callee is the one it
   decided: the caller's argument slots are the callee's first registers.
   A send whose window names its sources rather than its slots copies them
   into the slots first, on the push path (`Mutator::push_on_slots`); a
   decision answering without a push reads them in place and writes
   nothing ("Overlapping register windows" below).
-- **Register access through an `ActivationReference`** is the stack's word
+- **Register access through an `ActivationReference`**
+  (`r[vm.activation.register-in-window]`) is the stack's word
   at the frame's start -- its offset less its argument count -- plus `r`,
   the register numbering leaving the header's numbers out
   ([compiler.md](compiler.md), "Registers"), with no branch on the
@@ -410,8 +407,7 @@ pub struct ActivationReference {
   compiler defect produces such an index; the decoder refuses an
   artifact's register out of its body's range
   ([image-format.md](image-format.md), "Verification"). A frame's offset
-  is fixed for its whole life and everything is addressed by index, so the
-  reservation committing more moves nothing anyone holds. The activation
+  is fixed for its whole life (`r[vm.activation.offset-fixed]`). The activation
   below a frame is its caller word, and the one above is found by walking
   the caller words down from the innermost, since a callee on its
   sender's slots starts inside the sender's window. A frame's position is
@@ -420,34 +416,33 @@ pub struct ActivationReference {
   run's floor and every comparison of positions stay an ordering, and the
   run's base has returned once the top is back at its position
   (`Heap::activation_position`, `Heap::activation_stack_top`).
-- **Two handle types, not one tagged handle.** `ActivationReference` names a live
+- **Two handle types, not one tagged handle**
+  (`r[vm.handle.activation-never-stored]`). `ActivationReference` names a live
   stack frame; `FrameReference` names a frame object and is the only
-  activation handle anything *stores*: a closure's captured frame, a frame's
-  home and sender, `Continuation::Unwind`'s target, the suspended sender
-  `Continuation::ReturnToSuspended` names, a side-table row's frame and the
-  image's frame records take a `FrameReference`, so storing a stack
-  handle is a compile error rather than a convention. A tagged `FrameReference` would
+  activation handle anything *stores* -- `Continuation::Unwind`'s target and
+  the sender `Continuation::ReturnToSuspended` names among them -- so storing
+  a stack handle is a compile error rather than a convention. A tagged `FrameReference` would
   have touched only `heap.rs`, but it would put a branch on every register
   access and leave "a stack handle was stored" to a debug-build assertion — the
   silent failure class the handles' private field was built to exclude.
-- **An `ActivationReference` is 4 bytes in a release build.** In a debug build it
-  carries `origin`, like every handle, and a `generation` drawn from a counter at
-  each push and recorded in the frame's flags word. A handle read
+- **An `ActivationReference` is 4 bytes in a release build.** In a debug build
+  it carries `origin`, like every handle, and a `generation` drawn from a
+  counter at each push and recorded in the frame's flags word. A handle read
   after its frame was popped and the offset reused would otherwise answer a
-  different, perfectly valid activation; the generation check turns that
-  into a panic at the read.
-  `Interpreter::run_from_host`, the one host entry, debug-asserts that it leaves
-  the stack as deep as it found it, because a leaked frame is otherwise silent:
-  a later activation would sit on top of a dead one's registers.
-- **A reified frame is a frame object**: ten fixed fields, the stack frame
-  it is married to among them, and its registers inline. Only the heap module reads
-  or writes its words; the image encoder and decoder go through
+  different, perfectly valid activation; the generation check turns that into
+  a panic at the read. `Interpreter::run_from_host`, the one host entry,
+  debug-asserts that it leaves the stack as deep as it found it
+  (`r[vm.activation.run-balanced]`), because a leaked frame is otherwise
+  silent: a later activation would sit on top of a dead one's registers.
+- **A reified frame is a frame object**: ten fixed fields, the stack frame it
+  is married to among them, and its registers inline. Only the heap module
+  reads or writes its words; the image encoder and decoder go through
   `Heap::frame_record` and the decoder's in-place fills, which never touch the
-  marriage, so nothing outside the heap module can read or forge it. While
-  the married field is set, the frame's own registers stay nil and a
-  register read or write through the `FrameReference`
-  (`Heap::frame_local`/`frame_set_local`) reaches the stack slot. That
-  branch exists only on the path from a block to its method's variables —
+  marriage, so nothing outside the heap module can read or forge it. While the
+  married field is set (`r[vm.activation.marriage]`), a register read or
+  write through the `FrameReference`
+  (`Heap::frame_local`/`frame_set_local`) reaches the stack slot. That branch
+  exists only on the path from a block to its method's variables —
   `read_outer_local`/`write_outer_local`, behind the VM's
   `LoadOuterLocal`/`StoreOuterLocal`.
 - **The accessor prefix names the handle.** `activation_*` reads or writes a live
@@ -456,59 +451,57 @@ pub struct ActivationReference {
 
 ### Lifecycle
 
-**Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call
-allocates the frame object — receiver, `kind` and its operand, `current_class`,
-`program_counter`, the code id, and `home` when the activation is a
-closure's, with a field for every register of the activation's window but
-the header's thirteen words -- its arguments, then its registers above the
-header (`Heap::frame_field_of_register`) -- all nil —
-marries it to the stack frame, and records it in the frame's `reified`
-word; every later call
-answers the same handle. Its callers are closure creation, the VM's
+**Reify.** `Heap::reify(activation) -> FrameReference` is idempotent
+(`r[vm.activation.reify-once]`): the first call allocates the frame object —
+receiver, `kind` and its operand, `current_class`, `program_counter`, the code
+id, and `home` when the activation is a closure's, with a field for every
+register of the activation's window but the header's thirteen words -- its
+arguments, then its registers above the header
+(`Heap::frame_field_of_register`;
+`r[vm.activation.frame-object-full-register-file]`) -- all nil — marries it to
+the stack frame, and records it in the frame's `reified` word; every later
+call answers the same handle. Its callers are closure creation, the VM's
 `MakeClosure`, for the new closure's captured frame; the `currentActivation`
 leaf, whose `Activation` object is the frame object itself, so the same
 activation answers the same object every time; the unwinder, for a target it
 must name across `ensure:` blocks; and the depth limit's reserve. A closure
-stores no `home` of its own: `Heap::closure_home`
-derives it from the captured frame — that frame itself when it is a method's or
-an initializer's, that frame's own `home` when it is a block's ("The closure
-keeps its defining activation"). Every block creation reifies the activation
-that creates it, whether or not the block reads one of its variables, because
-`captured_frame` is also where `Mutator::push_step` reads the block's receiver
-and current class from.
+stores no `home` of its own (`r[vm.activation.closure-home-derived]`):
+`Heap::closure_home` derives it from the captured frame — that frame itself
+when it is a method's or an initializer's, that frame's own `home` when it is
+a block's ("The closure keeps its defining activation"). Every block creation
+reifies the activation that creates it, whether or not the block reads one of
+its variables, because `captured_frame` is also where `Mutator::push_step`
+reads the block's receiver and current class from.
 
 **Pop.** The run loop pops every activation it runs, on *every* exit, error
 paths included (`vm::run`), and only the top frame can be popped. Popping
-hands back the frame's continuation (`Popped`), which the loop applies to
-the activation's value ("The VM" below). If the activation was reified,
-its frame object is **divorced**: its `program_counter` takes the stack
-frame's last stored one, the
-married field becomes `true` when the divorce kept the frame's registers
-(below) and nil when it did not (`Heap::frame_registers_kept`),
-`uncontinuable` becomes true and `sender` becomes nil. Then the stack's top is set back to the top the frame was pushed at,
-its caller's window end or past it, the caller's registers above its slots
-its own again ("Representation" above).
+hands back the frame's continuation (`Popped`), which the loop applies to the
+activation's value ("The VM" below). If the activation was reified, its frame
+object is **divorced** (`r[vm.activation.divorce-on-pop]`): its married field
+becomes `true` when the divorce kept the frame's registers (below) and nil
+when it did not (`Heap::frame_registers_kept`). Then the stack's top is set
+back to the top the frame was pushed at, its caller's window end or past it,
+the caller's registers above its slots its own again ("Representation" above).
 
 **The registers are copied into the frame object's registers only when the
-frame asks for it**, and then only those below its body's `local_count`
--- the arguments, the copied values, the named temporaries and the
-indirection vector's register, all a block reaching the frame by
-reference can name -- every scratch register nil, since it may hold a
-word a callee left. The frame asks through the `retains_registers` flag
-of its header, which
-`Heap::retain_registers` sets and which `MakeClosure` sets when the block it
-creates can reach this frame by reference — `block.outer_reach > 0`
-("Converted representation"). Under the reference lowering that is every
+frame asks for it** (`r[vm.activation.outer-reach]`), and then only those
+below its body's `local_count` -- the arguments, the copied values, the named
+temporaries and the indirection vector's register, all a block reaching the
+frame by reference can name -- every scratch register nil, since it may hold a
+word a callee left. The frame asks through the `retains_registers` flag of its
+header, which `Heap::retain_registers` sets and which `MakeClosure` sets when
+the block it creates can reach this frame by reference — `block.outer_reach >
+0` ("Converted representation"). Under the reference lowering that is every
 activation that creates a closure, so every frame is divorced with its
 registers as it always was; under the optimized lowering it is only an
 activation whose fallback path actually created a closure. A frame divorced
 without its registers keeps the nil it was allocated with in each, so a
-register read answers `nil`; the frame object never grows or shrinks, and an
-image carries every register it has ([image-format.md](image-format.md),
-"Verification"). A frame that was never
-reified leaves nothing behind, so storage for activations nothing captured is
-bounded by the deepest the program has been rather than by every activation it
-has ever made.
+register read answers `nil`; the frame object never grows or shrinks
+(`r[vm.activation.frame-object-full-register-file]`), and an image carries
+every register it has ([image-format.md](image-format.md), "Verification"). A
+frame that was never reified leaves nothing behind, so storage for activations
+nothing captured is bounded by the deepest the program has been rather than by
+every activation it has ever made.
 
 **Sender.** A live activation's sender is the frame below it, its caller
 word — structural, not a field anyone passes on, so no call site can forget
@@ -522,10 +515,10 @@ does on return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`; the
 divorce clears it. The image format records one per frame, so beyond a
 suspended frame only a frame the decoder rebuilt can have one set.
 
-**Only a `FrameReference` is ever stored.** An `ActivationReference` is
+**Only a `FrameReference` is ever stored**
+(`r[vm.handle.activation-never-stored]`). An `ActivationReference` is
 valid until its frame is popped, and the next frame pushed there reuses its
-offset. Everything that
-outlives a call — a closure, another frame, an image record — holds a `FrameReference`.
+offset.
 
 ### Signatures
 
@@ -547,7 +540,7 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   nothing.
 - `vm::run` receives the `ActivationReference` of an activation its caller has just
   pushed — its *base* — and pops it, with everything it pushes above it, on
-  every path out.
+  every path out (`r[vm.activation.run-balanced]`).
 - The image encoder only ever runs between sends, when nothing is live: its
   one writer, behind `image::package` and `image::snapshot`, refuses to start
   while any activation is on the stack, and `Heap::frame_record` debug-asserts
@@ -638,7 +631,8 @@ serializes reified frames only, and is written when nothing is running
 An activation can leave the stack before it returns and come back to it
 later: it is *suspended* into its frame object and *resumed* from it. That is
 the landing point of every later deoptimization (road step 7b, "Planned: JIT
-tiers"). A frame object is in one of three states, told by its married word
+tiers"). A frame object is in one of three states
+(`r[vm.activation.marriage]`), told by its married word
 (`frame_field::MARRIED`):
 
 - **married**: a `SmallInteger` of 0 or more, the word offset of the stack
@@ -661,7 +655,8 @@ married one has a stack frame (`Heap::frame_activation`), so every reader
 that asks for the stack frame answers none for a suspended frame, and none
 mistakes it for a live one.
 
-**Suspending** (`Heap::suspend_activations(floor)`) reifies every frame at
+**Suspending** (`Heap::suspend_activations(floor)`;
+`r[vm.activation.suspension-copies-registers]`) reifies every frame at
 or above `floor` first, so that each sender is a frame by the time the
 activation above it is suspended, then works from the top down. It copies
 every register into the frame, whatever `retains_registers` says, since the
@@ -701,7 +696,8 @@ more, as Primordial Soup's `CreateBaseFrame` and `LocalBaseReturn` and Cog's
 `makeBaseFrameFor` arrange it. `Deliver` stays `finish`'s first, inline arm;
 only a run that was suspended ever reaches the second.
 
-A resume derives two things rather than storing them. The feedback base is
+A resume derives two things rather than storing them
+(`r[vm.activation.resume-derives-state]`). The feedback base is
 decided again by `push_step`'s rule for the frame's kind
 (`Mutator::resume_frame`: a closure's from the closure object, every other
 body's from `InlineCaches::base_for` of its code), so the side table holds
@@ -712,30 +708,31 @@ comes from the frame's code id (`Heap::frame_code`); a top-level frame
 records none and cannot be resumed, which nothing needs, since the runtime
 never pushes a top-level activation.
 
-**A suspended activation still counts against the depth limit.** The count
+**A suspended activation still counts against the depth limit**
+(`r[vm.activation.depth-count-exact]`). The count
 is one running total that suspending and resuming leave alone, so the check
 on every push stays one load and a resume never checks the limit ("The depth
 limit" below).
 
 **Everything that walks from an activation to its sender goes on into
-suspended frames**: `Heap::frame_sender_frame`, which the `sender` leaf
-answers and the kernel's handler search walks; the handler leaves, which read
-and write registers through `frame_local` and `frame_set_local` and the
-marker through `Heap::frame_unwind_marker`; the unwinder ("Unwinding"
-below); and the depth reserve's walks, which follow `interpreter::unwind`'s
-`WalkedActivation` -- the live frames, then, past a frame that returns to
-a suspended frame, the suspended frames by their `sender`, reading a
-suspended `signal`'s error from its row (`Heap::frame_signalled_vm_error`).
-A reader of a live frame's own continuation looks through the wrapper
-(`Heap::activation_own_continuation`), and `activation_set_continuation`
-replaces only the continuation inside it, so a VM error's `signal`
-resumed above a suspended reserve still holds the reserve and still returns
-to its suspended sender.
+suspended frames** (`r[vm.activation.sender-walks-reach-suspended]`):
+`Heap::frame_sender_frame`, which the `sender` leaf answers and the kernel's
+handler search walks; the handler leaves, which read and write registers
+through `frame_local` and `frame_set_local` and the marker through
+`Heap::frame_unwind_marker`; the unwinder ("Unwinding" below); and the depth
+reserve's walks, which follow `interpreter::unwind`'s `WalkedActivation` --
+the live frames, then, past a frame that returns to a suspended frame, the
+suspended frames by their `sender`, reading a suspended `signal`'s error from
+its row (`Heap::frame_signalled_vm_error`). A reader of a live frame's own
+continuation looks through the wrapper (`Heap::activation_own_continuation`),
+and `activation_set_continuation` replaces only the continuation inside it, so
+a VM error's `signal` resumed above a suspended reserve still holds the
+reserve and still returns to its suspended sender.
 
-**No activation outlives its run suspended.** Every path out of a run pops
-through the `ReturnToSuspended` frames, resuming each sender in turn, so
-the side table is empty when a run ends; `Interpreter::run_from_host`
-debug-asserts it beside its depth assertion (`World::suspension_count`). That
+**No activation outlives its run suspended**
+(`r[vm.activation.no-suspension-outlives-run]`).
+`Interpreter::run_from_host` debug-asserts it beside its depth assertion
+(`World::suspension_count`). That
 is why the image encoder, which runs only between runs, never meets a
 suspended frame. Runs never nest (nothing re-enters the loop from Rust,
 which `run_from_host` debug-asserts; "No re-entry from Rust" below), so a
@@ -784,9 +781,8 @@ entry: `vm::finish` or `vm::unwind` roots its answer for the host
 (`Mutator::to_host`), and `run` answers that `HostResult`, never a branded
 value. It never recurses: a send pushes
 the callee and switches to it, a return pops the callee and switches back to
-the caller. It pops everything it ran, `base` included, on every path out — a
-return from `base`, an error, or a non-local return aimed below `base` — so the
-stack is exactly as deep afterwards as it was before `base` was pushed. The
+the caller. It pops everything it ran, `base` included, on every path out
+(`r[vm.activation.run-balanced]`). The
 depth `base` sits at, the run's *floor*, is how the loop tells its own
 activations from its callers'.
 
@@ -857,15 +853,15 @@ Five kinds of body run, and each reaches the loop one way:
    in the loop enters it past its `AllocateInstance` and
    `InitializeInstance` (`Mutator::enter_factory_body`;
    [object-model.md](object-model.md), "Instantiation").
-4. **Instance initializer** — pushed by `push_step` for a
-   `Step::Initializer`, which the factory body's `InitializeInstance` and an
-   initializer's `InitializeSuperclass` and `InitializeAppliedLevel` answer:
-   one of the level's mixin's three bodies, entered at that level. Its value
-   goes to the instruction that started it, which does not use it; a level
-   whose body would run nothing answers `Step::Value`, the instance, and is
-   not entered. A user class whose mixin carries no full initializer is
-   refused on load (`image::decode::verify_mixins`); a mixin a host built
-   by hand has none, and its level is not entered.
+4. **Instance initializer** — pushed by `push_step` for a `Step::Initializer`,
+   which the factory body's `InitializeInstance` and an initializer's
+   `InitializeSuperclass` and `InitializeAppliedLevel` answer: one of the
+   level's mixin's three bodies, entered at that level. Its value goes to the
+   instruction that started it, which does not use it; a level whose body
+   would run nothing answers `Step::Value`, the instance, and is not entered.
+   A user class whose mixin carries no full initializer is refused on load
+   (`image::decode::verify_mixins`; `r[image.verify.initializers]`); a mixin a
+   host built by hand has none, and its level is not entered.
 5. **Superclass clause** — the nested-class
    accessor's clause is a `Step::SuperclassClause`, continuing with
    `Continuation::NestedClass`. A clause's message is no body of its own:
@@ -876,10 +872,13 @@ Five kinds of body run, and each reaches the loop one way:
 Rust enters the loop in one place, `Interpreter::run_from_host`, for a host's
 `send` or `instantiate`, and only from outside it: it pushes what the decision
 answered and runs `vm::run` on it. No decision, native or continuation runs
-code from Rust, and a debug build checks that the loop is never entered while
-it runs ("No re-entry from Rust" below).
+code from Rust (`r[vm.heap.no-native-frame-below-safepoint]`), and a debug
+build checks that the loop is never entered while it runs ("No re-entry from
+Rust" below).
 
-**The safepoint.** `run_stretch` tests one flag the heap owns
+**The safepoint.** A scavenge, a full collection and every move run only
+there or between entries (`r[vm.heap.collection-only-at-safepoint]`).
+`run_stretch` tests one flag the heap owns
 (`Heap::safepoint_requested`) at every switch to another activation — a push,
 or a caller resumed — and at every backward jump (the `jump_to!` macro every
 jumping arm goes through), so every call and every loop iteration passes one,
@@ -907,7 +906,8 @@ suspend stress mode rebuilt the stack, and `run` then reads its
 above), and `Terminate` when the debugger terminated the run, which `run`
 ends through the unwinder from the top activation
 (`vm::terminate_at_safepoint`). That is sound
-because of what `run` carries across the safepoint, which the compiler holds
+because of what `run` carries across the safepoint
+(`r[vm.handle.nothing-carried-across-safepoint]`), which the compiler holds
 it to, since the stretch's entry has ended before it: `FrameRegisters` — the
 running `ActivationReference`, the word offset of its frame on the stack, and
 no stack frame moves (a rebuilt stack is read again, above); its
@@ -919,10 +919,8 @@ its `RegisterBase`, the word offset of its first register, which a move does
 not touch — and the run's floor, a word offset on the stack. Every value
 the loop works on is read from a register or an operand when an
 instruction needs it and written back before
-the next, so at a safepoint every handle is in a word of a stack frame,
-in the heap's side table of continuations or of suspended
-activations, in a heap object or in a root, where
-the tracer rewrites it. A send's arguments are read in its slots, so nothing
+the next, so at a safepoint every handle is where the tracer rewrites it:
+in a stack frame, a side table, an object or a root. A send's arguments are read in its slots, so nothing
 outside the stack holds them while it is decided.
 
 **The VM has no dispatch logic, no `doesNotUnderstand:` construction, no native
@@ -957,23 +955,23 @@ argument count is still the same error.
 
 ## Where `program_counter` is stored
 
-An activation's `program_counter` is written **only by the instructions that can hand the
-activation to an observer**: every send, since a nested activation runs above it;
-`MakeClosure`, since the activation escapes into the object graph — the store
-comes just before `reify`, which copies it into the frame it creates; and
-`NonLocalReturn`, since control leaves with a signal; `ResolveFuture`
-when it calls a future's `resolve`, as a send; an `InitializeSlot` that
-meets a future not resolved (`vm::force_and_reexecute`), since the forcing
-runs above it and the loop runs that instruction again; and every
-instruction that raises an error (`vm::raise`), since the raising
-activation stays on the stack below the error's `signal` while the
-handler runs, and a collection meanwhile nils its dead registers as of
-the instruction its header stores ([memory.md](memory.md), "What the
-collector traces") -- as of an earlier send it would keep what that
-send's callee left in registers the frame wrote before it. The stretch adds one
-more, off the hot path: leaving for a safepoint, it stores the running
-activation's, since a suspension there copies it into the frame
-("Suspending and resuming").
+An activation's `program_counter` is written **only by the instructions that
+can hand the activation to an observer**
+(`r[vm.activation.program-counter-before-observation]`): every send, since a
+nested activation runs above it; `MakeClosure`, since the activation escapes
+into the object graph — the store comes just before `reify`, which copies it
+into the frame it creates; and `NonLocalReturn`, since control leaves with a
+signal; `ResolveFuture` when it calls a future's `resolve`, as a send; an
+`InitializeSlot` that meets a future not resolved (`vm::force_and_reexecute`),
+since the forcing runs above it and the loop runs that instruction again; and
+every instruction that raises an error (`vm::raise`), since the raising
+activation stays on the stack below the error's `signal` while the handler
+runs, and a collection meanwhile nils its dead registers as of the instruction
+its header stores ([memory.md](memory.md), "What the collector traces") -- as
+of an earlier send it would keep what that send's callee left in registers the
+frame wrote before it. The stretch adds one more, off the hot path: leaving
+for a safepoint, it stores the running activation's, since a suspension there
+copies it into the frame ("Suspending and resuming").
 
 The stores go to the stack frame (`Heap::activation_set_program_counter`), so
 they keep the activation's `program_counter` current for as long as it runs; a
@@ -1004,17 +1002,18 @@ safepoint with the frame standing at the patched slot.
 ## Unwinding
 
 A closure's `home` is the reified frame of the method, initializer or
-superclass-clause activation that lexically encloses it.
-It is not a field: `Heap::closure_home` derives it from the closure's
-`captured_frame` ("The closure keeps its defining activation").
-`Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
-it: for a closure activation, its closure's `home`, while that frame is
-running (`Heap::frame_is_running`: married to a stack frame or suspended into
-the frame), and a `CannotReturn` if it is dead, either divorced because the
-activation returned or built by the image decoder, which never marries or
-suspends a frame. For any other activation
-— an initializer's `^` from an inlined block — the target is the activation
-itself, reified for the purpose.
+superclass-clause activation that lexically encloses it. It is not a field:
+`Heap::closure_home` derives it from the closure's `captured_frame` ("The
+closure keeps its defining activation";
+`r[vm.activation.closure-home-derived]`). `Signal::Return` carries a
+`FrameReference`, its target, and `raise_return` picks it: for a closure
+activation, its closure's `home`, while that frame is running
+(`Heap::frame_is_running`: married to a stack frame or suspended into the
+frame), and a `CannotReturn` if it is dead
+(`r[semantics.block.cannot-return]`), either divorced because the activation
+returned or built by the image decoder, which never marries or suspends a
+frame. For any other activation — an initializer's `^` from an inlined block —
+the target is the activation itself, reified for the purpose.
 
 The one unwinder, `interpreter::unwind`, carries it down the stack;
 `vm::unwind` only does what it answers. A target whose frame is married to the
@@ -1024,35 +1023,36 @@ its message), ends the unwind: every activation above it has been popped, and
 the target returns the value through the ordinary return path, so a reified
 frame is divorced exactly as on any return. The unwinder decides that again
 before every pop, from the target's frame (`Heap::frame_activation`): a
-suspended target has no stack frame yet and gets one only when the pops
-reach it, since every pop is `Mutator::pop_for_unwind`, which resumes the
-suspended sender of the frame it pops before abandoning that frame's
-continuation. So the unwinder resumes a target only when it is suspended, and
-only by popping down to it, as `retry` keeps popping down to its `on:do:`
-activation ("Suspending and resuming" above). The popped activations'
-continuations are not applied, so a `^` out of a superclass clause or an
-`ensure:` block abandons the class's creation or the unwind; they go to
-`Mutator::abandon` instead, which unmarks a nested class's creation in its
-cache slot and drops every other. A return whose target catches none, or has
-returned meanwhile, pops every activation of the run, `base` included, in the
-same way — running the pending blocks on its way — and leaves `vm::run` with
-the signal, for the host that started the run.
+suspended target has no stack frame yet and gets one only when the pops reach
+it, since every pop is `Mutator::pop_for_unwind`, which resumes the suspended
+sender of the frame it pops before abandoning that frame's continuation. So
+the unwinder resumes a target only when it is suspended, and only by popping
+down to it, as `retry` keeps popping down to its `on:do:` activation
+("Suspending and resuming" above). The popped activations' continuations are
+not applied, so a `^` out of a superclass clause or an `ensure:` block
+abandons the class's creation or the unwind; they go to `Mutator::abandon`
+instead (`r[vm.activation.abandoned-continuation-undone]`), which unmarks a
+nested class's creation in its cache slot and drops every other. A return
+whose target catches none, or has returned meanwhile, pops every activation of
+the run, `base` included, in the same way — running the pending blocks on its
+way — and leaves `vm::run` with the signal, for the host that started the run.
 
-**The exceptions' unwinds are the same unwind.** `Exception>>return:` and
-`resume:` answer `Signal::Return` aimed at the `on:do:` or the `signal`
-activation's frame, and `retry` answers `Signal::Restart`, aimed at the
-`on:do:` activation's, which the unwinder carries down exactly as a `^`; at
-a restart's target it sets the program counter to 0 and the loop switches
-to it, its registers as they are. A restart whose target has returned
-meanwhile ends the run with a `CannotReturn`, the error §7.2 calls
-`cannotReturn`: the unwind has passed every handler by then. An unhandled exception's
-`defaultAction` answers `Signal::Terminate`, an unwind with no target: it
-runs every pending block down to the floor and leaves the run with the
-error, which the host receives as it received every error before there were
-exceptions. A pending unwind is a `PendingUnwind` — its target frame, if
-it has one, and whether it returns a value, restarts or terminates — and it
-is carried across a block it runs as what it was
-([core-library.md](core-library.md), "Exceptions").
+**The exceptions' unwinds are the same unwind** (`r[runtime.unwind]`).
+`Exception>>return:` and `resume:` answer `Signal::Return` aimed at the
+`on:do:` or the `signal` activation's frame, and `retry` answers
+`Signal::Restart`, aimed at the `on:do:` activation's, which the unwinder
+carries down exactly as a `^`; at a restart's target it sets the program
+counter to 0 and the loop switches to it, its registers as they are. A restart
+whose target has returned meanwhile ends the run with a `CannotReturn`, the
+error §7.2 calls `cannotReturn`: the unwind has passed every handler by then.
+An unhandled exception's `defaultAction` answers `Signal::Terminate`
+(`r[semantics.exception.unhandled]`), an unwind with no target: it runs every
+pending block down to the floor and leaves the run with the error, which the
+host receives as it received every error before there were exceptions. A
+pending unwind is a `PendingUnwind` — its target frame, if it has one, and
+whether it returns a value, restarts or terminates — and it is carried across
+a block it runs as what it was ([core-library.md](core-library.md),
+"Exceptions").
 
 **An error is not unwound at all.** Once the kernel is installed, a
 `Signal::Error` a step raised becomes an `Error`, and the unwinder pushes
@@ -1066,47 +1066,51 @@ block, and leaves with the error.
 **`ensure:` and `ifCurtailed:` blocks run on the way.** `Closure>>ensure:` and
 `ifCurtailed:` are kernel methods whose code carries an unwind marker
 (`bytecode::UnwindMarker`, recognized when the kernel is compiled,
-`compiler::unwind_marker`) naming the registers of their block and of their
-`complete` local. Before the unwinder pops an activation whose marker is one of
-the two and whose `complete` is still nil, it sets `complete` and answers the
-block; the loop pushes it above the marked activation, which stays on the stack,
-with `Continuation::Unwind` holding the unwind in progress, and when the block
+`compiler::unwind_marker`; `r[vm.activation.unwind-marker-from-code]`) naming
+the registers of their block and of their `complete` local. Before the
+unwinder pops an activation whose marker is one of the two and whose
+`complete` is still nil, it sets `complete` and answers the block; the loop
+pushes it above the marked activation, which stays on the stack, with
+`Continuation::Unwind` holding the unwind in progress, and when the block
 returns `Mutator::resume` raises the signal again, which carries on from the
 marked activation. A newer unwind or an error that pops the block first drops
 the old one. `ensure:`'s own normal path sets `complete` before it runs the
-block, so the block runs exactly once whichever path gets there first. An
-argument that is no closure is sent `value` through the kernel's
-`Closure>>valueOnUnwind:`, whose own return carries the unwind on. An activation
-without a marker costs the unwinder one test.
+block, so the block runs exactly once whichever path gets there first
+(`r[semantics.exception.ensure]`). An argument that is no closure is sent
+`value` through the kernel's `Closure>>valueOnUnwind:`, whose own return
+carries the unwind on. An activation without a marker costs the unwinder one
+test.
 
 Because those blocks run code while an unwind is in progress, an activation
 they push can reuse the stack index a popped target used. That is why the
-target is a frame, never an `ActivationReference`: a release build has no
+target is a frame, never an `ActivationReference`
+(`r[vm.activation.unwind-target-is-frame]`): a release build has no
 generation to tell two activations at one index apart, while a frame is
 divorced on its activation's pop and married to nothing afterwards, so a
 target popped meanwhile is found dead rather than mistaken for its successor
 (`interpreter::unwind`'s `a_target_survives_its_index_being_reused`). The
-unwinder asks the frame for its activation afresh each time it carries on,
-and compares only that handle (`ActivationReference::same`). The depth
+unwinder compares only the handle it asked the frame for afresh
+(`ActivationReference::same`). The depth
 limit's reserve is held by a frame for the same reason ("The depth limit"
 below).
 
-**An initializer home follows the same rule.** A block created during
-initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
-finished signals a `CannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
-the initializer's frame was divorced when its activation returned. A `^` into an
+**An initializer home follows the same rule**
+(`r[semantics.block.cannot-return]`). A block created during initialization —
+`| blk = [ ^2 ]. |` — whose `^` runs after initialization has finished signals
+a `CannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because the
+initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: an initializer activation catches
 no return, so the unwind pops it with everything else down to the floor of the
-host's run, running every pending `ensure:` block on its way, and leaves
-with the signal, and it reaches the top of the entry send as "internal:
-non-local return escaped the entry send", a known gap
-(`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings). A
-`^` in a block in a superclass or `<:` clause's argument is such a `^`
-too: the argument is lowered into the initializer of the class whose
-clause it is (§6.3 evaluates the message "in the context of *i*"), so the
-`^` targets that initializer's activation and escapes the instantiation;
-its value is never handed to the superclass as the clause's argument
-(`tests/vm_initializer.rs`'s
+host's run, running every pending `ensure:` block on its way, and leaves with
+the signal, and it reaches the top of the entry send as "internal: non-local
+return escaped the entry send", a known gap
+(`crates/ns-runtime/tests/trampoline.rs` pins it under both lowerings). A `^`
+in a block in a superclass or `<:` clause's argument is such a `^` too: the
+argument is lowered into the initializer of the class whose clause it is (§6.3
+evaluates the message "in the context of *i*"), so the `^` targets that
+initializer's activation and escapes the instantiation; its value is never
+handed to the superclass as the clause's argument
+(`r[semantics.block.non-local-return]`; `tests/vm_initializer.rs`'s
 `a_return_inside_a_block_in_a_clause_argument_escapes_instantiate`).
 
 **Machine code cuts the `^` that needs no unwinder.** A `^` from a
@@ -6448,7 +6452,8 @@ Simultaneous slots ([object-model.md](object-model.md), "Simultaneous
 slots") put three things on or beside the paths every program runs: four
 instructions in `vm::run`'s dispatch and a refusal branch in
 `InitializeSlot`'s arm; a `Continuation::Reexecute` arm in `vm::finish`; and
-the search for a future among a leaf's operands. None of the four fixtures
+the search for a future among a leaf's operands
+(`r[vm.dispatch.future-seen-through]`). None of the four fixtures
 makes a future, so none runs any of it past a flag test. What they can pay
 is the shape of the code around it.
 
@@ -6981,7 +6986,8 @@ pays as well.
 The second stage of road step 7a′ ("Overlapping register windows" below)
 -- a send's own callee laid on its sender's argument slots, the header 13
 words in every build and left out of the register numbering, the pop
-restoring the top it was pushed at, suspension, frame objects and image
+restoring the top it was pushed at (`r[vm.activation.top-at-window-end]`),
+suspension, frame objects and image
 records without the header's numbers, and the decoder's checks -- was
 measured against the first by the protocol of "What contiguous arguments
 moved" above, on 2026-10-25, in three rounds.
@@ -7099,7 +7105,8 @@ faster (`push_sent` and `push_step` 13,784 samples against stage 1's
   DeltaBlueTon80's methods the two stages now compile to the same number
   of instructions.
 - **The register base reads the frame's flags on every switch.** The
-  frame's start lies `argument_count` words below its header, so the
+  frame's start lies `argument_count` words below its header
+  (`r[vm.activation.register-base-from-argument-count]`), so the
   loop's register base after a push or a return
   (`Heap::activation_register_base`) is a load of the flags word where
   the first stage added 13 to the offset; `resume_caller` reads it once
@@ -7154,25 +7161,27 @@ builds separated, Queens and Storage faster in the second sitting.
 
 ### What the leftover analysis moved
 
-The leftover analysis, `bytecode::leftovers`, finds from a body's code
-alone the scratch registers it may read before it writes them: what a
-callee laid on its slots left there, or what the stack held before the
-push ([compiler.md](compiler.md), "What a callee leaves", one pass over
-bitsets, bounded by the construct limits of "Limits" there). The decoder
-refuses image code that reads one, both lowerings check every body in a
-debug build, and every trace of the stack nils them in each frame before
-it traces the frame's words (`Heap::trace_stack`; [memory.md](memory.md),
-"What the collector traces"). That is what lets neither a push nor a pop
-write a scratch register: a push fills only its named locals, a pop
-writes nothing ("Representation" above). The tree before it, `78a17506`,
-filled them in both: a push every register above its header, a pop of a
-callee laid on its sender's slots every word from the callee's header to
-the sender's window end, the fill that kept those words from being traced
-stale. A profile of that tree put the two fills at 1.6-1.8% of a run on
-average and 3.0% at most (DeltaBlueTon80), the push's 0.7-0.8 points of
-it and the pop's 0.9-1.0. The fill also kept image code from reading what
-a callee left, the VM mirror among it; the decoder's refusal is that
-guard now ([image-format.md](image-format.md), "Verification").
+The leftover analysis, `bytecode::leftovers`, finds from a body's code alone
+the scratch registers it may read before it writes them: what a callee laid on
+its slots left there, or what the stack held before the push
+([compiler.md](compiler.md), "What a callee leaves", one pass over bitsets,
+bounded by the construct limits of "Limits" there). The decoder refuses image
+code that reads one (`r[bytecode.verify.leftovers]`), both lowerings check
+every body in a debug build, and every trace of the stack nils them in each
+frame before it traces the frame's words
+(`r[vm.activation.dead-registers-nilled]`; `Heap::trace_stack`;
+[memory.md](memory.md), "What the collector traces"). That is what lets
+neither a push nor a pop write a scratch register
+(`r[vm.activation.top-at-window-end]`): a push fills only its named locals, a
+pop writes nothing ("Representation" above). The tree before it, `78a17506`,
+filled them in both: a push every register above its header, a pop of a callee
+laid on its sender's slots every word from the callee's header to the sender's
+window end, the fill that kept those words from being traced stale. A profile
+of that tree put the two fills at 1.6-1.8% of a run on average and 3.0% at
+most (DeltaBlueTon80), the push's 0.7-0.8 points of it and the pop's 0.9-1.0.
+The fill also kept image code from reading what a callee left, the VM mirror
+among it; the decoder's refusal is that guard now
+([image-format.md](image-format.md), "Verification").
 
 It was measured at `3c151532` against `78a17506` on 2026-10-25, by the
 protocol of "What contiguous arguments moved" above: three release builds
@@ -7313,7 +7322,8 @@ per instruction), found these causes, each of which is a reason still true:
   (`Heap::pointer_words`), on every lexical send's cached path: about 8 of
   `bench_loop.ns`'s 9 points and 4.5 of `bench_send.ns`'s 5, and half of
   Bounce's, Json's, DeltaBlue's and Havlak's loss. The answer is now decided
-  from the code that runs: `CompiledCode::is_declaration_code`, a derived
+  from the code that runs (`r[vm.dispatch.lexical-origin-from-code]`):
+  `CompiledCode::is_declaration_code`, a derived
   flag on a body-less declaration's full initializer and every block created
   in it, set by `Mixin::mark_declaration_code` wherever such a mixin's bodies
   are attached (the compiler, the image's mixin decoding, the embedded
@@ -7335,7 +7345,8 @@ per instruction), found these causes, each of which is a reason still true:
   that runs no code, writes the answer and starts the factory at its
   `Return`. The frame is kept, so reflection, the depth count, unwinding and
   stack traces see what they saw; no program code runs between the push and
-  those two instructions, so the only difference is a skipped safepoint. The
+  those two instructions (`r[vm.activation.factory-prefix-uninterruptible]`),
+  so the only difference is a skipped safepoint. The
   initializer is decided before the allocation, and any error returns the
   factory unexecuted at program counter 0 so the loop raises it in the
   body's order (`an_allocation_refused_is_raised_before_the_initializers_error`).
@@ -7875,27 +7886,26 @@ measurement above:
   cheap and entered every compiled body again ("What the entry at a send
   moved").
 - **The leaf stub's leaf for every setter**: 47 ns a setter against the
-  interpreter's few, two thirds of it spent finding the send again -- a
-  binary search over the installed bodies and their returns, two
-  decodings of the send's instruction, each allocating its argument
-  list, and the cache's decision of it. A setter stub of its own,
-  calling a store leaf that took the receiver, the field and the value,
-  brought `bench_loop` from 5.15 ms to 0.81; the setter stub now stores
-  inline through the write barrier, with no leaf ("Stage 4: closures,
-  non-local return, allocation and the barrier"). The leaf stub's leaf
-  finds its send by a table of every call's return address and reads it
-  without decoding, which is what the gains of this item and of the
-  abandonment below owe to the leaf stub's leaf: its path for a slot
-  accessor hit on the site's own cell, as first built, read the
+  interpreter's few, two thirds of it spent finding the send again -- a binary
+  search over the installed bodies and their returns, two decodings of the
+  send's instruction, each allocating its argument list, and the cache's
+  decision of it. A setter stub of its own, calling a store leaf that took the
+  receiver, the field and the value, brought `bench_loop` from 5.15 ms to
+  0.81; the setter stub now stores inline through the write barrier, with no
+  leaf ("Stage 4: closures, non-local return, allocation and the barrier").
+  The leaf stub's leaf finds its send by a table of every call's return
+  address and reads it without decoding, which is what the gains of this item
+  and of the abandonment below owe to the leaf stub's leaf: its path for a
+  slot accessor hit on the site's own cell, as first built, read the
   `send_cells` role, which a direct hit left at site 0's cell and the miss
-  leaf clobbered, so it never ran but at site 0 (where no slot accessor
-  lay) and could have run another site's entry. With the send entering
-  its callee with its own site's cell and the miss stub clearing the role
-  (`7f8ebdee`), the path runs: measured afterwards, three builds a side,
-  five rounds, against the tree without it working, Havlak 3,269 ms to
-  3,070 (-6.1%, now 3.4% faster than `master`'s 3,176), Richards 62.88 to
-  61.54 (-2.1%, level with `master`), `bench_loop` 0.813 to 0.806,
-  DeltaBlue level (616.8 and 616.6).
+  leaf clobbered, so it never ran but at site 0 (where no slot accessor lay)
+  and could have run another site's entry. With the send entering its callee
+  with its own site's cell and the miss stub clearing the role (`7f8ebdee`;
+  `r[vm.machine.stub-acts-as-interpreter]`), the path runs: measured
+  afterwards, three builds a side, five rounds, against the tree without it
+  working, Havlak 3,269 ms to 3,070 (-6.1%, now 3.4% faster than `master`'s
+  3,176), Richards 62.88 to 61.54 (-2.1%, level with `master`), `bench_loop`
+  0.813 to 0.806, DeltaBlue level (616.8 and 616.6).
 - **Exits on every turn of a loop**: `nil == x`, Richards's most frequent
   test, reached `Value>>=`, whose mirror row was not leaf-safe, so the
   call was refused and the caller materialized and resumed, 95,000 times
@@ -8321,14 +8331,14 @@ The geometric mean over the twenty-three sources is -54.6% against
   for them -- and at t15 the longer a run, the slower: DeltaBlue at
   fifteen iterations took 489 ms there against 247 at `5ba66627`, one
   build a side, where three iterations took 283 and 248.
-- **A lookup by a code address remembers the body it found**
-  (`5ba66627`; "The code zone", the lookup by an address inside the
-  code). The step, initializer and own-slot leaves find their calling
-  body by the code's own address, which the return-address table does
-  not hold, so each searched the installed bodies; DeltaBlue made about
-  2.7 million such lookups a run and spent about a sixth of its time in
-  the search, which the twins lengthened. DeltaBlue is 12.6% faster than
-  t15, and CD, Json and DeltaBlueTon80 3.7% to 4.2%, by the same table.
+- **A lookup by a code address remembers the body it found** (`5ba66627`;
+  `r[vm.machine.frame-names-body-by-code]`; "The code zone", the lookup by an
+  address inside the code). The step, initializer and own-slot leaves find
+  their calling body by the code's own address, which the return-address table
+  does not hold, so each searched the installed bodies; DeltaBlue made about
+  2.7 million such lookups a run and spent about a sixth of its time in the
+  search, which the twins lengthened. DeltaBlue is 12.6% faster than t15, and
+  CD, Json and DeltaBlueTon80 3.7% to 4.2%, by the same table.
 - **A frame reifies only in its body's twin.** `bench_recursion`'s
   `fib:` runs lean on its Boolean path, 2.7% faster than t15, which paid
   the reifying prologue and the stored program counters there.
@@ -8836,7 +8846,8 @@ keeps its temporaries written through (`tempsValidAndVolatileEntriesSpilled`,
 and voids the cache at every merge (`mergeWithFixupIfRequired`,
 `:43370-43436`). The register code here writes each intermediate once,
 to the register its consumer reads, so that traffic does not exist. And
-the store Cog skips may not be skipped here: the leftover analysis takes
+the store Cog skips may not be skipped here
+(`r[vm.machine.baseline-frame-current]`): the leftover analysis takes
 every register a frame writes as cleaned, so a skipped store would leave
 a callee's leftover there for the collector's pre-pass to trace
 ("What the collector traces" in [memory.md](memory.md)), and an older
@@ -9155,33 +9166,33 @@ the branch's three builds lies below each of `master`'s: 4.008, 3.991
 and 4.004 against 4.124, 4.133 and 4.138. No program is slower with its
 builds apart. What each difference is:
 
-- **Interpreted sends into a customized body: two slowdowns, fixed.**
-  The first sitting on the performance cores, of `f3e5ede3` as it was,
-  measured CD +1.5% and `bench_newarg` +3.1%, each with its builds
-  apart. A sampled profile of CD (xperf, three processes a side) put it
-  in `jit::called`, an interpreter's send into machine code: it computed
-  the callee's key -- the receiver's dispatch id, the instances id of
-  the current class's application through the application table -- and
-  searched the body's copies for it on every call into a body with a
-  row for any key, and `JitState::entered_body`, which `master` inlined
-  into its callers, had grown into a call that read the slot's state
-  three times; together 1.4% of CD's samples, and 0.4% with no copy at
-  all. CD's interpreted code, which its churn of baseline code keeps
-  large ("What reclamation moved"), calls customized bodies about
-  twenty million times in four runs. Now an interpreted send into a
-  body with an installed copy enters the body's dispatching entry
-  (`jit::called_dispatching_entry`), whose rows find the receiver's copy
-  in machine code as a `super` or private lexical site's cell does
-  (`dispatched_calls` counts both) -- unless it has more copies than
-  the eight rows hold, which takes the lookup, so that every copy stays
-  reachable -- any other enters its baseline or uncustomized code by
-  `entered_body`, inline again, and a key is computed only for a body
-  with an installed copy (`JitSlot::has_installed_copy`). Measured on build a alone, CD went
-  from about +2.5% to about +1% over these steps, and the final measurement has
-  it +0.8%, its builds overlapping; the samples still above `master`'s
-  are spread over the exit and cell-refresh paths CD's churn runs
-  (`refresh_cells_entering_any`, `leaf_frame`, `resume_caller`), none
-  above 0.2%.
+- **Interpreted sends into a customized body: two slowdowns, fixed.** The
+  first sitting on the performance cores, of `f3e5ede3` as it was, measured CD
+  +1.5% and `bench_newarg` +3.1%, each with its builds apart. A sampled
+  profile of CD (xperf, three processes a side) put it in `jit::called`, an
+  interpreter's send into machine code: it computed the callee's key -- the
+  receiver's dispatch id, the instances id of the current class's application
+  through the application table -- and searched the body's copies for it on
+  every call into a body with a row for any key, and `JitState::entered_body`,
+  which `master` inlined into its callers, had grown into a call that read the
+  slot's state three times; together 1.4% of CD's samples, and 0.4% with no
+  copy at all. CD's interpreted code, which its churn of baseline code keeps
+  large ("What reclamation moved"), calls customized bodies about twenty
+  million times in four runs. Now an interpreted send into a body with an
+  installed copy enters the body's dispatching entry
+  (`jit::called_dispatching_entry`;
+  `r[vm.machine.copy-per-receiver-and-level]`), whose rows find the receiver's
+  copy in machine code as a `super` or private lexical site's cell does
+  (`dispatched_calls` counts both) -- unless it has more copies than the eight
+  rows hold, which takes the lookup, so that every copy stays reachable -- any
+  other enters its baseline or uncustomized code by `entered_body`, inline
+  again, and a key is computed only for a body with an installed copy
+  (`JitSlot::has_installed_copy`). Measured on build a alone, CD went from
+  about +2.5% to about +1% over these steps, and the final measurement has it
+  +0.8%, its builds overlapping; the samples still above `master`'s are spread
+  over the exit and cell-refresh paths CD's churn runs
+  (`refresh_cells_entering_any`, `leaf_frame`, `resume_caller`), none above
+  0.2%.
 - **`bench_recursion`'s `fib:` is a quarter faster.** Stage 1's
   optimized `fib:` ran 0.9% slower than its baseline code, the depth
   count's chain its critical path ("What the optimizing tier's
@@ -9396,7 +9407,8 @@ difference is:
   - *The current class at every inlined entry.* Every inlined scope
     computed its current class at its entry and kept it bound, where
     only a frame node's template or an exit reads it. It is computed
-    before each frame node of the scope now, and the exit's walk computes
+    before each frame node of the scope now
+    (`r[vm.machine.inlined-scope-current-class]`), and the exit's walk computes
     and writes it for every inlined scope it materializes
     (`graph::ClassRecipe`, `materialize::scope_class`): List and
     `bench_send` about 7% faster and Queens about 5%, in an interim
@@ -9561,35 +9573,33 @@ compiler thread of stage 8.
   DeltaBlueTon80's 8.0 against 5.4.
 
 **What eliminating an Array's `do:` block moved**, measured 2026-11-08,
-`a31c8d73` against `71f65b83`, the commit before the change, by the
-protocol above: three pinned builds a side, the same three layouts and
-paddings, `vm::run` 44.0, 47.4 and 51.0 KB on both sides with no
-`run_stretch` or closure of its own, three rounds a sitting with the
-order rotated, the mask `0xC03C03`, two sittings. Between the two lie
-two changes. The escape analysis looks only at what the graph builds
-(`build::compiled_ways`): a way the feedback says never ran ends in a
-trap, a use at the trap lets nothing escape -- the exit materializes
-the block, as HotSpot's C2 reallocates an object that escapes only
-through an uncommon trap -- and nothing past it is built. Three gaps
-close with it: `Array>>do:`'s way to `super do:`; a conditional's
-closure for a receiver that is no Boolean, which reaches its home's
-registers by reference and kept `Set>>do:`, `Map>>do:` and
-`to:by:do:`, whose `action value:` lies in a conditional, and every
-home with such a conditional around a block's copied value from
-eliminating it, though no such receiver ever came; and a callee that
-passes a block on only on a way that never ran. And the recompilee
-walk goes up from a block to its home only when the home is called
-often enough for its copy to be entered, since until on-stack
-replacement into optimized code the home's running activation never
-enters its copy (`jit::recompilable`): at least `LEAST_HOME_CALLS`
-calls since its budget was armed, whatever budget is armed, which only
-a body without a backward jump can show -- its budget spent by its
-entries alone, each its instruction count, where a loop's back edges
-spend the same row and a loop run once would read as calls. Each cell is a
-side's medians per build pooled by geometric mean, in milliseconds, of
-the second sitting, the first sitting's difference beside it; the
-programs whose plans the two changes moved, as `--jit-statistics`
-counts them:
+`a31c8d73` against `71f65b83`, the commit before the change, by the protocol
+above: three pinned builds a side, the same three layouts and paddings,
+`vm::run` 44.0, 47.4 and 51.0 KB on both sides with no `run_stretch` or
+closure of its own, three rounds a sitting with the order rotated, the mask
+`0xC03C03`, two sittings. Between the two lie two changes. The escape analysis
+looks only at what the graph builds (`build::compiled_ways`): a way the
+feedback says never ran ends in a trap, a use at the trap lets nothing escape
+-- the exit materializes the block
+(`r[vm.machine.eliminated-block-made-once]`), as HotSpot's C2 reallocates an
+object that escapes only through an uncommon trap -- and nothing past it is
+built. Three gaps close with it: `Array>>do:`'s way to `super do:`; a
+conditional's closure for a receiver that is no Boolean, which reaches its
+home's registers by reference and kept `Set>>do:`, `Map>>do:` and `to:by:do:`,
+whose `action value:` lies in a conditional, and every home with such a
+conditional around a block's copied value from eliminating it, though no such
+receiver ever came; and a callee that passes a block on only on a way that
+never ran. And the recompilee walk goes up from a block to its home only when
+the home is called often enough for its copy to be entered, since until
+on-stack replacement into optimized code the home's running activation never
+enters its copy (`jit::recompilable`): at least `LEAST_HOME_CALLS` calls since
+its budget was armed, whatever budget is armed, which only a body without a
+backward jump can show -- its budget spent by its entries alone, each its
+instruction count, where a loop's back edges spend the same row and a loop run
+once would read as calls. Each cell is a side's medians per build pooled by
+geometric mean, in milliseconds, of the second sitting, the first sitting's
+difference beside it; the programs whose plans the two changes moved, as
+`--jit-statistics` counts them:
 
 | Program | `71f65b83` (ms) | builds | `a31c8d73` (ms) | builds | second sitting | first sitting |
 |---|---|---|---|---|---|---|
@@ -9884,7 +9894,8 @@ level's initializer to activate, or the instance when that level runs
 nothing -- each from one call into `interpreter/instantiate.rs`
 ([object-model.md](object-model.md), "Instantiation"). A factory's first
 two of them, between which nothing can run, are carried out where the
-factory is pushed (`Mutator::enter_factory_body`), deciding and running
+factory is pushed (`Mutator::enter_factory_body`;
+`r[vm.activation.factory-prefix-uninterruptible]`), deciding and running
 exactly as the loop would. So no state machine
 carries an instantiation between its bodies: the activation stack is its
 whole state, as it is a method's.
@@ -9915,28 +9926,28 @@ Three things the trampoline settles on its own:
   would guarantee that the count trips before the native stack under both
   lowerings. `Array>>do:` is a Newspeak loop of `value:` sends as well.
 - **Recursion depth is a checkable limit and an ordinary Newspeak error**
-  instead of a native stack overflow that aborts the process. That closes the
-  exposure [image-format.md](image-format.md) records against a loaded
-  artifact. The limit counts every activation except a block activation that a
-  builtin control-flow step, or the reference lowering's loop, performs for a
-  `SendInlinable`, the send only the
-  reference lowering emits where the optimized one inlines. That makes the
-  count agree under both lowerings at every point of every program, so the
-  reference lowering checks an overflow too ([compiler.md](compiler.md), "How
-  the limit counts"). `SendInlinable` and the counter arrived together.
-  Measured on Windows's 1 MB main-thread stack before the trampoline, the
-  reachable recursion depth was 818 inside an `ifFalse:` block (release
-  build), and 307 through `do:` — below the 1000 that Newspeak's own
-  `KernelWeakTests.ns` (`deepStack: 1000`) expects. The golden
-  `goldens/runtime/depth-limit/thousand_deep_recursion_runs.ns` runs exactly that
-  recursion, under both lowerings.
+  (`r[runtime.depth-limit]`) instead of a native stack overflow that aborts
+  the process. That closes the exposure [image-format.md](image-format.md)
+  records against a loaded artifact. The limit counts every activation except
+  a block activation that a builtin control-flow step, or the reference
+  lowering's loop, performs for a `SendInlinable`, the send only the reference
+  lowering emits where the optimized one inlines. That makes the count agree
+  under both lowerings at every point of every program, so the reference
+  lowering checks an overflow too ([compiler.md](compiler.md), "How the limit
+  counts"). `SendInlinable` and the counter arrived together. Measured on
+  Windows's 1 MB main-thread stack before the trampoline, the reachable
+  recursion depth was 818 inside an `ifFalse:` block (release build), and 307
+  through `do:` — below the 1000 that Newspeak's own `KernelWeakTests.ns`
+  (`deepStack: 1000`) expects. The golden
+  `goldens/runtime/depth-limit/thousand_deep_recursion_runs.ns` runs exactly
+  that recursion, under both lowerings.
 
 ### The depth limit
 
 Decided 2026-09-12. Once sends and control flow no longer recurse
 and nothing re-enters the run loop from Rust ("No re-entry from Rust" below),
 a recursion runs out of one resource only, the memory its activations take,
-and one counted bound limits it:
+and one counted bound limits it (`r[runtime.depth-limit]`):
 
 | Bound | Counts | Value | Error text |
 |---|---|---|---|
@@ -9978,7 +9989,8 @@ target, or what its fallback reserved ("Representation" above) -- is
 refused with L's error too, whose text names no number. Taking a frame is
 one comparison against the committed end, as Soup's
 `checked_stack_limit_` is, committing more on its cold path. The net keeps
-a reserve as L does: the last 1/16th of the reservation
+a reserve as L does (`r[vm.activation.stack-reservation-reserve]`):
+the last 1/16th of the reservation
 (`RESERVE_FRACTION`, `heap/frames.rs`; 1 GiB of 16) is refused to an
 ordinary push and left to the pushes made while the depth reserve is held
 (`Heap::push_reserved_activation`, which a push tries
@@ -10013,7 +10025,8 @@ could only end the run as L, uncatchable and under the wrong name.
   program's own `signal` takes none: one signalled at L is refused as any
   push is, and the refusal is L's error, signalled and catchable. An error
   far from L takes nothing, so its handler meets L where any code does.
-- **What holds it.** `Mutator.depth_reserve`, the `FrameReference` of the
+- **What holds it** (`r[vm.activation.depth-reserve-held-by-frame]`).
+  `Mutator.depth_reserve`, the `FrameReference` of the
   activation the error arose in, counts as held while that frame is running
   (`Heap::frame_is_running`, suspended included) and the activation directly
   above it is the error's `signal`, marked by
@@ -10080,19 +10093,20 @@ could only end the run as L, uncatchable and under the wrong name.
 `crates/ns-runtime/tests/exceptions.rs` the uncaught cases at L − 3, L − 1,
 L and L + 1 and the overruns of the machinery, a `pass`'s included.
 
-- **L is checked on every push.** `Mutator::push_placed` is the one
-  function every activation the runtime pushes goes through, and
+- **L is checked on every push**
+  (`r[vm.activation.every-push-checks-depth]`). `Mutator::push_placed` is
+  the one function every activation the runtime pushes goes through, and
   `Mutator::push` calls it. Its two placements, `Mutator::push_above` and
   `Mutator::push_on_slots`, each refuse a counted push when
   `Heap::counted_depth` has reached the limit. The heap keeps that count as a
-  running total on push and pop, so an error path — which pops through
-  `interpreter::unwind` like any other — leaves it exact; suspending and
-  resuming leave it alone, since a suspended activation counts all along.
+  running total on push and pop (`r[vm.activation.depth-count-exact]`),
+  an error path popping through `interpreter::unwind` like any other.
   Whether an activation counts is recorded in its frame's flags word. Only
   the block arm of `Mutator::push_step` ever records an exemption; a method, and every
   body an instantiation or a nested-class accessor runs — a factory, an
   initializer level, a superclass clause — are counted by construction.
-- **The exemption is marked by the arguments.** A control-flow step's block —
+- **The exemption is marked by the arguments**
+  (`r[vm.activation.depth-exemption]`). A control-flow step's block —
   one a Boolean receiver's `^<parameter> value` quick method answers — and
   the failure
   block a sent mirror send activates when its leaf declines
@@ -10152,7 +10166,7 @@ A level's initializer invokes its superclass's from inside its own
 activation (`InitializeSuperclass`), so the levels of a chain that run code
 nest, one counted activation each, below the factory's, and a chain of more
 such levels than the depth limit fails with "stack overflow: recursion too
-deep", caught like any other
+deep" (`r[runtime.depth-limit]`), caught like any other
 (`goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`,
 1,000 levels instantiating and 101,001 overflowing). That is decision 6 of
 `new` as compiled code ([object-model.md](object-model.md), "Decisions"),
@@ -10162,9 +10176,9 @@ superclass initializer being an ordinary call. A level whose initializer
 would run nothing is passed by `Mutator::enter_or_pass` in a loop rather
 than by recursion, so such levels neither nest nor escape the count: the
 length of a chain of them is an image's to choose, the same exposure
-`dispatch::walk` is iterative for, and a chain of any length of them costs
-the factory's one activation
-(`levels_without_code_are_passed_without_an_activation`,
+`dispatch::walk` is iterative for
+(`r[vm.activation.passed-levels-iterative]`;
+`levels_without_code_are_passed_without_an_activation`,
 `tests/instantiate.rs`).
 
 ### What the golden outcomes are trusted on
@@ -10229,17 +10243,17 @@ slot an activation, eight bytes on x64 and sixteen on AArch64
 ### No re-entry from Rust
 
 Rust enters the run loop only as its outermost caller — a host's `send` or
-`instantiate`, an application's assembly and its `main:args:` among them — and never from inside a
-running computation. Of the three paths that used to run Newspeak code from
-Rust, `do:` is a Newspeak loop -- `Array>>do:`, which sends `value:` for
-each element as any send does ([core-library.md](core-library.md), "Real
-bodies for control flow and `do:`") --, the nested-class accessor is a
-trampoline step, and instantiation is compiled code that runs in the loop
-like any method.
-This was step 2a of Milestone 4, decided 2026-09-13, and it is what the root
-discipline stands on ([memory.md](memory.md), "No Rust frame is live below a
-safepoint"): between two instructions no Rust frame between the host and the
-loop holds a value.
+`instantiate`, an application's assembly and its `main:args:` among them — and
+never from inside a running computation
+(`r[vm.heap.no-native-frame-below-safepoint]`). Of the three paths that used
+to run Newspeak code from Rust, `do:` is a Newspeak loop -- `Array>>do:`,
+which sends `value:` for each element as any send does
+([core-library.md](core-library.md), "Real bodies for control flow and `do:`")
+--, the nested-class accessor is a trampoline step, and instantiation is
+compiled code that runs in the loop like any method. This was step 2a of
+Milestone 4, decided 2026-09-13, and it is what the root discipline stands on
+([memory.md](memory.md), "No Rust frame is live below a safepoint"): between
+two instructions no Rust frame between the host and the loop holds a value.
 
 A trampoline step answers an activation together with a `Continuation`, the
 continuation is a row of the side table of continuations the activation's
@@ -10254,12 +10268,12 @@ when these paths ran in nested runs of the loop.
   `Step::SuperclassClause`, pushed with the declaring class as its current
   class and continuing with `Continuation::NestedClass`. The boxed
   `NestedClassCreation` it carries holds the enclosing object, the index of
-  its cache slot, the declaration and the declaring class; `resume` hands it to
-  `nested::after_clause`, which does steps 3 to 5 — the application, the class
-  object, the cache ([object-model.md](object-model.md)) — and answers the
-  class. While the clause runs, the class's cache slot itself says that its
-  creation is underway: `push_step` writes a marker into it once the clause's
-  push has succeeded (`nested::begin_creation`), and `resume` or
+  its cache slot, the declaration and the declaring class; `resume` hands it
+  to `nested::after_clause`, which does steps 3 to 5 — the application, the
+  class object, the cache ([object-model.md](object-model.md)) — and answers
+  the class. While the clause runs, the class's cache slot itself says that
+  its creation is underway: `push_step` writes a marker into it once the
+  clause's push has succeeded (`nested::begin_creation`), and `resume` or
   `Mutator::abandon` sets it back to nil when the activation is popped
   (`nested::end_creation`), before `after_clause` caches the class there. An
   access that finds the marker is the cyclic-definition error; the slot is
@@ -10270,13 +10284,14 @@ when these paths ran in nested runs of the loop.
   since only a host snapshots, between runs; an image that puts `false` in a
   hidden slot itself gets a cyclic-definition error, the same kind of
   wrong-but-safe answer as any other non-class value it puts there. The reset
-  replaces only the marker: the decoder does not bound `InitializeSlot`'s field
-  index, so an image's clause body can overwrite the slot, and a debug build
-  counts the marks rather than asserting on the slot's contents, which such an
-  image could turn into a panic. `abandon` is `resume`'s counterpart for a
-  continuation whose activation the unwinder throws away rather than returns
-  from: the loop forwards every popped entry's continuation to it and decides
-  nothing, as `vm::finish` forwards to `resume`.
+  replaces only the marker: the decoder does not bound `InitializeSlot`'s
+  field index, so an image's clause body can overwrite the slot, and a debug
+  build counts the marks rather than asserting on the slot's contents, which
+  such an image could turn into a panic. `abandon`
+  (`r[vm.activation.abandoned-continuation-undone]`) is `resume`'s counterpart
+  for a continuation whose activation the unwinder throws away rather than
+  returns from: the loop forwards every popped entry's continuation to it and
+  decides nothing, as `vm::finish` forwards to `resume`.
 - **Instantiation** is compiled code ([object-model.md](object-model.md),
   "Instantiation"): a factory send activates the factory entry's body, a
   `Step::Factory`, whose instructions allocate the instance and answer the
@@ -10342,7 +10357,8 @@ keeps no argument buffer: a send whose sources are consecutive registers
 names them in place, and only one whose sources are not copies them into
 its slots, out of line (`vm::place_arguments`). The registers
 stay put from the send's start to its push: no collection runs inside a
-decision, only at safepoints, and nothing pops the sender meanwhile.
+decision, only at safepoints (`r[vm.heap.collection-only-at-safepoint]`),
+and nothing pops the sender meanwhile.
 `Interpreter::reenter`, `invoke_closure`,
 `builtins::call_block`, the count of re-entries and its bound, and that
 bound's error, `stack overflow: too many nested native calls`, are gone with
@@ -10472,10 +10488,9 @@ fallback closure is the exception and keeps them, which is exactly what
 
 The link costs a closure nothing it did not already hold, and the home is no
 longer a field of its own: `Heap::closure_home` derives it from
-`captured_frame` — that frame itself when it is a method's, an initializer's
-or a superclass clause's, and that frame's own `home` when it is a block's.
-The decoder refuses a closure frame without a `home`
-(`DecodeError::FrameHomeMismatch`), and `closure_home` still falls back to the
+`captured_frame` (`r[vm.activation.closure-home-derived]`). The decoder
+refuses a closure frame without a `home` (`r[image.verify.frames]`;
+`DecodeError::FrameHomeMismatch`), and `closure_home` still falls back to the
 captured frame rather than asserting: a decoded frame is never married or
 suspended, so `raise_return` treats it as a dead home and raises
 `cannotReturn` either way, where an assertion would have aborted the process
@@ -10489,7 +10504,8 @@ literal as a scope and cannot tell which blocks `compiler/control_flow.rs`
 inlines; a variable read only in an inlined `ifTrue:` block is not captured,
 and the loop rule below depends on knowing which blocks are inlined loops. The
 pass calls `control_flow::recognize`, so it and the lowering agree on every
-block. Neither the resolver nor the reference lowering knows about it.
+block (`r[vm.compiler.capture-agrees-with-lowering]`). Neither the resolver
+nor the reference lowering knows about it.
 
 `analyze(RootBody, &bindings) -> Captures` walks one code family — a root body
 (method, initializer or superclass clause) and every block
@@ -10500,11 +10516,12 @@ literal under it — and answers, per body, keyed by `BodyKey::Root` or
   copy or not captured at all, or `Vector(slot)`, a slot of the body's own
   indirection vector;
 - **each real block's copied values** (`Captured`), **in first-reference
-  order**: each entry — a copied variable (`Captured::Variable`) or a scope's
-  vector (`Captured::Vector`) — takes its place the first time the walk needs
-  it, and the two kinds interleave rather than grouping (`Walker::needs`, and
-  `finish`, which deduplicates while keeping that order). That order is what
-  the block's register layout is built from, so it is part of the answer, not a
+  order** (`r[vm.compiler.copied-values-order]`): each entry — a copied
+  variable (`Captured::Variable`) or a scope's vector (`Captured::Vector`) —
+  takes its place the first time the walk needs it, and the two kinds
+  interleave rather than grouping (`Walker::needs`, and `finish`, which
+  deduplicates while keeping that order). That order is what the block's
+  register layout is built from, so it is part of the answer, not a
   presentation detail. What a block needs includes, **transitively**, whatever
   a block nested in it needs from further out — a middle block carries what an
   inner one needs, as in Cog — and a block that only *writes* an enclosing
@@ -10555,7 +10572,8 @@ A fallback closure can outlive the statement that made it — a non-Boolean
 receiver's `ifTrue:` may keep the block and run it later — so treating it as a
 converted block would put every variable written in any `ifTrue:` branch into a
 vector (rule 1), captured or not. Instead **a fallback closure, and every block
-nested in it, keeps the by-reference model**: it reads and writes through
+nested in it, keeps the by-reference model**
+(`r[vm.compiler.fallback-closure-by-reference]`): it reads and writes through
 `LoadOuterLocal`/`StoreOuterLocal`, reaching the registers of the frame whose
 common path it stands in for — that frame's own locals, its copied-value
 registers, and, for a vector variable, its vector register followed by
@@ -10585,15 +10603,15 @@ inlining observable.
 **The vector** is an ordinary `Array`, of the indexable format, as Cog's
 indirection vector is. No new object kind: the heap, `trace.rs` and the image
 already handle it, and Newspeak code never receives it as a value, since only
-the new instructions touch it. One vector per body that has vector variables,
-not a box per variable — the Smalltalk and Newspeak lineage's choice (Cog,
-Primordial Soup); Strongtalk, V8 and .NET instead keep one context per scope
-holding every captured variable, read or written, and Lua, CPython, Kotlin
-(`Ref.IntRef`/`ObjectRef`), Scala and Groovy box per variable. An `Array`'s
-elements sit inline in its block ([object-model.md](object-model.md), "The
-object layout"), so a box and a vector each cost one allocation for one
-variable, and the vector saves `k − 1` for `k`. A small-vector inline representation was
-considered and not built.
+the new instructions touch it (`r[vm.compiler.vector-never-a-value]`). One
+vector per body that has vector variables, not a box per variable — the
+Smalltalk and Newspeak lineage's choice (Cog, Primordial Soup); Strongtalk, V8
+and .NET instead keep one context per scope holding every captured variable,
+read or written, and Lua, CPython, Kotlin (`Ref.IntRef`/`ObjectRef`), Scala
+and Groovy box per variable. An `Array`'s elements sit inline in its block
+([object-model.md](object-model.md), "The object layout"), so a box and a
+vector each cost one allocation for one variable, and the vector saves `k − 1`
+for `k`. A small-vector inline representation was considered and not built.
 
 **Registers.** A method's or initializer's layout is parameters, temporaries,
 then one hidden vector register when the body has vector variables, then
@@ -10650,13 +10668,13 @@ the captured frame determines (`Heap::closure_home`, above). `trace_block`
 traces the captured frame and the copied values, never the two numbers.
 
 **The divorce.** Whether a returning frame keeps its registers is decided per
-activation, at run time. `CompiledCode` carries `outer_reach`, a **depth**, not
-a flag: `bytecode::outer_reach_of` takes the maximum of the body's own
-`LoadOuterLocal`/`StoreOuterLocal` depths and of each nested `MakeClosure`'s
-block reach minus one. So it is 0 for converted code, 1 for a body that creates
-a fallback closure reading its own registers, and one more per level above
-that. It is computed when the code is built, by the compiler and by the decoder
-alike, and is not on the wire.
+activation, at run time. `CompiledCode` carries `outer_reach`, a **depth**,
+not a flag (`r[vm.activation.outer-reach]`): `bytecode::outer_reach_of` takes
+the maximum of the body's own `LoadOuterLocal`/`StoreOuterLocal` depths and of
+each nested `MakeClosure`'s block reach minus one. So it is 0 for converted
+code, 1 for a body that creates a fallback closure reading its own registers,
+and one more per level above that. It is computed when the code is built, by
+the compiler and by the decoder alike, and is not on the wire.
 
 `MakeClosure` calls `Heap::retain_registers` on the creating activation when
 the block it creates has a non-zero reach, and `pop_activation` copies a
@@ -10678,7 +10696,8 @@ produced never has one.
 ### The image format
 
 Tags follow "assigned once, never renumbered or reused"
-(`crates/ns-runtime/src/image/opcodes.rs`, pinned by
+(`r[bytecode.wire.tag-assigned-once]`;
+`crates/ns-runtime/src/image/opcodes.rs`, pinned by
 `crates/ns-runtime/tests/opcode_tags.rs`):
 
 - `MakeClosure`'s payload changed, so tag 11 is **retired** and `MakeClosure`
@@ -10694,7 +10713,8 @@ known from its code alone: `Heap::fill_copied_values` sizes and fills the
 window between a block's parameters and its temporaries from it, and the
 decoder reconciles every `MakeClosure` and every closure record against it
 without needing the creating instruction in hand. `outer_reach`
-is *not* on the wire: the decoder derives it with the compiler's own
+is *not* on the wire (`r[vm.compiler.reach-derived-never-read]`): the decoder
+derives it with the compiler's own
 `outer_reach_of`, which works because a block's code precedes its parent's in
 the table.
 
@@ -10725,7 +10745,8 @@ too; `inspect`'s own structural walk reads a closure record's copied values
 from the same tags as the encoder and decoder. A
 returned converted frame is written with its whole register file, `nil`
 where nothing was copied, and `verify_graph` holds a frame record's register
-count to its body's ([image-format.md](image-format.md), "Verification").
+count to its body's (`r[image.verify.frames]`;
+[image-format.md](image-format.md), "Verification").
 
 ### Fewer protective copies
 
@@ -10736,12 +10757,11 @@ write, because the code it runs could write the local through a closure
 (`CLAUDE.md`, "An expression's value register must still hold that value").
 Under the optimized lowering a converted closure writes no register of another
 activation: a captured written variable lives in a vector, and a vector read
-lands in a scratch register as a snapshot; a copied register is read-only. The
+lands in a scratch register as a snapshot; a copied register is read-only
+(`r[vm.compiler.read-only-locals]`). The
 one exception is a fallback closure ("Fallback blocks"), which writes by
-reference exactly the locals its inlinable branch assigns. A local's register
-can therefore be written only by an assignment in its own body, including inside
-an inlined block, or — for a local some inlinable branch of the body assigns —
-by a fallback closure that any send may run.
+reference exactly the locals its inlinable branch assigns. Which writes can
+reach a local's register is the rule's (`r[vm.compiler.value-register]`).
 
 So the question is now asked **per register**, not per expression class.
 `a_send_can_write(register)` is the whole of "a send runs user code that can
@@ -10885,10 +10905,11 @@ resolved. Only the interpreter forces a future this way: machine code
 hands such an instruction to the interpreter before it forces anything.
 Every other continuation still goes through `Mutator::resume`.
 
-Running an instruction twice is safe because the first run wrote nothing:
-`InitializeSlot` forces before it writes, and **a leaf that declines or
-raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives"),
-so running again the send that ran it is running it once. A forcing an
+Running an instruction twice is safe because the first run wrote nothing
+(`r[vm.activation.reexecuted-instruction-wrote-nothing]`,
+`r[vm.dispatch.declining-leaf-changes-nothing]`;
+[dispatch.md](dispatch.md), "Primitives"): `InitializeSlot` forces before
+it writes. A forcing an
 unwind abandons, or one of whose pushes the run loop refuses -- the depth
 limit, or a computation's arity -- leaves its future unresolved again by
 `resolve`'s own `ifCurtailed:`; the continuation has nothing to undo. A
@@ -10948,7 +10969,8 @@ into its own locals -- Cog's `localIP` and `localFP` -- and dispatches
 `code.slot(program_counter)` until a safepoint is requested or the
 run's base activation is done; only when it leaves for a safepoint does it
 write the frame back, in one place every safepoint shares. A move or
-collection happens only between two entries, so within a stretch every
+collection happens only between two entries
+(`r[vm.heap.collection-only-at-safepoint]`), so within a stretch every
 handle stays valid until the entry ends; the brand's guarantee is the one it
 was when each instruction was an entry ([memory.md](memory.md), "The
 brand"). The safepoint is tested where it always was -- every switch to
@@ -10976,20 +10998,21 @@ had, which a JIT tier will reach the same way.
 
 **The register base.** `heap.rs` hands out an opaque `RegisterBase`, which
 only `Heap` can mint: `Heap::activation_register_base(activation)` computes an
-activation's window start once per switch, and `Heap::register(base,
-index)` and `Heap::set_register(base, index, value)` reach the frame
-stack's words with one index and one bounds check. It is an index, not a
-pointer: it survives the stack's reservation committing more and a move,
-which touches no register window, and so it sits in `FrameRegisters` across a safepoint. It carries
-the danger an `ActivationReference` does -- once its activation is popped,
-the next one at that depth reuses the window -- so in a debug build it
-carries its activation and every access checks the activation's generation,
-as `check_activation` does; in a release build it is a `u32`, which a
-release-build test pins. `LoadOuterLocal`, `StoreOuterLocal`, the
-indirection vectors and married frames are unchanged: a married frame's
-registers are its stack frame's words, so a write through the base is the
-write it always was. `read_local` and `write_local` remain for every caller
-outside the loop, the out-of-line arms among them. No `unsafe`.
+activation's window start once per switch, and `Heap::register(base, index)`
+and `Heap::set_register(base, index, value)` reach the frame stack's words
+with one index and one bounds check. It is an index, not a pointer: it
+survives the stack's reservation committing more and a move, which touches no
+register window, and so it sits in `FrameRegisters` across a safepoint. It
+carries the danger an `ActivationReference` does
+(`r[vm.handle.activation-never-stored]`) -- once its activation is popped, the
+next one at that depth reuses the window -- so in a debug build it carries its
+activation and every access checks the activation's generation, as
+`check_activation` does; in a release build it is a `u32`, which a
+release-build test pins. `LoadOuterLocal`, `StoreOuterLocal`, the indirection
+vectors and married frames are unchanged: a married frame's registers are its
+stack frame's words, so a write through the base is the write it always was.
+`read_local` and `write_local` remain for every caller outside the loop, the
+out-of-line arms among them. No `unsafe`.
 
 **What pins it.** The semantics are the suite's: every golden under both
 lowerings, the image round trips, the corpus, and the stress modes,
@@ -11448,25 +11471,25 @@ position, since `onUnwind value` follows `self value`.
 ## Overlapping register windows
 
 **Status: road step 7a′, decided with the user on 2026-10-24, built and
-measured in two stages.** The first makes a send's arguments contiguous
-slots or consecutive sources, read in place through an argument window,
-the argument buffer gone ("What contiguous arguments moved"). The second
-overlaps the windows: the header 13 words in every build, its numbers
-left out of the register numbering, a send's own callee laid on its
-caller's slots -- the caller's outgoing argument registers *are* the
-callee's first registers, so its arguments are copied into no window of
-the callee's -- the pop restoring the top the callee was pushed at,
-suspension keeping a sender's registers below its callee's header, frame
-objects and image records without the header's numbers, and the
-decoder's refusal of a register that names a header word, of argument
-slots below the header's end or below the body's locals, of a send source
-that is another of its slots, of a write to an argument register, and of
-an outer load or store into another frame's scratch
-([image-format.md](image-format.md), "Verification"). Neither a push nor
-a pop writes a scratch register; the leftover analysis decides what the
-collector nils instead ("What the leftover analysis moved"). The second
-stage costs nothing on the geometric mean against the first ("What
-overlapping windows moved").
+measured in two stages.** The first makes a send's arguments contiguous slots
+or consecutive sources, read in place through an argument window, the argument
+buffer gone ("What contiguous arguments moved"). The second overlaps the
+windows: the header 13 words in every build, its numbers left out of the
+register numbering, a send's own callee laid on its caller's slots -- the
+caller's outgoing argument registers *are* the callee's first registers, so
+its arguments are copied into no window of the callee's -- the pop restoring
+the top the callee was pushed at, suspension keeping a sender's registers
+below its callee's header, frame objects and image records without the
+header's numbers, and the decoder's refusal of a register that names a header
+word, of argument slots below the header's end or below the body's locals, of
+a send source that is another of its slots, of a write to an argument
+register, and of an outer load or store into another frame's scratch
+(`r[bytecode.verify.outer-locals]`; [image-format.md](image-format.md),
+"Verification"). Neither a push nor a pop writes a scratch register
+(`r[vm.activation.top-at-window-end]`); the leftover analysis decides what the
+collector nils instead ("What the leftover analysis moved"). The second stage
+costs nothing on the geometric mean against the first ("What overlapping
+windows moved").
 
 **What a send copies.** Each argument at most once, most of them
 never. A send names its arguments' contiguous slots, allocated after its
@@ -11534,22 +11557,22 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   "Registers"). Every register is still `base + r`, one addition and no
   branch on an args/temps split; the header sits at `base + argc`, and an
   `ActivationReference` is its offset.
-- **The header is 13 words in every build**, since its size is in the
-  compiled code and a debug build's artifact or image must run in a
-  release one: the debug build's generation rides in the flags word,
-  whose argument count is 16 bits -- 8 + 16 + 2 + 31 bits, inside 61.
+- **The header is 13 words in every build**
+  (`r[vm.activation.header-one-size]`): the debug build's generation rides
+  in the flags word, whose argument count is 16 bits -- 8 + 16 + 2 + 31
+  bits, inside 61.
   The register ceiling bounds the count: a body with more parameters
   compiles to the raising body ("Compilation cannot fail"), whose declared
   arity still passes the arity check, so a longer list of values -- a
-  host's send or `Message>>sendTo:` -- is refused at the push instead:
-  `Interpreter::push` raises the error the raising body would, without
-  pushing, so the sender is the activation that signals it.
+  host's send or `Message>>sendTo:` -- is refused at the push instead
+  (`r[vm.activation.push-checks-arity]`): `Interpreter::push` raises the
+  error the raising body would, without pushing, so the sender is the
+  activation that signals it.
 - **A send's arguments are contiguous slots at the top of the caller's
-  live registers**. Both lowerings allocate the `argc` slots right
-  after the receiver and lower each argument into its slot: a literal or a
-  send writes it directly, so nothing copies it. Every register numbered
-  above the slots is dead when the send executes -- the callee's header and
-  window overwrite them -- which the bump allocator makes true: nothing is
+  live registers** (`r[vm.compiler.argument-slots-top-live-registers]`).
+  Both lowerings lower each argument into its slot: a literal or a
+  send writes it directly, so nothing copies it. The bump allocator makes
+  every register above the slots dead at the send: nothing is
   allocated below a slot after it, and what an argument is computed with
   lands above. Both lowerings check it on every body in a debug build
   (`compiler::reference::check_leftovers`): no instruction after a send
@@ -11565,46 +11588,44 @@ callee                      | r0 .. r(argc-1)       | header (13) | r(argc+13) .
   on
   ([compiler.md](compiler.md), "The reference lowering").
 - **A push without the arguments in the caller's registers copies them**
-  to the top of the stack, above the caller's whole window: a
-  `doesNotUnderstand:` handler's message, `Message>>sendTo:`, `cull:`, a
-  future's forcing, an unwind block, a host's entry, a resumed
-  frame, and the initializer a factory enters, whose arguments are the
-  factory's own and lie below its header. A future forced before a send
-  is re-run lands above the caller's window too, so the slots it re-reads
-  are untouched. Only an activation that takes the run loop's send's own
-  arguments (`StepArguments::Send`) is laid on the slots; a mirror send's
+  to the top of the stack, above the caller's whole window --
+  `Message>>sendTo:` and `cull:` among them, and the initializer a factory
+  enters, whose arguments are the factory's own and lie below its header. A
+  future forced before a send is re-run lands above the caller's window too,
+  so the slots it re-reads are untouched. Only an activation that takes the
+  run loop's send's own arguments (`StepArguments::Send`) is laid on the
+  slots (`r[vm.activation.only-senders-callee-on-slots]`); a mirror send's
   leaf and `InitializeInstance` hand theirs on from elsewhere, and land
   above too (pinned by
   `goldens/language/evaluation-order/a_push_that_is_not_the_senders_callee_leaves_its_window.ns`).
-- **A pop restores the top it was pushed at**, not the callee's
-  offset: the caller's window end, or past it where the caller lies on a
-  longer frame's slots, since a push never lowers the top. The caller's
-  registers above its slots are its own again, dead, and the pop writes
-  none of them, nor does a push write a scratch register: every trace of
-  the stack nils each register a frame does not read before it writes it
-  (`Heap::trace_stack`; [memory.md](memory.md), "What the collector
-  traces"; "What the leftover analysis moved"). A debug build writes a
-  poison word no value can be into both, and refuses an instruction's
-  read of it ("Representation" above). Suspending a sender copies its
-  registers below its callee's header only and leaves the rest nil, so a
-  frame object holds no stale header word, and nils every register the
-  trace would. A frame object and an image record hold the registers
-  without the header's numbers: register `r` is field `r` below the
-  argument count and field `r - 13` above the header, and a number the
-  header takes has no field (`Heap::frame_field_of_register`), so a frame
-  of a body past the register ceiling whose arguments leave no number
-  above the header holds its arguments alone, and an image carrying one
-  decodes.
+- **A pop restores the top it was pushed at**
+  (`r[vm.activation.top-at-window-end]`), not the callee's offset: the
+  caller's window end, or past it where the caller lies on a longer frame's
+  slots. Every trace of the stack nils each register a
+  frame does not read before it writes it
+  (`r[vm.activation.dead-registers-nilled]`; `Heap::trace_stack`;
+  [memory.md](memory.md), "What the collector traces"; "What the leftover
+  analysis moved"). A debug build writes a poison word no value can be into
+  both, and refuses an instruction's read of it ("Representation" above).
+  Suspending a sender copies its registers below its callee's header only and
+  leaves the rest nil, so a frame object holds no stale header word, and nils
+  every register the trace would. A frame object and an image record hold the
+  registers without the header's numbers: register `r` is field `r` below the
+  argument count and field `r - 13` above the header, and a number the header
+  takes has no field (`Heap::frame_field_of_register`), so a frame of a body
+  past the register ceiling whose arguments leave no number above the header
+  holds its arguments alone, and an image carrying one decodes.
 - **Parameter slots are immutable (§3.6, §6.3.2)**, so a callee never
-  writes the caller's slots: a setter assignment's value, read from the
-  slot after the send, is still there (pinned by
+  writes the caller's slots (`r[bytecode.register.arguments]`): a setter
+  assignment's value, read from the slot after the send, is still there
+  (pinned by
   `goldens/language/evaluation-order/a_setter_value_read_after_its_send_survives_the_callee.ns`).
-  The decoder refuses an instruction that names one of the header's
-  numbers, a send whose slots start below the header's end, whose
-  callee's header would go over its sender's, an instruction that writes
-  an argument register, and an outer load or store into another frame's
-  scratch, which would reach a live frame above it
-  ([image-format.md](image-format.md), "Verification").
+  The decoder refuses a body that breaks the layout
+  (`r[bytecode.verify.registers]`, `r[bytecode.verify.argument-windows]`),
+  an instruction that writes an argument register, and an outer load or
+  store into another frame's scratch, which would reach a live frame
+  above it (`r[bytecode.verify.outer-locals]`;
+  [image-format.md](image-format.md), "Verification").
 - **The decision reads the arguments where they are**, through an
   argument window -- the frame, the slot base and the count, read through
   the `Heap` -- instead of a slice; there is no argument buffer.
@@ -11779,7 +11800,8 @@ an observer needs, and everything an observer needs is reconstructed at
 the one place observation can begin: the exit of machine code to the run
 loop. Every observer -- the collector, a suspension, the unwinder, the
 activation leaves, a deoptimization, an interpreted callee, later the
-debugger and an activation mirror -- runs only after such an exit. That
+debugger and an activation mirror -- runs only after such an exit
+(`r[vm.machine.observers-after-exit]`). That
 is HotSpot's arrangement, debug information at safepoints rather than in
 the frame, carried over to a stack of tagged words with no stack map,
 which is Cog's and Strongtalk's: neither has stack maps, because every
@@ -11805,27 +11827,26 @@ section are to the generated C under
   resumes them. The header word that tells them apart is a bit in the
   flags word, since the code word is a `CodeId` and not an address Cog
   could compare against its code zone (`cointerp.c:27029-27032`).
-- **The hot path writes two header words: the receiver and the current
-  class.** A compiled call places its callee on its argument slots as the
-  interpreter's send does, and writes the callee's receiver and current
-  class into their header places; every other header word is written when
-  the frame is materialized ("The exit materializes" below). The current
-  class cannot be derived later: a class object exists per enclosing
-  instance, a cache cell holds no handle, a return address names only the
-  call site, and a walk of the receiver's chain for the code's mixin --
-  Primordial Soup's -- answers the wrong level where one mixin is applied
-  twice in a chain; and a lexical or `super` miss inside the callee needs
-  it before any exit. The call computes it as the interpreter's
-  materialization does, from the chain's start and the entry's level
-  (decided with the user on 2026-10-28). Every system read writes its
-  frame's identifying words eagerly -- Cog's prologue four (the method,
-  the context, the receiver, the saved frame pointer;
-  `cogitX64SysV.c:33035-33085`), Sparkplug's six, the interpreter frame's
-  (`prior-art/v8/src/builtins/x64/builtins-x64.cc:2008-2031`) -- so a
-  call costs two stores more than HotSpot's and less than Cog's. A value
-  that lives across a send the code did not inline is stored into its
-  slot before the send, as HotSpot and V8 spill every live value across
-  a call.
+- **The hot path writes two header words: the receiver and the current class**
+  (`r[vm.machine.call-writes-receiver-and-class]`). A compiled call places its
+  callee on its argument slots as the interpreter's send does, and writes the
+  callee's receiver and current class into their header places; every other
+  header word is written when the frame is materialized ("The exit
+  materializes" below). The current class cannot be derived later: a class
+  object exists per enclosing instance, a cache cell holds no handle, a return
+  address names only the call site, and a walk of the receiver's chain for the
+  code's mixin -- Primordial Soup's -- answers the wrong level where one mixin
+  is applied twice in a chain; and a lexical or `super` miss inside the callee
+  needs it before any exit. The call computes it as the interpreter's
+  materialization does, from the chain's start and the entry's level (decided
+  with the user on 2026-10-28). Every system read writes its frame's
+  identifying words eagerly -- Cog's prologue four (the method, the context,
+  the receiver, the saved frame pointer; `cogitX64SysV.c:33035-33085`),
+  Sparkplug's six, the interpreter frame's
+  (`prior-art/v8/src/builtins/x64/builtins-x64.cc:2008-2031`) -- so a call
+  costs two stores more than HotSpot's and less than Cog's. A value that lives
+  across a send the code did not inline is stored into its slot before the
+  send, as HotSpot and V8 spill every live value across a call.
 - **The return addresses are on the native stack** of the thread that
   runs the interpreter, on which compiled code calls and returns with the
   processor's `call` and `ret`, so a return is predicted by the return
@@ -11837,11 +11858,13 @@ section are to the generated C under
   return addresses"). It holds only the return addresses of the
   compiled frames above the run loop's latest entry into machine code,
   and the frame's own base register addresses the activation stack.
-- **Machine code holds no handle**, as compiled code holds none today
+- **Machine code holds no handle** (`r[vm.machine.code-holds-no-handle]`),
+  as compiled code holds none today
   ([compiler.md](compiler.md), "Readers of compiled code take the
   mixin"): a literal object is loaded through the heap's tables, so the
   collector never patches code, where Cog's has to (`cogitX64SysV.c:9971-10310`).
-- **An inlined scope lies at the interpreter's position** (decided with
+- **An inlined scope lies at the interpreter's position**
+  (`r[vm.machine.optimized-frame-is-interpreters]`; decided with
   the user on 2026-11-07): where the interpreter would push its
   activation, on its sender's argument slots, its thirteen header
   places between its arguments and its other registers, so that its
@@ -11910,13 +11933,14 @@ sees.
 
 ### Returns
 
-- **A frame that lived through an exit returns only through the run
-  loop.** When the loop resumes a compiled frame, it enters the frame's
-  code at the machine address its program counter maps to, through a
-  table per code; that frame is the bottom of a new stretch of machine
-  code, and its return goes to the loop again. Each frame pays one slow
-  return per exit it lived through -- after a scavenge, the stack's depth
-  times the loop's round trip, which is small beside the scavenge itself.
+- **A frame that lived through an exit returns only through the run loop**
+  (`r[vm.machine.exited-frame-returns-through-loop]`). When the loop resumes a
+  compiled frame, it enters the frame's code at the machine address its
+  program counter maps to, through a table per code; that frame is the bottom
+  of a new stretch of machine code, and its return goes to the loop again.
+  Each frame pays one slow return per exit it lived through -- after a
+  scavenge, the stack's depth times the loop's round trip, which is small
+  beside the scavenge itself.
 - **A frame pushed by compiled code since the latest exit returns by a
   bare `ret`.** It was pushed by a send, so its continuation is
   `Deliver`; it counts against the depth limit; and only its own code can
@@ -11927,10 +11951,10 @@ sees.
   frame tests it, and every other return tests nothing. The continuation
   word and the reified word are read only on the loop's path, as
   `vm::finish` reads them today.
-- **Compiled code creates no fallback closure.** An inlined conditional
-  whose receiver is not a Boolean hands its frame to the interpreter at
-  that instruction, to run it again there, as Cog converts its frame at
-  `mustBeBoolean` (`cointerp.c:22380-22400`).
+- **Compiled code creates no fallback closure**
+  (`r[vm.machine.no-fallback-closure]`), as Cog converts its frame at
+  `mustBeBoolean` (`cointerp.c:22380-22400`) for an inlined conditional
+  whose receiver is not a Boolean.
 
 ### Safepoints and the depth limit
 
@@ -11945,25 +11969,23 @@ sees.
   already keeps it as the fallback), so a compiled call pays one
   compare for both, besides the comparison of its frame's end against
   the activation stack's committed end.
-- **The count stays exact.** The goldens pin where a recursion overflows,
-  so the running total of counted activations agrees with the
-  interpreter's at every check. Baseline code keeps it in its machine
-  word, `DepthCount`, which a compiled push loads, compares, increments
-  and stores and a return loads, decrements and stores: kept in `rbp`
-  instead, written back at every exit, every return out of machine code
-  and around the cut's leaves, it moved the mean of the 23 sources
-  -0.9%, within the builds' spread, and `bench_megamorphic.ns` +3.7%
-  beyond it, so it was reverted (measured on 2026-11-03, "What on-stack
-  replacement moved"); `rbp` stays free with `r13`. An inlined scope is not counted at run time: at a
-  call site d scopes deep the compiled call adds d to the depth count
-  for the call's length, a constant (`BodyAssembler::call_send`), so
-  that the callee's push compares and counts every activation an exit
-  above the call writes. The prologue of a copy whose deepest inlined
-  chain is D compares the depth against the limit less D, and the
-  stack's end against the frame's deepest extent; either refusal leaves
-  for the baseline code (`stubs::REFUSED_WITHIN_THE_INLINED_DEPTH`),
-  counted against no budget, which pushes real frames and overflows
-  exactly where the interpreter does.
+- **The count stays exact** (`r[vm.machine.depth-count-agrees]`). The goldens
+  pin where a recursion overflows. Baseline code keeps it in its
+  machine word, `DepthCount`, which a compiled push loads, compares,
+  increments and stores and a return loads, decrements and stores: kept in
+  `rbp` instead, written back at every exit, every return out of machine code
+  and around the cut's leaves, it moved the mean of the 23 sources -0.9%,
+  within the builds' spread, and `bench_megamorphic.ns` +3.7% beyond it, so it
+  was reverted (measured on 2026-11-03, "What on-stack replacement moved");
+  `rbp` stays free with `r13`. An inlined scope is not counted at run time: at
+  a call site d scopes deep the compiled call adds d to the depth count for
+  the call's length, a constant (`BodyAssembler::call_send`), so that the
+  callee's push compares and counts every activation an exit above the call
+  writes. The prologue of a copy whose deepest inlined chain is D compares the
+  depth against the limit less D, and the stack's end against the frame's
+  deepest extent; either refusal leaves for the baseline code
+  (`stubs::REFUSED_WITHIN_THE_INLINED_DEPTH`), counted against no budget,
+  which pushes real frames and overflows exactly where the interpreter does.
 
 ### Between the tiers
 
@@ -11971,7 +11993,8 @@ sees.
   compiled bit, once materialized, is the whole conversion, since its
   words are the interpreter's.
 - **An interpreted frame becomes a baseline one in place**, on-stack
-  replacement at a backward jump ("When a body is compiled" below says
+  replacement at a backward jump (`r[vm.machine.on-stack-replacement-at-loops]`;
+  "When a body is compiled" below says
   when): the interpreter has taken the jump's poll, `jit::back_edge_ready`
   has answered that the frame switches, the stretch has ended there
   (`vm::Leave::BackEdge`), and the next one enters the code
@@ -12007,7 +12030,8 @@ sees.
   the run loop's alone, so the poll exits, and the run loop enters the
   code again as it does a frame returned to. Decided with the user on
   2026-11-02.
-- **An optimized frame becomes interpreted ones in place** (decided with
+- **An optimized frame becomes interpreted ones in place**
+  (`r[vm.machine.exit-writes-every-scope]`; decided with
   the user on 2026-11-07): since every inlined scope lies at the
   interpreter's position and at every interrupt point every scope's
   words are the interpreter's, the exit's walk writes the inlined
@@ -12026,19 +12050,18 @@ sees.
   `unpack_frame_array`, `:784-874`): it needs no form of the frame but
   the interpreter's.
 - **A frame that left its optimized code at a poll goes back into it**
-  once the safepoint is served, at that poll, unless the poll has no
-  entry, the exit was a stress mode's forced one, or the safepoint made
-  it impossible -- the stack rebuilt or its scopes no longer the
-  stack's innermost chain, a frame among them reified, its copy freed
-  or installed again, its feedback base slid, or no room left for its
-  scopes on the native stack, within the depth limit or at the stack's
-  end (`jit::resumed_at_poll`) -- when its eliminated blocks are made
-  and every scope goes on in baseline code, as after any exit
+  (`r[vm.machine.back-into-optimized-code]`) once the safepoint is served,
+  at that poll, unless the poll has no entry, the exit was a stress
+  mode's forced one or the safepoint made it impossible (`jit::resumed_at_poll`; the conditions are
+  "Inlining", "Back into optimized code at a poll") -- when its
+  eliminated blocks are made and every scope goes on in baseline code, as
+  after any exit
   (decided with the user on 2026-11-07; "Inlining", "Back into
   optimized code at a poll"). It is the one way into optimized code
   mid-body: every other frame that goes on mid-body goes on in its
   baseline code.
-- **A scope resumes in one of two ways** (`Resumes`): the value of the
+- **A scope resumes in one of two ways** (`Resumes`;
+  `r[vm.machine.scope-resumes-at-boundary]`): the value of the
   send at the stored program counter is delivered to that send's
   destination, as `vm::resume_caller` delivers a callee's value -- every
   scope an inlined callee lies above, and a frame returned into, resumes
@@ -12076,14 +12099,13 @@ sees.
   point needs -- an unboxed number (stage 5) or an object escape
   analysis left virtual (stage 9). Baseline code needs none of this: its
   registers are the frame's words.
-- **Invalidation follows what a copy relied on**, the dependency keys of
+- **Invalidation follows what a copy relied on**
+  (`r[vm.machine.stale-copies-freed]`), the dependency keys of
   [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
-  their dependency keys": a copy's key and its recorded dependencies --
-  every application an arm or a customized read relied on, every
-  inlined body's code id and feedback base (`CopyDependencies`) -- and
-  an install, a reclaim or a slide that changes one frees every copy
-  that relied on it at once, since each runs after an exit or at a
-  safepoint, where every frame is activations already ("Speculation",
+  their dependency keys": a change to what a copy relied on
+  (`CopyDependencies`) frees the copy at once, since each change runs
+  after an exit or at a safepoint, where every frame is activations
+  already ("Speculation",
   "Invalidation"; "Inlining", "Dependencies"); Strongtalk walks every
   stack and deoptimizes the frames of marked code instead
   (`runtime/process.cpp:917-926`). The bulk forward frees all optimized
@@ -12108,11 +12130,10 @@ sees.
   where it lies and reifies nothing ("Unwinding" above), so it needs no
   leaf, where Cog's `primitiveFindNextUnwindContext` serves an unwinder
   written in the image.
-- **What is observed is never inlined.** `on:do:`, `ensure:`,
-  `ifCurtailed:` and every kernel method whose activation a leaf reads or
-  marks (`signal`, the handler's, the unwind marker's) stay frames of
-  their own in optimized code, so every activation the exception
-  machinery stops at is a whole frame.
+- **What is observed is never inlined**
+  (`r[vm.machine.observed-never-inlined]`): the kernel methods whose
+  activation a leaf reads or marks are `signal`, the handler's and the
+  unwind marker's.
 - **Any other request for an inlined activation as an object runs after
   an exit**, which writes it as an activation, and its frame goes on in
   baseline code -- the debugger, a stack trace, an activation mirror;
@@ -12125,43 +12146,40 @@ sees.
 
 ### Non-local return and unwinding
 
-- **Machine code cuts a non-local return itself** when its target's frame
-  lies in the current stretch of machine code and no activation with an
-  unwind marker lies between: it pops to the target and returns there,
-  as Primordial Soup cuts its stack when the home is on it and no
-  unwind-protect lies between (`prior-art/primordialsoup/vm/interpreter.cc:908-1001`).
-  Otherwise it takes the exit, and the one unwinder carries the unwind
-  on as today ("Unwinding" above) -- so a `^` out of a `do:` block costs
-  no exit. A `^` of a block compiled with its home is its home's return,
-  a jump in the compiled code ("Inlining", "Blocks with their home").
-  Where the cut would pop or return into an optimized frame inside an
-  inlined scope, it takes the exit instead, whose walk writes the
-  scopes as activations, and the unwinder carries the return on over
-  them (`jit/cut.rs`); an unwind marker never lies inside an optimized
-  frame, since "What is observed is never inlined". The cut of a
-  return into an inlined home from a block not compiled with it is
-  stage 4's ("Planned: the optimizing JIT", "Closures, frames and
-  non-local return in inlined scopes").
+- **Machine code cuts a non-local return itself**
+  (`r[vm.machine.cut-pops-as-returns-pop]`) where it can: it pops to the
+  target and returns there, as Primordial Soup cuts its stack when the home is
+  on it and no unwind-protect lies between
+  (`prior-art/primordialsoup/vm/interpreter.cc:908-1001`). Otherwise it takes
+  the exit, and the one unwinder carries the unwind on as today ("Unwinding"
+  above) -- so a `^` out of a `do:` block costs no exit. A `^` of a block
+  compiled with its home is its home's return, a jump in the compiled code
+  ("Inlining", "Blocks with their home"). Where the cut would pop or return
+  into an optimized frame inside an inlined scope, it takes the exit instead,
+  whose walk writes the scopes as activations, and the unwinder carries the
+  return on over them (`jit/cut.rs`); an unwind marker never lies inside an
+  optimized frame, since "What is observed is never inlined". The cut of a
+  return into an inlined home from a block not compiled with it is stage 4's
+  ("Planned: the optimizing JIT", "Closures, frames and non-local return in
+  inlined scopes").
 
 ### A closure created in an inlined scope
 
-A closure the optimizer does not inline still reifies the frame it is
-created in, whatever it captured, since `enclosingActivation` and the
-debugger read that link ("The closure keeps its defining activation"
-above). One it compiles with its home and eliminates -- every use an
-inlined `value`-family send or a move -- is created by no code, and an
-exit that finds it live makes it, one closure per block per exit, its
-home's activation reified and married in place, every register that
-holds it given the same object (decided with the user on 2026-11-07;
-"Inlining", "Blocks with their home"). A block that escapes is created
-by its `MakeClosure` in the outermost scope, which transfers the frame
-into the baseline body's reifying twin; in an inlined scope the plan
-sends the callee instead, where the block would be created on a way
-that ran, and a `MakeClosure` left on a way that never ran is a trap
-or an exit. Taking a frame object that stands for the inlined
-activation as its home, so that optimized code creates such a block
-itself, is stage 4's ("Planned: the optimizing JIT", "Closures, frames
-and non-local return in inlined scopes", below).
+A closure the optimizer does not inline still reifies the frame it is created
+in, whatever it captured, since `enclosingActivation` and the debugger read
+that link ("The closure keeps its defining activation" above). One it compiles
+with its home and eliminates -- every use an inlined `value`-family send or a
+move -- is created by no code, and an exit that finds it live makes it
+(`r[vm.machine.eliminated-block-made-once]`; decided with the user on
+2026-11-07; "Inlining", "Blocks with their home"). A block that escapes is created by its
+`MakeClosure` in the outermost scope, which transfers the frame into the
+baseline body's reifying twin; in an inlined scope the plan sends the callee
+instead, where the block would be created on a way that ran, and a
+`MakeClosure` left on a way that never ran is a trap or an exit. Taking a
+frame object that stands for the inlined activation as its home, so that
+optimized code creates such a block itself, is stage 4's ("Planned: the
+optimizing JIT", "Closures, frames and non-local return in inlined scopes",
+below).
 
 ## The optimizing tier's foundation
 
@@ -12259,7 +12277,8 @@ body's armed row to at least `BUDGET_AFTER_CACHE_CHANGE`, a sixth of the
 budget (`interpreter/inline_cache.rs`'s `fill`), so that a compile
 waits for its feedback to settle.
 
-Machine code never names a row by its code id, which a full collection
+Machine code never names a row by its code id
+(`r[vm.machine.budget-words-name-own-row]`), which a full collection
 may free and mint again for another body: each copy of a body's
 baseline code spends through one data word of its own, its **budget
 word**, which holds its row's address. The JIT points it once the code
@@ -12291,29 +12310,26 @@ tracing").
 ### The snapshot
 
 At the safepoint, the run loop takes up every request
-(`jit::optimize_requested`, from `Interpreter::safepoint`) and
-snapshots each body (`Snapshot::take`): its instructions as
-`SnapshotInstruction`s -- `Instruction` with `MakeClosure`'s `Rc`
-payloads replaced by the block's code id and its parameter count --
-its `BodyFacts`, the plain numbers the templates read off a
-`CompiledCode` (`sends::prologue` and `sends::call_slots_of` take them,
-the baseline's arms as much as the optimizer's), the registers the
-leftover analysis taints before each instruction (`tainted_before`),
-and for each `IntegerBinary` whether its fallback send's site has
-cached `Float` receivers and no other (`fallback_taken`). The snapshot
-holds no handle and is `Send`; the compile reads it alone, synchronously
-at the same safepoint, and the install only appends to the zone, so
-neither collects nor moves code.
+(`jit::optimize_requested`, from `Interpreter::safepoint`) and snapshots each
+body (`Snapshot::take`): its instructions as `SnapshotInstruction`s --
+`Instruction` with `MakeClosure`'s `Rc` payloads replaced by the block's code
+id and its parameter count -- its `BodyFacts`, the plain numbers the templates
+read off a `CompiledCode` (`sends::prologue` and `sends::call_slots_of` take
+them, the baseline's arms as much as the optimizer's), the registers the
+leftover analysis taints before each instruction (`tainted_before`), and for
+each `IntegerBinary` whether its fallback send's site has cached `Float`
+receivers and no other (`fallback_taken`). The snapshot holds no handle
+(`r[vm.machine.snapshot-holds-no-handle]`) and is `Send`.
 
-**Here the feedback is read as layout**, and as each site's executed
+**Here the feedback is read as layout**
+(`r[vm.machine.feedback-decides-layout]`), and as each site's executed
 and trapped bits in optimized code's guards ("Speculation", "Guards
 and traps"). An `IntegerBinary` whose fallback
 site has seen only `Float` receivers is built as a jump to its fallback
 send: the send alone, with no fast path, no guard and no deoptimization,
 as V8 Maglev's generic path for a `kAny` hint is, so that float
 arithmetic pays no failing `SmallInteger` test, diamond and merge. The
-send answers a `SmallInteger`'s operation too, so the feedback decides
-what the code loads and stores, never what it computes. Only a site
+send answers a `SmallInteger`'s operation too. Only a site
 that saw `Float` alone counts: a site that also saw another receiver
 -- a `nil` at the end of Json's input, beside the `SmallInteger`s the
 fast path answers without reaching the site -- keeps its fast path,
@@ -12323,28 +12339,26 @@ and reading any non-`SmallInteger` receiver so cost Json 10%
 
 ### The graph
 
-`build::build` makes a control-flow graph in SSA form in one pass over
-the snapshot's instructions, abstractly interpreting the registers --
-each mapped to the value that last defined it -- with a block at every
-jump target and after every instruction that jumps or stops, and a phi
-where blocks meet that disagree on a register, only for a register
-some path still reads, so that no frame word is read that the
-interpreter would not read. A **simple node** is register arithmetic
-that emits no call: an immediate literal, the receiver, a copy, an
-`IntegerBinary`'s `SmallInteger` fast path, with an edge to its
-fallback, and in a customized copy an own slot's read
-(`Node::OwnSlotLoad`), a load at the fixed field the entered
-application's own slot base gives (`Snapshot::customization`), with no
-guard ("Speculation", "Own slots at fixed offsets" below); returns, jumps and branches end blocks,
-and so does a copy's `ReturnSlotIfFilled`, which returns its slot unless
-it is `nil` and goes on to the initializer otherwise
-(`End::ReturnUnlessNil`). Every other
-instruction is a **frame node**, emitted by the baseline's template for
-it. A frame node may run Newspeak code, which can write this frame's
-registers by reference, move every object a value names or reify the
-frame, so a value lives in a machine register only between two frame
-nodes, and after one every register is read again from its frame word
-(`Node::FrameRead`).
+`build::build` makes a control-flow graph in SSA form in one pass over the
+snapshot's instructions, abstractly interpreting the registers -- each mapped
+to the value that last defined it -- with a block at every jump target and
+after every instruction that jumps or stops, and a phi where blocks meet that
+disagree on a register, only for a register some path still reads, so that no
+frame word is read that the interpreter would not read. A **simple node** is
+register arithmetic that emits no call: an immediate literal, the receiver, a
+copy, an `IntegerBinary`'s `SmallInteger` fast path, with an edge to its
+fallback, and in a customized copy an own slot's read (`Node::OwnSlotLoad`), a
+load at the fixed field the entered application's own slot base gives
+(`Snapshot::customization`), with no guard ("Speculation", "Own slots at fixed
+offsets" below); returns, jumps and branches end blocks, and so does a copy's
+`ReturnSlotIfFilled`, which returns its slot unless it is `nil` and goes on to
+the initializer otherwise (`End::ReturnUnlessNil`). Every other instruction is
+a **frame node**, emitted by the baseline's template for it. A frame node may
+run Newspeak code, which can write this frame's registers by reference, move
+every object a value names or reify the frame, so a value lives in a machine
+register only between two frame nodes
+(`r[vm.machine.registers-held-between-frame-nodes]`), and after one every
+register is read again from its frame word (`Node::FrameRead`).
 
 **A loop's head leaves a register its frame word** where every way in
 from before the loop brings a value that frame word holds, or the loop
@@ -12384,7 +12398,8 @@ the poll's stores on its cold path alone -- every dirty binding is
 written back (`DirtyPoint`), and where control meets and a register's
 binding does not carry on, it is written back on its way in, unless the
 leftover analysis taints the register there (`Binding::STALE`). So at
-every interrupt point the frame is the interpreter's word for word, and
+every interrupt point the frame is the interpreter's word for word
+(`r[vm.machine.optimized-frame-is-interpreters]`), and
 what the collector traces is what baseline code would have left: a store
 left out would keep an object alive that a `WeakArray` shows gone
 (CLAUDE.md, "A register a frame does not read before it writes it is
@@ -12432,23 +12447,23 @@ budget, whose spend then parks the row again and requests nothing.
 ### The two tiers' entries
 
 Optimized code lives beside baseline code: the body's slot names both
-(`JitSlot`'s `optimized`), and a body gets optimized code only once it
-has baseline code. A push enters the optimized code past its prologue
-(`optimized_push_entry`), and the install writes every cell that called
-the baseline code afresh from its entry and clears the machine entry
-row, so that compiled calls and the closure stubs enter the optimized
-prologue. A frame returned to (`jit::resumed`), switched at a back edge
-(`jit::at_back_edge`) or resumed after a safepoint goes on in the
-*baseline* code at its program counter, since only baseline code has an
-entry at every instruction; optimized code's program-counter map has
-only its calls' returns, and its polls' entries, kept beside it
-(`InstalledBody::polls`), serve only a frame that left at that poll. Leaving optimized
-code is therefore going on in baseline code or the interpreter, which
-the frame's words, written back, make exact ("Between the tiers"), but
-for a frame that left at a poll and goes back in there ("Inlining",
-"Back into optimized code at a poll"). The exit's walk
-(`jit/materialize.rs`) and the leaves find an optimized frame's send by
-the call's return address, as a baseline frame's.
+(`JitSlot`'s `optimized`), and a body gets optimized code only once it has
+baseline code. A push enters the optimized code past its prologue
+(`optimized_push_entry`), and the install writes every cell that called the
+baseline code afresh from its entry and clears the machine entry row, so that
+compiled calls and the closure stubs enter the optimized prologue. A frame
+returned to (`jit::resumed`), switched at a back edge (`jit::at_back_edge`) or
+resumed after a safepoint goes on in the *baseline* code
+(`r[vm.machine.entered-only-at-entries]`) at its program counter, since only
+baseline code has an entry at every instruction; optimized code's
+program-counter map has only its calls' returns, and its polls' entries, kept
+beside it (`InstalledBody::polls`), serve only a frame that left at that poll.
+Leaving optimized code is therefore going on in baseline code or the
+interpreter, which the frame's words, written back, make exact ("Between the
+tiers"), but for a frame that left at a poll and goes back in there
+("Inlining", "Back into optimized code at a poll"). The exit's walk
+(`jit/materialize.rs`) and the leaves find an optimized frame's send by the
+call's return address, as a baseline frame's.
 
 ### Exits, abandonment and the code zone
 
@@ -12596,7 +12611,8 @@ the geometric mean of the twenty-seven sources against `master`, and
 
 ### The key and the copies
 
-A method body's copy is compiled for a **key** (`CustomizationKey`):
+A method body's copy is compiled for a **key** (`CustomizationKey`,
+`r[vm.machine.copy-per-receiver-and-level]`):
 the receiver's application and the application the body is entered
 at, each by its instances' dispatch id. The entered application is
 the current class's, which the call writes into the frame. Code lives
@@ -12676,7 +12692,8 @@ sites, and the cell's entry stays a function of its entry and the JIT's
 state.
 
 The rows lie in a reservation of their own, as the machine entry
-table's do (`heap/optimized_copies.rs`): a block of `DISPATCHING_ROWS`,
+table's do (`heap/optimized_copies.rs`; their writer's rule is
+`r[vm.machine.dispatching-rows]`): a block of `DISPATCHING_ROWS`,
 eight, rows of three words per code id -- the receiver's dispatch id,
 the entered application word and the copy's machine entry -- a row past
 the body's copies vacant, its receiver word one no dispatch id is, so
@@ -12715,7 +12732,8 @@ copies read their own slots through lazy getters' `ReturnSlotIfFilled`
 today; `LoadOwnSlot`'s node is reached by the tests and the passes'
 sweeps over every body.
 
-**The reads need no guard**: the receiver was verified at the copy's
+**The reads need no guard** (`r[vm.machine.unguarded-slot-reads-verified]`):
+the receiver was verified at the copy's
 entry, by its cell's guard, the dispatching rows or the key's lookup;
 any forward of it -- the bulk forward, an install's migration -- runs in
 a mirror leaf that machine code exits for, and after an exit the frame
@@ -12832,14 +12850,14 @@ in `JitStatistics::invalidated_copies`:
   (`invalidate_all_optimized`; [debugger.md](debugger.md), "A breakpoint
   in a method with a fast path").
 
-The copies are **freed at once**, their cells, dispatching rows and
-machine entry rows written afresh: an install and a forward are mirror
-leaves machine code exits for (`MachineCall::Exit`), a collection
-runs at a safepoint, and a breakpoint is set or removed at a safepoint,
-between runs, or as an interpreted module build or install resolves it
-again, so no return address into the zone exists and
-every frame goes on in its baseline code. No frame is converted, nor
-needs to be, even one that stands for several inlined activations: the
+The copies are **freed at once** (`r[vm.machine.stale-copies-freed]`),
+their cells, dispatching rows and machine entry rows written afresh: an
+install and a forward are mirror leaves machine code exits for
+(`MachineCall::Exit`), a collection runs at a safepoint, and a
+breakpoint is set or removed at a safepoint, between runs, or as an
+interpreted module build or install resolves it again, so no return
+address into the zone exists and every frame goes on in its baseline
+code. No frame is converted, nor needs to be, even one that stands for several inlined activations: the
 exit the install or the forward ran after wrote them as activations,
 and a collection's safepoint finds them so ("Inlining", "The exit that
 writes the scopes"). Beside the key, a copy's recorded dependencies
@@ -12952,11 +12970,10 @@ estimated frequency -- their sender's, times `LOOP_WEIGHT`, 8, for
 each loop around the site, times the callee's budget share spent since
 it was armed, at least `LEAST_BUDGET_SHARE`, 1/64 -- as TurboFan queues
 its candidates (`compiler/js-inlining-heuristic.cc:225-403`), a site
-never executed excluded. What is observed is never inlined: a body
-with an unwind marker -- `on:do:`, `ensure:`, `ifCurtailed:` -- and
-every kernel method whose activation a leaf reads or marks, a mirror
-send of the `Activation` rows ("Observers" above). Nor is a body a
-breakpoint patched, whose own code exits at the patch for the
+never executed excluded. What is observed is never inlined
+(`r[vm.machine.observed-never-inlined]`; "Observers" above): a body with
+an unwind marker and a mirror send of the `Activation` rows stay sent. Nor
+is a body a breakpoint patched, whose own code exits at the patch for the
 interpreter to stop there: the walk answers `CalleeFacts::Other` for
 such a method callee, which the copy calls, and leaves such a block
 literal unsnapshotted, so that its closure is made and runs the block's
@@ -13033,41 +13050,39 @@ tracing", decision 16).
 
 ### Inlined scopes in the frame
 
-**An inlined scope lies at the interpreter's position** (decided with
-the user on 2026-11-07): its register `r` is the physical register
-`offset + r`, its offset its sender's plus the send's `argument_base`,
-the header's thirteen words part of the numbering as they are of every
-frame. `build_inlined` lays the plan's scopes out as one flat body: at
-an inlined send the type-case, each arm's entry and body, the send
-itself where the type-case falls through to it, and every arm's return
-to the instruction after the send, where the returns meet in a phi. The
-entry reads the receiver and the arguments, binds the parameters, the
-named temporaries to `nil` and the scope's receiver, a header binding
-(`HeaderBinding`) written back like a register -- its current class,
-the other, is bound only where a frame node reads it (below) -- and
-ends, unwritten, every binding of the registers the callee is
-laid over (`Node::Overlay`): the leftover analysis taints them there,
-so no value of the sender's is written into the callee's frame nor
-read after its return. The frame register moves only around a scope's
-frame nodes, to its register 0 (`MacroAssembler::shift_frame`), so
-every baseline template runs unchanged and a scope without a frame
-node costs nothing; a simple node addresses a physical register at any
-shift.
+**An inlined scope lies at the interpreter's position**
+(`r[vm.machine.optimized-frame-is-interpreters]`; decided with the user on
+2026-11-07): its register `r` is the physical register `offset + r`, its
+offset its sender's plus the send's `argument_base`, the header's thirteen
+words part of the numbering as they are of every frame. `build_inlined` lays
+the plan's scopes out as one flat body: at an inlined send the type-case, each
+arm's entry and body, the send itself where the type-case falls through to it,
+and every arm's return to the instruction after the send, where the returns
+meet in a phi. The entry reads the receiver and the arguments, binds the
+parameters, the named temporaries to `nil` and the scope's receiver, a header
+binding (`HeaderBinding`) written back like a register -- its current class,
+the other, is bound only where a frame node reads it (below) -- and ends,
+unwritten, every binding of the registers the callee is laid over
+(`Node::Overlay`; `r[vm.machine.inlined-callee-ends-sender-bindings]`): the
+leftover analysis taints them there. The frame register moves
+only around a scope's frame nodes, to its register 0
+(`MacroAssembler::shift_frame`), so every baseline template runs unchanged and
+a scope without a frame node costs nothing; a simple node addresses a physical
+register at any shift.
 
-**The current class is computed only before a frame node** of the
-scope (`Node::CurrentClass`, from the scope's recipe,
-`graph::ClassRecipe`), as a compiled call computes its callee's from
-the chain's start and the target's level, and an exit's walk computes
-it for every scope it writes (`materialize::scope_class`) before the
-scope's header, whose write records the guard and entered level of
-that class; a debug build asserts the order in `materialize_scopes`. A
-scope whose code addresses its own slots has its own-slot guard word
-reset at its entry (`Node::ResetOwnSlotGuard`), as a push records none.
-The prologue of a copy that inlines checks its deepest chain against
-the depth limit and its deepest extent against the stack's end, and a
-call d scopes deep counts d more for its length ("Safepoints and the
-depth limit" above); the run loop's push enters such a copy only
-where both fit (`Heap::machine_frame_fits`).
+**The current class is computed only before a frame node** of the scope
+(`r[vm.machine.inlined-scope-current-class]`; `Node::CurrentClass`, from the
+scope's recipe, `graph::ClassRecipe`), as a compiled call computes its
+callee's from the chain's start and the target's level, and an exit's walk
+computes it for every scope it writes (`materialize::scope_class`) before the
+scope's header, whose write records the guard and entered level of that class;
+a debug build asserts the order in `materialize_scopes`. A scope whose code
+addresses its own slots has its own-slot guard word reset at its entry
+(`Node::ResetOwnSlotGuard`), as a push records none. The prologue of a copy
+that inlines checks its deepest chain against the depth limit and its deepest
+extent against the stack's end, and a call d scopes deep counts d more for its
+length ("Safepoints and the depth limit" above); the run loop's push enters
+such a copy only where both fit (`Heap::machine_frame_fits`).
 
 **An exit inside an inlined scope** counts against the physical
 copy's exit budget, and a trap there against the copy, setting the
@@ -13103,23 +13118,20 @@ through an uncommon trap; so a block handed to `Array>>do:`, `Set>>do:`,
 `Map>>do:` or `to:by:do:` is eliminated, their ways for a receiver that
 is not what they expect being traps.
 
-An eliminated `MakeClosure` binds its register to
-`Node::EliminatedBlock`, which holds `nil`, and the metadata names the
-block as that register's location (`allocate::Location::EliminatedBlock`);
-a debug build refuses a graph in which a frame node, a return, an
-always-inlined operand or a type-case reads one
-(`build::eliminated_block_read`). **An exit that finds it live makes
-it**, after the walk: one closure per block per exit, in the order the
-blocks depend on each other, its home's activation reified and married
-in place, so that the home goes on in its twin, and every register that
-holds it, in every scope, given the same object, with the operand of
-the scope that runs it (`materialize::materialize_blocks`). A block
-that escapes is created by its `MakeClosure` in the outermost scope,
-which transfers the frame into the twin -- or exits, where an
-eliminated block is live, since the transfer writes no register; in an
-inlined scope the plan sends the callee instead, and a `MakeClosure`
-left on a way that never ran is a trap on that way's site, so that its
-first run marks the site trapped and the trap that follows there
+An eliminated `MakeClosure` binds its register to `Node::EliminatedBlock`,
+which holds `nil`, and the metadata names the block as that register's
+location (`allocate::Location::EliminatedBlock`); a debug build refuses a
+graph in which a frame node, a return, an always-inlined operand or a
+type-case reads one (`build::eliminated_block_read`). **An exit that finds it
+live makes it** (`r[vm.machine.eliminated-block-made-once]`), after the walk,
+in the order the blocks depend on each other, so that its home goes on in its
+twin, with the operand of the scope that runs it
+(`materialize::materialize_blocks`). A block that escapes is created by its
+`MakeClosure` in the outermost scope, which transfers the frame into the twin
+-- or exits, where an eliminated block is live, since the transfer writes no
+register; in an inlined scope the plan sends the callee instead, and a
+`MakeClosure` left on a way that never ran is a trap on that way's site, so
+that its first run marks the site trapped and the trap that follows there
 retires the copy (`a_block_made_on_a_way_not_run_traps`).
 
 ### The exit that writes the scopes
@@ -13129,7 +13141,8 @@ metadata (`jit::OptimizedMetadata`): each interrupt point's chain of
 scopes, innermost first, by the offset of its return address or exit
 site in the body, so that a compaction moves it with the code, and per
 scope its code, its method and its feedback base (`InlinedScope`). The
-exit's walk stops the physical frame at the send its outermost inlined
+exit's walk (`r[vm.machine.exit-writes-every-scope]`) stops the physical
+frame at the send its outermost inlined
 scope is inlined at, and writes every other scope's header in place,
 outermost first (`materialize_scopes`): its code, its program counter,
 its caller and top, its flags -- counted, its kind, its argument count
@@ -13191,31 +13204,31 @@ later").
 ### Back into optimized code at a poll
 
 **A frame that left its optimized code at a poll goes back into it**
-(decided with the user on 2026-11-07), after the safepoint, at that
-poll: without it, every scavenge would send a loop's frame into its
-baseline code until its next push. The poll's exit is light: the walk
-writes the scopes' headers as at every exit but defers the frame's
-eliminated blocks (`materialize::defer_the_poll_s_blocks`), and the
-run loop records the stop (`StoppedAtPoll`). `vm::after_safepoint` asks
-`jit::resumed_at_poll` before it asks `back_edge_ready`, which re-enters
-only where nothing the safepoint did made it impossible: the inlined
-scopes still the stack's innermost chain and none of them reified
-(`Heap::inlined_scopes_stand`), the frame's code the same, its copy
-found again by body and key with the same install serial
-(`InstalledBody::installation`) -- a copy freed, or freed and installed
-again, has another -- and the same feedback base, and room on the
-native stack, against the depth limit and at the stack's end
-(`Heap::machine_frame_fits_without`). Then the scopes are folded back
-into the physical frame (`Heap::fold_inlined_scopes`), the depth count
-less the scopes, and the frame enters the poll's entry as the copy now
-lies, past the poll's test, so that a request still standing costs a
-turn of the loop. Otherwise its blocks are made and every scope goes
-on in baseline code, as after any exit (`deoptimize_at_poll`); the
-suspend stress mode, the one rebuild of the stack, deoptimizes a
-stopped frame before it suspends (`jit::deoptimize_stopped_at_poll`),
-as the debugger's stop does before the agent reads the stack and its
-termination before the unwind pops the frame ([debugger.md](debugger.md),
-"The stop"), and a forced exit at a poll is deoptimized at once.
+(`r[vm.machine.back-into-optimized-code]`; decided with the user on
+2026-11-07), after the safepoint, at that poll: without it, every scavenge
+would send a loop's frame into its baseline code until its next push. The
+poll's exit is light: the walk writes the scopes' headers as at every exit but
+defers the frame's eliminated blocks (`materialize::defer_the_poll_s_blocks`),
+and the run loop records the stop (`StoppedAtPoll`). `vm::after_safepoint`
+asks `jit::resumed_at_poll` before it asks `back_edge_ready`, which re-enters
+only where nothing the safepoint did made it impossible: the inlined scopes
+still the stack's innermost chain and none of them reified
+(`Heap::inlined_scopes_stand`), the frame's code the same, its copy found
+again by body and key with the same install serial
+(`InstalledBody::installation`) -- a copy freed, or freed and installed again,
+has another -- and the same feedback base, and room on the native stack,
+against the depth limit and at the stack's end
+(`Heap::machine_frame_fits_without`). Then the scopes are folded back into the
+physical frame (`Heap::fold_inlined_scopes`), the depth count less the scopes,
+and the frame enters the poll's entry as the copy now lies, past the poll's
+test, so that a request still standing costs a turn of the loop. Otherwise its
+blocks are made and every scope goes on in baseline code, as after any exit
+(`deoptimize_at_poll`); the suspend stress mode, the one rebuild of the stack,
+deoptimizes a stopped frame before it suspends
+(`jit::deoptimize_stopped_at_poll`), as the debugger's stop does before the
+agent reads the stack and its termination before the unwind pops the frame
+([debugger.md](debugger.md), "The stop"), and a forced exit at a poll is
+deoptimized at once.
 
 **The poll's entry restores what the code past it reads**
 (`metadata::poll_restores`, which the emitter and a debug build's
@@ -13236,27 +13249,25 @@ outcomes: `poll_reentries`, `poll_deoptimizations` and
 ### Dependencies
 
 A copy records at its install what it relied on beyond its key
-(`CopyDependencies`): every application an arm or a customized read
-relied on -- each type-case arm's guard, each always-inlined arm's
-application, and each inlined scope's receiver's and entered
-application, whose chain the lookup walked, whose layout a slot read
-takes its offset from and whose outer structure a lexical send walks
--- and every inlined body's and eliminated block's code id and
-feedback base. **Whatever changes any of it frees the copy at once**,
-through the path every invalidation takes, uncounted as a failure: an
-install that rebuilds one of the applications
-(`invalidate_applications`; an install rebuilds every application one
-of whose levels it edits, so an edit anywhere on the chain from the
-receiver's level to the definer rebuilds the receiver's), a full
-collection that reclaims one (`forget_freed_copies`, since the id
-minted again would be taken for the dead one's), and a slide that
-moves one of the feedback bases (`invalidate_copies_of_moved_bases`).
-The code ids never change under a live copy: a full collection names
-every code id a live copy inlined (`jit::inlined_code_ids`), so that an
-inlined method no activation runs keeps its id. The zone frees a copy's
-metadata, dependencies and poll entries with it (`jit/zone.rs`,
-`mark_free`), or its scopes would keep every version an edit replaced
--- and their families' sites -- alive.
+(`CopyDependencies`): every application an arm or a customized read relied on
+-- each type-case arm's guard, each always-inlined arm's application, and each
+inlined scope's receiver's and entered application, whose chain the lookup
+walked, whose layout a slot read takes its offset from and whose outer
+structure a lexical send walks -- and every inlined body's and eliminated
+block's code id and feedback base. **Whatever changes any of it frees the copy
+at once** (`r[vm.machine.stale-copies-freed]`), through the path every
+invalidation takes, uncounted as a failure: an install that rebuilds one of
+the applications (`invalidate_applications`; an install rebuilds every
+application one of whose levels it edits, so an edit anywhere on the chain
+from the receiver's level to the definer rebuilds the receiver's), a full
+collection that reclaims one (`forget_freed_copies`, since the id minted again
+would be taken for the dead one's), and a slide that moves one of the feedback
+bases (`invalidate_copies_of_moved_bases`). The code ids never change under a
+live copy: a full collection names every code id a live copy inlined
+(`jit::inlined_code_ids`), so that an inlined method no activation runs keeps
+its id. The zone frees a copy's metadata, dependencies and poll entries with
+it (`jit/zone.rs`, `mark_free`), or its scopes would keep every version an
+edit replaced -- and their families' sites -- alive.
 
 ### Verification
 
@@ -13693,51 +13704,48 @@ moved" those of stage 4's parts, "What the entry at a send moved" that
 of the entry, "What sends in machine code moved" that of stage 3, "What
 the baseline JIT's foundation moved" that of the first two.
 
-- **The code zone** (`crates/ns-memory/src/code_zone.rs`): one
-  reservation of at most 128 MiB (`CodeZone::MAXIMUM_BYTES`, AArch64's
-  `bl` reach), mapped twice on Windows and Linux -- an executable view
-  code runs from and a writable view the zone's one `CodeWriter` stores
-  through -- and one `MAP_JIT` mapping with the per-thread switch on Apple
-  AArch64, so no page is ever writable and executable at once. A zone
-  is reserved with its one writer, which owns it and is held by the
-  JIT's state, while an entry runs the code from the zone it shares as
-  an `Rc<CodeZone>` (`CodeWriter::zone`); since a write stores only
-  through the writable view and nothing borrows the executable view's
-  bytes, code is installed while machine code runs -- from a leaf it
-  calls -- and machine code holds no address an install moves. Code is
-  installed from the base up, the writer committing pages as it goes and
-  flushing the instruction cache over each write (nothing on x64), the
-  Apple switch turned for the write alone; on Linux each zone keeps the
-  memory object behind its views open for its life, one descriptor, so
-  that a commit allocates its pages with `fallocate` and a zone the
-  system cannot back
-  fails as a value rather than by `SIGBUS`, on every kernel with `memfd`.
-  `CodeZone::enter` calls the entry or the call stub with the platform's
-  C convention, handing it a block of thirty-three words, an `EntryBlock`
-  kept from one entry to the next -- 0 to 3 its own, written at every
-  entry, 4 to 32 the caller's (`jit::stubs::BlockWord`) --
-  and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64`
-  back, from a leaf table that is one constant for the process.
-  Every zone has an identity of its own, never 0, so that a body records
-  which zone its code lies in. A zone that cannot be reserved -- on a
-  Windows before version 1803, whose placeholders the zone's chunks need
-  ([memory.md](memory.md), "Giving committed memory back") -- leaves the
-  JIT off with its reason (`Interpreter::jit_unavailable`): `ns-next run`
-  and `load` say so in one line on stderr, and `bench` refuses, since a
-  measurement must never time the interpreter in the JIT's place.
+- **The code zone** (`crates/ns-memory/src/code_zone.rs`): one reservation of
+  at most 128 MiB (`CodeZone::MAXIMUM_BYTES`, AArch64's `bl` reach), mapped
+  twice on Windows and Linux -- an executable view code runs from and a
+  writable view the zone's one `CodeWriter` stores through -- and one
+  `MAP_JIT` mapping with the per-thread switch on Apple AArch64, so no page is
+  ever writable and executable at once. A zone is reserved with its one
+  writer, which owns it and is held by the JIT's state, while an entry runs
+  the code from the zone it shares as an `Rc<CodeZone>` (`CodeWriter::zone`);
+  since a write stores only through the writable view and nothing borrows the
+  executable view's bytes (`r[vm.machine.install-appends]`), code is installed
+  while machine code runs -- from a leaf it calls -- and machine code holds no
+  address an install moves. Code is installed from the base up, the writer
+  committing pages as it goes and flushing the instruction cache over each
+  write (nothing on x64), the Apple switch turned for the write alone; on
+  Linux each zone keeps the memory object behind its views open for its life,
+  one descriptor, so that a commit allocates its pages with `fallocate` and a
+  zone the system cannot back fails as a value rather than by `SIGBUS`, on
+  every kernel with `memfd`. `CodeZone::enter` calls the entry or the call
+  stub with the platform's C convention, handing it a block of thirty-three
+  words, an `EntryBlock` kept from one entry to the next -- 0 to 3 its own,
+  written at every entry, 4 to 32 the caller's (`jit::stubs::BlockWord`) --
+  and the leaf shim calls a Rust function `fn(&mut C, [u64; 3]) -> u64` back,
+  from a leaf table that is one constant for the process. Every zone has an
+  identity of its own, which a body records
+  (`r[vm.machine.body-entered-in-its-zone]`). A zone that cannot be
+  reserved -- on a Windows before version 1803, whose placeholders the zone's
+  chunks need ([memory.md](memory.md), "Giving committed memory back") --
+  leaves the JIT off with its reason (`Interpreter::jit_unavailable`):
+  `ns-next run` and `load` say so in one line on stderr, and `bench` refuses,
+  since a measurement must never time the interpreter in the JIT's place.
 - **The native stack's room** (`crates/ns-memory/src/native_stack.rs`):
-  `remaining_bytes` answers what is left of the running thread's stack
-  below the caller, from the bounds the system reports --
+  `remaining_bytes` answers what is left of the running thread's stack below
+  the caller, from the bounds the system reports --
   `GetCurrentThreadStackLimits` less the guard pages and the overflow
   handler's guarantee on Windows, `pthread_getattr_np` on Linux,
-  `pthread_attr_get_np` on FreeBSD and NetBSD,
-  `pthread_get_stackaddr_np` and `pthread_get_stacksize_np` on Apple --
-  asked once per thread; `None` elsewhere. Every entry into machine code
+  `pthread_attr_get_np` on FreeBSD and NetBSD, `pthread_get_stackaddr_np` and
+  `pthread_get_stacksize_np` on Apple -- asked once per thread; `None`
+  elsewhere. Every entry into machine code (`r[vm.machine.native-stack-room]`)
   compares it with `jit::NATIVE_STACK_NEED`, a return address's slot per
-  activation the depth limit and its reserve count plus 64 KiB for the
-  deepest leaf -- eight bytes a slot on x64, about 0.87 MB, sixteen on
-  AArch64, about 1.68 MB -- and a thread with less runs the body
-  interpreted ("The native stack carries the return addresses" below).
+  activation the depth limit and its reserve count plus 64 KiB for the deepest
+  leaf -- eight bytes a slot on x64, about 0.87 MB, sixteen on AArch64, about
+  1.68 MB ("The native stack carries the return addresses" below).
 - **`ns-assembler`** (`crates/ns-assembler`): the abstract operations and
   two encoders, x64's (`X64`, `x64.rs`) and AArch64's (`Aarch64`,
   `aarch64.rs`), branches sized in one pass, among them
@@ -13850,69 +13858,66 @@ the baseline JIT's foundation moved" that of the first two.
   from the machine words and writes block word `EnteredByCall` (13), so
   that the exit stub materializes the called callee ("The entry at a
   send" below).
-- **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction
-  by instruction through the one exhaustive `match` over `Instruction`
-  (`lower`), recording where each instruction's code starts and, for
-  every call a send's template is to emit, the program counter of the
-  send its return address belongs to (`ProgramCounterMap`,
-  `program_counter_of_return`): a send's call goes through
-  `BodyAssembler::call_send`, whose idiom `MacroAssembler::call_returning`
-  binds the return label right after the `call`, at the address the
-  processor pushes. Templates: `LoadLiteral` of a literal whose value
-  is a word (`nil`, a Boolean, a `SmallInteger`, an immediate float),
-  `LoadSelf`, `Move`, `StoreLocal`, `Jump`, `JumpIfNotBoolean`,
-  `BranchIfFalse`, `BranchIfTrue`, the cached sends, `Return` and
-  `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`, `MakeArray`,
-  `AllocateInstance`, the initializer invocations and
-  `LoadEnclosingObject` ("The miss leaf" below), `LoadVector`,
-  `StoreVector`, the own-slot instructions
-  (`InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot`,
-  `ReturnSlotIfFilled`; "Own slots in machine code" below), and
-  `IntegerBinary`'s `SmallInteger`
-  fast path -- add, subtract, multiply, floor divide and the five
-  compares, with their tag checks, declining to the send at the
-  instruction's target, before anything is written, on an operand that
-  is no `SmallInteger`, an overflow or a zero divisor. A backward jump
-  polls the heap's safepoint request (in the machine words, block word
-  `MachineWords`, 11; "The machine words" below) first and
-  exits as a safepoint there, so a loop that makes no send still reaches
-  one. `MakeVector` bumps eden's cursor inline (block word `EdenCursor`,
-  22; `MacroAssembler::bump_allocate`) against the limit the
-  interpreter's fast path bumps against, writes the header and the class
-  word from the machine words `ArrayHeader` and `ArrayClass`, counts the
-  object in `MachineAllocations` and fills its fields with nil
-  (`nil_fill`); past the limit, or for a block at or past the
-  large-object threshold, it calls `Leaf::Allocate`, which places the
-  object as the interpreter's cold path does (`Heap::allocate_block`'s
-  `place_block`: young up to eden's end, asking for the scavenge, else
-  old and remembered) and never collects, and rejoins the fill; a
-  scavenge it asks for runs at the next poll's exit. `MakeArray`
-  allocates as `MakeVector` does and stores its element registers into
-  the new object with no barrier, as `allocate_array_from_registers`
-  does: the object is young, or old and born remembered. `LoadVector`
-  and `StoreVector` check what `interpreter::locals::load_vector` and
-  `store_vector` check -- an object of an `Array`'s format with the
-  element, its count the header's or the overflow word's
-  (`MacroAssembler::check_array_index`) -- and exit to re-execute before
-  anything is written otherwise, so the interpreter raises the error.
-  `StoreVector` stores through the write barrier
-  (`MacroAssembler::store_with_barrier`, or `store_with_barrier_at` an
-  address a stub computed): the word stored, then Cog's
-  four early outs in Cog's order -- a value that names no object (the
-  tag test, then the word 0), a young holder, an old value (each one
-  compare against `NURSERY_END`, `MachineLayout::nursery_end`), a holder
-  whose header's remembered bit, bit 31, is set -- and only past them,
-  out of line, `Leaf::Remember`, which is `Heap::remember`, the request
-  of a scavenge past the set's limit included, and answers the holder
-  again, so that a setter finds its receiver after the call. The
-  generic leaf, `Leaf::Step` (`jit/leaves.rs`), runs a `LoadLiteral`
-  that allocates, an `InitializeSlot` whose value §3.1.1's check of a
-  value's slot must look at, an `AllocateInstance` the inline bump does
-  not make, a `CheckAppliedClause` and a body-less declaration's own
-  `LoadEnclosingObject`, through the interpreter's own function for
-  it, and answers "re-execute" only before it has changed anything,
-  so the interpreter raises the error, or forces a future, itself.
-  - **Own slots in machine code.** An own-slot template first makes
+- **The baseline compiler** (`jit/baseline.rs`) lowers a body instruction by
+  instruction through the one exhaustive `match` over `Instruction` (`lower`),
+  recording where each instruction's code starts and, for every call a send's
+  template is to emit, the program counter of the send its return address
+  belongs to (`ProgramCounterMap`, `program_counter_of_return`): a send's call
+  goes through `BodyAssembler::call_send`, whose idiom
+  `MacroAssembler::call_returning` binds the return label right after the
+  `call`, at the address the processor pushes. Templates: `LoadLiteral` of a
+  literal whose value is a word (`nil`, a Boolean, a `SmallInteger`, an
+  immediate float), `LoadSelf`, `Move`, `StoreLocal`, `Jump`,
+  `JumpIfNotBoolean`, `BranchIfFalse`, `BranchIfTrue`, the cached sends,
+  `Return` and `ImplicitReturn`, a leaf-safe `SendMirror`, `MakeVector`,
+  `MakeArray`, `AllocateInstance`, the initializer invocations and
+  `LoadEnclosingObject` ("The miss leaf" below), `LoadVector`, `StoreVector`,
+  the own-slot instructions (`InitializeSlot`, `InitializeSlotProvisionally`,
+  `LoadOwnSlot`, `ReturnSlotIfFilled`; "Own slots in machine code" below), and
+  `IntegerBinary`'s `SmallInteger` fast path -- add, subtract, multiply, floor
+  divide and the five compares, with their tag checks, declining to the send
+  at the instruction's target, before anything is written
+  (`r[vm.machine.decline-before-write]`), on an operand that is no
+  `SmallInteger`, an overflow or a zero divisor. A backward jump polls the
+  heap's safepoint request (in the machine words, block word `MachineWords`,
+  11; "The machine words" below) first and exits as a safepoint there, so a
+  loop that makes no send still reaches one. `MakeVector` bumps eden's cursor
+  inline (`r[vm.machine.allocation-as-interpreter]`; block word `EdenCursor`,
+  22; `MacroAssembler::bump_allocate`) against the limit the interpreter's
+  fast path bumps against, writes the header and the class word from the
+  machine words `ArrayHeader` and `ArrayClass`, counts the object in
+  `MachineAllocations` and fills its fields with nil (`nil_fill`); past the
+  limit, or for a block at or past the large-object threshold, it calls
+  `Leaf::Allocate`, which places the object as the interpreter's cold path
+  does (`Heap::allocate_block`'s `place_block`: young up to eden's end, asking
+  for the scavenge, else old and remembered) and never collects, and rejoins
+  the fill; a scavenge it asks for runs at the next poll's exit. `MakeArray`
+  allocates as `MakeVector` does and stores its element registers into the new
+  object with no barrier, as `allocate_array_from_registers` does: the object
+  is young, or old and born remembered. `LoadVector` and `StoreVector` check
+  what `interpreter::locals::load_vector` and `store_vector` check -- an
+  object of an `Array`'s format with the element, its count the header's or
+  the overflow word's (`MacroAssembler::check_array_index`) -- and exit to
+  re-execute before anything is written otherwise, so the interpreter raises
+  the error. `StoreVector` stores through the write barrier
+  (`r[vm.heap.barrier]`; `MacroAssembler::store_with_barrier`, or
+  `store_with_barrier_at` an address a stub computed): the word stored, then
+  Cog's four early outs in Cog's order -- a value that names no object (the
+  tag test, then the word 0), a young holder, an old value (each one compare
+  against `NURSERY_END`, `MachineLayout::nursery_end`), a holder whose
+  header's remembered bit, bit 31, is set -- and only past them, out of line,
+  `Leaf::Remember`, which is `Heap::remember`, the request of a scavenge past
+  the set's limit included, and answers the holder again, so that a setter
+  finds its receiver after the call. The generic leaf, `Leaf::Step`
+  (`jit/leaves.rs`), runs a `LoadLiteral` that allocates, an `InitializeSlot`
+  whose value §3.1.1's check of a value's slot must look at, an
+  `AllocateInstance` the inline bump does not make, a `CheckAppliedClause` and
+  a body-less declaration's own `LoadEnclosingObject`, through the
+  interpreter's own function for it, and answers "re-execute" only before it
+  has changed anything (`r[vm.machine.leaf-contract]`), so the interpreter
+  raises the error, or forces a future, itself.
+  - **Own slots in machine code** (`r[vm.machine.own-slot-access-guarded]`).
+    An own-slot template first makes
     `check_own_slots`' hot path inline
     (`MacroAssembler::check_own_slot_guard`): the receiver an object
     whose header's guard is the one its frame recorded, and not `NONE`.
@@ -13949,34 +13954,33 @@ the baseline JIT's foundation moved" that of the first two.
     otherwise. Every other instruction exits
   and the interpreter runs it. `JitStatistics::leaf_calls` counts every
   leaf call machine code makes, once, in the leaf table's wrapper.
-- **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode`
-  carries a `JitSlot`, never encoded, which a clone answers fresh,
-  counting its entries; at the second, `note_entry` compiles the body
-  into the zone of the running interpreter, whose state -- the zone, 16
-  MiB by default (`DEFAULT_ZONE_BYTES`, a first guess), the bodies
-  installed in it, each held weakly with its range and its
-  program-counter map, so that `JitState::body_at` answers the body a
-  return address into the zone lies in, and the statistics
-  (`Interpreter::jit_statistics`) -- is held on the `Mutator`. The zone
-  keeps no body alive, so code still dies with its mixin's row, and it
-  records no code id, which a full collection may free and mint again
-  for another body: `body_at` asks the heap for the body's id afresh,
-  and a body that died answers nothing. No return address into the zone
-  outlives an exit, and a collection runs only at an exit or between
-  entries, so a body with a compiled frame is always one that runs. A
-  push in `vm::run_stretch` of a counting or compiled body pays one load
-  and one compare (`JitSlot::push_is_armed`; the abandonment below says
-  what the others pay); everything else is
-  `jit::entered`, out of line and `#[cold]`. A send of a method in the
-  run loop pays three loads, from the method to its code to the slot,
-  and one compare (`JitSlot::is_compiled`, inline in
-  `Mutator::enter_sent`); everything else is `call_sent` and
-  `jit::called`, out of line ("The entry at a send" below). A run's base
-  activation, which the host pushed, is entered at `vm::run`'s start
-  like any push, or a host's entry send would never run compiled.
-  **Which bodies are installed and which are entered** is decided from
-  the code, by `baseline::reaches_before_an_exit` over the instructions'
-  lowerings:
+- **The trigger and the entry** (`jit/mod.rs`): every `CompiledCode` carries a
+  `JitSlot`, never encoded, which a clone answers fresh, counting its entries;
+  at the second, `note_entry` compiles the body into the zone of the running
+  interpreter, whose state -- the zone, 16 MiB by default
+  (`DEFAULT_ZONE_BYTES`, a first guess), the bodies installed in it, each held
+  weakly with its range and its program-counter map, so that
+  `JitState::body_at` answers the body a return address into the zone lies in,
+  and the statistics (`Interpreter::jit_statistics`) -- is held on the
+  `Mutator`. The zone keeps no body alive
+  (`r[vm.machine.zone-keeps-no-body-alive]`), so code still dies with its
+  mixin's row, and it records no code id, which a full collection may free and
+  mint again for another body: `body_at` asks the heap for the body's id
+  afresh, and a body that died answers nothing. No return address into the
+  zone outlives an exit (`r[vm.machine.no-return-address-at-safepoint]`), and
+  a collection runs only at an exit or between entries, so a body with a
+  compiled frame is always one that runs. A push in `vm::run_stretch` of a
+  counting or compiled body pays one load and one compare
+  (`JitSlot::push_is_armed`; the abandonment below says what the others pay);
+  everything else is `jit::entered`, out of line and `#[cold]`. A send of a
+  method in the run loop pays three loads, from the method to its code to the
+  slot, and one compare (`JitSlot::is_compiled`, inline in
+  `Mutator::enter_sent`); everything else is `call_sent` and `jit::called`,
+  out of line ("The entry at a send" below). A run's base activation, which
+  the host pushed, is entered at `vm::run`'s start like any push, or a host's
+  entry send would never run compiled. **Which bodies are installed and which
+  are entered** is decided from the code, by
+  `baseline::reaches_before_an_exit` over the instructions' lowerings:
   - a body whose code cannot reach a return, a compiled send or a
     backward jump before its first exit is neither installed nor entered
     (`EXITS_AT_ONCE`, `JitStatistics::bodies_exiting_at_once`): such
@@ -14158,7 +14162,8 @@ sends and the inline caches in machine code.
 
 - **The cells** ("Inline caches" below; [dispatch.md](dispatch.md), "The
   cells beside the entries"; [memory.md](memory.md), "The cells'
-  reservation"): every site's `CacheEntry` has a cell of four words --
+  reservation"): every site's `CacheEntry` has a cell of four words
+  (`r[vm.machine.cells-follow-entries]`) --
   the guard, the entry address, the level and the chain start --
   written in the same function as the entry, and every polymorphic
   block's slot and every global cache row has one likewise. A cell's
@@ -14192,7 +14197,8 @@ sends and the inline caches in machine code.
   mismatch the send calls the polymorphic stub with the site's cell's
   address, the compared guard, the selector's index above the rule's tag
   and the chain's start (`jit/targets.rs`'s module documentation).
-- **The callee writes its own header places** (decided on
+- **The callee writes its own header places**
+  (`r[vm.machine.call-writes-receiver-and-class]`; decided on
   2026-10-28): the call hands the callee's receiver and current class in fixed
   registers (`Roles::callee_receiver`, `callee_class`) and writes nothing
   into the callee's frame; the callee's prologue checks the depth count
@@ -14223,130 +14229,124 @@ sends and the inline caches in machine code.
   into the entry stub ("The stubs" above). Machine code does not poll at
   a compiled call's return, so a mirror row whose effect relies on its
   return being a safepoint -- `garbageCollect` -- stays an exit.
-- **The stubs a cell names** (`jit/targets.rs`): the polymorphic stub
-  scans the site's block of four cells for the guard, as
+- **The stubs a cell names** (`jit/targets.rs`): the polymorphic stub scans
+  the site's block of four cells for the guard, as
   `InlineCaches::polymorphic_hit` scans the entries; the megamorphic stub
-  hashes the global cache's key exactly as `GlobalCache::group` does,
-  with `hash.rs`'s constants, and probes the two rows of its group in the
-  machine-readable mirror of the global cache, without promoting the
-  second, since the order within a group decides only what a colliding
-  insert evicts (`the_megamorphic_hash_is_the_global_caches` holds the
-  two hashes to each other). At a `super` or private lexical site, whose
-  guard is an application word while the global cache is keyed by
-  dispatch id, the stub reads the key's dispatch id from **the
-  application id table** (decided on 2026-10-29; `heap/application_ids.rs`; memory.md,
-  "The application id table"). Either stub's hit continues as the send's
-  own hit, and its miss calls the miss leaf. Beside them the accessor
-  stubs, each doing what `Mutator::act_with_base` does for its target
-  and nothing more: a getter of a public or protected chain, which checks
-  the receiver as `Heap::instance_field` does and loads the field; a
-  setter of one, which checks the receiver as the getter does, stores
-  the argument through the inline write barrier and answers the
-  receiver; a quick method's constant, receiver or parameter; a
-  method whose fast path is a leaf-safe mirror row, whose leaf
-  (`Leaf::MirrorMethod`) runs the row's leaf on the receiver and a few
-  arguments read off the send's slots; a method whose fast path is a row
-  with a stub of its own (`MachineCall::Stub`) -- an Array's or a
-  ByteArray's `at:` and `at:put:` -- which reads or writes the element a
-  `SmallInteger` index in range names, its bounds the header's count or
-  the overflow word's, a ByteArray's data at the first 32-byte offset at
-  or after its field 0, as `heap/object.rs` computes it, an Array's store
-  through the inline barrier, and goes on to the row's mirror method
-  stub for every other case, so that the row's failures stay its leaf's;
-  a nested class's accessor on a public or protected chain, whose cell
-  compares the receiver's own guard, so that the hidden slot the entry
-  recorded is the receiver's: the getter's checks and load of that
-  slot, answering the class it caches (`nested::nested_class`'s hit), and
-  declining for a slot that holds none yet -- nil, or a creation's
+  hashes the global cache's key exactly as `GlobalCache::group` does, with
+  `hash.rs`'s constants, and probes the two rows of its group in the
+  machine-readable mirror of the global cache, without promoting the second,
+  since the order within a group decides only what a colliding insert evicts
+  (`the_megamorphic_hash_is_the_global_caches` holds the two hashes to each
+  other). At a `super` or private lexical site, whose guard is an application
+  word while the global cache is keyed by dispatch id, the stub reads the
+  key's dispatch id from **the application id table** (decided on 2026-10-29;
+  `heap/application_ids.rs`; memory.md, "The application id table"). Either
+  stub's hit continues as the send's own hit, and its miss calls the miss
+  leaf. Beside them the accessor stubs, each doing what
+  `Mutator::act_with_base` does for its target and nothing more: a getter of a
+  public or protected chain, which checks the receiver as
+  `Heap::instance_field` does and loads the field; a setter of one, which
+  checks the receiver as the getter does, stores the argument through the
+  inline write barrier and answers the receiver; a quick method's constant,
+  receiver or parameter; a method whose fast path is a leaf-safe mirror row,
+  whose leaf (`Leaf::MirrorMethod`) runs the row's leaf on the receiver and a
+  few arguments read off the send's slots; a method whose fast path is a row
+  with a stub of its own (`MachineCall::Stub`) -- an Array's or a ByteArray's
+  `at:` and `at:put:` -- which reads or writes the element a `SmallInteger`
+  index in range names, its bounds the header's count or the overflow word's,
+  a ByteArray's data at the first 32-byte offset at or after its field 0, as
+  `heap/object.rs` computes it, an Array's store through the inline barrier,
+  and goes on to the row's mirror method stub for every other case, so that
+  the row's failures stay its leaf's; a nested class's accessor on a public or
+  protected chain, whose cell compares the receiver's own guard, so that the
+  hidden slot the entry recorded is the receiver's: the getter's checks and
+  load of that slot, answering the class it caches (`nested::nested_class`'s
+  hit), and declining for a slot that holds none yet -- nil, or a creation's
   `SmallInteger` -- so that the interpreter makes the class (decided on
-  2026-10-30); a getter or setter of a private or `super` chain, whose field the
-  lookup decided from N's or S's chain: `slot_level_holds`'s first
-  compare made inline -- the receiver's guard against the one the entry
-  recorded, which the cell carries above the chain start in its
-  `chain_start` word (`cells::Cell`, `CHAIN_START_BITS`; a lexical
-  send tests the one bit of the start it needs), a megamorphic hit
-  moving `send_cells` so that a global row's word lies where a cell's
-  does -- then the public stubs' access; the leaf stub (`Leaf::Act`)
-  for every other target machine code runs this way -- a private or
-  `super` slot accessor whose guard differs from the recorded one, or
-  that came from the miss leaf, whose guard check runs as `act` runs
-  it, straight from the site's entry when the send hit its site's own
-  cell directly, a primitive that is a leaf-safe mirror send, a builtin
-  class's accessor; and the
-  refusing stub, which exits so that the interpreter runs the send. Every
-  decline refuses the call before anything is written. A stub stores
-  into no frame. A send enters its callee with its own site's cell's
-  address in the `send_cells` role, a stub with the block's cell or the
-  global row it found, and the miss stub with 0, since after a miss the
-  site's entry need not be the decision for this receiver; the leaf
-  stub's leaf runs a slot accessor straight from the entry only for a
-  site's own cell. Every other leaf a callee calls finds the send by its call's
-  return address in a table of every installed call
-  (`JitState::returns`), reading it without decoding the instruction.
+  2026-10-30); a getter or setter of a private or `super` chain, whose field
+  the lookup decided from N's or S's chain: `slot_level_holds`'s first compare
+  made inline -- the receiver's guard against the one the entry recorded,
+  which the cell carries above the chain start in its `chain_start` word
+  (`cells::Cell`, `CHAIN_START_BITS`; a lexical send tests the one bit of the
+  start it needs), a megamorphic hit moving `send_cells` so that a global
+  row's word lies where a cell's does -- then the public stubs' access; the
+  leaf stub (`Leaf::Act`) for every other target machine code runs this way --
+  a private or `super` slot accessor whose guard differs from the recorded
+  one, or that came from the miss leaf, whose guard check runs as `act` runs
+  it, straight from the site's entry when the send hit its site's own cell
+  directly, a primitive that is a leaf-safe mirror send, a builtin class's
+  accessor; and the refusing stub, which exits so that the interpreter runs
+  the send. Every decline refuses the call before anything is written
+  (`r[vm.machine.decline-before-write]`). A stub stores into no frame
+  (`r[vm.machine.stub-acts-as-interpreter]`). A send enters its callee with its
+  own site's cell's address in the `send_cells` role, a stub with the block's
+  cell or the global row it found, and the miss stub with 0, since after a
+  miss the site's entry need not be the decision for this receiver; the leaf
+  stub's leaf runs a slot accessor straight from the entry only for a site's
+  own cell. Every other leaf a callee calls finds the send by its call's
+  return address in a table of every installed call (`JitState::returns`),
+  reading it without decoding the instruction.
 - **The miss leaf** (`Leaf::Miss`, `inline_cache::decide_at`): decides the
   send as the interpreter's cached send does, through the same functions
   (`public_key`, `lexical_site`, `lexical_receiver`, `lexical_key`,
-  `super_site`, `super_key`), filling the site's entry and cell and the
-  global cache as the interpreter's miss fills them, but acts on nothing:
-  for a method machine code runs as an activation, and for a factory's
-  body, it counts the callee's entry, compiling and installing it at its
-  second -- one of the three leaves that may compile a callee, with the
-  initializer leaf and the forcing leaf, which decide a compiled call at
-  the same moment and share its tail (`sends::call_decided`), beside the
-  twin leaf, which compiles the running body's twin ("A frame reifies
-  only in its body's twin"), from inside
-  machine code, which holds no address an install moves -- and answers
-  its machine entry, the receiver and class handed
-  over in the machine words (`CalleeReceiver`, `CalleeClass`); for a
-  target that is no method with code it answers the stub its cell names;
-  for everything else it refuses the call. **A factory send is a compiled
-  call** (decided with the user on 2026-10-30): its cell names the
-  factory body's machine entry, or the miss stub while it may still be
-  compiled (`jit::cell_entry`), and the body's prologue makes the class
-  object it runs on, its receiver, its current class as well
+  `super_site`, `super_key`), filling the site's entry and cell and the global
+  cache as the interpreter's miss fills them, but acts on nothing: for a
+  method machine code runs as an activation, and for a factory's body, it
+  counts the callee's entry, compiling and installing it at its second -- one
+  of the three leaves that may compile a callee, with the initializer leaf and
+  the forcing leaf, which decide a compiled call at the same moment and share
+  its tail (`sends::call_decided`), beside the twin leaf, which compiles the
+  running body's twin ("A frame reifies only in its body's twin"), from inside
+  machine code, which holds no address an install moves -- and answers its
+  machine entry, the receiver and class handed over in the machine words
+  (`CalleeReceiver`, `CalleeClass`); for a target that is no method with code
+  it answers the stub its cell names; for everything else it refuses the call.
+  **A factory send is a compiled call** (decided with the user on 2026-10-30):
+  its cell names the factory body's machine entry, or the miss stub while it
+  may still be compiled (`jit::cell_entry`), and the body's prologue makes the
+  class object it runs on, its receiver, its current class as well
   (`baseline::BodyRole::Factory`), whatever class a hit walked to. Its
-  `AllocateInstance` bumps an ordinary instance inline: the receiver a
-  class object, by its format, whose builtin field and value class
-  refusal are nil, read afresh at every instantiation, as
-  `allocate_for_factory` reads them, and whose application's row records
-  an instance header word (`MacroAssembler::load_instance_header`; memory.md,
-  "The application id table"), the count of the header's words the size
-  (`ObjectSize::Register`, `nil_fill_block`); everything else -- a
-  builtin's own instances, the VM mirror's class among them, a refusal,
-  an overflowing count, eden at its limit -- runs through `Leaf::Step`,
-  which runs `allocate_instance` and, for a refusal, exits so that the
-  interpreter raises. **An initializer invocation is a compiled call**
+  `AllocateInstance` bumps an ordinary instance inline: the receiver a class
+  object, by its format, whose builtin field and value class refusal are nil,
+  read afresh at every instantiation, as `allocate_for_factory` reads them,
+  and whose application's row records an instance header word
+  (`MacroAssembler::load_instance_header`; memory.md, "The application id
+  table"), the count of the header's words the size (`ObjectSize::Register`,
+  `nil_fill_block`); everything else -- a builtin's own instances, the VM
+  mirror's class among them (`r[vm.mirror.not-instantiable]`), a refusal, an
+  overflowing count, eden at its limit -- runs through `Leaf::Step`, which
+  runs `allocate_instance` and, for a refusal, exits so that the interpreter
+  raises. **An initializer invocation is a compiled call**
   (`jit::sends::initialize`): `InitializeSuperclass` and
   `InitializeAppliedLevel` place their arguments on their slots, and
   `InitializeInstance` copies the factory's own above its window, where
-  `Mutator::push_above` pushes the initializer, once the stack has room
-  for them; then the initializer leaf (`Leaf::Initializer`) decides the
-  invocation through the interpreter's own decision, counts and compiles
-  the callee as the miss leaf does, and answers its machine entry with
-  the receiver, the level and the body's kind in the machine words
-  (`Heap::hand_machine_initializer`, `CalleeKind`), the stub answering
-  its receiver for a decision that runs no code, or 0, at which the
-  invocation exits so that the interpreter raises the error or pushes
-  the body. A passed level's initializer takes no arguments and lies on
-  the slots all the same. `CheckAppliedClause` runs through
-  `Leaf::Step`, and `LoadEnclosingObject` is a template over the lexical
-  walk `load_enclosing_object` makes, or `Leaf::Step` for a body-less
-  declaration's own code.
-  **A frame machine code pushes has a kind and an operand**
-  (`MachineKind`): a method's tag and selector, a factory's tag and its
-  current class, and an initializer's tag, which its code does not say,
-  since one code can be two of its mixin's bodies, written by its
-  prologue into its flags word from `CalleeKind`
-  (`MacroAssembler::record_frame_kind`), and its current class; the
-  walk keeps the recorded tag (`Heap::write_machine_frame`). A callee's
-  header lies past as many arguments as its own code takes. **A site filled while
-  its callee had no code heals at its next miss** (decided on 2026-10-28): the
-  leaf writes afresh every cell the decision went through -- the site's,
-  its block's slot, the global row (`InlineCaches::refresh_cells`) -- once
-  the callee has machine code, so that the next send calls the body
-  directly, as Cog links a send at `ceSend`, and once it never will --
-  refused, or exiting at once -- so that they name the refusing stub and
-  the next send exits at once rather than calling the miss leaf again.
+  `Mutator::push_above` pushes the initializer, once the stack has room for
+  them; then the initializer leaf (`Leaf::Initializer`) decides the invocation
+  through the interpreter's own decision, counts and compiles the callee as
+  the miss leaf does, and answers its machine entry with the receiver, the
+  level and the body's kind in the machine words
+  (`Heap::hand_machine_initializer`, `CalleeKind`), the stub answering its
+  receiver for a decision that runs no code, or 0, at which the invocation
+  exits so that the interpreter raises the error or pushes the body. A passed
+  level's initializer takes no arguments and lies on the slots all the same.
+  `CheckAppliedClause` runs through `Leaf::Step`, and `LoadEnclosingObject` is
+  a template over the lexical walk `load_enclosing_object` makes, or
+  `Leaf::Step` for a body-less declaration's own code. **A frame machine code
+  pushes has a kind and an operand** (`r[vm.machine.frame-records-kind]`;
+  `MachineKind`): a method's tag and selector, a factory's tag and its current
+  class, and an initializer's tag, which its code does not say, since one code
+  can be two of its mixin's bodies, written by its prologue into its flags
+  word from `CalleeKind` (`MacroAssembler::record_frame_kind`), and its
+  current class; the walk keeps the recorded tag
+  (`Heap::write_machine_frame`). A callee's header lies past as many arguments
+  as its own code takes. **A site filled while its callee had no code heals at
+  its next miss** (decided on 2026-10-28): the leaf writes afresh every cell
+  the decision went through -- the site's, its block's slot, the global row
+  (`InlineCaches::refresh_cells`) -- once the callee has machine code, so that
+  the next send calls the body directly, as Cog links a send at `ceSend`, and
+  once it never will -- refused, or exiting at once -- so that they name the
+  refusing stub and the next send exits at once rather than calling the miss
+  leaf again.
 - **The exit materializes** (`jit/materialize.rs`): an exit at any depth
   of compiled frames jumps to the exit stub, which walks the return
   addresses above the entry's on the native stack, outermost first,
@@ -14363,24 +14363,21 @@ sends and the inline caches in machine code.
   as the innermost for the leaf's length (`materialize::leaf_frame`).
   `Interpreter::stack_trace` after an error in a compiled callee answers
   the interpreter's own trace.
-- **A switch is a safepoint**: a push or a return the run loop switches
-  to machine code at first takes a real safepoint request made meanwhile
-  -- the collection `garbageCollect` asks for before its method returns
-  -- as the interpreter would before its next instruction
-  (`Heap::real_safepoint_requested`), clearing the compiled bit of a frame
-  it would have resumed, since machine code polls only at its loops and
-  its pushes.
-- **`SendMirror` of a leaf-safe row** runs its row through `Leaf::Mirror`
-  and exits for every other row. A row is leaf-safe when its leaf answers
-  a value or declines before it changed anything, runs no Newspeak code,
-  pushes nothing and reads no other activation (`MachineCall::Leaf`);
-  each row says so, the default is the exit, and every row marked leaf-safe
-  is listed with the reason in `AUDITED_LEAF_ROWS` (`tests/jit.rs`). The
-  mirror leaf places arguments that are not consecutive registers into
-  the send's argument slots before the row's leaf runs, as the
-  interpreter's `vm::argument_window` does, so a row that declines or is
-  refused may have written those slots -- which nothing reads after the
-  send but the send itself, re-executed -- and nothing else.
+- **A switch is a safepoint** (`r[vm.machine.switch-is-safepoint]`): a
+  push or a return the run loop switches to machine code at first takes a
+  real safepoint request made meanwhile -- the collection `garbageCollect`
+  asks for before its method returns, say -- read through
+  `Heap::real_safepoint_requested`, clearing the compiled bit of a frame it
+  would have resumed.
+- **`SendMirror` of a leaf-safe row** runs its row through `Leaf::Mirror` and
+  exits for every other row. A row is leaf-safe
+  (`r[vm.machine.leaf-contract]`; `MachineCall::Leaf`); each row says so,
+  the default is the exit, and every row marked leaf-safe is listed with the reason in
+  `AUDITED_LEAF_ROWS` (`tests/jit.rs`). The mirror leaf places arguments that
+  are not consecutive registers into the send's argument slots before the
+  row's leaf runs, as the interpreter's `vm::argument_window` does, so a row
+  that declines or is refused may have written those slots -- which nothing
+  reads after the send but the send itself, re-executed -- and nothing else.
 
 ### The entry at a send
 
@@ -14439,19 +14436,18 @@ returns to an interpreted caller through a trampoline that resets the C
 stack and jumps into `interpret()` afresh
 (`cogitX64SysV.c:8844-8903`), so no C frame ever waits for machine code.
 
-**Why a call stub and not Cog's switch.** Cog never returns into the C
-frame that entered machine code; here the run loop's frames hold `Rc`s
-and the protected `&mut Mutator`, and skipping a Rust frame without
-returning through it is undefined behaviour, so every entry returns to
-the Rust that made it ("The native stack carries the return addresses"
-below). What is kept of the prior art is what makes its transitions
-cheap without that: the callee builds its own frame -- the compiled
-prologue does ("Sends, returns and the exit that materializes", "The
-callee writes its own header places"), and the overlapping windows lay
-a send's callee on its sender's slots in the interpreter as in machine
-code, the role V8's shared layout plays -- and the value comes back to
-where the caller goes on, with no pop and no second reading of the
-send.
+**Why a call stub and not Cog's switch.** Cog never returns into the C frame
+that entered machine code; here the run loop's frames hold `Rc`s and the
+protected `&mut Mutator`, and skipping a Rust frame without returning through
+it is undefined behaviour, so every entry returns to the Rust that made it
+(`r[vm.machine.entry-returns-to-its-caller]`; "The native stack carries the
+return addresses" below). What is kept of the prior art is what makes its
+transitions cheap without that: the callee builds its own frame -- the
+compiled prologue does ("Sends, returns and the exit that materializes", "The
+callee writes its own header places"), and the overlapping windows lay a
+send's callee on its sender's slots in the interpreter as in machine code, the
+role V8's shared layout plays -- and the value comes back to where the caller
+goes on, with no pop and no second reading of the send.
 
 - **The test** (`Mutator::enter_sent`, inlined at each of the run
   loop's sends through `vm::deliver`): when the decided step is a
@@ -14520,7 +14516,8 @@ send.
   program-counter map; the leaf table is a constant the compiler
   promotes to a static (`leaves::table`); a return is answered before
   the exit is decoded.
-- **The entry block** (`ns_memory::EntryBlock`): the thirty-three words
+- **The entry block** (`ns_memory::EntryBlock`;
+  `r[vm.machine.entry-block-current]`): the thirty-three words
   machine code is entered with are `Cell`s behind an `Rc` that
   `JitState` holds and keeps from one entry to the next, an allocation
   of its own outside the mutator, as the machine words are ("The machine
@@ -14542,103 +14539,96 @@ send.
 
 ### The machine words
 
-Machine code runs while `CodeZone::enter` holds the mutator as its
-context, a `&mut` protected for the whole entry, through which the shim
-hands every leaf its `&mut Mutator`. A word machine code reads or writes
-by itself between two leaf calls -- at an address it was entered with,
-not through the shim -- therefore lies outside the mutator's bytes: an
-address into them, taken before the entry, would make every such access
-a foreign one to the protected reference, undefined behaviour under the
-aliasing model once a leaf has written the word, though no processor
-notices and Miri cannot run machine code to find it. Such words are the
-heap's **machine words** (`heap/machine_words.rs`): an allocation of
-their own, `AtomicU64`s behind an `Arc` the heap holds, which Rust reads
-and writes only through shared references and never borrows mutably
-(`Arc::get_mut` is never called), and which machine code reaches through
-block word `MachineWords` (11), an address derived from the `Arc`'s own
-pointer. An `Arc` rather than a `Box`, since a `Box` is retagged as
-unique wherever it moves, and an `Arc` rather than an `Rc`, so that a
-clone crosses to another thread: an attached debugger's agent arms the
-safepoint request from its own ([debugger.md](debugger.md), "The poll
-words as atomics"). Every access of the mutator's to them is `Relaxed`
--- on x64 and AArch64 the plain load or store a `Cell`'s would be, so the
-interpreter's poll and machine code's are the same instructions as
-without another thread, and machine code's own plain stores stay
-correct -- with two exceptions on the cold path: a change to the request
-word, which another thread may change at the same time, is a `SeqCst`
-`fetch_or` or `fetch_and`, and `Heap::synchronize_depth_limit` issues a
-`SeqCst` fence between its store of the depth limit and its second read
-of the request word. Today they hold the safepoint request, which the
-interpreter's poll and machine code's both read
-(`Heap::safepoint_requested`); the
-depth count (`DepthCount`, which `Heap::counted_depth` reads and the
-push and pop write, so that the count lives nowhere else), the depth
-limit (`DepthLimit`: L, or L plus `DEPTH_RESERVE` exactly while a VM
-error's `signal` holds the reserve -- `Mutator::set_depth_reserve` raises
-it and the unwind's pop of that `signal` (`pop_for_unwind`) gives it back
-at once; the reserve a `doesNotUnderstand:` handler takes never raises
-it, since the handler returns by an ordinary pop, so machine code leaves a
-push at L to the interpreter), the end of the activation stack's
-ordinary room (`OrdinaryStackEnd`, written beside `FrameStack::ordinary_end`
-in `grow_to`) and, for each of the five immediates, its class object as a
-stored word (`ImmediateClass(index)`, rewritten by
-`Mutator::rewrite_machine_classes` after every scavenge, compaction,
-move and bulk forward, since a stored word is a handle the collector does
-not trace) and its dispatch id (`ImmediateGuard(index)`); in a debug
-build the generation the last pushed frame took (`NextGeneration`),
-which the heap's push and a compiled prologue share; the receiver and
-the current class handed between machine code and a leaf
-(`CalleeReceiver`, `CalleeClass`: the miss leaf writes the callee's for
-the miss stub to hand the callee's machine entry, an interpreter's send
-the callee's for the call stub, the leaf stub and the mirror method stub
-the send's receiver for their leaves, each read only right after it was
-written); and the application id table's
-address and the number of its rows recorded (`ApplicationIds`,
-`ApplicationIdRows`; [memory.md](memory.md), "The application id
-table"); the objects machine code's inline bump placed since the heap
-last counted them (`MachineAllocations`: one add per allocation, which
-the heap folds into its own counts before a scavenge or a compaction
+Machine code runs while `CodeZone::enter` holds the mutator as its context, a
+`&mut` protected for the whole entry, through which the shim hands every leaf
+its `&mut Mutator`. A word machine code reads or writes by itself between two
+leaf calls -- at an address it was entered with, not through the shim --
+therefore lies outside the mutator's bytes
+(`r[vm.machine.machine-words-outside-mutator]`): an address into them, taken
+before the entry, would make every such access a foreign one to the protected
+reference, undefined behaviour under the aliasing model once a leaf has
+written the word, though no processor notices and Miri cannot run machine code
+to find it. Such words are the heap's **machine words**
+(`heap/machine_words.rs`): an allocation of their own, `AtomicU64`s behind an
+`Arc` the heap holds, which Rust reads and writes only through shared
+references and never borrows mutably (`Arc::get_mut` is never called), and
+which machine code reaches through block word `MachineWords` (11), an address
+derived from the `Arc`'s own pointer. An `Arc` rather than a `Box`, since a
+`Box` is retagged as unique wherever it moves, and an `Arc` rather than an
+`Rc`, so that a clone crosses to another thread: an attached debugger's agent
+arms the safepoint request from its own ([debugger.md](debugger.md), "The poll
+words as atomics"). Every access of the mutator's to them is `Relaxed` -- on
+x64 and AArch64 the plain load or store a `Cell`'s would be, so the
+interpreter's poll and machine code's are the same instructions as without
+another thread, and machine code's own plain stores stay correct -- with two
+exceptions on the cold path: a change to the request word, which another
+thread may change at the same time, is a `SeqCst` `fetch_or` or `fetch_and`,
+and `Heap::synchronize_depth_limit` issues a `SeqCst` fence between its store
+of the depth limit and its second read of the request word. Today they hold
+the safepoint request, which the interpreter's poll and machine code's both
+read (`Heap::safepoint_requested`); the depth count (`DepthCount`, which
+`Heap::counted_depth` reads and the push and pop write, so that the count
+lives nowhere else), the depth limit (`DepthLimit`: L, or L plus
+`DEPTH_RESERVE` exactly while a VM error's `signal` holds the reserve --
+`Mutator::set_depth_reserve` raises it and the unwind's pop of that `signal`
+(`pop_for_unwind`) gives it back at once; the reserve a `doesNotUnderstand:`
+handler takes never raises it, since the handler returns by an ordinary pop,
+so machine code leaves a push at L to the interpreter), the end of the
+activation stack's ordinary room (`OrdinaryStackEnd`, written beside
+`FrameStack::ordinary_end` in `grow_to`) and, for each of the five immediates,
+its class object as a stored word (`ImmediateClass(index)`, rewritten by
+`Mutator::rewrite_machine_classes` (`r[vm.machine.class-words-rewritten]`)
+after every scavenge, compaction, move and bulk forward, since a stored word
+is a handle the collector does not trace) and its dispatch id
+(`ImmediateGuard(index)`); in a debug build the generation the last pushed
+frame took (`NextGeneration`), which the heap's push and a compiled prologue
+share; the receiver and the current class handed between machine code and a
+leaf (`CalleeReceiver`, `CalleeClass`: the miss leaf writes the callee's for
+the miss stub to hand the callee's machine entry, an interpreter's send the
+callee's for the call stub, the leaf stub and the mirror method stub the
+send's receiver for their leaves, each read only right after it was written);
+and the application id table's address and the number of its rows recorded
+(`ApplicationIds`, `ApplicationIdRows`; [memory.md](memory.md), "The
+application id table"); the objects machine code's inline bump placed since
+the heap last counted them (`MachineAllocations`: one add per allocation,
+which the heap folds into its own counts before a scavenge or a compaction
 recounts them and adds when it reports them, so that its counts stay the
-interpreter's); and the kernel's `Array` class as a stored word and the
-header of an `Array` of no words (`ArrayClass`, `ArrayHeader`, rewritten
-with the immediates' classes), what `MakeVector`'s allocation writes;
-and the kind tag of the initializer the initializer leaf decided
-(`CalleeKind`), which the callee's prologue adds to its flags word,
-read only right after it was written; the class words and the headers
-of an empty closure, frame object and future (`ClosureClass`,
-`ClosureHeader`, `FrameClass`, `FrameHeader`, `FutureClass`,
-`FutureHeader`), what `MakeClosure`, its reification of the frame and
-`MakeFuture` write, the future's header 0 until the heap has made a
-future, which only Rust records; the kernel's `Float` class as a stored
-word and the whole header of a boxed `Float` (`FloatClass`,
-`FloatHeader`, rewritten with the immediates' classes), what machine
-code's box of a result outside the `SmallFloat64` range writes; the code
-table's epoch
+interpreter's); and the kernel's `Array` class as a stored word and the header
+of an `Array` of no words (`ArrayClass`, `ArrayHeader`, rewritten with the
+immediates' classes), what `MakeVector`'s allocation writes; and the kind tag
+of the initializer the initializer leaf decided (`CalleeKind`), which the
+callee's prologue adds to its flags word, read only right after it was
+written; the class words and the headers of an empty closure, frame object and
+future (`ClosureClass`, `ClosureHeader`, `FrameClass`, `FrameHeader`,
+`FutureClass`, `FutureHeader`), what `MakeClosure`, its reification of the
+frame and `MakeFuture` write, the future's header 0 until the heap has made a
+future, which only Rust records; the kernel's `Float` class as a stored word
+and the whole header of a boxed `Float` (`FloatClass`, `FloatHeader`,
+rewritten with the immediates' classes), what machine code's box of a result
+outside the `SmallFloat64` range writes; the code table's epoch
 (`CodeTableEpoch`), which a closure site and an outer-local site compare
 theirs with; the rows of the machine entry table committed
-(`MachineEntryRows`), which a closure stub compares a code id with; and
-the closure and its depth count an interpreter's `value` send hands the
-closure call stub (`CalleeClosure`, `CalleeCounted`), read only right
-after they were written. The area keeps room for the later stages'
-words (40 words, 37 of them taken). Eden's top and limit, which machine code bumps in place, are not
-among them: they are the object space reservation's own cursor, which
-lies in an allocation of `ns-memory`'s for the same reason
-(`ns_memory::SharedCursor`; [memory.md](memory.md), "The memory
-layer"), and which machine code reaches through block word
-`EdenCursor` (22), a lasting word, fixed for the heap's life.
-The object space and the activation stack, whose words are the object
+(`MachineEntryRows`), which a closure stub compares a code id with; and the
+closure and its depth count an interpreter's `value` send hands the closure
+call stub (`CalleeClosure`, `CalleeCounted`), read only right after they were
+written. The area keeps room for the later stages' words (40 words, 37 of them
+taken). Eden's top and limit, which machine code bumps in place, are not among
+them: they are the object space reservation's own cursor, which lies in an
+allocation of `ns-memory`'s for the same reason (`ns_memory::SharedCursor`;
+[memory.md](memory.md), "The memory layer"), and which machine code reaches
+through block word `EdenCursor` (22), a lasting word, fixed for the heap's
+life. The object space and the activation stack, whose words are the object
 fields and frame registers machine code reads and writes, are `ns-memory`
 reservations outside the mutator likewise, and their addresses come from
-`Reservation::base_address`: the reservation's own pointer, obtained from
-the mapping, never a slice of it. Every slice Rust borrows of the
-reservation between two leaf calls is derived afresh from that same
-pointer, so a write through one is a child's access, which leaves the
-address machine code holds valid, and none of those slices is alive while
-machine code runs. An address taken from a slice instead would be a child
-of that `&mut` retag, invalidated by the next sibling's write. The
-argument is written where `CodeZone::enter` is documented, at
-`Reservation::base_address` and at the area's definition, since no tool
-checks it. The entry block is an allocation of the same kind
+`Reservation::base_address`: the reservation's own pointer, obtained from the
+mapping, never a slice of it. Every slice Rust borrows of the reservation
+between two leaf calls is derived afresh from that same pointer, so a write
+through one is a child's access, which leaves the address machine code holds
+valid, and none of those slices is alive while machine code runs. An address
+taken from a slice instead would be a child of that `&mut` retag, invalidated
+by the next sibling's write. The argument is written where `CodeZone::enter`
+is documented, at `Reservation::base_address` and at the area's definition,
+since no tool checks it. The entry block is an allocation of the same kind
 (`ns_memory::EntryBlock`, `Cell`s behind an `Rc` that `JitState` holds),
 outside the mutator, its lasting words written only when what they name
 changes ("The entry at a send" above).
@@ -14737,7 +14727,8 @@ three lowerings:
    idioms, never against an encoder.
 2. **A leaf call**: the instruction's own interpreter step, a Rust
    function shared with `vm::run`, called through the leaf stub. Only an instruction that runs no Newspeak
-   code, cannot collect and reads no other activation may take it --
+   code, cannot collect and reads no other activation may take it
+   (`r[vm.machine.leaf-contract]`) --
    HotSpot's `JRT_LEAF` class (`share/runtime/interfaceSupport.inline.hpp:300-314`).
 3. **An exit that re-executes it**: the frame is materialized and handed
    to the interpreter at that instruction, as a non-Boolean conditional
@@ -14812,7 +14803,8 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
   return addresses of compiled frames above the latest entry, and leaf
   calls while they run.
 - **On AArch64 the return address lies in a 16-byte slot on `sp`**
-  (decided with the user on 2026-11-03). A call is `blr`, which leaves
+  (`r[vm.machine.return-address-slot]`; decided with the user on
+  2026-11-03). A call is `blr`, which leaves
   the return address in `x30` alone, so every address a call reaches
   begins with `enter_called`, `str x30, [sp, #-16]!`, and a return is
   `ldr x30, [sp], #16` then `ret`; `sp` stays 16-byte aligned at all
@@ -14850,13 +14842,18 @@ the stack they expect -- Cog abandoned `longjmp` because MSVC's unwinder
     #-16]!; br target`, 16 bytes, the `bl` keeping the return-address
     predictor balanced and the body's `ret` landing on the `b`, which
     skips to the next operation; x64's `call`.
-- **The entry checks the native stack's room.** A counted activation
+
+  The tests that name `r[vm.machine.return-address-slot]` can expose a
+  breach only where AArch64 runs -- the `aarch64` gate under QEMU and the
+  CI's macOS runner on Apple silicon -- since on x64 all three operations
+  are the plain `call` and jump.
+- **The entry checks the native stack's room**
+  (`r[vm.machine.native-stack-room]`). A counted activation
   costs one slot of it, eight bytes on x64 and sixteen on AArch64, so the
   depth limit with its reserve bounds the compiled frames at about 0.8 MB
   and 1.6 MB; the entry compares what is left of the thread's stack
   (`ns-memory` reads its bounds) against that bound plus 64 KiB for the
-  deepest leaf (`jit::NATIVE_STACK_NEED`, about 0.87 MB and 1.68 MB), and
-  a thread with too little runs interpreted.
+  deepest leaf (`jit::NATIVE_STACK_NEED`, about 0.87 MB and 1.68 MB).
   `ns-next` runs programs on a thread of 8 MiB
   (`INTERPRETER_STACK_BYTES`, `crates/ns-cli/src/main.rs:160`); a test
   thread's default 2 MiB is close to AArch64's bound, so the `aarch64`
@@ -14928,7 +14925,8 @@ decides" holds unchanged.
   widens or clears the entry. The entry address is the callee's machine
   entry for a method with code, else a stub that acts on the entry's
   `Target` ("Sends in machine code" below).
-- **The cells lie in a reservation of their own** (decided with the user
+- **The cells lie in a reservation of their own**
+  (`r[vm.machine.cell-addresses-fixed]`; decided with the user
   on 2026-10-28), an `ns-memory` reservation parallel to the site table
   and the polymorphic pool, committed as they grow, so a site's cell is
   at a fixed address -- the table's base plus the site's index -- while
@@ -14947,9 +14945,9 @@ decides" holds unchanged.
   machine code, as Cog's open PIC probes the interpreter's method cache
   (`:30611-30748`). A miss calls the lookup as a leaf, which fills the
   entry and the cell.
-- **A lexical, `self`, `outer` or private send checks no receiver
-  guard** where the resolution does not depend on the receiver's class,
-  as SOMns's `LexicallyBoundDispatchNode` calls directly
+- **A lexical, `self`, `outer` or private send checks no receiver guard**
+  (`r[vm.dispatch.unguarded-sends-receiver-independent]`), as SOMns's
+  `LexicallyBoundDispatchNode` calls directly
   (`prior-art/somns/src/som/interpreter/nodes/dispatch/LexicallyBoundDispatchNode.java:17-35`).
 - **Measured, not decided: an indirect call through the cell or a
   patched direct call.** V8's Sparkplug+ and HotSpot patch only a call's
@@ -15006,13 +15004,11 @@ Strongtalk, V8 and HotSpot again for it.
   accessor on a private or `super` chain, a `doesNotUnderstand:`
   handler, an unsafe row -- takes an exit, and the interpreter runs the
   send. The stub is chosen
-  from the target because the target is immutable: a `MixinMethod` is
-  never changed in place, so the fast path it carries is the one a fresh
-  read would find.
+  from the target because the target is immutable
+  (`r[vm.dispatch.method-never-changed-in-place]`).
 - **`SendMirror` runs a leaf-safe row through the leaf shim** and exits
-  for every other row. A row is leaf-safe when its leaf answers a value
-  or declines before it changed anything, runs no Newspeak code, pushes
-  nothing and reads no other activation; each row says so, and the
+  for every other row. A row is leaf-safe as
+  `r[vm.machine.leaf-contract]` says; each row says so, and the
   default is the exit.
 - **The depth count and the activation stack's committed end are machine
   words** (decided with the user on 2026-10-28): a compiled push compares
@@ -15249,15 +15245,16 @@ Cog's citations in this subsection are to
 compaction is the one this zone follows, and the Sista build's frees
 by a different rule.
 
-Machine code holds no handle, so nothing of it is patched or relocated by
-a collection -- V8 relocates embedded objects and pins pages with running
-code (`src/heap/mark-compact.cc:6090-6116`), HotSpot rewrites immediate
-oops (`share/code/nmethod.cpp:2073-2084`), Cog keeps a list of methods
-referring to young objects (`addToYoungReferrers`, `:13275-13287`).
-Literals are loaded through the heap's tables. A body's data words -- its
-`MakeClosure`s' closure sites ("Stage 4" below) -- lie in the zone right
-after its code, reached relative to the instructions that read them, so
-a move would take them with the body and a free would free them with it.
+Machine code holds no handle (`r[vm.machine.code-holds-no-handle]`), so
+nothing of it is patched or relocated by a collection -- V8 relocates embedded
+objects and pins pages with running code
+(`src/heap/mark-compact.cc:6090-6116`), HotSpot rewrites immediate oops
+(`share/code/nmethod.cpp:2073-2084`), Cog keeps a list of methods referring to
+young objects (`addToYoungReferrers`, `:13275-13287`). Literals are loaded
+through the heap's tables. A body's data words -- its `MakeClosure`s' closure
+sites ("Stage 4" below) -- lie in the zone right after its code, reached
+relative to the instructions that read them, so a move would take them with
+the body and a free would free them with it.
 
 The zone installs by appending (`Zone.next_offset`, `jit/mod.rs`), and
 is compacted, as Cog compacts its method zone, when a compile finds no
@@ -15282,7 +15279,9 @@ that make everything that grows reclaimable (plan
   (`Interpreter::safepoint`, `interpreter/safepoint.rs`) serves the
   request (`Mutator::compact_code_zone`) before it serves a collection.
   Machine code runs only inside `CodeZone::enter`, and a leaf never
-  reaches a safepoint, so no return address into the zone exists there:
+  reaches a safepoint, so no return address into the zone exists there
+  (`r[vm.machine.zone-compacted-at-safepoint]`,
+  `r[vm.machine.no-return-address-at-safepoint]`):
   moving a body needs no walk of the native stack, and a debug build
   asserts that no entry is in progress (`JitState.entries_in_progress`).
   A compile from inside a leaf -- the miss leaf, the initializer leaf, a
@@ -15418,7 +15417,8 @@ that make everything that grows reclaimable (plan
      yields an old-start to new-start table (`planCompaction`,
      `:13713-13730`) -- a body keeps its alignment so that its data words
      stay on cache lines of their own;
-  5. remap every address outside the bodies through the plan: every
+  5. remap every address outside the bodies through the plan
+     (`r[vm.machine.compaction-remaps-every-holder]`): every
      cache cell (the sites', the polymorphic blocks' and the global
      rows', `InlineCaches::remap_cell_entries`) and every machine entry
      row (`Heap::remap_machine_entries`, its bit beside it following). An
@@ -15450,18 +15450,18 @@ that make everything that grows reclaimable (plan
      the bodies' starts, so that the zone stress mode checks the
      remapping at every compaction it makes.
 
-  A body is position-independent: stubs and leaves are reached through
-  the entry block's words, callees through cells, and its data words
-  relative to `rip` (`zone`'s test
-  `a_body_assembled_at_two_offsets_is_the_same_bytes`). The entry block's
-  lasting words name only stubs, which sit at the zone's base and never
-  move, so a compaction leaves the block current, which the debug check
-  at every entry confirms. A compiled frame names its body by code and
-  program counter, never by address, so a frame stopped in a body the
-  compaction freed resumes interpreted (`jit::resumed`); keeping an
-  active body, as its count does, is only a matter of speed. A closure
-  site moves with its body and keeps what it holds: its code ids and
-  their epoch name no address.
+  A body is position-independent: stubs and leaves are reached through the
+  entry block's words, callees through cells, and its data words relative to
+  `rip` (`zone`'s test `a_body_assembled_at_two_offsets_is_the_same_bytes`).
+  The entry block's lasting words name only stubs, which sit at the zone's
+  base and never move, so a compaction leaves the block current, which the
+  debug check at every entry confirms. A compiled frame names its body by code
+  and program counter, never by address
+  (`r[vm.machine.frame-names-body-by-code]`), so a frame stopped in a body the
+  compaction freed resumes interpreted (`jit::resumed`); keeping an active
+  body, as its count does, is only a matter of speed. A closure site moves
+  with its body and keeps what it holds: its code ids and their epoch name no
+  address.
 - **A refusal is not permanent.** `ZoneFull` refuses no body for good:
   after a compaction bodies compile again, as Cog forgets which methods
   it found uncoggable after every compaction (`nilUncoggableMethods`,
@@ -15489,7 +15489,8 @@ that make everything that grows reclaimable (plan
 
 A full collection that slides the site ranges
 ([dispatch.md](dispatch.md), "Code families", "The ranges slide at a
-full collection") frees the machine code of every body compiled against
+full collection") frees the machine code
+(`r[vm.machine.moved-base-frees-code]`) of every body compiled against
 a feedback base that moved, or against one no live range holds
 (`JitState::free_bodies_with_moved_bases`): a body's compiled sends
 address their cells from the base it was compiled against
@@ -15523,7 +15524,8 @@ above): a compiled callee's prologue compares the depth count with the
 lowers that word to 0 while it is pending, so the one compare refuses the
 push for the depth and the request alike, and the interpreter takes the
 push and, at it, the safepoint. The request word
-(`MachineWord::SafepointRequested`) is a set of bits (`heap.rs`): the
+(`MachineWord::SafepointRequested`) is a set of bits
+(`r[vm.machine.safepoint-request-bits]`; `heap.rs`): the
 VM's own request (`REAL_REQUEST`, bit 0: a collection's, a scavenge's, a
 full code zone's, `Heap::request_safepoint`), a stress mode's hold
 (`STRESS_HOLD`, bit 1), an attached debugger's pause and commands
@@ -15621,20 +15623,19 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   its body's twin (below). 4b allocates through 4a's bump, 4c cuts
   through frames 4b's closures run in, and 4d frees what the three
   compile.
-- **Eden's bump cursor lies where machine code reaches it.** Its top and
-  limit leave the reservation's inline fields for an allocation of their
-  own in `ns-memory`, which the reservation and machine code both read
-  and write, as the machine words are; the entry block names its address.
-  An allocation in machine code bumps inline against the limit, as the
-  interpreter's fast path does, and past the limit calls a leaf that does
-  what the interpreter's cold path does -- request a scavenge, carry on
-  up to the ceiling, allocate old and born remembered once eden is spent
-  -- and never collects. Cog carries on into the slack past its threshold
-  inline and calls a trampoline that only schedules the scavenge
-  (`:20107-20131`, `cointerp.c:44401-44408`); here the limit already
-  stands below the threshold, so the leaf is the interpreter's own
-  decision.
-- **The write barrier is inline with Cog's four early outs** -- an
+- **Eden's bump cursor lies where machine code reaches it.** Its top and limit
+  leave the reservation's inline fields for an allocation of their own in
+  `ns-memory`, which the reservation and machine code both read and write, as
+  the machine words are; the entry block names its address. An allocation in
+  machine code bumps inline against the limit, as the interpreter's fast path
+  does (`r[vm.machine.allocation-as-interpreter]`), and past the limit calls a
+  leaf that does what the interpreter's cold path does, carrying on up to the
+  ceiling, and never collects. Cog carries on into the slack past its
+  threshold inline and calls a trampoline that only schedules the scavenge
+  (`:20107-20131`, `cointerp.c:44401-44408`); here the limit already stands
+  below the threshold, so the leaf is the interpreter's own decision.
+- **The write barrier is inline with Cog's four early outs**
+  (`r[vm.heap.barrier]`) -- an
   immediate or nil value, a young holder, an old value, an already
   remembered holder (`genStoreCheckReceiverReg:valueReg:scratchReg:inFrame:`,
   `:22856-22906`) -- and only remembering an object calls a leaf, as
@@ -15657,18 +15658,18 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   frame ("A frame reifies only in its body's twin", below). The twin's
   return divorces a reified frame inline, and calls a leaf only for a
   frame that retains its registers.
-- **A `MakeClosure`'s code ids are read from a site of its own, never
-  compiled in.** A full collection frees the code id of a body nothing
-  names -- no closure, frame or activation -- and mints it again for
-  another, while the body's machine code lives on with its mixin, so an
-  id compiled into the code would name another body after the next full
-  collection. Each `MakeClosure` has a closure site: the code ids of its
-  body and of its block with the code table's epoch they were asked in,
+- **A `MakeClosure`'s code ids are read from a site of its own, never compiled
+  in** (`r[vm.machine.code-ids-read-from-sites]`). A full collection frees the
+  code id of a body nothing names -- no closure, frame or activation -- and
+  mints it again for another, while the body's machine code lives on with its
+  mixin, so an id compiled into the code would name another body after the
+  next full collection. Each `MakeClosure` has a closure site: the code ids of
+  its body and of its block with the code table's epoch they were asked in,
   which a full collection that frees an id renews
-  (`MachineWord::CodeTableEpoch`). The template compares the site's
-  epoch with the heap's and, where they differ -- at the site's first
-  run, and after such a collection -- calls a leaf that asks the heap for
-  both ids afresh, registering each body that has none.
+  (`MachineWord::CodeTableEpoch`). The template compares the site's epoch with
+  the heap's and, where they differ -- at the site's first run, and after such
+  a collection -- calls a leaf that asks the heap for both ids afresh,
+  registering each body that has none.
   - A site lives with its body's code, as Cog keeps a method's data in
     the method's own code: three of the body's data words
     (`MacroAssembler::take_body_words`), which the assembler places right
@@ -15704,57 +15705,54 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   send tells the two apart by the row's bit alone
   (`Heap::closure_has_machine_entry`), before it reads anything else of
   the closure.
-  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve every
-    method whose fast path activates a block: `Closure`'s `value` to
+  - The closure stubs (`jit/targets.rs`'s `ClosureStub`) serve every method
+    whose fast path activates a block: `Closure`'s `value` to
     `value:value:value:`, whose rows activate the receiver, and the quick
-    methods `^<parameter> value` -- `ifTrue:`, `and:` and their
-    relatives -- and `^<parameter> cull: self` -- `ifNotNil:` and its
-    relatives -- of up to three arguments. No send writes its slots: a
-    setter send's one slot is the assignment's value, read after the send
-    (`compiler::lower`'s `lower_setter_assign`), and the interpreter lays
-    a block that takes anything but the send's own arguments -- `cull:`'s,
-    the receiver -- above its sender's window. So a closure stub lays the
-    block past the send's slots: it shifts the frame register up by the
-    slots before it jumps into the block, the prologue records the shift
-    in two bits of the flags word past every field the interpreter reads
-    (`frames::CALL_SHIFT_BITS`), a leaf's view of the frame keeps them,
-    and the block's return shifts the frame register back before its
-    `ret`. The block's arguments lie right past the slots: `cull:`'s one,
-    the receiver, which the prologue places once its checks have passed;
-    a block row's, the send's own, copied there from the slots by the
-    stub, before the prologue's check of the frame's room. So the stub
-    copies them only where they end at or below the ordinary end
-    (`MachineWord::OrdinaryStackEnd`, never past the committed end), and
-    declines otherwise, before anything is written, so that the
-    interpreter's push grows the stack. A call the prologue then refuses
-    has written nothing the sender reads: only those copies, past the
-    slots, in registers whose words the callee's window covers and the
-    leftover analysis counts dead after any send (`compiler.md`, "What a
-    callee leaves"), and which the interpreter's push of the block,
-    re-executing the send, overwrites. A block frame a stub lays reaches
-    up to three words higher than the interpreter's push of the same
-    block on the slots -- the arguments it takes, copied or placed past
-    them -- so no argument about the stack's room may assume the
-    interpreter's layout for a frame machine code called; the block's
-    prologue checks the room of the frame where it lies. The walk places a block a compiled
-    send called past the slots and its arguments, and one an interpreter's
-    send called (`jit::called_closure`), whose arguments are the slots, on
-    them (`materialize`'s `Callee`). No second return address lies on the
-    native stack, so the native stack a recursion takes is a method's.
-  - A stub finds the block's machine entry by the closure's code id in a
-    table of the heap's (`heap/machine_entries.rs`, the entry block's
-    `MachineEntries`): each row the machine entry, the feedback base the
-    body was compiled against, which the closure's must equal, and its
-    parameter count. Since a code id is freed and minted again by a full
-    collection while machine code lives on with its mixin, as a closure
-    site's are (above), a row is a copy the JIT writes from the body
-    whenever the interpreter pushes a block whose body has machine code
-    (`jit::note_block_entry`, from `jit::entered`) -- only the push, since
-    the interpreter's call is made only once the row is written -- and
-    every way it could name another body's code clears it: the free of
-    the id, the abandonment of the body, the replacement of the zone, and
-    a switch of the JIT on or off, since a body pushed while it is off is
-    refused without being abandoned.
+    methods `^<parameter> value` -- `ifTrue:`, `and:` and their relatives --
+    and `^<parameter> cull: self` -- `ifNotNil:` and its relatives -- of up to
+    three arguments. No send writes its slots: a setter send's one slot is the
+    assignment's value, read after the send (`compiler::lower`'s
+    `lower_setter_assign`), and the interpreter lays a block that takes
+    anything but the send's own arguments -- `cull:`'s, the receiver -- above
+    its sender's window. So a closure stub lays the block past the send's
+    slots: it shifts the frame register up by the slots before it jumps into
+    the block, the prologue records the shift in two bits of the flags word
+    past every field the interpreter reads (`frames::CALL_SHIFT_BITS`), a
+    leaf's view of the frame keeps them, and the block's return shifts the
+    frame register back before its `ret`. The block's arguments lie right past
+    the slots: `cull:`'s one, the receiver, which the prologue places once its
+    checks have passed; a block row's, the send's own, copied there from the
+    slots by the stub, before the prologue's check of the frame's room. The
+    stub copies them only where they end at or below the ordinary end
+    (`MachineWord::OrdinaryStackEnd`, never past the committed end), so that
+    the interpreter's push grows the stack otherwise. The copies a call the
+    prologue refuses leaves lie past the slots, in registers whose words the
+    callee's window covers and the leftover analysis counts dead after any
+    send (`compiler.md`, "What a callee leaves"), and the interpreter's push
+    of the block, re-executing the send, overwrites them. A block frame a stub
+    lays reaches up to three words higher
+    (`r[vm.machine.block-frame-room]`) than the interpreter's push of the same
+    block on the slots -- the arguments it takes, copied or placed past them
+    -- so no argument about the stack's room may assume the interpreter's
+    layout for a frame machine code called. The walk places a block a compiled send
+    called past the slots and its arguments, and one an interpreter's send
+    called (`jit::called_closure`), whose arguments are the slots, on them
+    (`materialize`'s `Callee`). No second return address lies on the native
+    stack, so the native stack a recursion takes is a method's.
+  - A stub finds the block's machine entry by the closure's code id in a table
+    of the heap's (`heap/machine_entries.rs`, the entry block's
+    `MachineEntries`; `r[vm.machine.machine-entry-rows]`): each row the
+    machine entry, the feedback base the body was compiled against, which the
+    closure's must equal, and its parameter count. Since a code id is freed
+    and minted again by a full collection while machine code lives on with its
+    mixin, as a closure site's are (above), a row is a copy the JIT writes
+    from the body whenever the interpreter pushes a block whose body has
+    machine code (`jit::note_block_entry`, from `jit::entered`) -- only the
+    push, since the interpreter's call is made only once the row is written --
+    and every way it could name another body's code clears it: the free of the
+    id, the abandonment of the body, the replacement of the zone, and a switch
+    of the JIT on or off, since a body pushed while it is off is refused
+    without being abandoned.
   - Beside the rows, Rust keeps one bit per row, set while the row names
     a machine entry (`MachineEntries::names_entry`); the table's own
     writes -- a row recorded, one cleared, all of them cleared -- set and
@@ -15779,7 +15777,8 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
     the exemption into the frame's flags word, which a frame an exit
     materializes keeps (`Heap::write_machine_frame`), so that its pop
     takes nothing off.
-- **An outer local is read and written where its frame keeps it**, as
+- **An outer local is read and written where its frame keeps it**
+  (`r[vm.machine.outer-local-at-its-frame]`), as
   `interpreter::locals`'s `frame_at_depth` finds it (`jit::closures`'s
   `outer_local`). The template hops from the running closure's captured
   frame along each closure frame's closure's, staying, as the
@@ -15827,46 +15826,44 @@ to `prior-art/opensmalltalk-vm/src/spur64.cog/` (`cogitX64SysV.c`, or
   a forcing in Rust needs a continuation of its own, which no compiled
   call carries, and would cost an exit per future a clause's end forces.
 - **Non-local return is cut by a routine of its own, as Cog's
-  `ceNonLocalReturn` cuts it** (`cointerp.c:15730-16070`; `jit/cut.rs`):
-  a `NonLocalReturn`'s template calls the cut stub
-  (`stubs::assemble_cut_stub`, `BlockWord::CutStub`) with its program
-  counter. The cut takes the block's home as `raise_return` takes it,
-  from the closure its frame holds, and declines at once a body that is
-  no block's, a block that is the stretch's entry frame, and a home not
-  running, suspended or below the stretch's entry frame. Then it walks
-  the compiled frames of the current stretch by their return addresses,
-  innermost first: Rust reads no native stack, so the stub hands it each
-  return address with the word it lies in and the word above it, one
-  leaf call per frame (`Leaf::CutFrame`), and the return address names
-  the caller and the send it stopped at, whose argument slots the callee
-  lies on -- a block past them, as the exit's walk places it. A caller
-  whose code carries an unwind marker -- `ensure:`, `ifCurtailed:`,
-  `on:do:`, the `ifCurtailed:` a future's `resolve` evaluates its
-  computation inside -- a return address into a stub, and the stretch's
-  entry frame reached first end the walk with nothing changed, and so
-  does a home that catches no return, an initializer's, and a caller
-  running a method a method breakpoint names, whose exit by the unwind
-  only the interpreter's unwinder reports ([debugger.md](debugger.md),
-  "Method breakpoints"). The home found,
-  every frame above it and the home itself are popped as their returns
-  pop them: a reified frame is divorced with the program counter it
-  stopped at -- the `NonLocalReturn`'s for the block, its send's for
-  each other -- and each frame's count, which its prologue added, is
-  taken off the depth count. Machine code resumes where the home's own
-  `ret` would have gone: at the home's return address, the stack pointer
-  above it, the frame register at the home's register 0 and the value in
-  the leaf result's register (`BlockWord::CutStackPointer`,
-  `CutFrameRegister`, `CutValue`) -- in its caller's code after the
-  call, which stores the value as the send's, or in the entry or the
-  call stub, which hand it to the run loop or the interpreter's send as
-  the home's return would. Where the cut declines, the stub returns and
-  the template exits at the `NonLocalReturn`, and the interpreter's one
-  unwinder carries the return ("Unwinding" above), so that a `^` through
-  an `ensure:` runs its block exactly once, in the interpreter's order,
-  and one whose home has returned raises `cannotReturn`
-  (`goldens/runtime/jit/non_local_return*.ns`). The cut runs no Newspeak
-  code, never collects and never pushes; it is the one routine that
-  reads and pops other activations, which no leaf may.
+  `ceNonLocalReturn` cuts it** (`cointerp.c:15730-16070`; `jit/cut.rs`): a
+  `NonLocalReturn`'s template calls the cut stub (`stubs::assemble_cut_stub`,
+  `BlockWord::CutStub`) with its program counter. The cut takes the block's
+  home as `raise_return` takes it, from the closure its frame holds, and
+  declines at once a body that is no block's, a block that is the stretch's
+  entry frame, and a home not running, suspended or below the stretch's entry
+  frame. Then it walks the compiled frames of the current stretch by their
+  return addresses, innermost first: Rust reads no native stack, so the stub
+  hands it each return address with the word it lies in and the word above it,
+  one leaf call per frame (`Leaf::CutFrame`), and the return address names the
+  caller and the send it stopped at, whose argument slots the callee lies on
+  -- a block past them, as the exit's walk places it. A caller whose code
+  carries an unwind marker -- `ensure:`, `ifCurtailed:`, `on:do:`, the
+  `ifCurtailed:` a future's `resolve` evaluates its computation inside -- a
+  return address into a stub, and the stretch's entry frame reached first end
+  the walk with nothing changed, and so does a home that catches no return, an
+  initializer's, and a caller running a method a method breakpoint names,
+  whose exit by the unwind only the interpreter's unwinder reports
+  ([debugger.md](debugger.md), "Method breakpoints"). The home found, every
+  frame above it and the home itself are popped as their returns pop them: a
+  reified frame is divorced with the program counter it stopped at -- the
+  `NonLocalReturn`'s for the block, its send's for each other -- and each
+  frame's count, which its prologue added, is taken off the depth count.
+  Machine code resumes where the home's own `ret` would have gone: at the
+  home's return address, the stack pointer above it, the frame register at the
+  home's register 0 and the value in the leaf result's register
+  (`BlockWord::CutStackPointer`, `CutFrameRegister`, `CutValue`) -- in its
+  caller's code after the call, which stores the value as the send's, or in
+  the entry or the call stub, which hand it to the run loop or the
+  interpreter's send as the home's return would. Where the cut declines, the
+  stub returns and the template exits at the `NonLocalReturn`, and the
+  interpreter's one unwinder carries the return ("Unwinding" above), so that a
+  `^` through an `ensure:` runs its block exactly once
+  (`r[semantics.exception.ensure]`), in the interpreter's order, and one whose
+  home has returned raises `cannotReturn` (`r[semantics.block.cannot-return]`)
+  (`goldens/runtime/jit/non_local_return*.ns`). The cut
+  (`r[vm.machine.cut-pops-as-returns-pop]`) is the one routine that reads and
+  pops other activations, which no leaf may.
 
 ### A frame reifies only in its body's twin
 
@@ -15916,7 +15913,8 @@ the second time only on demand (`jit::baseline::BodyCopy`):
   (`jit::refuse_for_its_twin`). The twin is compiled under the settings
   its lean body was (`CompileSettings`: the back-edge counting and the
   futures' exit a test may change between the two).
-- **A frame whose reified word is set runs only twin code.** Machine code
+- **A frame whose reified word is set runs only twin code**
+  (`r[vm.machine.reify-only-in-twin]`). Machine code
   reifies a frame only at a `MakeClosure`, which a lean body transfers,
   and no leaf reifies one, so a lean frame is never reified while it
   runs; the run loop enters a frame the interpreter reified -- by a
@@ -16107,10 +16105,11 @@ baseline JIT's foundation" above).
   code, so the reference lowering and a JIT share it. A send is split into a
   decision and an activation, which preserves this: the decision stays in
   `interpreter/`, and only running what it decided is the loop's.
-- **`program_counter` is stored only at observable points**, not at every instruction — a
-  deliberate hot-path trade the debugger keeps, since a stop leaves
-  its stretch for the safepoint, which stores it ([debugger.md](debugger.md),
-  "The stop").
+- **`program_counter` is stored only at observable points**
+  (`r[vm.activation.program-counter-before-observation]`), not at every
+  instruction — a deliberate hot-path trade the debugger keeps, since a stop
+  leaves its stretch for the safepoint, which stores it
+  ([debugger.md](debugger.md), "The stop").
 - **Activations are stack frames, reified on demand**, because the
   always-reified model cost about 41% of a send, before the arena, for a structure
   most activations never expose. The arena took the `Rc` box and the `RefCell`
@@ -16137,35 +16136,37 @@ baseline JIT's foundation" above).
   reification mechanism itself is permanent: `^` and the debugger need it with
   or without conversion.
 - **Sends run on the activation stack, not the Rust stack**: one loop pushes,
-  pops and resumes, and it pops everything it runs on every path out.
-- **Control flow answers trampoline steps and depth has one bound**,
-  L = 100,000 activations, counted alike under both lowerings, because a
-  callback native would make the reference lowering's native stack grow with
-  source nesting; with no re-entry from Rust left, nothing else can run out
-  first ("The depth limit"). It keeps a reserve of 1,000 above it for
-  signalling the errors raised near it (decided with the user on
-  2026-09-25), held by a frame, not a stack index.
-- **One unwinder, aimed at a frame** (decided with the user on 2026-09-25,
-  "Unwinding"): non-local return, the exceptions' `return:`, `retry` and
-  `resume:`, and termination all go through `interpreter::unwind`, which
-  runs `ensure:` and `ifCurtailed:` blocks as trampoline steps rather than
-  calling back into Newspeak, and whose target is a `FrameReference`,
-  because code runs while an unwind is in progress and a release build
-  does not check an activation's generation.
-- **Rust does not re-enter the run loop** (decided 2026-09-13, "No re-entry
-  from Rust"): the nested-class accessor is a trampoline step, `do:` a
-  Newspeak loop since the loops' real bodies (decided with the user on
+  pops and resumes (`r[vm.activation.run-balanced]`).
+- **Control flow answers trampoline steps and depth has one bound**
+  (`r[runtime.depth-limit]`), L = 100,000 activations, counted alike under
+  both lowerings, because a callback native would make the reference
+  lowering's native stack grow with source nesting; with no re-entry from Rust
+  left, nothing else can run out first ("The depth limit"). It keeps a reserve
+  of 1,000 above it for signalling the errors raised near it (decided with the
+  user on 2026-09-25), held by a frame, not a stack index.
+- **One unwinder, aimed at a frame**
+  (`r[vm.activation.unwind-target-is-frame]`; decided with the user on
+  2026-09-25, "Unwinding"): non-local return, the exceptions' `return:`,
+  `retry` and `resume:`, and termination all go through `interpreter::unwind`,
+  which runs `ensure:` and `ifCurtailed:` blocks as trampoline steps rather
+  than calling back into Newspeak, and whose target is a `FrameReference`,
+  because code runs while an unwind is in progress and a release build does
+  not check an activation's generation.
+- **Rust does not re-enter the run loop**
+  (`r[vm.heap.no-native-frame-below-safepoint]`; decided 2026-09-13, "No
+  re-entry from Rust"): the nested-class accessor is a trampoline step, `do:`
+  a Newspeak loop since the loops' real bodies (decided with the user on
   2026-10-27, [core-library.md](core-library.md), "Real bodies for control
-  flow and `do:`"), and instantiation is compiled code since `new` is (decided with the user
-  on 2026-10-22, [object-model.md](object-model.md), "Decisions"), so that
-  no Rust frame is live below a safepoint and the root discipline has
-  nothing to root but the host's values. The bound on re-entries went with
-  them.
+  flow and `do:`"), and instantiation is compiled code since `new` is (decided
+  with the user on 2026-10-22, [object-model.md](object-model.md),
+  "Decisions"), so that no Rust frame is live below a safepoint and the root
+  discipline has nothing to root but the host's values. The bound on
+  re-entries went with them.
 - **A superclass chain nests one activation per level with code**
-  (decided with the user on 2026-10-22, "A superclass chain nests one
-  activation per level"), and a chain deeper than the depth limit
-  overflows, where a Rust driver flattening it would be the walk compiled
-  `new` replaced.
+  (`r[runtime.instantiate]`; decided with the user on 2026-10-22, "A
+  superclass chain nests one activation per level"), and a chain deeper than
+  the depth limit overflows, where a Rust driver flattening it would be the
+  walk compiled `new` replaced.
 - **The run loop's stretch is forced inline** (2026-09-16 for the
   per-instruction step it replaced, confirmed by the user 2026-09-17), since
   the inline caches' hit path makes it too large for the inliner to take on
@@ -16187,12 +16188,12 @@ baseline JIT's foundation" above).
   which would undo the register assignment. Each send kind joins its own
   send path, since one join shared by the four cost `bench_loop.ns` 3.5%.
 - **The run loop polls a safepoint at every switch and every backward jump**
-  ("The VM"): one compare of a flag the heap owns, and when it is set the
-  stretch leaves its entry and `run` makes a cold call, at the points where
-  what the loop carries holds no handle a move would change
-  ([memory.md](memory.md), "Where a collection can happen"). The slow path
-  serves the request by clearing the flag, which is also what keeps the
-  optimizer from deleting the poll.
+  ("The VM"; `r[vm.heap.collection-only-at-safepoint]`): one compare of a flag
+  the heap owns, and when it is set the stretch leaves its entry and `run`
+  makes a cold call, at the points where what the loop carries holds no handle
+  a move would change ([memory.md](memory.md), "Where a collection can
+  happen"). The slow path serves the request by clearing the flag, which is
+  also what keeps the optimizer from deleting the poll.
 - **A nested class's creation is marked in its own cache slot** ("No re-entry
   from Rust"), not listed beside the stack: the slot is keyed by exactly the
   pair a cyclic definition is, so the check is the read the accessor makes
@@ -16232,7 +16233,8 @@ baseline JIT's foundation" above).
   header's numbers left out of the register numbering and 13 words in
   every build, so that a caller's outgoing arguments are its callee's
   first registers and a debug build's artifact runs in a release one.
-- **Neither a push nor a pop writes a scratch register** (decided with
+- **Neither a push nor a pop writes a scratch register**
+  (`r[vm.activation.top-at-window-end]`; decided with
   the user on 2026-10-25, "What the leftover analysis moved"): the
   leftover analysis, derived from the code, says what a frame may read
   before writing it, the decoder refuses image code that reads it, and

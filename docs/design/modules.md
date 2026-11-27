@@ -66,7 +66,8 @@ Newspeak and Primordial Soup key one flat map by the class's name, the last
 writer winning (`prior-art/newspeak/Namespacing.ns:35-82`,
 `prior-art/primordialsoup/newspeak/CompilerApp.ns:53-56`).
 
-**2. A module declares its id, fully, in metadata above its class.**
+**2. A module declares its id, fully, in metadata above its class**
+(`r[semantics.module.identity]`).
 
 ```newspeak
 (* :module: com.acme.json.Json@2.1.0 *)
@@ -96,14 +97,10 @@ class Json usingPlatform: platform = Object new ( ... ) ( ... )
   would be ambiguous beside an unannotated `Json`.
 
 **3. The manifest is asked with strings.** `Manifest.ns` answers
-`at: id` -- the one module of that id, an `Error` `` no module `<id>` ``
-when there is none and `` `<id>` names <count> modules; ask with
-at:version: `` when there are several -- and `at: id version: range`,
-whose `Error` for a range none of the id's versions matches names the
-versions there are (`` no module `<id>` of version <range>; there are
-1.0.0, 2.0.0 ``) and whose `Error` for a range of no range's form, `'2.'`
-or `'02'`, is the loader's own, `` `<range>` is no version: <reason> ``,
-the reason `VersionRange::parse` gives
+`at: id` and `at: id version: range` (`r[semantics.module.manifest]`),
+the `Error` for a range of no range's form, `'2.'` or `'02'`, being the
+loader's own, `` `<range>` is no version: <reason> ``, the reason
+`VersionRange::parse` gives
 (`crates/ns-runtime/tests/manifest.rs`,
 `a_malformed_range_is_no_version`), and nothing through
 `doesNotUnderstand:`: an id is any string, so a dotted one, and no key
@@ -144,12 +141,11 @@ where either has none (no request could pick between them), and an id in
 the reserved namespace.
 
 **6. Metadata comments are parsed, generally.** `ns-syntax` recognizes
-every `(*:tag: payload*)` (§4.3) as `Metadata { tag, payload, span }` beside
-the comment it is, and attaches it as §4.3 says: to the expression, slot or
-parameter it immediately precedes, to the method or factory whose pattern
-it immediately follows, to the class whose header it follows, to the module
-declaration it precedes. `:module:` is one reader of it. The lexer does not
-change -- metadata are comments lexically -- and the formatter keeps them
+every `(*:tag: payload*)` (§4.3, `r[lex.comment.metadata]`) as
+`Metadata { tag, payload, span }` beside the comment it is, and attaches
+it as §4.3 says (`r[syntax.metadata]`). `:module:` is one reader of it. The
+lexer does not change -- metadata are comments lexically -- and the
+formatter keeps them
 where they are, which it does already: a factory of many annotated
 parameters breaks one keyword a line (formatting rule 3). Exposing metadata
 through the mirrors, as §4.3 asks, is open ([OPEN-WORK.md](../OPEN-WORK.md)).
@@ -207,9 +203,11 @@ the build had -- an image no longer holds the building machine's
 directories -- and the id and version as resolved, after an `as`, so that
 an image written with `--strip-source` names its modules as the program
 did and `ns-next load`'s tools name them as `run`'s do. The decoder holds
-them to everything decision 2, 5 and 9 hold a project to, before any of
-them is used ("An image is untrusted input", `CLAUDE.md`). The origin tags
-`ORIGIN_PROJECT` and `ORIGIN_CORE` took the next free numbers, and
+them to everything decision 2, 5 and 9 hold a project to
+(`r[image.verify.module-identity]`, `r[image.verify.modules]`,
+`r[image.load.modules]`), before any of them is used ("An image is untrusted
+input", `CLAUDE.md`). The origin tags `ORIGIN_PROJECT` and `ORIGIN_CORE` took
+the next free numbers, and
 `ORIGIN_FILE` and `ORIGIN_EMBEDDED` are retired
 ([image-format.md](image-format.md), "Module section").
 

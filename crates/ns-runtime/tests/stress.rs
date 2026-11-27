@@ -110,6 +110,8 @@ fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     )
 }
 
+// spec: vm.heap.collection-only-at-safepoint
+// spec: vm.handle.nothing-carried-across-safepoint
 #[test]
 fn every_continuation_survives_a_move_at_every_safepoint() {
     assert_eq!(run_every_continuation(false), (31, 0, 0), "the control");
@@ -134,6 +136,7 @@ fn every_continuation_survives_a_move_at_every_safepoint() {
 /// answer checked. This does: a premature reclamation that turned 31 into
 /// something else would have nowhere else to be caught, since the other
 /// collect stress coverage (`collector.rs`) uses a simpler fixture.
+// spec: vm.heap.roots-complete
 #[test]
 fn every_continuation_survives_a_collection_at_every_safepoint() {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
@@ -148,6 +151,7 @@ fn every_continuation_survives_a_collection_at_every_safepoint() {
 
 /// The scavenge stress mode verifies the remembered set and scavenges at
 /// every safepoint; the program's answer must not change.
+// spec: vm.heap.roots-complete
 #[test]
 fn every_continuation_survives_a_scavenge_at_every_safepoint() {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
@@ -163,6 +167,7 @@ fn every_continuation_survives_a_scavenge_at_every_safepoint() {
 /// The cache stress mode vacates every cache at every safepoint, so filling,
 /// transitions and invalidation all run under a program with every kind of
 /// continuation; its answer is the one without the mode.
+// spec: vm.dispatch.cache-records-lookup
 #[test]
 fn the_cache_stress_mode_invalidates_at_every_safepoint_and_changes_no_answer() {
     let (mut calm_interpreter, calm_class) = load(EVERY_CONTINUATION);
@@ -270,6 +275,7 @@ const DEEP_RECURSION: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.suspension-copies-registers
     fn a_deep_recursion_runs_on_from_suspended_frames(lowering) {
         assert_runs_on_from_suspended_frames(DEEP_RECURSION, lowering, "answered 2001000");
     }
@@ -333,6 +339,7 @@ const BLOCKS_AND_LOOPS: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.suspension-copies-registers
     fn blocks_loops_and_do_run_on_from_suspended_frames(lowering) {
         assert_runs_on_from_suspended_frames(BLOCKS_AND_LOOPS, lowering, "answered 2002000");
     }
@@ -365,6 +372,7 @@ const SLOW_SUPERCLASS_CLAUSE: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.resume-derives-state
     fn a_nested_class_created_across_a_suspension_is_cached_once(lowering) {
         assert_runs_on_from_suspended_frames(SLOW_SUPERCLASS_CLAUSE, lowering, "answered 7");
     }
@@ -397,6 +405,7 @@ const SLOW_FUTURE: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.reexecuted-instruction-wrote-nothing
     fn a_future_forced_across_a_suspension_runs_its_instruction_again(lowering) {
         assert_runs_on_from_suspended_frames(SLOW_FUTURE, lowering, "answered 9003001");
     }
@@ -435,6 +444,7 @@ const HANDLER_BELOW_SUSPENDED_FRAMES: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.sender-walks-reach-suspended
     fn an_exception_signalled_above_suspended_frames_finds_its_handler(lowering) {
         assert_runs_on_from_suspended_frames(HANDLER_BELOW_SUSPENDED_FRAMES, lowering, "answered 43");
     }
@@ -465,6 +475,7 @@ const RETRY_A_SUSPENDED_ON_DO: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.sender-walks-reach-suspended
     fn retry_restarts_a_suspended_on_do_activation(lowering) {
         assert_runs_on_from_suspended_frames(RETRY_A_SUSPENDED_ON_DO, lowering, "answered 30");
     }
@@ -508,6 +519,8 @@ const ENSURE_BLOCKS_OF_SUSPENDED_ACTIVATIONS: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.no-suspension-outlives-run
+    // spec: vm.activation.unwind-marker-from-code
     fn an_unwind_runs_the_ensure_blocks_of_suspended_activations_in_order(lowering) {
         assert_runs_on_from_suspended_frames(
             ENSURE_BLOCKS_OF_SUSPENDED_ACTIVATIONS,
@@ -537,6 +550,7 @@ const RETURN_INTO_A_SUSPENDED_HOME: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.activation.sender-walks-reach-suspended
     fn a_return_into_a_suspended_home_is_caught_there(lowering) {
         assert_runs_on_from_suspended_frames(RETURN_INTO_A_SUSPENDED_HOME, lowering, "answered 2501");
     }
@@ -692,6 +706,7 @@ ns_runtime::for_each_lowering! {
     /// depth limit as running ones do: the limit is met at the same depth,
     /// an error raised there is reported from the reserve as itself, and
     /// the reserve ends at the same depth and reports the same errors.
+    // spec: vm.activation.depth-count-exact
     fn the_depth_limit_counts_suspended_activations(lowering) {
         const INDEX_ERROR: &str = "failed: index 5 out of range: valid indices are 1..1 (size 1)";
         const DEPTH_ERROR: &str = "failed: stack overflow: recursion too deep";
@@ -776,6 +791,7 @@ fn run_paused(source: &str, lowering: Lowering, pause: bool) -> (String, usize) 
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.heap.stop-runs-no-code
     fn the_pause_stress_mode_keeps_outcomes(lowering) {
         let (plain, plain_pauses) = run_paused(PAUSED_PROGRAM, lowering, false);
         assert_eq!(plain, "answered 552000", "the control");
@@ -867,6 +883,7 @@ fn run_breakpointed(
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.compiler.patched-slot-runs-original-once
     fn the_breakpoint_stress_mode_keeps_outcomes(lowering) {
         for jit in [true, false] {
             let (plain, plain_hits) = run_breakpointed(BREAKPOINTED_PROGRAM, lowering, jit, false);
@@ -972,6 +989,7 @@ fn run_stepped(source: &str, lowering: Lowering, jit: bool, step: bool) -> (Stri
 }
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.compiler.patched-slot-runs-original-once
     fn the_step_stress_mode_keeps_outcomes(lowering) {
         for jit in [true, false] {
             let (plain, plain_steps, plain_ended) =

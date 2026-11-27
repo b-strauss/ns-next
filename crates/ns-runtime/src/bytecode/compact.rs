@@ -2847,6 +2847,7 @@ mod tests {
     /// decoding it, in every form: sends numbered and `UNCACHED`, blocks
     /// with a family and a reach of their own, and outer locals, narrow,
     /// wide, and mixed in one body.
+    // spec: vm.activation.outer-reach
     #[test]
     fn the_family_size_and_outer_reach_read_off_the_encoding_are_the_decoded_ones() {
         let block = |family_size, outer_reach| {
@@ -3089,6 +3090,7 @@ mod tests {
     }
 
     // spec: bytecode.compact.round-trip
+    // spec: vm.compiler.reach-derived-never-read
     #[test]
     fn every_instruction_round_trips_narrow_and_wide() {
         let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(

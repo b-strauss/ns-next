@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.feedback-decides-layout"]
 stdout = '''
 5050000
 310000000

@@ -6,8 +6,8 @@ numbered steps, and a step that can fail says what it signals. They state
 only what a program observes -- what is evaluated in which order, what
 answers and what is signalled with which text -- and never how the
 implementation achieves it: caches, compiled code and the heap's layout
-change none of these steps, and the part "VM invariants" states what they
-must keep.
+change none of these steps, and the part "VM invariants"
+([the chapter](vm-invariants.md)) states what they must keep.
 
 Every operation runs in an *activation*: the receiver, the *current
 class* -- the class the running method was found in, or the block's

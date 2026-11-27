@@ -1004,6 +1004,7 @@ mod tests {
     /// module's initializer, and draws no identity hash while it does: the
     /// first hash a program draws is 1, under `run` and `load` alike
     /// (`goldens/library/object/identity_hash.ns`).
+    // spec: vm.heap.shipped-world-draws-no-hash
     #[test]
     fn a_boot_draws_no_identity_hash() {
         let mut interpreter = crate::Interpreter::bootstrap();
@@ -1028,6 +1029,7 @@ mod tests {
     /// their superclass clauses and initializers and draws no identity
     /// hash either: the first hash a program draws is 1 whichever modules
     /// it used, under `run` and `load` alike.
+    // spec: vm.heap.shipped-world-draws-no-hash
     #[test]
     fn building_a_module_on_demand_draws_no_identity_hash() {
         let mut interpreter = crate::Interpreter::bootstrap();

@@ -1,4 +1,4 @@
-rules = ["semantics.send.evaluation-order"]
+rules = ["semantics.send.evaluation-order", "vm.activation.top-at-window-end", "vm.compiler.argument-slots-top-live-registers"]
 stdout = '''
 3 4 11 7 8 3 4 11 7 8 3 4 11 7 8
 3 4 11 7 8 3 4 11 7 8 3 4 11 7 8

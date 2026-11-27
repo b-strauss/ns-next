@@ -3780,6 +3780,7 @@ mod tests {
     /// it, by its offset in the range, and every other base stays; machine
     /// code compiled against a base that moved, or that lies in no live
     /// range, is freed, and against `NOT_ASSIGNED` or 0 never.
+    // spec: vm.dispatch.slide-rewrites-every-base
     #[test]
     fn a_slide_packs_the_live_ranges_and_remaps_each_base_inside_one() {
         let slide = SiteSlide {
@@ -3836,6 +3837,7 @@ mod tests {
 
     /// A family gets one contiguous range the first time it is asked for,
     /// and the same one every time after; ranges never overlap.
+    // spec: vm.dispatch.family-range-own
     #[test]
     fn a_family_keeps_the_range_it_was_first_given() {
         let mut caches = InlineCaches::new();
@@ -3851,6 +3853,7 @@ mod tests {
     /// A family whose body only the table holds gives its range back unless
     /// a live closure or activation names its base; a range inside the
     /// table is taken by the next family, one at its end is cut off.
+    // spec: vm.dispatch.family-range-own
     #[test]
     fn a_family_nothing_runs_gives_its_range_back() {
         let mut caches = InlineCaches::new();
@@ -3891,6 +3894,7 @@ mod tests {
 
     /// A site index past its code's family, or from an unassigned base, is
     /// never used: the send runs uncached.
+    // spec: vm.dispatch.site-within-family
     #[test]
     fn a_site_outside_its_family_is_uncached() {
         assert_eq!(site_index(FeedbackBase(4), 3, CallSite { number: 3 }), None);
@@ -4093,6 +4097,8 @@ mod tests {
     /// recorded, a polymorphic block's matching slot, a global entry's
     /// guard and a lexical rule's N, the verified slot level -- and keeps
     /// every other entry warm.
+    // spec: vm.dispatch.freed-ids-scrubbed
+    // spec: vm.dispatch.application-cache-key
     #[test]
     fn forgetting_freed_ids_vacates_exactly_the_entries_naming_them() {
         let mut caches = InlineCaches::new();

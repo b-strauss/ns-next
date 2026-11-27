@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.activation.reexecuted-instruction-wrote-nothing", "vm.machine.decline-before-write"]
 stdout = '''
 1225
 1225

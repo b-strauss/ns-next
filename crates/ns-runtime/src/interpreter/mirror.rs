@@ -485,6 +485,7 @@ mod tests {
     /// reaches a shipped one too: a shipped root that is a value with a
     /// mutable slot is refused, and the bootstrap panics on it, rather than
     /// booting with a mutable value.
+    // spec: vm.mirror.slot-checked-before-recording
     #[test]
     fn a_defective_shipped_root_is_refused_to_the_bootstrap() {
         let source = indoc::indoc! {"

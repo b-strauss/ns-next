@@ -40,6 +40,7 @@ fn a_send_after_two_bindings() -> Snapshot {
     ])
 }
 
+// spec: vm.machine.optimized-frame-is-interpreters
 #[test]
 fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
     let snapshot = a_send_after_two_bindings();
@@ -73,6 +74,7 @@ fn a_value_used_across_a_send_is_in_its_frame_word_at_the_send() {
     assert_eq!(verified(&graph, &allocation), Ok(()));
 }
 
+// spec: vm.machine.optimized-frame-is-interpreters
 #[test]
 fn a_send_without_its_write_back_is_refused() {
     let snapshot = a_send_after_two_bindings();
@@ -222,6 +224,7 @@ fn more_live_values_than_registers_spill_the_farthest_used() {
     assert_eq!(verified(&graph, &allocation), Ok(()));
 }
 
+// spec: vm.machine.registers-held-between-frame-nodes
 #[test]
 fn a_use_whose_reload_is_left_out_is_refused() {
     let snapshot = ten_live_values();
@@ -235,6 +238,7 @@ fn a_use_whose_reload_is_left_out_is_refused() {
     ));
 }
 
+// spec: vm.machine.registers-held-between-frame-nodes
 #[test]
 fn a_value_live_across_a_leaf_call_leaves_the_registers_it_clobbers() {
     let snapshot = ten_live_values();
@@ -284,6 +288,7 @@ fn a_register_dead_where_two_arms_meet() -> Snapshot {
     ])
 }
 
+// spec: vm.machine.optimized-frame-is-interpreters
 #[test]
 fn a_binding_a_merge_does_not_carry_is_stored_on_its_way_in() {
     let snapshot = a_register_dead_where_two_arms_meet();

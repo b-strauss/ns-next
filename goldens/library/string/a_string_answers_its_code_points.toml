@@ -1,4 +1,4 @@
-rules = ["semantics.literal.string"]
+rules = ["semantics.literal.string", "vm.heap.string-canonical-width"]
 stdout = '''
 97 233 8364 128512
 ell

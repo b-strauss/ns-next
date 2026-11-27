@@ -564,6 +564,7 @@ fn the_factory_body_allocates_initializes_and_returns_the_instance() {
 /// optimized lowering hands the block the parameter's register as a copied
 /// value, the reference lowering reads it by reference, and neither body
 /// is too large.
+// spec: vm.compiler.capture-agrees-with-lowering
 #[test]
 fn a_block_in_a_clause_argument_captures_the_factory_parameter() {
     let source = indoc! {"

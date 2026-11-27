@@ -73,6 +73,7 @@ fn tainted(
     flattened(&answers[0])
 }
 
+// spec: vm.compiler.register-effects-declared
 #[test]
 fn scratch_is_tainted_at_entry() {
     let body = [Instruction::Return { register: 7 }];
@@ -90,6 +91,7 @@ fn scratch_is_tainted_at_entry() {
     assert_eq!(tainted(&body, 6, 10, 4), Vec::<u16>::new());
 }
 
+// spec: vm.compiler.register-effects-declared
 #[test]
 fn a_send_taints_from_its_slot_end_and_writes_none_of_its_slots() {
     let mut body = loads(10..14);

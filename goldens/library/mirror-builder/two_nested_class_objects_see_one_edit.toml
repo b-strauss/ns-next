@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.dispatch.header-guard-stamped", "vm.dispatch.mixin-id-one-per-mixin"]
 stdout = '''
 false
 an object does not understand #added

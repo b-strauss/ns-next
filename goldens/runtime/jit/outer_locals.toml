@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.outer-local-at-its-frame"]
 stdout = '''
 5 13 6 1 2 0 1 2
 6 15 10 101 102 1000 2001 3002

@@ -1647,6 +1647,7 @@ mod tests {
     /// `rip`: one body compiled at two offsets of a zone is the same
     /// bytes, so that a compaction may move it.
     #[cfg(ns_jit)]
+    // spec: vm.machine.code-holds-no-handle
     #[test]
     fn a_body_assembled_at_two_offsets_is_the_same_bytes() {
         use crate::jit::{JitState, install};

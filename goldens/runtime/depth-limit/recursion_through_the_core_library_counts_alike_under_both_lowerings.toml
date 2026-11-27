@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "vm.compiler.mirror-literal-block-last"]
 status = 1
 stdout = '''
 0

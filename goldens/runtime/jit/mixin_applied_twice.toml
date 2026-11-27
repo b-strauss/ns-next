@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.call-writes-receiver-and-class"]
 stdout = '''
 4011000
 1004000

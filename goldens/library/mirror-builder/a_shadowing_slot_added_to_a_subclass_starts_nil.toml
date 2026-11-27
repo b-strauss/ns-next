@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.heap.migration-by-declared-name"]
 stdout = '''
 1 2 2 4 3 5 6
 1 nil 2 4 3 5 6

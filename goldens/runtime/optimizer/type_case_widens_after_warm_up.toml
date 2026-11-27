@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.scope-resumes-at-boundary"]
 stdout = '''
 150000
 400000

@@ -292,7 +292,7 @@ declares nothing the source does not name ([frontend.md](frontend.md),
 name is a send in Newspeak, not an error. `resolve_for_editor` never records
 `Binding::MirrorSend` — it goes through the same walk as `resolve`, never
 through `resolve_kernel` — so the VM mirror's capability invariant
-(`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
+(`r[vm.mirror.binding-only-in-shipped-resolution]`) is not touched, and
 `Kernel.ns`, opened in the editor, shows its `vmMirror` sends as ordinary
 sends.
 
@@ -1213,10 +1213,10 @@ shipped level again for a breakpoint ([debugger.md](debugger.md),
 "Compiling the metadata again"), so the lines are where a breakpoint set
 in the module lands; a lazy module stays unbuilt. The document's text
 only selects which module is compiled, and only an exact copy selects
-one, so no text a user writes is resolved as shipped code (`CLAUDE.md`,
-"The VM mirror is a capability"); a text one byte away from a shipped
-module's is an ordinary module. `ns-cli`'s `debug_metadata` holds every
-shipped module's answer to where `SetBreakpoints` lands in the built
+one, so no text a user writes is resolved as shipped code
+(`r[vm.mirror.shipped-text-by-exact-copy]`); a text one byte away from
+a shipped module's is an ordinary module. `ns-cli`'s `debug_metadata` holds
+every shipped module's answer to where `SetBreakpoints` lands in the built
 module, under both lowerings
 (`shipped_breakable_statements_agree_with_the_breakpoints`). The
 comparison is against the analyzer's own shipped sources, so it holds

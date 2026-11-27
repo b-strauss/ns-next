@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.own-slot-access-guarded"]
 stdout = '''
 300 201
 600 201

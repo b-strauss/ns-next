@@ -1,4 +1,4 @@
-rules = ["runtime.memory.weak", "runtime.memory.ephemeron"]
+rules = ["runtime.memory.weak", "runtime.memory.ephemeron", "vm.heap.resolved-future-judged-by-value"]
 stdout = '''
 'kept'
 true

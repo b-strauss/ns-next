@@ -2038,6 +2038,7 @@ const AN_ENDLESS_WRITER: &str = indoc! {"
 /// | head -1` -- ends as a terminated run does, with status 1 and the
 /// report line, its `ensure:` block run without raising it again, rather
 /// than panicking or writing to nobody for ever.
+// spec: vm.machine.leaf-contract
 #[test]
 fn a_closed_standard_output_ends_the_run() {
     use std::io::BufRead;

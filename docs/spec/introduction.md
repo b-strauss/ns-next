@@ -36,6 +36,15 @@ how it differs and why. A section of Bracha's document is cited as
 The first is the language every implementation of it would share; the
 other four are this implementation's.
 
+The fifth part's rules each have a line `Protects:` linking the rules of
+the first four parts they keep true, and either a test or a *detector*
+that finds their breach -- a stress mode, a check of a debug build or a
+check of the compiler, listed in the chapter's table of detectors -- or
+a line `Undetected:` with the reason none exists. The rendered book lists
+a rule's detectors beside its tests. `CLAUDE.md` and the documents
+under `docs/` point at a rule by its line in backticks, as `` `r[vm.heap.roots-complete]` ``,
+and `cargo xtask spec` refuses a pointer that names no rule.
+
 ### Conventions
 
 **Rules.** Every normative rule is preceded by its identifier, a line of
@@ -49,15 +58,16 @@ as the parts are written, `semantics`, `runtime`, `bytecode`, `image` and
 `vm`. An identifier is unique in the book and never reused for another
 rule. In the rendered book each identifier is an anchor and lists the
 tests that check its rule; the appendix "Untested rules" lists the rules
-no test names yet.
+no golden, no Rust test and no detector names.
 
 **Tests name their rules.** A golden names the rules it checks in its
 `.toml`, `rules = ["syntax.outer.alone"]`; a Rust test in a comment line
-`// spec: syntax.outer.alone` directly above its `#[test]`, one line per
-rule, which the book lists with the test's name. A reference to an
-identifier the book does not declare, or a `// spec:` line above no test,
-fails the suite, and so does a link to a chapter or a rule the book does
-not have.
+`// spec: syntax.outer.alone` directly above its `#[test]` -- or, for a
+test `for_each_lowering!` makes under both lowerings, directly above its
+function -- one line per rule, which the book lists with the test's
+name. A reference to an identifier the book does not declare, or a
+`// spec:` line above no test, fails the suite, and so does a link to a
+chapter or a rule the book does not have.
 
 **Gaps.** Where this book describes a construct ns-next does not build --
 one Bracha marks *Unimplemented*, or one a decision left open -- the rule

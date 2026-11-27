@@ -670,6 +670,7 @@ ns_runtime::for_each_lowering! {
 /// `docs/design/memory.md`, "Weak references"). The text never appears in
 /// the module's source but split across strings, so nothing interns it
 /// before the install.
+// spec: vm.heap.symbol-canonical
 #[test]
 fn a_program_made_symbol_finds_a_method_installed_after_it() {
     let source = indoc! {"

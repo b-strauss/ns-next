@@ -753,6 +753,7 @@ mod tests {
         );
     }
 
+    // spec: vm.heap.bump-limit-within-committed
     #[test]
     fn a_limit_below_the_top_refuses_every_bump() {
         let (mut reservation, page) = two_committed_pages();
@@ -763,6 +764,7 @@ mod tests {
         assert!(reservation.bump_array::<1>().is_none());
     }
 
+    // spec: vm.heap.bump-limit-within-committed
     #[test]
     fn a_decommit_clamps_the_limit_to_the_new_prefix() {
         let (mut reservation, page) = two_committed_pages();

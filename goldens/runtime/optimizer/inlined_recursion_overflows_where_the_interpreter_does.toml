@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.depth-count-agrees"]
 status = 1
 stdout = '''
 20000

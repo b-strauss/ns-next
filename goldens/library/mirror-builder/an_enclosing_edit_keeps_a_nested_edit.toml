@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.compiler.edit-recompiles-from-current-text"]
 stdout = '''
 #nested #nested #enclosing
 public tag = (^#nested)

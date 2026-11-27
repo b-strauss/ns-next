@@ -51,8 +51,8 @@ an object = its words in the space, end to end with the others:
             [header word][class word][field 1][field 2] ...   ("The object layout")
 ```
 
-**A value is one tagged word, Spur's.** Its low three bits say what the
-rest is:
+**A value is one tagged word, Spur's** (`r[vm.heap.value-tags]`). Its
+low three bits say what the rest is:
 
 | Low bits | Meaning |
 |---|---|
@@ -102,24 +102,25 @@ needs no heap. `SmallFloat` is the immediate float only: code that reads a
 float asks `Heap::float_value`, which answers a boxed one too. Tests compare
 through the accessors (`value.as_small_integer() == Some(3)`).
 
-**Each number has one representation.** A `SmallInteger` is every integer
-from `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`, -2^60 to 2^60 - 1; any
-other is an object of the kernel class `LargeInteger`, of the 64-bit-indexed
+**Each number has one representation**
+(`r[vm.heap.number-one-representation]`). A `SmallInteger` is an integer
+from `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`, -2^60 to 2^60 - 1; any other
+is an object of the kernel class `LargeInteger`, of the 64-bit-indexed
 format: its words are the magnitude's digits, its sign is the header's
-negative bit, and it holds no handle.
-`Mutator::new_integer` decides which ([core-library.md](core-library.md),
-"Large integers"). A finite float in the `SmallFloat64` range is immediate;
-every other float -- NaN, the infinities, denormals and magnitudes outside
-that range -- is a boxed `Float`, an instance of the builtin `Float` whose
-one 64-bit-indexed word holds the `f64`'s bits and no handle, and
-`Mutator::new_float` decides which by Spur's range test. Soup boxes every
+negative bit, and it holds no handle. `Mutator::new_integer` decides which
+([core-library.md](core-library.md), "Large integers"). A finite float in
+the `SmallFloat64` range is immediate; every other float -- NaN, the
+infinities, denormals and magnitudes outside that range -- is a boxed
+`Float`, an instance of the builtin `Float` whose one 64-bit-indexed word
+holds the `f64`'s bits and no handle, and `Mutator::new_float` decides
+between the immediate and the boxed form by Spur's range test. Soup boxes every
 float, which costs an allocation per floating-point result; Spur's split
 keeps the common range immediate. Both are §5.1.1's binary float; the
 `FixedPointNumber` that section names for non-integral literals -- `Decimal`, the gap
-`semantics.gap.decimal` -- would be a class of the numeric tower, not a
+`r[semantics.gap.decimal]` -- would be a class of the numeric tower, not a
 tag. A `Fraction` is an object too, of the
 fixed-pointer format, its two fields the numerator and the denominator in
-normal form, each a `SmallInteger` or a `LargeInteger`
+normal form (`r[vm.heap.fraction-normal-form]`)
 ([core-library.md](core-library.md), "The numeric tower"). A boxed
 `Float`, like a `LargeInteger` and a `Fraction`, is a value object
 (§3.1.1), so its `=` and its hash come from its value, never from the
@@ -148,7 +149,9 @@ a value needs no identity, so a fresh one per execution is correct
 outside the `SmallFloat64` range does the same with a boxed `Float`, through
 `Mutator::new_float`.
 
-**The debug build keeps its exact check.** A debug handle carries its heap's
+**The debug build keeps its exact check**
+(`r[vm.handle.stored-only-when-current]`).
+A debug handle carries its heap's
 id and its move epoch in full, and every accessor compares both
 ([memory.md](memory.md), "The brand, checked by the compiler rather than by
 convention"). The Rust-side `Value` does too: in a debug build it is the word
@@ -171,7 +174,8 @@ collector traces"). What still holds a Rust-side value or handle -- a stack
 entry's receiver, a continuation's state, a host's `Root` -- keeps its brand
 and its `Trace`.
 A scavenge walks only the young objects and the remembered ones, so an old
-object whose store missed the write barrier keeps a stale young word; that
+object whose store missed the write barrier (`r[vm.heap.barrier]`) keeps a
+stale young word; that
 is what `NS_NEXT_STRESS_SCAVENGE`'s check of the remembered set before each
 scavenge, and a debug build's poison over the nursery a scavenge vacated,
 catch ([memory.md](memory.md), "Generations").
@@ -184,7 +188,8 @@ The guard in an object's header word is the id an inline cache guards the
 object's sends on, a copy stamped from its application's ids
 ([dispatch.md](dispatch.md), "The dispatch id").
 
-**A symbol is a heap object, and a canonical one**: each `Heap` keeps a
+**A symbol is a heap object, and a canonical one**
+(`r[vm.heap.symbol-canonical]`): each `Heap` keeps a
 canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
 `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
 answers the table's object, allocating it only the first time. A symbol a
@@ -193,9 +198,8 @@ no number: `Mutator::program_symbol` answers the object a second, weak table
 holds for the text, keyed by the text's hash, or makes one and records it
 there, and once something interns the text the canonical table adopts that very
 object ([memory.md](memory.md), "Weak references"). Those are the only ways to
-make a symbol, so a symbol literal, `asSymbol` and every selector handed to
-`doesNotUnderstand:` all reach the same object for the same text, which is what
-§5.1.6 and §3.1.1 make two equal symbols. The tables are per heap because a
+make a symbol, which is what §5.1.6 and §3.1.1 need of two equal symbols.
+The tables are per heap because a
 handle means nothing against another heap. Both are weak: the collector clears
 an entry whose symbol nothing else holds.
 This is what every reference does -- Primordial Soup's weak `symbolTable`
@@ -209,8 +213,8 @@ and keyed by the object's byte offset, so the object stores nothing but its code
 points and no lookup of a canonical symbol reads them; a program-made symbol
 answers the number of its text once something interned it and `None` before,
 which names nothing, since every selector, slot name and class name is interned.
-A symbol's `hash` is its text's, told apart from a String's, never its number,
-so a program-made symbol hashes the same before and after its adoption. Rejected: a symbol
+A symbol's `hash` is its text's, told apart from a String's, never its number
+(`r[vm.heap.symbol-hash-from-text]`). Rejected: a symbol
 as an immediate, a tag of its own, which no reference does and which every
 string primitive, and later the Newspeak kernel, would have to accept as a
 non-object. An image carries a symbol as a record of its text, never a number;
@@ -218,7 +222,8 @@ the decoder interns each text and enters each record into the loading heap's
 canonical table, and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
-**An `ObjectReference` is an offset, not a pointer.** Every object lives in one
+**An `ObjectReference` is an offset, not a pointer**
+(`r[vm.handle.space-relative]`). Every object lives in one
 `Heap`'s object space and is reached only through a `Heap` accessor; the offset is
 private to the `heap` module -- `crates/ns-runtime/src/heap.rs` and its
 submodules, `heap/value.rs` among them, which puts it into a word and takes it
@@ -228,8 +233,9 @@ how the collector reclaims an object once nothing reaches it, and why a handle
 means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a counter the first time `hash` asks for
-one**, never derived from an address and never from the handle's offset, and 0
-means "not yet assigned" (`Heap::object_ensure_identity_hash`); it is 22 bits
+one** (`r[vm.heap.identity-hash-moves-with-object]`,
+`r[runtime.memory.identity-hash]`), and 0 means "not yet assigned"
+(`Heap::object_ensure_identity_hash`); it is 22 bits
 of the header word, and the counter wraps within them ("The identity hash is
 22 bits wide" below). An address- or
 offset-derived hash would break the moment a moving collector relocates the
@@ -262,8 +268,9 @@ conversion"). The code id names, in the heap's table of compiled code, the
 body shared with the `MakeClosure` instruction that made the closure, and its
 parameter count is the body's; everything is inline in the closure object,
 never behind an `Rc` of its own, because a handle lives only where the tracer
-can rewrite it in place ([memory.md](memory.md), "What the collector traces")
-and an `Rc` shared by several holders is not such a place. So a block's
+can rewrite it in place (`r[vm.handle.only-where-rewritable]`;
+[memory.md](memory.md), "What the collector traces") and an `Rc` shared by
+several holders is not such a place. So a block's
 activation (`FrameKind::Closure`) and a decided block step name the closure
 object, and reach its body and its
 captured frame through it. **The home is a `FrameReference`, not an
@@ -289,7 +296,8 @@ together. That is wrong, and the language specification says why directly.
 > be a distinct class per instance of the enclosing class.
 
 An enclosing object is per-instance state, so a class that has one cannot be
-shared between instances of its enclosing class. §2.3 adds the other half: a
+shared between instances of its enclosing class
+(`r[semantics.class.per-enclosing-object]`). §2.3 adds the other half: a
 nested class declaration can be overridden by a slot in a subclass of its
 enclosing class, and that slot can be assigned at run time —
 
@@ -371,7 +379,8 @@ for it, the one kernel-private `Mixin` object per mixin per heap
 reified as a kernel-private object").
 
 **The application cache is keyed by (the mixin's id, the superclass
-*application*'s full-width index), never by the superclass class object.** If
+*application*'s full-width index), never by the superclass class object**
+(`r[vm.dispatch.application-cache-key]`). If
 the superclass is itself a nested class, its class object is per-instance, so a
 class-object key would never hit: every instance would mint its own
 application, which is wrong per §6.2 and would leave every call site
@@ -398,18 +407,18 @@ bucket index (the FxHash scheme rustc's own tables use).
 rather than on the class object, because a superclass contributes slots and can
 differ between instances of the same enclosing class.
 
-**A slot is reached through its accessors, which are method-table entries.**
-§6.3.2 has every slot declaration define a getter and, for a mutable slot, a
-setter, each with the slot's accessibility; they are entries of the declaring
-mixin's `methods` beside the compiled methods, found and overridden like any
-method ([dispatch.md](dispatch.md), "Slot accessors"). An entry names its slot by
+**A slot is reached through its accessors, which are method-table entries**
+(`r[semantics.slot.accessors]`): they are entries of the declaring
+mixin's `methods` beside the compiled methods
+([dispatch.md](dispatch.md), "Slot accessors"). An entry names its slot by
 position among the mixin's *own* slots, so one entry serves every application:
 the absolute field is the defining application's `own_slot_base` plus that
-position — the same mixin-relative addressing `InitializeSlot` uses, and for the
-same reason. Nothing maps a slot name to a field; nothing but an accessor needs
-to.
+position — the same mixin-relative addressing `InitializeSlot` uses
+(`r[vm.compiler.mixin-relative-slot-index]`), and for the same reason.
+Nothing maps a slot name to a field; nothing but an accessor needs to.
 
-**A lazy slot (§6.3.3) is an own slot like any other**, laid out at its
+**A lazy slot (§6.3.3, `r[semantics.slot.lazy]`) is an own slot like any
+other**, laid out at its
 position and starting `nil`, with two differences. The instance initializer
 skips it; its getter is a compiled method in the mixin's `methods`, with no
 fast path, which opens with `ReturnSlotIfFilled` -- answering a filled slot
@@ -423,7 +432,8 @@ it ([core-library.md](core-library.md), "Lazy slots first").
 ## The nested-class accessor
 
 A nested declaration implicitly defines a method with the same name and
-accessibility in its enclosing class. §6:
+accessibility in its enclosing class
+(`r[semantics.class.per-enclosing-object]`). §6:
 
 > The first time this method is invoked on a given receiver r, it evaluates the
 > class declaration, using r as the enclosing object, and returns the resulting
@@ -433,8 +443,9 @@ The accessor body, in five steps:
 
 1. Read the hidden slot reserved for this declaration in the receiver's layout.
    If it is not nil, return it.
-2. Otherwise evaluate the superclass clause **in the receiver's context**,
-   yielding a class object; take its application. A declaration with `<:`
+2. Otherwise evaluate the superclass clause **in the receiver's context**
+   (`r[semantics.superclass.clause]`), yielding a class object; take its
+   application. A declaration with `<:`
    clauses evaluates their receivers in the same activation, left to right
    after the superclass's, and builds the levels they add ("Mixin
    application" below) before step 3, which then applies the declaration's
@@ -459,7 +470,9 @@ lookups the accessor's own path makes (`Heap::known_mixin_id`,
 `MixinApplication::nested_slot`). An empty slot, one whose creation is
 underway, and a send that brings no index take steps 1 to 5 above, which
 run once per enclosing object. The guard decides the index, so the entry
-records what the lookup decided ([dispatch.md](dispatch.md), "An entry",
+records what the lookup decided (`r[vm.dispatch.cache-records-lookup]`,
+`r[vm.dispatch.key-covers-every-dependency]`;
+[dispatch.md](dispatch.md), "An entry",
 "Every target is a function of its key and its site"). The accessor stays
 bodiless, a quick method in Cog's sense, as the slot accessors are: a
 compiled body would cost the interpreter an activation per `Foo` and make
@@ -471,11 +484,14 @@ every send.
 
 **Inherited nested declarations get their own slots.** §6 says a distinct nested
 class exists for each declaration given in the declaration of C *and its
-superclasses*, so the hidden slots are part of the absolute layout an application
-computes, contributed at the level that declares them, exactly like ordinary
-inherited slots. They are derived from a mixin's nested declarations
-(`Heap::nested_of`) rather than declared, so nothing stores them separately. The hidden slot is keyed by the
-declaration's mixin, not by its name: keying by name would make an override and
+superclasses*, so the hidden slots are part of the absolute layout an
+application computes, contributed at the level that declares them, exactly
+like ordinary inherited slots. They are derived from a mixin's nested
+declarations (`Heap::nested_of`) rather than declared, so nothing stores
+them separately. The hidden slot is keyed by the
+declaration's mixin, not by its name
+(`r[vm.dispatch.hidden-slot-by-declaration]`):
+keying by name would make an override and
 the declaration it overrides share one slot.
 
 **§2.3's override behaviour needs no special case.** Because the accessor is an
@@ -512,10 +528,9 @@ clause bodies onto the `Mixin`, before the mixin is shared
 ([execution.md](execution.md), "The VM"), so a class `load_module` returns is
 already runnable. A mixin decoded from an image carries the bodies its row
 names instead, reconciled on load by `image::decode::verify_mixins`. Nothing it
-does evaluates Newspeak code, and compiling a resolved module is total — a
-program-level error is deferred to the execution of the body that raises it
-([compiler.md](compiler.md), "Compilation cannot fail") — so loading stays
-total.
+does evaluates Newspeak code, and compiling a resolved module is total
+(`r[vm.compiler.total]`; [compiler.md](compiler.md), "Compilation cannot
+fail"), so loading stays total.
 
 ## The builtin classes
 
@@ -569,15 +584,16 @@ kernel's.
   ordinary classes of the shipped module `TypedArraysFactory.ns`
   ([core-library.md](core-library.md), "`ByteArray`, `StringBuilder` and
   the views").
-- **A program reaches a builtin class through `Object`'s accessors** (§3.2):
+- **A program reaches a builtin class through `Object`'s accessors** (§3.2,
+  `r[semantics.builtin-names]`):
   `Kernel.ns`'s `Object` declares one protected method per nameable builtin,
   `protected String = ( ^outer Kernel String )`, and a bare `String` is
-  `self String` by §5.7, so a class that declares or inherits a member of
-  that name reaches its own, and `other String` from outside reaches
+  `self String` by §5.7, so `other String` from outside reaches
   `doesNotUnderstand:` ([core-library.md](core-library.md), "The
   predefined classes are accessors on `Object`", "`class` and the class
   accessors are protected").
-- **`Top` is not nameable.** It is declared private in `Kernel.ns`, as
+- **`Top` is not nameable** (`r[vm.mirror.class-unnameable]`). It is
+  declared private in `Kernel.ns`, as
   only `Activation`, `NonBooleanReceiver`, `FutureImplementation`, `Mixin`,
   `IndexedCollection`, `LittleEndianDataView` and `BigEndianDataView` are
   besides it, so §6.3.1 keeps it out of every other module's reach; `Object`
@@ -602,8 +618,9 @@ kernel's.
   refused. `Array new` builds its own payload
   (`instantiate::allocate_for_factory`, which the factory body's
   `AllocateInstance` runs), and the VM mirror's class is refused
-  outright, with a `CannotInstantiate` carrying nil rather than the class a
-  program must not be handed — there is exactly one mirror.
+  outright (`r[vm.mirror.not-instantiable]`), with a `CannotInstantiate`
+  carrying nil rather than the class a
+  program must not be handed -- there is exactly one mirror.
 - **A user subclass of a builtin inherits its methods but not its payload.**
   `class MyArray = Array new` answers `Array`'s kernel methods, whose leaves
   decline on an instance that carries no array, and each method's failure
@@ -625,7 +642,8 @@ in `= Object new (...)` — has its two parts evaluated at **different times**
   instantiation, by the instance initializer of the class whose clause it is,
   so the subclass's own factory parameters are in scope when it runs.
 
-Sending the factory message to a class object then does this:
+Sending the factory message to a class object then does this
+(`r[semantics.instantiation.initializer-order]`, `r[runtime.instantiate]`):
 
 1. **One** instance `o` is allocated — distinct identity, every slot declared by
    the class and its superclasses initially nil. There is no separate instance
@@ -650,7 +668,8 @@ walked the superclass chain upward and ran every level's slots and initializer
 expressions in the *subclass's* activation with the subclass's factory arguments,
 which §6.2 does not permit.
 
-**The factory is compiled code with an activation of its own**, shaped as
+**The factory is compiled code with an activation of its own**
+(`r[vm.compiler.factory-body-synthesized]`), shaped as
 both references shape it (Squeak-Newspeak's `| o | o := self basicNew. o
 initializer`…`: args. ^o`, `Newspeak2SqueakCompilation.ns:1991-2025`;
 SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`, `MixinBuilder.java:547-600`;
@@ -686,13 +705,16 @@ error leaves the factory to the loop from its start, which raises the
 allocation's refusal before the decision's error, as the body orders
 them; the initializer's push refused at the depth limit raises from the
 factory's activation, as `InitializeInstance`'s send does. What is
-skipped is a safepoint at which no program code runs on either side.
+skipped is a safepoint at which no program code runs on either side
+(`r[vm.activation.factory-prefix-uninterruptible]`).
 
-**The allocation decides everything that refuses an instance**, before it
+**The allocation decides everything that refuses an instance**
+(`r[runtime.instantiate]`), before it
 allocates: `instantiate::allocate_for_factory` builds the builtins whose
 instances are not ordinary ones -- `Array`, `ByteArray`, `String` and
-`Ephemeron` of their own formats -- refuses the VM mirror's class, `Symbol`
-and `Mixin`, then refuses from the application's `instantiation_refusal`
+`Ephemeron` of their own formats -- refuses the VM mirror's class
+(`r[vm.mirror.not-instantiable]`), `Symbol` and `Mixin`, then refuses from
+the application's `instantiation_refusal`
 and the class object's own value refusal ("A value object's four
 conditions" below), and only then allocates through
 `Heap::allocate_instance_with` with the header the application carries
@@ -710,8 +732,9 @@ reads: the class object's format, its builtin field and its value
 refusal, afresh at every instantiation, and the header of the
 application's instances. That header is the second word of the
 application's row in the application id table, the one table machine code
-reads an application by ([memory.md](memory.md), "The application id
-table"): `Heap::register_application` writes it from the application's
+reads an application by (`r[vm.machine.application-id-table]`;
+[memory.md](memory.md), "The application id table"):
+`Heap::register_application` writes it from the application's
 `instance_header` when it records the row, and writes 0 where
 `allocate_for_factory` would make no ordinary instance of the
 application's count -- an instantiation refusal, or a count that needs an
@@ -724,8 +747,9 @@ the leaf, which raises nothing itself and exits so that the interpreter
 raises the refusal with its text and selector.
 
 **Each level's initializer is a body on its mixin, outside the method
-table, reached only by the instructions that initialize** (decision 2).
-The references name it ``initializer`sel:`` and put it in the method table,
+table, reached only by the instructions that initialize** (decision 2;
+`r[vm.compiler.factory-body-synthesized]`). The references name it
+``initializer`sel:`` and put it in the method table,
 where `perform:` with a constructed symbol, or a mirror, reaches it, so a
 program could run a finished object's initializer again, a value's
 included; here no message reaches one, and no mirror lists the factory,
@@ -756,7 +780,8 @@ primary factory -- after the clause's arguments were evaluated, since §6.3
 evaluates the message "in the context of *i*" and then invokes, so their
 effects precede §6.1's error
 (`goldens/language/class/instantiation/spec_6_1_a_clause_argument_runs_before_the_mismatch_fails.ns`)
--- then checks the arity and enters that level. A verdict precomputed per
+-- then checks the arity and enters that level
+(`r[semantics.instantiation.initializer-order]`). A verdict precomputed per
 application would skip the arguments' side effects. Every instruction that
 reads a level validates what a crafted image can make disagree -- a level
 that is not there, a body that is missing, an arity -- and raises an
@@ -767,18 +792,19 @@ of one guard; it is left to the JIT.
 **The arity is checked at every level**, against the factory of the
 declaration whose body the level runs (`check_factory_arity`: the
 mixin's own, or a body-less declaration's), since that body's registers
-are laid out for it. §6.1's selector check pins the arity for a class with
+are laid out for it (`r[vm.activation.push-checks-arity]`). §6.1's selector
+check pins the arity for a class with
 a body, since a selector's keyword count is its parameter count, but not
 for a body-less named class, and not for a decoded image, which can pair a
 body with a level whose factory has another arity; the check is what
-stands between such a body and a register window of the wrong size, with
-the text "wrong number of factory arguments: factory takes *n*, got *m*".
+stands between such a body and a register window of the wrong size.
 
 **A level whose full body would only check is passed, in a loop.**
 `Mutator::enter_or_pass` does not enter a declaration's own level when its
 declaration needs no initializer code, none of its clauses passes
 arguments, and every level its `<:` clauses added has a mixin with no own
-code and a factory of no arguments: it makes the full body's checks itself,
+code and a factory of no arguments (`r[vm.activation.passed-levels-iterative]`):
+it makes the full body's checks itself,
 in the body's order and with its texts -- each `<:` clause against the
 class it named, nearest level first, then the superclass clause against the
 class above them -- and carries on at that class with no arguments. A level
@@ -789,7 +815,8 @@ neither nests nor escapes the depth limit's count, whatever its length
 level it copies out of the level's application in one read
 (`LevelFacts::of_mixin` the level's own mixin, computed where the application is
 built and checked against the mixin by a debug build's
-`Heap::register_application`): `needs_initializer_code`, the superclass
+`Heap::register_application`; `r[vm.dispatch.level-facts-agree]`):
+`needs_initializer_code`, the superclass
 clause's `clause_selector` and `clause_has_arguments`, the
 `applied_clause_count` and `applied_clauses_pass_arguments`, the mixin's own
 `factory_arity`, and for a metaclass mixin the factory entry it holds.
@@ -804,7 +831,8 @@ not look it up again.
 Each initializer invokes its superclass's from inside its own activation,
 so the levels with code nest, and a chain of more of them than the depth
 limit fails with the ordinary stack-overflow error, as any recursion that
-deep does (`goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`;
+deep does (`r[runtime.depth-limit]`;
+`goldens/language/class/instantiation/a_chain_deeper_than_the_depth_limit_overflows.ns`;
 [execution.md](execution.md), "A superclass chain nests one activation per
 level"). A flat chain would need a Rust driver between the levels, which is
 the walk compiled `new` replaced.
@@ -830,11 +858,13 @@ MirrorBuilder and an atomic install").
 ### A value object's four conditions
 
 §3.1.1 makes an object a value object when "it is deeply immutable ... and its
-class inherits from class `Value`", and its second bullet spells that out as
+class inherits from class `Value`" (`r[semantics.value]`), and its second
+bullet spells that out as
 four conditions: all its slots "are immutable, have been initialized and
 contain value objects"; "its enclosing objects (3.3) are all value objects";
 and "its class inherits from class `Value` and does not define an identity
-method (`==`)". All four are enforced strictly (designed with the user on
+method (`==`)". All four are enforced strictly
+(`r[semantics.value.conditions]`; designed with the user on
 2026-09-23). Two are about an instance's slots and are decided as the
 instance is built, the one place every instance of every class comes from,
 whether its class was loaded from source, materialized as a nested class or
@@ -842,11 +872,9 @@ rebuilt from an image. Of the other two, the identity method is a property of
 the *application* and is decided once, where `Mutator::apply_mixin` builds
 it — before any class object exists, which is what covers a module's root
 class along with every nested one — and the enclosing objects are fixed per
-*class object*, decided once where one is created. **Every one of them is
-refused where an instance would come into being**. Every such refusal is an
-ordinary Newspeak error named under the primary factory of the class being
-instantiated, defaulted to `new`, raised at run time — a class nothing
-instantiates never fails, as a method nothing runs never does — and every
+*class object*, decided once where one is created. Every refusal is raised at
+run time — a class nothing instantiates never fails, as a method nothing
+runs never does — and every
 text lives in `interpreter/instantiate.rs`, so both lowerings raise the same
 errors. The root rule ("Mixin application", at its end), which decides what a
 module that declares itself a value may write, is not among them: a root that
@@ -897,11 +925,7 @@ of `String`" — a value class whose enclosing object `g` is mutable, which the
 specification creates and never instantiates
 (`goldens/language/class/nesting/spec_2_3_superclass_of_a_nested_class.ns`, which passes as
 transcribed). §3.1.1 defines when an *object* is a value; what must never
-exist is an instance that passes for a value and is not one. The texts are
-"cannot instantiate `C`: a value class may not define ==, and `D` defines it"
-and "cannot instantiate `C`: a value class's enclosing objects must be
-values, and its enclosing object, …, is not one" (or "`L`'s enclosing object"
-for a level above `C`).
+exist is an instance that passes for a value and is not one.
 
 - **No identity method** is decided once per *application*, cold, when
   `Mutator::apply_mixin` builds it — the same place `first_mutable_slot` is
@@ -993,7 +1017,8 @@ for a level above `C`).
   other decoded class; a ready-made *instance* decoded from an image is not
   re-checked ("What is still unchecked" in [core-library.md](core-library.md)).
 
-**`Kernel` and the VM mirror are values, as in SOMns** (decided with the user
+**`Kernel` and the VM mirror are values, as in SOMns**
+(`r[semantics.value]`; decided with the user
 on 2026-09-23). `Kernel.ns`'s module is declared
 `class Kernel vmMirror: mirror = Value (…)`, a value as
 `prior-art/somns/core-lib/Kernel.ns`'s `Object <: Value` is, and its one
@@ -1076,7 +1101,8 @@ future of actors and `<-:` (`KernelForSqueak.ns`, `Future`'s comment): it is
 synchronous, computed on the forcing thread in the forcing send, with no
 event loop. SOMns parses `|| ... ||` and does not support it.
 
-**The four rules.**
+**The four rules** (`r[semantics.slot.simultaneous]`; the value rule is
+also `r[semantics.value]`).
 
 1. **Once the clause is done, no slot of it holds a future.** Its end forces
    each slot's future in declaration order and writes the value back, so
@@ -1096,7 +1122,8 @@ event loop. SOMns parses `|| ... ||` and does not support it.
    value in every object field it traces, so a resolved future lives at most
    until the next collection; removing escaped futures at the clause's end
    instead would be `becomeForward:`, a walk of the whole heap on every
-   instantiation of such a class, for nothing a program can observe.
+   instantiation of such a class, for nothing a program can observe
+   (`r[vm.heap.resolved-future-replaced-in-fields]`).
 4. **A value never holds a future** (§3.1.1's deep immutability). A future
    about to be stored in a slot of a value is forced first, and its value is
    stored and checked — so `|| p = Pair first: q second: 1. q = 3. ||`
@@ -1106,8 +1133,7 @@ event loop. SOMns parses `|| ... ||` and does not support it.
 
 A future still being computed is observable, as §6.3.2 intends: touching one
 forces it, and forcing one that is already being computed — ill-founded
-recursion — raises an ordinary, catchable `Error`, "divergent evaluation: a
-future was forced while it was being computed", a text that names the
+recursion — raises an ordinary, catchable `Error`, a text that names the
 future rather than a slot because a program's own `Future computing:`
 diverges the same way. **A clause abandoned by an exception** —
 an initializer raises and a handler outside the instantiation takes it —
@@ -1263,7 +1289,9 @@ instance of `FutureImplementation` until the program has made one.
   instead of the next one (`vm::reexecute`); the second time the future is
   resolved, or `resolve` signalled its error. This rests on an invariant written
   on `builtins::execute` and checked leaf by leaf: **a leaf that declines or
-  raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
+  raises has changed nothing** (`r[vm.dispatch.declining-leaf-changes-nothing]`,
+  `r[vm.dispatch.future-seen-through]`; [dispatch.md](dispatch.md),
+  "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
   equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`
   and `Symbol`, and `inheritsMixinOf:` — decline instead when that answer
@@ -1317,10 +1345,11 @@ instance of `FutureImplementation` until the program has made one.
   a program handed it one during a clause.
 
 **The collector** replaces a reference to a resolved future with its value in
-object fields — slots, array elements, closure copies, indirection vectors —
-and never in registers or host roots: a forcing activation that is returning
-has the future as `self`, and would otherwise read its own slots from the
-value ([memory.md](memory.md), "A resolved future is traced as its value").
+object fields and never in registers or host roots
+(`r[vm.heap.resolved-future-replaced-in-fields]`,
+`r[vm.heap.resolved-future-judged-by-value]`): a forcing activation that is
+returning has the future as `self`, and would otherwise read its own slots from
+the value ([memory.md](memory.md), "A resolved future is traced as its value").
 
 **The image** never holds a resolved future: the encoder writes its value in
 its place. An unresolved one — of an abandoned clause, or a
@@ -1388,7 +1417,9 @@ tree and ignored, as they are on a superclass clause
 drops").
 
 **Each clause adds one class level between the declaration and its
-superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
+superclass** (`r[semantics.mixin.application]`,
+`r[semantics.mixin.clause-order]`), lowest first, so the last clause's mixin
+is the nearest to `C`.
 §6.2 gives the level four properties, and the level has each one:
 
 - **Its mixin is the named class's mixin** — that class's own declaration, not
@@ -1417,7 +1448,8 @@ superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
   arguments, their count checked against the factory of the mixin it
   applies, whose registers it is laid out for.
 
-**A declaration without a body is the mixin application it writes** (§6:
+**A declaration without a body is the mixin application it writes**
+(`r[semantics.mixin.application]`; §6:
 "the mixin can be specified along with the superclass via a mixin
 application"; decision 8 of `new` as compiled code). For `class M3 x: x =
 Base new <: M1 tag: x + 1.`, `Mixin::has_body` is false, and `M3`'s class
@@ -1462,7 +1494,8 @@ the code itself says (`CompiledCode::is_declaration_code`, marked on the
 full initializer and its blocks wherever a body-less mixin is built:
 `Mixin::mark_declaration_code`; a debug build holds it to the frame's
 captured chain, `Heap::activation_runs_declaration_code`) --
-starts its lexical walk there (`interpreter::sends::lexical_origin`,
+starts its lexical walk there (`r[vm.dispatch.lexical-origin-from-code]`;
+`interpreter::sends::lexical_origin`,
 `dispatch::LexicalOrigin::Declaration`): depth 1 is `M3`'s enclosing
 object, deeper levels step out from `M3`'s declaring class, and depth 0 has
 no N, since `M3` declares no member and §5.8 makes a self send `outer M3 m`.
@@ -1487,7 +1520,8 @@ never off the class object per send, and the lexical sends of `M3`'s own
 code, which runs once per instantiation, run uncached: every cached
 lexical send starts at its current class
 (`goldens/language/class/mixin/spec_6_a_body_less_declarations_clause_resolves_in_its_own_scope.ns`).
-`super` takes no part in this: §5.10 starts it at "the superclass of *C*",
+`super` takes no part in this (`r[semantics.send.super]`): §5.10 starts it
+at "the superclass of *C*",
 *C* the current class of the activation (§3.6), and `M3`'s own code is
 evaluated by the instance initializer of the class *I* §6.2 makes
 ("the instance initializer for *I* evaluates *m*<sub>s</sub> ... Then,
@@ -1509,7 +1543,8 @@ gives the class of a declaration "an enclosing object which is eo"
 level's
 (`goldens/library/mirror/a_body_less_classs_enclosing_object_is_its_declarations.ns`).
 
-§3.1.1's enclosing-object condition is decided on both: an instance's
+§3.1.1's enclosing-object condition (`r[semantics.value.conditions]`) is
+decided on both: an instance's
 enclosing objects (§3.3, "with respect to S") are `M3`'s, `M1`'s level's
 and every level's below, as a body version's are, so a body-less value
 class is refused when `M3`'s enclosing object is no value as well as when a
@@ -1548,7 +1583,8 @@ one `SmallInteger` with the builtin the clause names ("The object layout"
 below), rather than carrying a copy, because two clauses of one declaration
 can be identical and the image names a level's clause by row and position.
 A superclass clause of more than 1,024 `<:` clauses is a resolve error
-([compiler.md](compiler.md), "Limits"), well within the position's 23
+(`r[image.limit.clauses]`, `r[image.limit.clause-index]`;
+[compiler.md](compiler.md), "Limits"), well within the position's 23
 bits.
 
 **So lookup, `super`, `outer`, the dispatch ids and the inline caches need
@@ -1563,7 +1599,8 @@ superclass application), so two enclosing instances whose `C`s apply the same
 mixin over the same superclass share each level's `MixinApplication`, as §6.2's
 "they all share their code and structural definition with the mixin" requires.
 
-**Initialization order follows §6.2's text**, generalized to a chain, and
+**Initialization order follows §6.2's text**
+(`r[semantics.mixin.clause-order]`), generalized to a chain, and
 matches SOMns (`MixinBuilder.assembleInitializationMethod`): `C`'s full
 initializer checks every `<:` clause's selector against the primary factory
 of the class it named, nearest level first (`CheckAppliedClause`);
@@ -1575,12 +1612,12 @@ own slots and initializer expressions ([compiler.md](compiler.md), "The
 three initializer bodies"). Every clause message is lowered in `C`'s
 factory scope and evaluated with `C`'s factory arguments (§6.3 makes the
 factory's parameters visible in the superclass clause), and each `mk` is
-evaluated just before `Mk`'s own part runs, so a `<:` clause's message runs
-with the applying class's factory arguments just before the initializer of
-the level it adds (`goldens/language/class/mixin/mixin_initializer_order.ns`).
+evaluated just before `Mk`'s own part runs
+(`goldens/language/class/mixin/mixin_initializer_order.ns`).
 An applied level's own part is checked against the arity of its mixin's
-own factory, for which its registers are laid out, with the text of every
-arity check. Because the `<:` clauses' selectors are checked first, a
+own factory, for which its registers are laid out
+(`r[vm.activation.push-checks-arity]`). Because the `<:` clauses' selectors
+are checked first, a
 misnamed clause fails before `ms` and the superclass initializers run
 (`goldens/language/class/mixin/mixin_clause_naming_the_wrong_factory_fails.ns`),
 while the superclass clause's selector is checked once its arguments have
@@ -1590,16 +1627,15 @@ and none of its own `<:` clauses
 (`goldens/language/class/mixin/mixin_applied_mixins_own_clauses_are_not_applied.ns`).
 
 **A level a `<:` clause added, reached from outside, is an ordinary class
-of its mixin** (decision 4, "Decisions" below). A program reaches such a
+of its mixin** (`r[semantics.mixin.standalone]`; decision 4, "Decisions"
+below). A program reaches such a
 level only through a mirror (`(ClassMirror reflecting: C) superclass
 reflectee`). Instantiated directly, or named as the superclass of another
 class, it initializes as a class whose mixin is the applied mixin and whose
 superclass is the level's actual superclass: it runs its mixin's
 standalone body -- the mixin's *own* superclass clause, checked by §6.1
 against that superclass, then the mixin's own part -- and never the
-mixin's own `<:` clauses, whose levels are not above it. Only the full
-initializer of the declaration that applied it runs it the `<:` way, its
-clause's message then the mixin's own part. Squeak-Newspeak deletes such a
+mixin's own `<:` clauses, whose levels are not above it. Squeak-Newspeak deletes such a
 level's initializer (`prior-art/newspeak/squeak/KernelForSqueak.ns:1055-1065`), so both cases end in a
 `doesNotUnderstand:` or silently run a higher initializer; SOMns flattens
 the levels into one class, so none is reachable; Primordial Soup has no
@@ -1629,19 +1665,15 @@ class's enclosing objects must be values, and the outermost one is the module
 effect of how a root clause is resolved
 (`goldens/language/class/mixin/mixin_module_declares_itself_a_value.ns`).
 
-**The root rule: only `Object`, `Value` or `Object <: Value`.** A module's
+**The root rule: only `Object`, `Value` or `Object <: Value`**
+(`r[semantics.module.root-rule]`). A module's
 root class may write every combination of `Object` and `Value` that works
-(decided with the user on 2026-09-30), and exactly these seven root clauses:
-none (which is `Object`), `Object`, `Object new`, `Value`, `Value new`,
-`Object <: Value` and `Object new <: Value`. Everything after the header's
+(decided with the user on 2026-09-30). Everything after the header's
 `=` is held to the rule; the primary factory before it (`new`,
 `packageUsing: manifest`, `usingPlatform: platform`, …) is not. Everything
-else is a root defect: any prefix, any other name — the other builtins,
-`Top` and a name nothing declares included — any message but the superclass
-clause's `new` (`Object foo`, `Object new: 3`,
-`goldens/language/module/root_superclass_sending_other_than_new_is_refused.ns`), any
-other `<:` clause, a message sent to the `<:` clause's `Value`, and a second
-`<:` clause. `Value <: Value` and `Value new <: Value` stay refused:
+else is a root defect
+(`goldens/language/module/root_superclass_sending_other_than_new_is_refused.ns`).
+`Value <: Value` and `Value new <: Value` stay refused:
 applying `Value` over `Value` adds nothing. A root class has no
 enclosing object to evaluate a receiver in: §6.1 evaluates its clause "as if
 it was a top level expression", where it "will almost certainly fail", so the
@@ -1651,20 +1683,15 @@ usingPlatform: platform`, `UISessionManager`'s `= NewspeakObject new` — which
 the Squeak-hosted implementation accepts; none is on `corpus/runnable.toml`.
 
 **Every root defect is a resolve error** (decided with the user on
-2026-09-30), for every module root, the shipped modules' included, before
-anything runs: `resolver::root_clause_defect` classifies the root's clauses
+2026-09-30; `r[semantics.module.root-rule]`):
+`resolver::root_clause_defect` classifies the root's clauses
 and the resolver reports the first defect at the offending clause's span, so
-the editor underlines exactly that clause. The specification would leave the
-failure to evaluation; checking it statically is a rule of the
-specification of ns-next, `semantics.module.root-rule`, which its appendix
-lists as a difference from §6.1, taken because a module root is not an ordinary class and a program must not
+the editor underlines exactly that clause. The book's appendix
+lists it as a difference from §6.1, taken because a module root is not an
+ordinary class and a program must not
 run when its artifact cannot be built — deferring it to instantiation let a
 project module nothing instantiated run under `run` while `build` refused it.
-`run` and `build` print it alike, as "resolve error: a module's root class
-may inherit only Object or Value, or write Object <: Value, and its
-superclass clause names `…`" (or "its superclass clause sends `s` to `…`,
-not new", "its mixin application clause *n* names `…`", "its mixin
-application clause *n* sends `s` to Value", "it applies Value to Value"). The
+`run` and `build` print it alike. The
 resolver binds none of a root clause's receivers (`resolver/mod.rs`); the
 rule decides them, and a root's clause receiver is never run. Nested
 declarations keep their own resolve errors.
@@ -1679,9 +1706,9 @@ same reason. From source this is unreachable; it is reached only by a
 `ResolvedModule` a host assembles past `resolve`, whose fields are public
 (`tests/value_conditions.rs`,
 `a_defective_root_built_past_the_resolver_refuses_only_an_instance`). **The
-encoder refuses a module with a root defect**, in `image::package` and
-`image::snapshot` alike, with "image encoding cannot serialize `M`:" and the
-same reason, so the format needs no wire field and no tag for one; the
+encoder refuses a module with a root defect** (`r[image.verify.root-rule]`),
+in `image::package` and `image::snapshot` alike, so the format needs no wire
+field and no tag for one; the
 decoder's root-section reader refuses what the encoder cannot write
 ([image-format.md](image-format.md), "Verification"), so a crafted artifact,
 which is untrusted input, cannot bring the rule back.
@@ -1756,11 +1783,11 @@ a metaclass of one application, for the reason the application cache is
 keyed by the superclass's application (§6.2): a metaclass per application of
 its own would send every `X new` site megamorphic.
 
-**A metaclass is flat: a class side is not inherited.** A metaclass's
+**A metaclass is flat: a class side is not inherited**
+(`r[semantics.class-side]`). A metaclass's
 superclass is always `Class`, never the metaclass of `Foo`'s superclass, so
 the ordinary lookup from a class object walks its own class side, then
-`Class`, `Behavior` and `Object`, and a subclass answers a class-side message
-only if its own class side declares it
+`Class`, `Behavior` and `Object`
 (`goldens/language/class/class-side/class_side_is_not_inherited_by_a_subclass_with_none_of_its_own.ns`).
 §5.10 makes a `super` send's S the superclass of the activation's current
 class, which for a class-side method is `Class`: a class-side
@@ -1770,8 +1797,8 @@ class-side `super new` does not instantiate, because nothing above the
 metaclass declares a factory.
 
 **Every class object's class is its metaclass, and every metaclass's class is
-`Metaclass`.** `attach_metaclass` sets both headers: the class object becomes
-an instance of its metaclass, and the metaclass an instance of `Metaclass`.
+`Metaclass`** (`r[vm.heap.class-word-is-metaclass]`). `attach_metaclass`
+sets both headers.
 `Metaclass` is a kernel class with a metaclass of its own, whose class is
 `Metaclass` again, which closes the loop without a regress
 (`goldens/language/class/class-side/the_class_of_a_class_is_its_metaclass.ns`
@@ -1806,7 +1833,8 @@ kernel second"). After the bootstrap the invariant holds without exception;
 pins that every builtin has a metaclass linked back to it and sharing its
 enclosing object.
 
-An object's class word is never `nil`, because the builtin
+An object's class word is never `nil` (`r[vm.heap.class-word-never-nil]`),
+because the builtin
 `Object` class exists from the first moment of the bootstrap and serves as
 every provisional header. The image decoder relies on that the same way: it
 allocates every record but a frame's as a placeholder of the size its first
@@ -1843,7 +1871,8 @@ above). `primary_factory_selector` reads it where §6.1 needs it, in the
 checks of the superclass clause and of the `<:` clauses, and an
 instantiation refusal names the class and its factory the same way.
 
-The entry is derived, never stored twice: `instantiate::build_class_side`
+The entry is derived, never stored twice
+(`r[vm.compiler.factory-body-synthesized]`): `instantiate::build_class_side`
 inserts it as a class side is built from source, `image::mixins::build`
 derives it on load for a row another row names as its class side, and
 `Mutator::metaclass_mixin` puts it in the otherwise empty mixin a class that
@@ -1915,7 +1944,8 @@ consequences:
   instance, and still refuses one that is not
   (`goldens/library/value/a_value_modules_nested_class_is_a_value.ns`,
   `goldens/library/value/a_values_slot_refuses_a_class_that_is_no_value.ns`).
-- **A value class object has no identity.** Its `=` and `hash` are derived
+- **A value class object has no identity** (`r[semantics.value.identity]`).
+  Its `=` and `hash` are derived
   from its state: two class objects are equal when they share their mixin
   application, their enclosing objects are `=` and their superclass class
   objects are `=`. The application alone is not enough, because it is keyed
@@ -2005,7 +2035,8 @@ is written depends on its class:
 
 The decoder applies each metaclass record over `Class` as `attach_metaclass`
 does (`rebuild_metaclasses`) and holds each class record and its metaclass
-record to each other both ways (`pair_metaclasses`, `MetaclassPairing`), which
+record to each other both ways (`r[image.verify.metaclass-records]`;
+`pair_metaclasses`, `MetaclassPairing`), which
 keeps a metaclass's identity across a round trip: the metaclass a slot holds
 is the one its class answers. `Behavior`, `Class` and `Metaclass` are
 refused wherever a class is made from them — a superclass, a `<:` clause's
@@ -2069,8 +2100,7 @@ and cheap to carry.
   no per-node copy: in the front end as `span.text(&module_source)`, and
   from a mixin through its own text's `slice`, which answers a span only
   within the declaration and in no hole. A text is checked once when it is
-  made -- its range within the text, its holes in order, disjoint and
-  within it, every boundary a character boundary -- and slicing and
+  made (`r[image.verify.texts]`), and slicing and
   assembling answer nothing for a span or a hole that does not fit, never
   a panic, since a text and a span read from an image are the image's to
   choose ([image-format.md](image-format.md), "Source"). A mirror's
@@ -2103,8 +2133,8 @@ field of reference type holds nothing else. A Newspeak field holds any value
 -- an integer, a float, an object -- so it is a full 64-bit word whatever
 the handle's width, as in Spur. With the words in one space, every field,
 element and register accessor reads through the object's own block, which
-ends where its header's count says, not only through the space's bounds, so
-no access through one object reaches the next object's header.
+ends where its header's count says, not only through the space's bounds
+(`r[vm.heap.access-within-object]`).
 
 Two consequences belong here rather than there, because they are about this
 document's subject.
@@ -2219,7 +2249,8 @@ first user of the overflow word: an object of more than 254 words after its
 header stores 255 there and takes the overflow word
 ([memory.md](memory.md), "The object space").
 
-**The reserved guard values sit at the low end**, as Primordial Soup's
+**The reserved guard values sit at the low end**
+(`r[vm.dispatch.reserved-guards]`), as Primordial Soup's
 reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
 `kFreeListElementCid = 2`, `kFirstLegalCid = 3`,
 `prior-art/primordialsoup/vm/object.h:64-68`), and Spur keeps its own
@@ -2241,7 +2272,7 @@ does, since the forward is eager and leaves no handle naming a forwarder
 within them, as Strongtalk's wraps within 20 (`markOop.cpp`), and skips 0.
 Hashes are therefore not unique once the counter has wrapped, which a hash
 need not be; the decoder advances the counter past the largest hash an image
-holds and refuses a hash of 2^22 or more (`IdentityHashTooWide`;
+holds and refuses a wider one (`r[image.verify.hashes]`, `IdentityHashTooWide`;
 [image-format.md](image-format.md), "Identity hashes are preserved
 verbatim").
 
@@ -2263,7 +2294,8 @@ The tables are `heap/tables.rs`'s, one set per heap because the objects
 naming them are: a `MixinId` for a mixin, an `ApplicationIndex` for an
 application and a `CodeId` for a compiled body, each registered on first
 sight (`Heap::mixin_id`, `register_application`, `code_id`). Every version
-of a mixin answers the id it was first registered under: the row holds the
+of a mixin answers the id it was first registered under
+(`r[vm.dispatch.mixin-id-one-per-mixin]`): the row holds the
 current version, the id of the mixin it is declared in and the ids of those
 declared in it (`Heap::nested_of`), and `Heap::replace_mixin` installs a
 fresh version under an old id, keeping the one it supersedes in
@@ -2273,7 +2305,8 @@ fresh version under an old id, keeping the one it supersedes in
 replaces the mixin under its id"). The ids are per heap and never on the
 wire: the image encoder numbers its own records and bodies.
 
-**Each id has its own reuse rule, and a full collection enforces them.** A
+**Each id has its own reuse rule, and a full collection enforces them**
+(`r[vm.heap.id-reclaimed-only-when-unnamed]`). A
 guard id is reusable once no object header, no inline- or global-cache
 entry and no recorded guard -- an activation's, a slot accessor's cache
 entry's or the caches' verified pair -- names it; a full-width index once
@@ -2283,7 +2316,8 @@ names it; a mixin id once no application, no class object's applied-clause
 field, no reified mixin object and no holder of one of its versions names
 it or any other id of its module's tree; a code id once no closure or
 frame object names it. A class's change of application restamps every
-instance's header by a heap walk (`Heap::class_set_application`) before
+instance's header by a heap walk (`Heap::class_set_application`;
+`r[vm.dispatch.header-guard-stamped]`) before
 the old guard id can become reusable. `Mutator::reclaim_ids`
 (`interpreter/reclaim.rs`) applies the rules. `World::collect` runs it
 between marking and compaction, after `prune_canonical_symbols` and
@@ -2462,9 +2496,11 @@ A
 code no format uses reads as free, so a corrupt word walks as a gap rather
 than panicking. A forwarder needs no field of its own: the class word, which
 every object has -- a header and a class word are the 16-byte minimum --
-takes the target, as Spur's forwarders take their first slot.
+takes the target, as Spur's forwarders take their first slot
+(`r[vm.heap.no-forwarder-reached]`).
 
-**A class object has a format of its own**, where Spur's and Primordial
+**A class object has a format of its own** (`r[vm.heap.class-by-format]`),
+where Spur's and Primordial
 Soup's class objects are ordinary pointer objects, because whether an object
 is a class is asked of untrusted objects: the image decoder's verification
 and its lookups ask it of every object a record names
@@ -2473,7 +2509,9 @@ own, `Heap::is_class` reads the object's header alone, rather than following
 its class word to the class and that class's to the metaclass, through
 objects a crafted image may not have made what they claim to be.
 
-**The format decides what the collector traces**: `object.rs`'s
+**The format decides what the collector traces**
+(`r[vm.heap.format-decides-pointer-words]`,
+`r[vm.heap.non-pointer-words-untraced]`): `object.rs`'s
 `pointer_ranges` names, for marking and for `trace_block`'s forwarding
 alike, the class word and, by the header's format alone, every field of
 the two pointer formats, a class object's
@@ -2536,8 +2574,8 @@ sign-extended, so a tag that sets bit 60 packs into a negative
 limit, 1,024 `<:` clauses in one superclass clause (`CLAUSE_INDEX_LIMIT`;
 [compiler.md](compiler.md), "Limits"), sits far below the 23 bits, which
 keep their headroom: the resolver refuses a source past it with an ordinary
-resolve error naming the limit, and the decoder an image whose clause count
-passes it or whose clause index reaches it (`ClauseCountTooLarge`,
+resolve error naming the limit, and the decoder an image past it
+(`r[image.limit.clauses]`, `r[image.limit.clause-index]`; `ClauseCountTooLarge`,
 `ClauseIndexTooLarge`). It is a stated limit of this implementation, set
 340 times above the largest golden, and the one bound on a clause count:
 the class object's field and the initializer's `u16` step count are never
@@ -2560,7 +2598,8 @@ top-level frame), kind (the kind's wire tag), the kind's operand -- the
 closure of a block frame, or the class of an initializer, superclass-clause,
 superclass-message or mixin-application-message frame, a handle the trace
 sees -- `uncontinuable`, and its married word; its registers follow
-inline. The married word tells the frame's three states: a `SmallInteger`
+inline. The married word tells the frame's three states
+(`r[vm.activation.marriage]`): a `SmallInteger`
 of 0 or more is the offset of the stack frame it is married to, a negative
 one, `-(row + 1)`, names the side-table row of its suspended activation,
 and `nil` means it has returned ([execution.md](execution.md), "Suspending
@@ -2568,7 +2607,8 @@ and resuming"). The `Activation` object the exception machinery holds is
 this frame object itself, so the same activation answers the same object
 every time; a running activation is a stack frame, or is suspended into
 its frame until something returns into it. A frame object is allocated at
-`reify` with its code's full register count but the header's numbers,
+`reify` (`r[vm.activation.frame-object-full-register-file]`)
+with its code's full register count but the header's numbers,
 whatever the code: a field for each argument, then one for each register
 above the header, so register `r` is field `r` below the argument count
 and field `r - HEADER_REGISTERS` above the header, and a number the
@@ -2578,7 +2618,7 @@ A frame of a body past the register ceiling whose arguments leave no
 number above the header holds its arguments alone. Whether the
 divorce copies the registers into it is decided per activation from the
 block's `outer_reach` ([execution.md](execution.md), "Closure conversion").
-So no frame object ever grows, and suspension, the debugger and
+Suspension, the debugger and
 edit-and-continue find room for the registers in every reified frame.
 Edit-and-continue adding locals will divorce the affected activation into a
 newly allocated, larger frame object -- allocated old and born remembered by
@@ -2596,11 +2636,11 @@ inline copies. `FrameReference` is the type of a handle to a frame object,
 so an `ActivationReference` is still never stored, and a frame has no store,
 forwarding table or register vector of its own.
 
-**Strings have two widths.** A string holds one byte per code point while
+**Strings have two widths** (`r[vm.heap.string-canonical-width]`). A string
+holds one byte per code point while
 every code point fits Latin-1, 32 bits per code point otherwise -- the
-byte-indexed and 32-bit-indexed formats, eight or two units to a word, least
-significant first, the last word's unused units zero, so that equal texts
-have equal words (`object.rs`'s `pack_string` and `pack_code_points`, the
+byte-indexed and 32-bit-indexed formats, eight or two units to a word
+(`object.rs`'s `pack_string` and `pack_code_points`, the
 writers, and `PackedString`, the one reader of the layout). Either way the
 elements are code
 points, so `size` and `at:` are one access, read in place. §5.1.5 makes a
@@ -2623,7 +2663,8 @@ code points in two widths").
 `Symbol` is a subclass of `String`, as in every reference kernel: a symbol's
 words are a string's, and only its class tells it from one.
 `Mutator::new_symbol` and `Mutator::program_symbol` are the only ways to make
-one: instantiating `Symbol` is refused, and `String new` answers an empty one-byte string
+one (`r[vm.heap.symbol-canonical]`): instantiating `Symbol` is refused, and
+`String new` answers an empty one-byte string
 (`goldens/library/string/symbol_new_is_refused.ns`,
 `string_new_answers_an_empty_string.ns`). `=` is class-tight both ways:
 `'foo' = #foo` and `#foo = 'foo'` both answer `false`, since `Symbol>>=` is
@@ -2634,18 +2675,19 @@ identity and `String>>=` answers `false` for a `Symbol` argument
 `LargeInteger`'s digits are lent in place to `=`, `hash`, the comparisons and
 the sign tests; arithmetic still copies its operands' digits out
 ([core-library.md](core-library.md), "Large integers"). Every field,
-element and register accessor indexes the object's own block, so no access
-through one object -- a crafted image's by-reference register write
-included -- can reach another object's words, and an out-of-range index that
-a valid program produces raises an ordinary Newspeak error, never a panic.
+element and register accessor indexes the object's own block
+(`r[vm.heap.access-within-object]`), and an out-of-range index that
+a valid program produces raises an ordinary Newspeak error, never a panic
+(`r[vm.heap.field-access-total]`).
 
 ### What a slot access checks
 
 Built by road step 5b1 (2026-10-18,
 [its plan](../superpowers/plans/2026-10-18-1236-become-and-recorded-guards.md)).
 A slot access that is not guarded by the receiver's own header checks a
-*recorded guard*. Such an access reads or writes a field at an index decided
-without looking at the receiver: the own-slot instructions
+*recorded guard* (`r[vm.dispatch.slot-guard-checked]`,
+`r[runtime.slot.guard]`). Such an access reads or writes a field at an index
+decided without looking at the receiver: the own-slot instructions
 `InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot` and
 `ReturnSlotIfFilled`, which address `slot_base + own_index` in `self` with
 no send (`bytecode.rs`, `vm.rs`), and a slot accessor acted on through
@@ -2692,11 +2734,8 @@ superclass links comparing full-width indexes): if it does -- the receiver
 was forwarded to an instance of a subclass -- the check records the
 receiver's current guard, so the accesses after it take the hot path again,
 and the access proceeds; if not, it raises an ordinary Newspeak error,
-which `on: Error do:` catches:
-
-> `<receiver> no longer has the slots of <class>, which the running code was compiled for`
-
-`<receiver>` is `Heap::describe` of the receiver and `<class>` the entered
+which `on: Error do:` catches (`r[runtime.slot.guard]`), its receiver
+`Heap::describe` of the receiver and its class the entered
 level's mixin's name; the error's selector is the method's for a lazy
 slot's getter and the entered level's factory selector otherwise, as the
 §3.1.1 slot refusal's is. An immediate receiver passes, and the access
@@ -2720,7 +2759,8 @@ could hold -- runs with `NONE` and `UNREGISTERED` and raises for every
 object receiver, as does own-slot code run in an activation with no
 `current_class`.
 
-**The entered level's successor** (road step 5b2a, decided with the user
+**The entered level's successor** (`r[vm.dispatch.entered-level-successor]`;
+road step 5b2a, decided with the user
 on 2026-10-18; [liveness-and-reflection.md](liveness-and-reflection.md),
 "A MirrorBuilder and an atomic install"). The install builds new
 applications for every class it reaches, even for an edit that changes
@@ -2729,14 +2769,13 @@ from. For each old level whose slot base and own slots, by name and in
 order, the edit keeps, it records the new application as the old one's
 successor (`Heap::record_successor`, into `Tables::successors`), pointing
 every earlier predecessor at the newest; the cold path of
-`Heap::receiver_has_level` accepts the entered level or its successor. So
-an initializer or a lazy getter entered before the install runs to its
-end when its level's slots did not change, and raises the error above
-when they did; the hot path is unchanged. A successor entry lives while
+`Heap::receiver_has_level` accepts the entered level or its successor; the
+hot path is unchanged. A successor entry lives while
 its old application does and keeps the new one alive; a full collection
 drops it with the old index ("An application has two ids" above).
 
-**Private and super slot accessors.** `Lookup::SlotAccessor` answers the
+**Private and super slot accessors** (`r[vm.dispatch.slot-guard-checked]`).
+`Lookup::SlotAccessor` answers the
 level whose own slot the field is, and `Resolved::Slot` and
 `Target::Slot` carry it with a recorded guard. Every fresh lookup -- the
 uncached path and a site's miss alike (`resolve::resolved`) -- carries
@@ -2774,17 +2813,19 @@ walk ran about ten million times a run, +3.9%; rewriting the recorded guard
 of the entry that hit instead cut the walks but carried the entry's
 location through every cached send and cost every program 2.5-7.4%.
 
-**The assumption.** A guard names one application, and an application's
-chain does not change while the caches persist. Whatever changes a class
-object's application or chain under an unchanged guard must invalidate the
-caches after it -- `Heap::class_set_application` on a superclass is the
-case -- which the atomic install does. Recorded guards follow the
+**The assumption** (`r[vm.dispatch.invalidation-after-change]`). A guard
+names one application, and an application's
+chain does not change while the caches persist:
+`Heap::class_set_application` on a superclass is the case that changes it
+under an unchanged guard, and the atomic install invalidates the caches
+after it. Recorded guards follow the
 guard id's reuse rule: an activation's recorded guard keeps its
 application, and so the guard, from being reclaimed, and a collection
 that frees a guard vacates every cache entry and the verified pair that
 name it ("An application has two ids" above).
 
-**A reified frame has no field for it.** The recorded guard and the
+**A reified frame has no field for it**
+(`r[vm.activation.resume-derives-state]`). The recorded guard and the
 entered level live in the activation's stack frame; while the activation
 is suspended, its entered level lives in its row of the heap's side table
 and goes back into its stack frame when it is resumed
@@ -2807,7 +2848,9 @@ private and a super lazy getter pushed after their receiver was forwarded
 raise from `ReturnSlotIfFilled`, as does an applied level pushed after
 its `<:` clause's message forwarded the instance.
 
-**The nested-class cache slot.** A nested class is cached in a hidden slot
+**The nested-class cache slot**
+(`r[vm.dispatch.nested-cache-slot-relooked]`). A nested class is cached in a
+hidden slot
 of its enclosing object, whose index `cache_slot` (`interpreter/nested.rs`)
 decides from the enclosing object's layout before the superclass clause
 runs, and where `begin_creation` writes the in-progress marker: the serial
@@ -2876,7 +2919,8 @@ shipped code, and only tests reach it, handing the VM mirror to a test
 program from the host, which no program can do. Eager forwarding and its reach only through mirrors were
 decided with the user on 2026-10-05.
 
-**The forward.** Primordial Soup's `Heap::BecomeForward`
+**The forward** (`r[runtime.forward-identity]`,
+`r[vm.heap.bulk-forward-atomic]`). Primordial Soup's `Heap::BecomeForward`
 (`prior-art/primordialsoup/vm/heap.cc:1072-1229`) validates both arrays,
 turns each old object into a forwarding corpse after copying its identity
 hash into the new one, then forwards the class ids (`ForwardClassIds`), the
@@ -2935,7 +2979,8 @@ old holder of a young replacement remembered, a forwarder garbage
 afterwards) and `builtins/reflection.rs`'s for the leaf.
 
 **What the eager forward spares.** Since nothing names a forwarder once the
-forward ends, nothing outside it ever meets one. No send entry unforwards
+forward ends (`r[vm.heap.no-forwarder-reached]`), nothing outside it ever
+meets one. No send entry unforwards
 its receiver; a super or private lexical send's cache hit needs no check of
 its receiver for the forwarded format; no heap accessor has a cold path
 that follows a forwarder; `==` compares two handles and nothing more; no
@@ -2976,7 +3021,8 @@ offers no `setClass:` at all, its tests of it empty
 shape-changing `setClass:` is deferred beyond road step 5b2a (`OPEN-WORK.md`,
 "Reflection beyond road step 5b2a").
 
-**Only mirrors reach it.** No program sends `become:`: `Object` declares no
+**Only mirrors reach it** (`r[runtime.forward-identity]`,
+`r[runtime.vm-mirror]`). No program sends `become:`: `Object` declares no
 such method, and the forward is a leaf on the VM mirror, which only the
 shipped core-library modules hold (`CLAUDE.md`, "The VM mirror is a
 capability"). The specification has no `become:`; §8.2 (`newspeak-spec.pdf`
@@ -2990,7 +3036,8 @@ installation of an edit (`installAll`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`), and SOMns, a
 Newspeak with values and actors, has no `become:` at all.
 
-**What the forward refuses.** `Heap::forward_identity` refuses, as
+**What the forward refuses** (`r[vm.mirror.forward-refuses-shipped]`).
+`Heap::forward_identity` refuses, as
 Primordial Soup's validation does (`heap.cc:1078-1113`), arrays of unequal
 sizes and a split or a chain -- an old object named twice, or an object both
 forwarded and a target (`ForwardRefusal`) -- and accepts a merge, several
@@ -3000,13 +3047,11 @@ an ordinary instance (format `FixedPointers`) of a class that is no builtin
 and whose application's mixin is not shipped (read as the mirrors read it,
 so a class side whose instance side is shipped counts as shipped), and no
 reified mixin and no value a mirror withholds -- the VM mirror and the
-recorded shipped module instances (`may_be_forwarded`). So no immediate,
-class object, closure, frame object, `Array`, symbol, string, large integer
-or boxed float is ever forwarded, nothing whose layout the VM reads
-natively, and no object on a path from shipped code to the VM mirror: every
+recorded shipped module instances (`may_be_forwarded`). Every
 instance a platform path names is an instance of a shipped mixin, and so is
 every kernel-made object a program can reach, a VM error's `Error` or
-`MessageNotUnderstood` and its `Message` among them. The builtin and the
+`MessageNotUnderstood` and its `Message` among them, so no object on a path
+from shipped code to the VM mirror is forwarded. The builtin and the
 withheld tests are not belt and braces: the VM mirror's class is a builtin
 whose mixin is not marked shipped, so the shipped test alone would let it
 through, and forwarding a program object to the mirror would hand the
@@ -3020,8 +3065,9 @@ receiver is an instance of a user subclass the install migrated fails the
 slot-access check ("What a slot access checks" above) rather than writing
 the old layout into the new shape.
 
-**Everything stays editable.** A class object keeps its identity when its
-class is edited: the VM writes its fields -- a new application id when
+**Everything stays editable** (`r[runtime.install]`,
+`r[semantics.reflection.atomic-install]`). A class object keeps its identity
+when its class is edited: the VM writes its fields -- a new application id when
 methods or slots change, a new superclass, a new value refusal -- and every
 reference to it stays valid, so the install forwards no class object and
 no mixin, where Primordial Soup's forwards its old mixins and classes to
@@ -3029,13 +3075,10 @@ the new ones after the instances (`Mirrors.ns:320-326`); a mixin is
 replaced under its id instead (`Mutator::replace_mixin`;
 [liveness-and-reflection.md](liveness-and-reflection.md), "An edit
 replaces the mixin under its id"). When the slots change, the instances
-migrate: the atomic install allocates each in the new shape, copies its
-fields by what they are named -- a slot by its declaring level's mixin id,
-that id's occurrence in the chain and its name, a hidden nested-class slot
-by its declaration's id and occurrence (`mixin.rs`'s `FieldName`) --
-leaves a slot the edit added, or moved to another level, `nil` without
-running its initializer, keeps its identity hash, and sends nothing to a
-user object while it does; then one bulk forward replaces all of them at
+migrate (`r[vm.heap.migration-by-declared-name]`): the atomic install
+allocates each in the new shape, copies its
+fields by what they are named (`mixin.rs`'s `FieldName`) and sends nothing
+to a user object while it does; then one bulk forward replaces all of them at
 once ([liveness-and-reflection.md](liveness-and-reflection.md), "A
 MirrorBuilder and an atomic install"). The install touches no frame: a
 running activation finishes with the code it was running. Edit-and-continue,
@@ -3116,7 +3159,8 @@ no program can observe, since a value has no identity.
   unresolved one forces it and runs again, which rests on a leaf that
   declines or raises having changed nothing.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
-  first request**, so identity survives a moving collector and a snapshot, and
+  first request** (`r[vm.heap.identity-hash-moves-with-object]`), so
+  identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
 - **The value is one tagged 64-bit word, with a 61-bit `SmallInteger` over
   the `LargeInteger` that makes integers unbounded** (decided with the user

@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.dispatch.mixin-id-one-per-mixin"]
 stdout = '''
 7 nil
 true true

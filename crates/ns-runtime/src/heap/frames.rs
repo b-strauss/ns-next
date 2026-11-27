@@ -1069,6 +1069,7 @@ mod tests {
         assert_eq!(caller_top_above_start(word), 0);
     }
 
+    // spec: vm.activation.header-one-size
     #[test]
     fn the_header_is_thirteen_words_in_every_build() {
         assert_eq!(frame_header::COUNT, 13);
@@ -1116,6 +1117,7 @@ mod tests {
         assert_all_nil(&stack.words()[offset..]);
     }
 
+    // spec: vm.activation.refused-push-changes-nothing
     #[test]
     fn a_push_the_reservation_cannot_hold_is_refused_and_leaves_the_top() {
         let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");

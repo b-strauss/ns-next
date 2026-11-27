@@ -71,7 +71,8 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    under their full selectors (`at:put:` declares `at:put:`, not `at`), each
    slot's getter, each *mutable* slot's setter `x:` (§6.3.2: an immutable slot
    has "no setter method"), and its nested classes. The first declaration that
-   declares the selector is `N`, at depth `k`, and the send is `outer N m`.
+   declares the selector is `N`, at depth `k`, and the send is `outer N m`
+   (`r[runtime.implicit-receiver]`, `r[semantics.send.implicit-receiver]`).
    Nothing a declaration merely **inherits** counts: §2.3.1, "lookup proceeds up
    the lexical scope chain ... and only if no lexically visible matching method
    is found, do we proceed up the inheritance chain of self . After that, no
@@ -109,26 +110,28 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
    activation's slot.
 
    A module root whose clauses break the root rule is a resolve error at the
-   offending clause, for every module root, before anything runs
-   (`classes::root_clause_defect`; [object-model.md](object-model.md), "The
-   root rule"). The specification leaves such a clause to fail when it is
-   evaluated; refusing it statically is a rule of the specification of
-   ns-next, `semantics.module.root-rule`, which its appendix lists.
+   offending clause (`r[semantics.module.root-rule]`), for every module root,
+   before anything runs (`classes::root_clause_defect`;
+   [object-model.md](object-model.md), "The root rule"). The specification
+   leaves such a clause to fail when it is evaluated; refusing it statically
+   is a rule of the specification of ns-next,
+   `r[semantics.module.root-rule]`, which its appendix lists.
 
-   The member set also holds the declaration's **primary factory selector** —
-   the one its own message pattern spells out, or `new` when it writes none.
-   §6.3 makes the factory a member of the metaclass mixin the class side
-   becomes, so §5.7's search must find it on the declaring class: without it
-   an implicit `new` inside a class-side method bound to an *enclosing*
-   class's member `new` and answered that member instead of an instance,
-   silently and at exit status 0. It is the same selector a class-side method
-   may not redeclare (`classes::duplicate_member_names`), so the two
-   agree on what the class side holds. Because the two sides share one member
-   set, an implicit `new` in an *instance*-side method now binds at the
-   declaring class too, and answers `doesNotUnderstand:` where it used to
-   reach an enclosing member `new` — the same shape every other class-side
-   member already has, and the direction the open question below would have to
-   settle for all of them at once.
+   The member set also holds the declaration's **primary factory selector**
+   (`r[semantics.instantiation.factory]`) — the one its own message pattern
+   spells out, or `new` when it writes none. §6.3 makes the factory a member
+   of the metaclass mixin the class side becomes, so §5.7's search must find
+   it on the declaring class: without it an implicit `new` inside a
+   class-side method bound to an *enclosing* class's member `new` and
+   answered that member instead of an instance, silently and at exit status
+   0. It is the same selector a class-side method may not redeclare
+   (`classes::duplicate_member_names`), so the two agree on what the class
+   side holds. Because the two sides share one member set, an implicit `new`
+   in an *instance*-side method now binds at the declaring class too, and
+   answers `doesNotUnderstand:` where it used to reach an enclosing member
+   `new` — the same shape every other class-side member already has, and the
+   direction the open question below would have to settle for all of them at
+   once.
 
    **A member set belongs to its declaration, borrowed down the walk.**
    `resolve_class` computes `classes::own_member_names` for the declaration
@@ -180,9 +183,10 @@ Newspeak's algorithm is two-phase, not a single linear scope walk:
   `k`.
   A bare predefined class name is one too: a name no local and no enclosing
   declaration declares binds `LexicalSend { depth: 0 }`, so `String` is
-  `self String`, answered by an accessor on `Object` (§3.2) through the
-  receiver's inheritance chain ([core-library.md](core-library.md), "The
-  predefined classes are accessors on `Object`").
+  `self String`, answered by an accessor on `Object` (§3.2;
+  `r[semantics.builtin-names]`) through the receiver's inheritance chain
+  ([core-library.md](core-library.md), "The predefined classes are accessors
+  on `Object`").
 - `SuperSend` — a `super m` send (§5.10). Not depth-based; resolved at run time
   from S, the superclass of the current activation's `current_class`, which need not be `self`'s
   own class -- a body-less declaration's own code included, whose current
@@ -226,10 +230,12 @@ declares no accessor for `Top`, the VM mirror's class or `Platform`, so
 `goldens/language/builtin-names/the_mirrors_class_is_not_a_name.ns`). Only a module root's
 clause receivers stay unbound, which the root rule decides and which never
 run; they lower to the deferred `UnresolvedIdentifier` literal, so compiling
-stays total. A bare `super` is a syntax error (§5.10). The accessor itself
-runs without an activation ("Primitive methods" below).
+stays total. A bare `super` is a syntax error (§5.10;
+`r[syntax.super]`). The accessor itself runs without an activation
+("Primitive methods" below).
 
-**A `super`-prefixed clause receiver is a super send.** For
+**A `super`-prefixed clause receiver is a super send**
+(`r[semantics.superclass.clause]`, `r[semantics.send.super]`). For
 `class N = super Foo (...)` the resolver binds the receiver `Foo` as
 `SuperSend` (`resolver::resolve_superclass_clause`), and both lowerings emit
 it as `SendSuper` of `Foo`: §6.1 evaluates the clause "as if it occurred
@@ -349,7 +355,7 @@ The parser normalizes several forms, and the resolver keys off those shapes:
 - **`outer N`** with no message after it is the object `outer N m` would send
   to, as in canonical Newspeak; §5.9 defines `outer N` only as a receiver
   (decided with the user on 2026-09-27; the specification's
-  `syntax.outer.alone`). The resolver records
+  `r[syntax.outer.alone]`, `r[semantics.outer.alone]`). The resolver records
   `Binding::EnclosingObject { depth }` on it, both lowerings emit
   `LoadEnclosingObject`, and the VM answers `dispatch::kth_enclosing_object`
   through `interpreter::sends::enclosing_object` -- a load, no send, so no
@@ -373,17 +379,17 @@ the superclass's, with no case of its own ([object-model.md](object-model.md),
 "Mixin application").
 
 **`lookupPublic(selector, class)`** — ordinary sends with an explicit receiver
-(§5.5): "m, if the mixin of C defines a method m with selector n and public
-access. Undefined, if ... protected access. lookupPublic(n, superclass(C))
-otherwise." A `public` declaration is the answer; a `protected` one **stops the
-search and fails** — it *shadows* a public implementation further up the chain
-rather than merely hiding the name locally; a `private` one is **passed over**,
-falling to §5.5's "otherwise". Primordial Soup's `OrdinarySendMiss` does exactly
+(§5.5; `r[runtime.lookup]`, `r[semantics.access.public]`): "m, if the mixin
+of C defines a method m with selector n and public access. Undefined, if ...
+protected access. lookupPublic(n, superclass(C)) otherwise." A `protected`
+declaration **stops the search and fails** — it *shadows* a public
+implementation further up the chain rather than merely hiding the name
+locally. Primordial Soup's `OrdinarySendMiss` does exactly
 this.
 
 **`lookupProtected(selector, class)`** — the run-time half of a `LexicalSend`
-(§5.9), and of a super send. `public` and `protected` are the answer, and a
-`private` declaration is passed over.
+(§5.9), and of a super send (`r[semantics.access.protected]`). `public` and
+`protected` are the answer, and a `private` declaration is passed over.
 
 **The "defined for" walk** (§3.5) — only for `doesNotUnderstand:`, below: every
 declaration is the answer, whatever its accessibility.
@@ -399,7 +405,8 @@ success the new activation's `current_class` becomes the defining class, which
 is what makes a chain of `super` sends walk one level at a time instead of
 looping.
 
-**`doesNotUnderstand:` is exempt from every access check.** `Object`'s own
+**`doesNotUnderstand:` is exempt from every access check**
+(`r[runtime.does-not-understand]`). `Object`'s own
 implementation must be `protected` (§5.5), so resolving it through
 `lookupPublic` would make it unreachable from an ordinary send. It is resolved
 by the presence-only "defined for" relation instead: the first
@@ -422,7 +429,8 @@ selector and arguments". `resolve.rs`'s `handler_message` hands every
 Primordial Soup's `doesNotUnderstand: message <Message>` receives one: its
 `selector` is the selector symbol and its `arguments` an `Array` of the
 arguments, built by slot name once the handler is found, and `sendTo:
-receiver` sends it again as an ordinary *public* send (§5.5), through the
+receiver` sends it again as an ordinary *public* send (§5.5;
+`r[semantics.send.does-not-understand]`), through the
 `message:sendTo:ifFail:` leaf's `decide_send` — a program can build a
 message, so a send through one must reach no protected or private method
 (`goldens/library/exception/send_to_is_a_public_send`). A handler reads
@@ -444,10 +452,11 @@ path, since no kernel handler forwards to a leaf any more, and takes the
 depth limit's reserve for the kernel's own handler near the limit
 ([execution.md](execution.md), "The depth limit").
 
-**Unmarked access defaults to `protected`** (§6.3.1). This is binding rather than
-cosmetic: it decides whether a member participates in `lookupPublic` at all. A
-top-level class's own access is always public regardless of what is written on
-it.
+**Unmarked access defaults to `protected`** (§6.3.1;
+`r[semantics.access.protected]`). This is binding rather than cosmetic: it
+decides whether a member participates in
+`lookupPublic` at all. A top-level class's own access is always public
+regardless of what is written on it.
 
 ## Resolving a lexical send at run time
 
@@ -467,9 +476,11 @@ other. Then §5.9: "If N declares a private method f named s then the
 value of the send is the result of invoking f in response to (3.5) message µ on
 o. Otherwise, Let f = lookupProtected(s, R) where R is the class of o".
 
-**The private rule asks `N` alone.** `N` is the class declaration at lexical
-depth `k` — the class that declares the running method at `k = 0`, its
-declaring class one step out, and so on (`dispatch::kth_lexical_class`). Only
+**The private rule asks `N` alone**
+(`r[semantics.access.private]`, `r[runtime.outer-send]`). `N` is the class
+declaration at lexical depth `k` — the class that declares the running method
+at `k = 0`, its declaring class one step out, and so on
+(`dispatch::kth_lexical_class`). Only
 `N`'s own mixin is asked whether it declares the selector private
 (`dispatch::private_member`); a private declaration anywhere else — in a
 subclass of `N` that `o` happens to be an instance of, or in a superclass of
@@ -482,7 +493,8 @@ from the receiver's class. Otherwise `lookupProtected` runs against `o`'s
 sends virtual while private ones are not.
 
 **`outer` walks the lexical declaration chain, never the receiver's dynamic
-class.** The activation's current class seeds the walk and each class
+class** (`r[semantics.outer.lexical]`, `r[runtime.outer]`). The activation's
+current class seeds the walk and each class
 object's declaring-class field (`Heap::class_declaring`) continues it
 level by level. A method or nested-class accessor inherited across a
 nesting boundary runs with the class that lexically declares it, not with the
@@ -498,7 +510,8 @@ object, or a block created in it: that class object is the level its last
 clause added, with the named class's enclosing object and declaring class,
 and the code was written in the declaration, so the walk starts at the
 declaration's own enclosing object and declaring class, which the class
-object records (`sends::lexical_origin`, `LexicalOrigin::Declaration`;
+object records (`r[vm.dispatch.lexical-origin-from-code]`;
+`sends::lexical_origin`, `LexicalOrigin::Declaration`;
 [object-model.md](object-model.md), "Mixin application").
 
 ## The send machinery
@@ -529,12 +542,12 @@ match the declaration would silently shift every temporary rather than fail.
 ## Slot accessors
 
 A slot is reached only through messages (§2.3: "accessed exclusively via
-messages"). §6.3.2: "The getter method is implicitly defined by the slot
-declaration, and returns the value of the slot. The accessibility of the method
-is the same as the slot's"; a mutable slot also has a setter, named by the slot
-name with `:` appended, which "sets the value of the slot to be the incoming
-argument. It returns the receiver of the message"; an immutable slot has "no
-setter method".
+messages"; `r[semantics.slot.accessors]`). §6.3.2: "The getter method is
+implicitly defined by the slot declaration, and returns the value of the
+slot. The accessibility of the method is the same as the slot's"; a mutable
+slot also has a setter, named by the slot name with `:` appended, which
+"sets the value of the slot to be the incoming argument. It returns the
+receiver of the message"; an immutable slot has "no setter method".
 
 So a slot's accessors are **entries of its mixin's method table**, beside the
 compiled methods (`mixin::MethodEntry::SlotAccessor`), with the slot's own
@@ -557,12 +570,12 @@ Initialization never goes through an accessor ("The initialization itself is not
 accomplished by the setter method"): the instance initializer writes the field
 with `InitializeSlot`.
 
-**A private or super accessor checks its receiver's chain.** A public or
-protected accessor's site is guarded on the receiver's own guard, so its
-field is decided by the receiver; a private one's is guarded on N's
-application ("The private rule, decided once per site" below) and a super
-one's on the running method's, so the field is decided without looking at
-the receiver. Such an accessor's cache entry (`Target::Slot`) records the
+**A private or super accessor checks its receiver's chain**
+(`r[vm.dispatch.slot-guard-checked]`). A public or protected accessor's
+site is guarded on the receiver's own guard, so its field is decided by the
+receiver; a private one's is guarded on N's application ("The private rule,
+decided once per site" below) and a super one's on the running method's, so
+the field is decided without looking at the receiver. Such an accessor's cache entry (`Target::Slot`) records the
 level whose own slot the field is (`Lookup::SlotAccessor`'s application
 index) and the receiver's guard when it was filled, if the receiver had
 that level (`NONE` otherwise); a fresh lookup carries `VACANT` and always
@@ -582,9 +595,9 @@ accessor, public ones included, by 7-11%
 mechanism, its measurements and the assumption the verified pair rests
 on).
 
-**A lazy slot's getter is a compiled method, not an accessor** (§6.3.3). Its
-getter has to evaluate the initializer while the slot holds `nil`, so
-`mixin::slot_accessors` gives a lazy slot no getter entry, and
+**A lazy slot's getter is a compiled method, not an accessor** (§6.3.3;
+`r[semantics.slot.lazy]`). Its getter has to evaluate the initializer while
+the slot holds `nil`, so `mixin::slot_accessors` gives a lazy slot no getter entry, and
 `interpreter::instantiate::build_methods` compiles one
 (`compiler::compile_lazy_slot_getter`, `MixinMethod::lazy_slot_getter`) whose
 body opens with `Instruction::ReturnSlotIfFilled`, which returns the field
@@ -645,12 +658,13 @@ same "defining class" a `Lookup::Method` reports — and `resolve` turns it
 into `Resolved::Primitive` with the chain it was found on ("Resolve, then
 act" below).
 
-**The mirror's class and table are fixed at bootstrap.** The bootstrap builds
-them once from `MIRROR`, and nothing can add to or override them: no program
-can name the mirror's class to subclass it, the decoder refuses its tag
-wherever a program names a class ([image-format.md](image-format.md),
-"Verification"), and the MirrorBuilder refuses every edit of a shipped
-mixin. That is what lets the
+**The mirror's class and table are fixed at bootstrap**
+(`r[vm.mirror.shipped-mixins-never-edited]`, `r[runtime.vm-mirror]`). The
+bootstrap builds them once from `MIRROR`, and nothing can add to or override
+them: no program can name the mirror's class to subclass it, the decoder
+refuses its tag wherever a program names a class
+([image-format.md](image-format.md), "Verification"), and the MirrorBuilder
+refuses every edit of a shipped mixin. That is what lets the
 compiler bind a mirror send to its row at compile time — `SendMirror` carries
 the row and runs it with no lookup, checking only that its receiver register
 holds the mirror ([compiler.md](compiler.md), "Mirror sends") — and what
@@ -683,16 +697,17 @@ failure block, the `[^super …]` every kernel method writes:
   whose mirror send declines again and runs the failure block
   ("Primitive methods" below).
 
-**A leaf that declines or raises has changed nothing.** Each one checks its
+**A leaf that declines or raises has changed nothing**
+(`r[vm.dispatch.declining-leaf-changes-nothing]`). Each one checks its
 operands before it writes anything — a register, a slot, an array element, the
-transcript — so running it again, or running again the instruction that sent
-it, is running it once. The search for §6.3.2's futures rests on this: once a
+transcript. The search for §6.3.2's futures rests on this: once a
 program has made one, the three ways a leaf runs — `mirror::execute_sent`,
 `send_inlined` and `execute_method` — look for a future among the operands on
 the path where the leaf could not answer, it declined or raised
-(`future::after_a_failed_leaf`), and run the leaf again on the values, or
-force the future and run the sending instruction again
-([object-model.md](object-model.md), "Where Rust sees a future"). Identity and
+(`r[vm.dispatch.future-seen-through]`; `future::after_a_failed_leaf`), and run
+the leaf again on the values, or force the future and run the sending
+instruction again ([object-model.md](object-model.md), "Where Rust sees a
+future"). Identity and
 the equality leaves, which answer `false` to a stranger, decline instead when
 that answer is `false` and an operand is a future, so the same path sees
 through it. A leaf that answers pays nothing — but for those equality leaves,
@@ -769,7 +784,8 @@ variants:
   ([core-library.md](core-library.md), "`True` and `False` are quick
   methods", "The nil protocol").
 
-Only a method of shipped core-library source carries one -- `Kernel.ns`'s, and
+Only a method of shipped core-library source carries one
+(`r[vm.mirror.shipped-source-only-fast-paths]`) -- `Kernel.ns`'s, and
 `PlatformFactory.ns`'s `Transcript` forwarders to the mirror. Every other
 method -- a lazy slot's getter included ("Slot accessors" above) -- and every
 method decoded from an image has `None`. Each variant is an arm inlined into
@@ -844,8 +860,9 @@ path costs one field test on every method send;
 the leaf's answer is delivered exactly as a native entry's was, a value or a
 step.
 
-**It applies under both lowerings**, because it is dispatch, not lowering: the
-reference lowering's sends reach `act` like the optimized lowering's. It has
+**It applies under both lowerings** (`r[semantics.depth-limit]`), because it
+is dispatch, not lowering: the reference lowering's sends reach `act` like
+the optimized lowering's. It has
 to. The depth count holds both lowerings to the same count of activations
 ([compiler.md](compiler.md), "How the limit counts"), and the reference
 lowering's `SendInlinable` of `ifTrue:` reaches `True>>ifTrue:`: without
@@ -918,10 +935,11 @@ V8](https://benediktmeurer.de/2017/12/13/an-introduction-to-speculative-optimiza
 [MethodData](https://wiki.openjdk.org/spaces/HotSpot/pages/13729947/MethodData)
 on the OpenJDK wiki.
 
-**A cache guards on the application, not on the class object.** Two `Inner`
-instances from different `Outer` instances have different class objects, as §6
-requires, but the same application, so a site that sees both stays
-monomorphic. This is recorded because the obvious key — the class object — is
+**A cache guards on the application, not on the class object**
+(`r[vm.dispatch.guard-names-dependency]`). Two `Inner` instances from
+different `Outer` instances have different class objects, as §6 requires,
+but the same application, so a site that sees both stays monomorphic. This
+is recorded because the obvious key — the class object — is
 the wrong one, and a cache keyed by it would never hit on a nested class.
 Primordial Soup's per-class-object id is that key, and the price is visible in
 its implicit-receiver cache above.
@@ -997,7 +1015,8 @@ A class object keeps no copy of it: allocation and restamping read it off
 the application the class object's application field names
 (`Heap::header_dispatch_id`), without cloning its `Rc`.
 
-**The id a guard reads is in the object header**, its bits 0-21
+**The id a guard reads is in the object header**
+(`r[vm.dispatch.header-guard-stamped]`), its bits 0-21
 ([object-model.md](object-model.md), "The object layout"), stamped
 at allocation from the object's class's instances id — an instance's from its
 class, a class object's from its metaclass — and restamped by
@@ -1013,8 +1032,9 @@ which the bootstrap fills from the builtin classes; a boxed `Float` or a
 `LargeInteger` is an object and carries its own.
 
 The header holds a copy, so every place a class's application changes must
-restamp: `Heap::class_set_application` walks the space and restamps every
-live instance of the class along with the class object itself. The decoder
+restamp (`r[vm.dispatch.header-guard-stamped]`):
+`Heap::class_set_application` walks the space and restamps every live
+instance of the class along with the class object itself. The decoder
 does not use that path, since a walk per class record would be quadratic in
 a count the image controls: `rebuild_applications` installs each class
 record's application without the walk (`Heap::class_install_application`),
@@ -1033,7 +1053,8 @@ forward"). In a debug build
 asserts that the header agrees, so a missed restamp fails the first test
 that dispatches on the stale object. Outside `heap.rs` nothing knows where
 the id lives: every read goes through `Heap::dispatch_id` or
-`Heap::class_dispatch_ids`. Three values are reserved, at the low end:
+`Heap::class_dispatch_ids`. Three values are reserved, at the low end
+(`r[vm.dispatch.reserved-guards]`):
 `DispatchId::NONE`, 0, which a value whose class has no application answers
 — only a crafted image makes one — and which is never cached;
 `DispatchId::VACANT`, 1, which guards a site state and which no value
@@ -1088,7 +1109,8 @@ into the `Step`, value or signal. The uncached path is literally
 `sends::decide_super_send`), the cached one `act` on a `Resolved` rebuilt
 from an entry, so there is one place that executes a target, and a hit
 cannot do anything a miss would not. **A cache records what the lookup
-decided; it never decides.** Every detour a lookup takes ends in a resolution
+decided; it never decides** (`r[vm.dispatch.cache-records-lookup]`). Every
+detour a lookup takes ends in a resolution
 too: a lexical send whose `lookupProtected` finds nothing falls to
 `resolve_public`, class side and `doesNotUnderstand:` included, and what it
 ends in is what is recorded. That is what makes the uncached reference
@@ -1120,7 +1142,8 @@ records with every handle taken out:
 
 and three states a site can be in, each guarded by `VACANT`: `Vacant`,
 `Polymorphic` (a block in the pool below) and `Megamorphic`. An entry holds
-no handle. The defining class is a class object per enclosing instance, so it
+no handle (`r[vm.dispatch.caches-hold-no-handle]`). The defining class is a
+class object per enclosing instance, so it
 is not recorded but recomputed on a hit, `level` superclass steps from the
 chain's start (`chain_start`): the receiver's class for `Public`, `Protected`
 and `DoesNotUnderstand` — for a class object, its metaclass — N itself
@@ -1319,8 +1342,8 @@ way:
   (`InlineCaches.loose_ranges`), start to size; a block without sends
   takes base 0 and no room, as a body without sends does.
 
-**A family's range is reclaimed.** The map holds each family's root body
-(`Family`), so that the body's address, its key, is never another body's
+**A family's range is reclaimed** (`r[vm.dispatch.family-range-own]`). The
+map holds each family's root body (`Family`), so that the body's address, its key, is never another body's
 while the entry lives. A full collection drops every family whose root body
 only the map holds and whose base no marked closure and no activation
 names (`InlineCaches::forget_families`, from `Mutator::reclaim_ids`): such
@@ -1339,7 +1362,8 @@ entry is vacated: by the scrub of the application the entry names
 ("Invalidation" below), by an invalidation, or, for an entry of a family
 the same collection dropped, by the next collection.
 
-**The ranges slide at a full collection**, so that the site table's size
+**The ranges slide at a full collection**
+(`r[vm.dispatch.slide-rewrites-every-base]`), so that the site table's size
 follows the live families, not the most it ever held.
 
 - **When.** After `forget_families`, a full collection slides the live
@@ -1388,13 +1412,12 @@ follows the live families, not the most it ever held.
 
 #### `site_index`'s rule
 
-A send runs uncached — the full lookup, nothing recorded — when its number is at
-or past its running code's `family_size`, or when its activation's base is
-`NOT_ASSIGNED`. `CallSite::UNCACHED`, the number every reference-lowering send
-carries, is `u32::MAX`, which no family size reaches, so the same test makes all
-of those uncached; a table that cannot grow to a family's range answers
-`NOT_ASSIGNED`. Every read of the table is a checked `get`, so no crafted
-artifact can make it panic or index out of range.
+A send whose number lies outside its code's family runs uncached
+(`r[vm.dispatch.site-within-family]`). `CallSite::UNCACHED`, the number every
+reference-lowering send carries, is `u32::MAX`, which no family size reaches,
+so the same test makes all of those uncached; a table that cannot grow to a
+family's range answers `NOT_ASSIGNED`. Every read of the table is a checked
+`get`, so no crafted artifact can make it panic or index out of range.
 
 #### A send, step by step
 
@@ -1470,9 +1493,10 @@ nothing is checked ahead of it.
 
 #### Every target is a function of its key and its site
 
-That is the property the entries rest on, and a lookup that also reads something
-the key does not cover re-checks it in `act`. The plan audited every read
-`resolve` and its callees make: the only ones the key does not cover are
+That is the property the entries rest on
+(`r[vm.dispatch.key-covers-every-dependency]`), and a lookup that also reads
+something the key does not cover re-checks it in `act`. The plan audited
+every read `resolve` and its callees make: the only ones the key does not cover are
 the class object's builtin field, which the factory body's allocation
 (`instantiate::allocate_for_factory`) re-reads off the receiver on every
 instantiation rather than trusting an entry, and a primitive's payload check,
@@ -1494,9 +1518,10 @@ the key covers it as it covers an instance's class.
 
 #### The private rule, decided once per site
 
-Whether §5.9's private rule applies depends on N alone, the class declaration
-`k` levels out from the running method's class, and it is not known at a
-still-vacant site until N is. What a first resolution finds decides the site
+Whether §5.9's private rule applies
+(`r[vm.dispatch.privacy-decided-once-per-site]`) depends on N alone, the class
+declaration `k` levels out from the running method's class, and it is not
+known at a still-vacant site until N is. What a first resolution finds decides the site
 for good: a `Private` resolution makes it a private site, anything else a
 non-private one, and its transitions keep the decision. A non-private site is
 guarded on `o`'s id, and a hit never computes N. A private site is guarded on
@@ -1530,11 +1555,12 @@ only once a miss is certain.
 
 Every error comes from the same paths as before the caches, inside `resolve` or
 `act`, word for word; a hit produces exactly the step, value or signal the
-uncached path would.
+uncached path would (`r[vm.dispatch.cache-records-lookup]`).
 
 #### Invalidation
 
-The entries are designed for invalidation: they hold no handle, so
+The entries are designed for invalidation
+(`r[vm.dispatch.invalidation-after-change]`): they hold no handle, so
 `InlineCaches::invalidate`
 (`Interpreter::invalidate_caches`) vacates every site, clears the pool and its
 free list, and vacates the global cache, keeping every family's range, since
@@ -1554,8 +1580,9 @@ guards. Scoping an invalidation to the application a change affects — the
 dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
 "Caches and their dependency keys" — is deferred beyond that step.
 
-**A collection scrubs selectively.** A full collection that frees a guard
-id or an application index ([object-model.md](object-model.md), "An
+**A collection scrubs selectively**
+(`r[vm.dispatch.freed-ids-scrubbed]`). A full collection that frees a guard id
+or an application index ([object-model.md](object-model.md), "An
 application has two ids") vacates exactly the entries that name one --
 a site's or a polymorphic slot's guard, a `Lexical` rule's N, a global
 cache entry's guard or key, a slot target's level -- and forgets the
@@ -1590,9 +1617,10 @@ No instruction changed shape except in the width of its site:
   call site was a `u16` instruction index and 21–24 because the number was
   serialized as a `u32` at all. A stale artifact meets a retired tag and is
   refused.
-- No call-site number is on the wire ("Call-site numbers are not serialized"
-  below). The decoder assigns every family's numbers once the whole code
-  table is read, in the compiler's own emission order, so a family's numbers
+- No call-site number is on the wire (`r[bytecode.wire.call-sites]`;
+  "Call-site numbers are not serialized" below). The decoder assigns every
+  family's numbers once the whole code table is read, in the compiler's own
+  emission order, so a family's numbers
   are dense by construction rather than checked on decode; a code record
   carries a flag for a family the reference lowering compiled uncached, in
   place of the call-site list that used to guard a stale body. The family
@@ -1791,8 +1819,10 @@ a class-index guard as in Spur and Primordial Soup would make every site
 that sees nested-class instances from two enclosing objects polymorphic.
 
 Two things follow for the caches. The application cache
-(`Mutator.applications`) is keyed by the mixin's id and the superclass
-application's full-width index rather than by two `Rc::as_ptr` addresses,
+(`Mutator.applications`; `r[vm.dispatch.application-cache-key]`,
+`r[vm.dispatch.mixin-id-one-per-mixin]`) is keyed by the mixin's id and the
+superclass application's full-width index rather than by two `Rc::as_ptr`
+addresses,
 since the mixins and `MixinApplication`s live in the heap's tables indexed by
 their ids (`heap/tables.rs`), and a class object names its application by
 that full-width index, separate from the 22-bit guard id; an id is minted
@@ -1879,10 +1909,12 @@ reclaimable.
   above).
 - **A slot's accessors are methods** (§6.3.2), in the method table, answered
   without an activation.
-- **`doesNotUnderstand:` bypasses access control**, because `Object`'s own
-  implementation is protected and would otherwise be unreachable.
-- **Unmarked members are protected**, per §6.3.1, which decides public
-  reachability rather than only documenting intent.
+- **`doesNotUnderstand:` bypasses access control**
+  (`r[runtime.does-not-understand]`), because `Object`'s own implementation
+  is protected and would otherwise be unreachable.
+- **Unmarked members are protected**, per §6.3.1
+  (`r[semantics.access.protected]`), which decides public reachability rather
+  than only documenting intent.
 - **Dispatch lives in `interpreter/`, once.** Duplicating it into the VM is the
   failure mode this rule exists to prevent.
 - **Primitives are method-table entries** (3a, 2026-09-15), bound as an
@@ -1978,9 +2010,10 @@ reclaimable.
     adds to the step every send runs, not work done per send; it is not entry
     size, which is unchanged ([execution.md](execution.md), "Which half of
     the lexical key costs the send benchmarks").
-  - **The primary factory is a method of the class side** (§6.3: "The class
-    side, together with the primary factory method, defines the mixin for
-    the metaclass"), an entry of the metaclass mixin's method table, found by
+  - **The primary factory is a method of the class side**
+    (`r[semantics.instantiation.factory]`; §6.3: "The class side, together
+    with the primary factory method, defines the mixin for the metaclass"),
+    an entry of the metaclass mixin's method table, found by
     the ordinary lookups — as both references build it (Primordial Soup's
     `astForPrimaryFactory:` in
     `prior-art/primordialsoup/newspeak/Newspeak2PrimordialSoupCompilation.ns`,
@@ -2025,7 +2058,8 @@ reclaimable.
     so that `ValueArray` can delegate to a primitive) — the class then no
     longer instantiates and nothing says so. Built; a resolver check costs no
     send anything at run time.
-  - **Metaclasses are flat**, so **a class side is not inherited**. §3.2:
+  - **Metaclasses are flat**, so **a class side is not inherited**
+    (`r[semantics.class-side]`). §3.2:
     "All metaclasses are instances of class Metaclass, and are direct
     subclasses of Class. Metaclasses may not be subclassed. […] The metaclass
     hierarchy in Newspeak is deliberately kept very flat"; §6: a class is an

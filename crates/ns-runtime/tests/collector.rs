@@ -98,6 +98,7 @@ fn a_collection_gives_back_what_a_run_discarded() {
 /// being minted: `#kept` is interned twice in one send, after a collection
 /// has already pruned `#transient`, and the two occurrences must still be
 /// the same object (`docs/design/memory.md`, "Weak references").
+// spec: vm.heap.symbol-canonical
 #[test]
 fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     let source = indoc! {"
@@ -820,6 +821,7 @@ fn only_the_stack_shrinks(damped: bool) -> ns_runtime::ShrinkPairs {
 /// (`heap::limits::Shrink`, the hysteresis): the stack decommits once.
 /// Only the stack may shrink, so that no other reservation's decommit is
 /// counted.
+// spec: vm.machine.bounds-lowered-before-decommit
 #[test]
 fn a_sawtooth_of_recursions_does_not_thrash() {
     let (mut interpreter, class) = load(SAWTOOTH);

@@ -1,4 +1,4 @@
-rules = ["semantics.number.exact"]
+rules = ["semantics.number.exact", "vm.heap.fraction-normal-form"]
 stdout = '''
 (3/4) 3 4 true
 (-1/2) (1/2)

@@ -679,10 +679,10 @@ it had not received; no category and no printing is no tracing.
   `Rc<CompiledCode>`, a copy's key as its `CustomizationKey`, a selector
   as its `Symbol`, and the receiver of a cache transition as its class's
   qualified name, a `String` computed when it is recorded. No pending
-  event holds a handle, so no collection between its record and its
-  delivery moves what it names, and it keeps no object of the program
-  alive ("A handle means nothing against a `Heap` that did not mint it",
-  `CLAUDE.md`).
+  event holds a handle (`r[vm.handle.trace-holds-no-handle]`), so no
+  collection between its record and its delivery moves what it names, and it
+  keeps no object of the program alive ("A handle means nothing against a
+  `Heap` that did not mint it", `CLAUDE.md`).
 - **Delivery.** A flush (`trace_events::flush`, cold) names the bodies
   and keys, applies the filter and delivers each event in the order it
   was recorded: at the end of every compile trigger the interpreter
@@ -698,7 +698,8 @@ it had not received; no category and no printing is no tracing.
   before the id is freed (`trace_events::name_freed_keys`): named at the
   flush, the id would be no class's, or another class's that was minted
   it meanwhile. **A leaf of machine code only records**
-  (`jit::after_compile_trigger_in_leaf`): a flush runs the host's sink,
+  (`r[vm.machine.tracing-changes-nothing]`;
+  `jit::after_compile_trigger_in_leaf`): a flush runs the host's sink,
   which must not run with machine code's frames on the native stack, so
   the sink is called outside machine code only. A leaf's events wait
   for the next safepoint or host return the run reaches on its own, and
@@ -953,7 +954,8 @@ values, and the host formats it.
   outcome it belongs to), holding bodies as `Rc<CompiledCode>`, keys as
   their `CustomizationKey` and an arm's receiver as its dispatch id --
   named before a full collection reclaims the id, as a key is
-  (`trace_events::name_freed_keys`) -- and no handle; a flush names them
+  (`trace_events::name_freed_keys`) -- and no handle
+  (`r[vm.handle.trace-holds-no-handle]`); a flush names them
   as it names events, applies the print filter to the body and delivers
   each in its place among the events, so that a listing follows the line
   of its event (decision 12). Nothing of it is `cfg(debug_assertions)`:
@@ -976,7 +978,8 @@ values, and the host formats it.
   that nothing is added on its path. The debugger's metadata compile and
   an edit only checked add no mixin to the heap's tables and print
   nothing.
-- **Machine code at its install** (decision 5). A compile annotates
+- **Machine code at its install** (decision 5,
+  `r[vm.machine.tracing-changes-nothing]`). A compile annotates
   when `CompileSettings::annotate` is set, which every compile reads
   from the tracer (`EventTracer::prints_code`): the macro assembler then
   records positions and annotations as labels, which emit no byte, so

@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "vm.activation.every-push-checks-depth"]
 status = 1
 stderr = '''
 Uncaught Newspeak error: stack overflow: recursion too deep

@@ -367,6 +367,22 @@ mod tests {
         assert_eq!(Header(POISON).word_count(), 0);
     }
 
+    /// A code no format uses never comes from a header this heap wrote,
+    /// but a crafted image can write one: it reads as a free gap, never as
+    /// a class object or a format with words to trace.
+    // spec: vm.heap.class-by-format
+    #[test]
+    fn a_format_code_no_format_uses_reads_as_a_free_gap() {
+        for code in [6_u64, 12, 13, 14, 15] {
+            let header = Header(code << FORMAT_SHIFT);
+            assert_eq!(header.format(), Format::Free, "code {code}");
+        }
+        assert_eq!(
+            Header((Format::Class as u64) << FORMAT_SHIFT).format(),
+            Format::Class
+        );
+    }
+
     #[test]
     fn a_zero_header_carries_no_guard() {
         assert_eq!(Header(0).guard(), DispatchId::NONE);

@@ -596,6 +596,8 @@ mod tests {
     }
 
     crate::for_each_lowering! {
+        // spec: vm.activation.debugger-reads-no-dead-register
+        // spec: vm.compiler.debug-tables-describe-their-body
         fn a_program_s_bodies_are_checked(lowering) {
             let mut interpreter = loaded(lowering);
             match interpreter.check_debug_metadata(false) {
@@ -608,6 +610,7 @@ mod tests {
     }
 
     crate::for_each_lowering! {
+        // spec: vm.compiler.debug-tables-describe-their-body
         fn a_broken_table_fails_the_check(lowering) {
             let mut interpreter = loaded(lowering);
             interpreter.enter(|mutator| {
