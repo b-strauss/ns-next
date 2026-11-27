@@ -618,10 +618,7 @@ pub fn pointers_in(root: &Path) -> Result<Vec<Pointer>, String> {
     if refusals.is_empty() {
         Ok(pointers)
     } else {
-        Err(refusals.join(
-            "
-",
-        ))
+        Err(refusals.join("\n"))
     }
 }
 
@@ -646,10 +643,7 @@ pub fn check_pointers(rules: &[Rule], pointers: &[Pointer]) -> Result<(), String
     if refusals.is_empty() {
         Ok(())
     } else {
-        Err(refusals.join(
-            "
-",
-        ))
+        Err(refusals.join("\n"))
     }
 }
 
@@ -1315,31 +1309,15 @@ mod tests {
     /// design document `docs/design/a.md`.
     fn pointer_scratch(name: &str, document: &str, contents: &str) -> Scratch {
         let scratch = Scratch::new(name);
-        scratch.write(
-            "docs/spec/SUMMARY.md",
-            "# Summary
-
-- [A](a.md)
-",
-        );
-        scratch.write(
-            "docs/spec/a.md",
-            "r[vm.sample]
-A rule.
-",
-        );
+        scratch.write("docs/spec/SUMMARY.md", "# Summary\n\n- [A](a.md)\n");
+        scratch.write("docs/spec/a.md", "r[vm.sample]\nA rule.\n");
         scratch.write(document, contents);
         scratch
     }
 
     #[test]
     fn a_pointer_to_a_rule_of_the_book_is_accepted() {
-        let scratch = pointer_scratch(
-            "pointer-ok",
-            "docs/design/a.md",
-            "see `r[vm.sample]`
-",
-        );
+        let scratch = pointer_scratch("pointer-ok", "docs/design/a.md", "see `r[vm.sample]`\n");
         let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
         let pointers = pointers_in(&scratch.0).expect("the pointers");
         assert_eq!(pointers.len(), 1);
@@ -1353,10 +1331,7 @@ A rule.
         let scratch = pointer_scratch(
             "pointer-none",
             "docs/design/a.md",
-            "one
-two
-`r[vm.none]`
-",
+            "one\ntwo\n`r[vm.none]`\n",
         );
         let rules = book_rules(&scratch.0.join("docs/spec")).expect("the book");
         let pointers = pointers_in(&scratch.0).expect("the pointers");
@@ -1372,10 +1347,7 @@ two
         let scratch = pointer_scratch(
             "pointer-fence",
             "docs/design/a.md",
-            "```
-`r[vm.none]`
-```
-",
+            "```\n`r[vm.none]`\n```\n",
         );
         assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
     }
@@ -1385,20 +1357,14 @@ two
         let scratch = pointer_scratch(
             "pointer-bare",
             "docs/design/a.md",
-            "`vm.rs` and `image.bound.sizing` and `ns-next-analyzer[.exe]`
-",
+            "`vm.rs` and `image.bound.sizing` and `ns-next-analyzer[.exe]`\n",
         );
         assert!(pointers_in(&scratch.0).expect("the pointers").is_empty());
     }
 
     #[test]
     fn a_malformed_pointer_is_refused() {
-        let scratch = pointer_scratch(
-            "pointer-bad",
-            "CLAUDE.md",
-            "`r[Vm.X]`
-",
-        );
+        let scratch = pointer_scratch("pointer-bad", "CLAUDE.md", "`r[Vm.X]`\n");
         let refusal = pointers_in(&scratch.0).expect_err("malformed");
         assert_eq!(refusal, "CLAUDE.md:1: `r[Vm.X]` is no rule identifier");
     }
@@ -1407,12 +1373,7 @@ two
     /// point at rules as the design documents do.
     #[test]
     fn a_pointer_in_a_document_of_docs_is_read() {
-        let scratch = pointer_scratch(
-            "pointer-docs",
-            "docs/OPEN-WORK.md",
-            "`r[vm.none]`
-",
-        );
+        let scratch = pointer_scratch("pointer-docs", "docs/OPEN-WORK.md", "`r[vm.none]`\n");
         let pointers = pointers_in(&scratch.0).expect("the pointers");
         assert_eq!(pointers.len(), 1);
         assert_eq!(pointers[0].document, Path::new("docs/OPEN-WORK.md"));
@@ -1508,9 +1469,7 @@ two
     /// it is text, and the rule is untested as any other.
     #[test]
     fn only_a_vm_invariant_shows_undetected() {
-        let markdown = "r[lex.a]
-Undetected: none.
-";
+        let markdown = "r[lex.a]\nUndetected: none.\n";
         let processed = processed_chapter(markdown, Path::new("lexical.md"), &[], &[]);
         assert!(
             processed.contains("<span class=\"rule-tests\">tests: none yet</span>"),
