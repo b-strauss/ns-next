@@ -1,0 +1,53 @@
+/// A header may add a `<:` clause: every class object of the class gains
+/// the level the clause adds between it and its superclass, so an instance
+/// made before the install answers the applied mixin's methods and starts
+/// its slots nil, and keeps its superclass's.
+class AMixinClauseIsAdded = Object new () (
+  class Holder = Object new () (
+    public class Base = Object new () (
+      public base = (
+        ^#base.
+      )
+    )
+
+    public class Trait = Object new (
+      |
+        public mark ::= #initialized.
+      |
+    ) (
+      public trait = (
+        ^#trait.
+      )
+    )
+
+    public class Inner = Base new () ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder Inner new.
+      builder = (ClassMirror reflecting: holder Inner) mixin declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [old trait]);
+        newLine.
+    builder header source: 'public class Inner = Base new <: Trait ()'.
+    builder install.
+    transcript
+        print: old trait;
+        show: ' ';
+        print: old base;
+        show: ' ';
+        print: old mark;
+        show: ' ';
+        print: holder Inner new mark;
+        newLine.
+  )
+)

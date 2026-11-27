@@ -1,0 +1,6 @@
+rules = ["runtime.install.epoch", "runtime.install.superclass", "semantics.reflection.atomic-install"]
+stdout = '''
+an install ran between the preparation and the commit of Inner's install; nothing was installed
+true an object does not understand #staged #added
+installed true
+'''

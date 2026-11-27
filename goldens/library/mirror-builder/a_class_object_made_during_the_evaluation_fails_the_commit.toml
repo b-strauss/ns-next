@@ -1,0 +1,5 @@
+rules = ["runtime.install.epoch", "runtime.install.superclass"]
+stdout = '''
+a class object of Inner was made while its superclass clauses were evaluated; nothing was installed
+true true
+'''

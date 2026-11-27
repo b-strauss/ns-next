@@ -132,6 +132,9 @@ pub(crate) struct PreparedModule {
     /// mixin no longer declares it, which the commit makes obsolete
     /// (`Heap::make_obsolete`).
     pub(crate) removed: Vec<MixinId>,
+    /// Every declaration's id among `replacements` whose superclass clause
+    /// or `<:` clauses the edit changed (`Mutator::clauses_changed`).
+    pub(crate) clauses_changed: Vec<MixinId>,
     /// Every fresh mixin with the id it is installed under: per entry
     /// whose declaration no other entry's encloses, the edited
     /// declaration's instance side first, then its class side, then
@@ -321,7 +324,6 @@ impl<'gc> Mutator<'gc> {
         }
         let edited = parse_module(&spliced, &name)?;
         let declaration = check_kept_header(
-            text,
             original_declaration,
             &spliced,
             &edited,
@@ -532,6 +534,7 @@ impl<'gc> Mutator<'gc> {
             );
             self.pair(*id, &current, &fresh, &renamed, &mut paired);
         }
+        let clauses_changed = self.clauses_changed(&original_text, &text, &paired.replacements)?;
         Ok(PreparedModule {
             #[cfg(test)]
             module_text: text,
@@ -540,7 +543,56 @@ impl<'gc> Mutator<'gc> {
             synthesized: paired.synthesized,
             added: paired.added,
             removed: paired.removed,
+            clauses_changed,
         })
+    }
+
+    /// The ids among `replacements` whose fresh declaration, in `text`,
+    /// writes another superclass clause or other `<:` clauses than its
+    /// current version does in `original_text`, its module's current text:
+    /// the declarations whose class objects the install re-parents, a
+    /// nested one's over what its new clause answers in each enclosing
+    /// instance, a root over its new static superclass. A declaration that
+    /// is a mixin application without a body of its own, before or after,
+    /// is refused: its class object is the level its last clause adds, so
+    /// a new clause would change what the class object itself applies.
+    fn clauses_changed(
+        &self,
+        original_text: &str,
+        text: &str,
+        replacements: &[(MixinId, Rc<Mixin>)],
+    ) -> Result<Vec<MixinId>, String> {
+        let Ok(original) = ns_syntax::parse(original_text) else {
+            return Ok(Vec::new());
+        };
+        let mut changed = Vec::new();
+        for (id, fresh) in replacements {
+            if fresh.is_class_side() {
+                continue;
+            }
+            let (Some(current), Some(edited)) =
+                (self.heap.mixin(*id), fresh.declaration.as_deref())
+            else {
+                continue;
+            };
+            let (_, path) = self.path_from_module_root(*id);
+            let Some(written) = find_declaration(&original.root_class, &path) else {
+                continue;
+            };
+            if current.has_body == fresh.has_body
+                && clauses_as_written(original_text, written) == clauses_as_written(text, edited)
+            {
+                continue;
+            }
+            if !current.has_body || !fresh.has_body {
+                return Err(format!(
+                    "{} is a mixin application without a body of its own, whose superclass an install does not change",
+                    current.reflected_name()
+                ));
+            }
+            changed.push(*id);
+        }
+        Ok(changed)
     }
 
     /// The id of the module root the mixin `id` is declared in, and the
@@ -1138,18 +1190,14 @@ fn edited_identity(
 }
 
 /// The declaration the edited module holds in place of `original`, or a
-/// refusal when it lost its place, its superclass clause or its `<:`
-/// clauses. Everything before the header's start, `header_start`, is
-/// untouched by the splices, so the edited declaration is the class that
-/// starts where the old one did, a root the module's; a header edit must
-/// end where its members' `(` begins, or it spliced a declaration of its
-/// own into the enclosing class.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the texts and parses before and after the edit, and where the header lies"
-)]
+/// refusal when it lost its place. Everything before the header's start,
+/// `header_start`, is untouched by the splices, so the edited declaration
+/// is the class that starts where the old one did, a root the module's; a
+/// header edit must end where its members' `(` begins, or it spliced a
+/// declaration of its own into the enclosing class. Its superclass and
+/// `<:` clauses may change: the install evaluates the new ones
+/// (`clauses_changed`).
 fn check_kept_header<'module>(
-    original_text: &str,
     original: &ast::ClassDeclaration,
     text: &str,
     edited: &'module ast::Module,
@@ -1180,37 +1228,29 @@ fn check_kept_header<'module>(
                 })
         })
     };
-    let Some(declaration) = declaration.filter(|declaration| header_kept_in_place(declaration))
-    else {
-        return Err(syntax_diagnostic(
-            name,
-            "the header must declare the class and end where its members begin",
-            text,
-            declaration_start,
-        ));
-    };
-    let clause_text =
-        |source: &'_ str, clause: &ast::SuperclassClause| clause.span.text(source).to_string();
-    let original_clauses: Vec<String> = original
-        .superclass
-        .iter()
-        .chain(&original.mixin_applications)
-        .map(|clause| clause_text(original_text, clause))
-        .collect();
-    let edited_clauses: Vec<String> = declaration
+    declaration
+        .filter(|declaration| header_kept_in_place(declaration))
+        .ok_or_else(|| {
+            syntax_diagnostic(
+                name,
+                "the header must declare the class and end where its members begin",
+                text,
+                declaration_start,
+            )
+        })
+}
+
+/// What decides a declaration's superclass, as its text writes it:
+/// whether it writes a superclass clause, and the text of that clause and
+/// of each `<:` clause.
+fn clauses_as_written(text: &str, declaration: &ast::ClassDeclaration) -> (bool, Vec<String>) {
+    let clauses = declaration
         .superclass
         .iter()
         .chain(&declaration.mixin_applications)
-        .map(|clause| clause_text(text, clause))
+        .map(|clause| clause.span.text(text).to_string())
         .collect();
-    if original.superclass.is_some() != declaration.superclass.is_some()
-        || original_clauses != edited_clauses
-    {
-        return Err(format!(
-            "the header changes the superclass of {name}; an edit keeps it"
-        ));
-    }
-    Ok(declaration)
+    (declaration.superclass.is_some(), clauses)
 }
 
 #[cfg(test)]
@@ -1826,10 +1866,6 @@ mod tests {
             (
                 rename("+"),
                 "Inner cannot be renamed to +, which is no identifier",
-            ),
-            (
-                header_edit("public class Inner = Object new ()"),
-                "the header changes the superclass of Inner; an edit keeps it",
             ),
             (
                 header_edit("public class Inner = () () class Sneaked = ()"),

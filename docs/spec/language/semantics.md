@@ -666,15 +666,18 @@ removed, a removed class living on obsolete, its name no longer
 understood by its enclosing class while its class objects, instances and
 subclasses run its last version; a module's root can be renamed and its
 `:module:` changed, the same module under the new id or version, held to
-the loader's rules. Several builders' edits are one change: each is
+the loader's rules; a class's superclass and its `<:` clauses can change,
+the new clauses evaluated for every class object before anything is
+installed and each class object re-parented over what they answered,
+keeping its identity, its instances migrated by slot name. Several
+builders' edits are one change: each is
 spliced into its module's text in the order the builders are given, and
 two builders of one class, or one of a class another removes or
 replaces, are refused. A failed install changes nothing,
 and the core library's classes cannot be edited.
 
 r[semantics.gap.reflection.several-builders]
-A superclass change and a class declared from source with no
-predecessor cannot be edited.
+A class declared from source with no predecessor cannot be installed.
 The complete install closes this gap
 (`docs/design/liveness-and-reflection.md`, "Planned: the complete
 install").

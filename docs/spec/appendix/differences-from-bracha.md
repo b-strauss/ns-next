@@ -156,9 +156,8 @@ only through mirrors. Decided with the user on 2026-11-25
   ([`semantics.gap.actors`](../language/semantics.md#r-semantics.gap.actors)).
 - **Tail calls** (Bracha §3.6), *Unimplemented* there, are not
   eliminated ([`semantics.gap.tail-calls`](../language/semantics.md#r-semantics.gap.tail-calls)).
-- **Reflection** (Bracha §8.2): several builders' edits are not installed
-  as one, and a superclass, the nested classes and a class from source
-  are not edited
+- **Reflection** (Bracha §8.2): a class declared from source with no
+  predecessor is not installed
   ([`semantics.gap.reflection.several-builders`](../language/semantics.md#r-semantics.gap.reflection.several-builders));
   no mirror changes the class of an individual object
   ([`semantics.gap.reflection.object-class`](../language/semantics.md#r-semantics.gap.reflection.object-class))

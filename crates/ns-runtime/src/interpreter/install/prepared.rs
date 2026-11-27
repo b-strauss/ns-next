@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use crate::heap::MixinId;
+use crate::heap::{ClassReference, MixinId};
 use crate::interpreter::Mutator;
 use crate::interpreter::edit::{Edit, EditedTexts, InstallEntry};
 use crate::mixin::Mixin;
@@ -33,10 +33,26 @@ pub(crate) struct PreparedInstall {
     /// Every nested declaration removed, module by module
     /// (`PreparedModule::removed`).
     pub(crate) removed: Vec<MixinId>,
+    /// Every declaration whose superclass clause or `<:` clauses the
+    /// install changes, module by module (`PreparedModule::clauses_changed`):
+    /// a nested one's class objects each have their new clause evaluated
+    /// before the commit (`Mutator::clause_class_objects`), and a root's
+    /// class object is re-applied over its new static superclass.
+    pub(crate) clauses_changed: Vec<MixinId>,
     /// Each edited module's whole text, in the order the modules were
     /// first named.
     #[cfg(test)]
     pub(crate) module_texts: Vec<Rc<str>>,
+}
+
+impl PreparedInstall {
+    /// The fresh mixin the install puts under `id`.
+    pub(crate) fn fresh_version(&self, id: MixinId) -> Option<&Rc<Mixin>> {
+        self.replacements
+            .iter()
+            .find(|(replaced, _)| *replaced == id)
+            .map(|(_, fresh)| fresh)
+    }
 }
 
 /// The one prepared install a later preparation or commit of the same
@@ -136,6 +152,7 @@ impl<'gc> Mutator<'gc> {
         let mut synthesized = Vec::new();
         let mut added = Vec::new();
         let mut removed = Vec::new();
+        let mut clauses_changed = Vec::new();
         #[cfg(test)]
         let mut module_texts = Vec::new();
         for (module_root, positions) in modules {
@@ -149,6 +166,7 @@ impl<'gc> Mutator<'gc> {
             synthesized.extend(prepared.synthesized);
             added.extend(prepared.added);
             removed.extend(prepared.removed);
+            clauses_changed.extend(prepared.clauses_changed);
             #[cfg(test)]
             module_texts.push(prepared.module_text);
         }
@@ -166,9 +184,57 @@ impl<'gc> Mutator<'gc> {
             synthesized,
             added,
             removed,
+            clauses_changed,
             #[cfg(test)]
             module_texts,
         })
+    }
+
+    /// The class objects whose superclass clauses an install of `prepared`
+    /// evaluates before its commit, in the space's order: every class
+    /// object of a nested declaration whose clauses it changes -- no
+    /// metaclass, and no level a `<:` clause added, whose superclass the
+    /// clause that added it decides. A root's class object evaluates
+    /// nothing: its superclass follows its fresh `root_shape`.
+    ///
+    /// The walk meets dead class objects too; the leaf that answers them
+    /// keeps them alive from then on, so that the commit's walk meets each
+    /// again.
+    pub(crate) fn clause_class_objects(
+        &self,
+        prepared: &PreparedInstall,
+    ) -> Vec<ClassReference<'gc>> {
+        if !prepared
+            .clauses_changed
+            .iter()
+            .any(|id| self.heap.enclosing_mixin_id(*id).is_some())
+        {
+            return Vec::new();
+        }
+        let mut classes = Vec::new();
+        self.heap.each_object(|object| {
+            if self.clause_declaration(prepared, object).is_some() {
+                classes.push(object);
+            }
+        });
+        classes
+    }
+
+    /// The id of the nested declaration whose clauses `prepared` changes
+    /// and of which `class` is a class object, as `clause_class_objects`
+    /// collects them; `None` for any other object.
+    pub(crate) fn clause_declaration(
+        &self,
+        prepared: &PreparedInstall,
+        class: ClassReference<'gc>,
+    ) -> Option<MixinId> {
+        if self.heap.class_this_class(class).is_some() || self.heap.class_is_applied_level(class) {
+            return None;
+        }
+        let application = self.heap.class_application(class)?;
+        let id = self.heap.known_mixin_id(&application.mixin)?;
+        (prepared.clauses_changed.contains(&id) && self.heap.enclosing_mixin_id(id).is_some())
+            .then_some(id)
     }
 
     /// Whether the declaration `id` is `ancestor` or declared in it, at

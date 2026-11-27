@@ -211,6 +211,17 @@ pub(crate) enum Step<'gc> {
     /// declares it; its value is the superclass, from which the class is
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
+    /// Activate `code`, a superclass clause's body an install prepared, on
+    /// `enclosing` and as part of `declaring_class`, as `SuperclassClause`
+    /// activates a declaration's clause, and deliver its value as a
+    /// method's is delivered: an install's evaluation of a new clause for
+    /// a class object that exists, which creates and caches nothing
+    /// (`interpreter::install::superclasses`).
+    ClauseEvaluation {
+        code: Rc<crate::bytecode::CompiledCode>,
+        enclosing: ObjectReference<'gc>,
+        declaring_class: ClassReference<'gc>,
+    },
     /// Activate `method`, as `Step::Method` with owned arguments does, and
     /// do `then` with its value: how a future is forced for an instruction
     /// that runs again once it is resolved
@@ -2531,6 +2542,38 @@ impl<'gc> Mutator<'gc> {
         self.push_step_placed(step, send_arguments, sender, inlinable, None)
     }
 
+    /// The activation of the superclass clause body `code` on `enclosing`,
+    /// as part of `declaring_class`, which does `then` with its value: a
+    /// nested class's creation (`Step::SuperclassClause`) and an install's
+    /// evaluation of a new clause (`Step::ClauseEvaluation`) alike. Out of
+    /// line: a class object's creation is once per enclosing instance.
+    #[cold]
+    #[inline(never)]
+    fn push_superclass_clause(
+        &mut self,
+        code: Rc<crate::bytecode::CompiledCode>,
+        enclosing: ObjectReference<'gc>,
+        declaring_class: ClassReference<'gc>,
+        then: Continuation<'gc>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        let feedback_base = self.feedback_base_for(&code);
+        let temporaries = code.registers_above_header();
+        self.push(
+            ActivationHeader {
+                receiver: Value::object(enclosing),
+                current_class: Some(declaring_class),
+                kind: ActivationKind::SuperclassClause(declaring_class),
+                method: None,
+                code,
+                then,
+                counted: true,
+                feedback_base,
+            },
+            Arguments::NONE,
+            temporaries,
+        )
+    }
+
     /// `push_step`, an activation that takes the send's own arguments laid
     /// on the send's slots from register `slots` of the sender's window
     /// when it is given (`push_placed`): the run loop's sends give it.
@@ -2738,23 +2781,17 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
-                let feedback_base = self.feedback_base_for(&code);
-                let temporaries = code.registers_above_header();
-                let (enclosing, index, serial) =
-                    (creation.enclosing, creation.index, creation.serial);
-                let activation = self.push(
-                    ActivationHeader {
-                        receiver: Value::object(enclosing),
-                        current_class: Some(creation.declaring_class),
-                        kind: ActivationKind::SuperclassClause(creation.declaring_class),
-                        method: None,
-                        code,
-                        then: Continuation::NestedClass(creation),
-                        counted: true,
-                        feedback_base,
-                    },
-                    Arguments::NONE,
-                    temporaries,
+                let (enclosing, index, serial, declaring_class) = (
+                    creation.enclosing,
+                    creation.index,
+                    creation.serial,
+                    creation.declaring_class,
+                );
+                let activation = self.push_superclass_clause(
+                    code,
+                    enclosing,
+                    declaring_class,
+                    Continuation::NestedClass(creation),
                 )?;
                 // A nested class's creation is in progress exactly while its
                 // clause's activation is on the stack: marked once the push
@@ -2763,6 +2800,13 @@ impl<'gc> Mutator<'gc> {
                 // marks nothing.
                 nested::begin_creation(self, enclosing, index, serial);
                 Ok(activation)
+            }
+            Step::ClauseEvaluation {
+                code,
+                enclosing,
+                declaring_class,
+            } => {
+                self.push_superclass_clause(code, enclosing, declaring_class, Continuation::Deliver)
             }
             // Pushed as `Step::Method` pushes it, and only then given its
             // continuation, as the unwinder gives `valueOnUnwind:` its own

@@ -471,7 +471,9 @@ objects, migrates instances and invalidates caches without running
 Newspeak code, sending to a user object or polling a safepoint between
 the end of its preparation and its own end; every failure arises before
 anything is replaced, and a failed install changes no version,
-application or guard.
+application or guard. The new superclass clauses an install evaluates
+run before the commit, as program code in activations of their own
+leaf's, and the commit only reads what they answered.
 
 Protects:
 [`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install),

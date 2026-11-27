@@ -134,10 +134,27 @@ pub(crate) fn execute<'gc>(
         ReflectionPrimitive::ForwardIdentity => forward_identity(mutator, receiver, arguments),
         ReflectionPrimitive::CheckEdit => check_edit(mutator, receiver, arguments),
         ReflectionPrimitive::PrepareInstall => prepare_install(mutator, receiver),
-        // An edit keeps every superclass clause, so the preparation answers
-        // no clause to evaluate and every index is out of range.
+        // A step, not a value: `execute_step` answers it.
         ReflectionPrimitive::EvaluateClause => None,
         ReflectionPrimitive::CommitInstall => commit_install(mutator, receiver, arguments),
+    }
+}
+
+/// `execute`, for the one leaf of the family that answers a step rather
+/// than a value: `reflectionInstall:evaluateClause:epoch:ifFail:`, which
+/// activates a superclass clause (`evaluate_clause`).
+pub(crate) fn execute_step<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: ReflectionPrimitive,
+    receiver: Value<'gc>,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<Result<crate::interpreter::Step<'gc>, crate::interpreter::Signal<'gc>>> {
+    match primitive {
+        ReflectionPrimitive::EvaluateClause => {
+            evaluate_clause(mutator, receiver, arguments).map(Ok)
+        }
+        _ => execute(mutator, primitive, receiver, arguments)
+            .map(|answer| Ok(crate::interpreter::Step::Value(answer))),
     }
 }
 
@@ -193,16 +210,29 @@ fn refusal<'gc>(mutator: &mut Mutator<'gc>, diagnostic: String) -> Vec<Value<'gc
 /// entries the subject stands for (`entries_from_value`), committing
 /// nothing. Answers `{true. epoch. clauses}` -- the install epoch the
 /// commit is to name, and the `{classObject. enclosingObject}` pairs
-/// whose superclass clauses the builder evaluates before it commits,
-/// none while an edit keeps every clause -- or `{false. diagnostic}`.
+/// whose new superclass clauses the installer evaluates before it
+/// commits (`Mutator::clause_class_objects`) -- or `{false. diagnostic}`.
 /// Declined for a subject it cannot read and an epoch past the
 /// `SmallInteger` range.
+///
+/// The class objects leave the leaf in the `Array` alone: the prepared
+/// install the leaves cache outlives a safepoint, so it holds no handle.
 fn prepare_install<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Option<Value<'gc>> {
     let entries = entries_from_value(mutator, subject)?;
     let answer = match mutator.prepare_install(&entries) {
         Ok(prepared) => {
             let epoch = epoch_value(prepared.epoch)?;
-            let clauses = Value::object(mutator.new_array(Vec::new()));
+            let mut pairs = Vec::new();
+            for class in mutator.clause_class_objects(&prepared) {
+                let enclosing = mutator
+                    .heap
+                    .class_enclosing(class)
+                    .map_or(Value::nil(), Value::object);
+                pairs.push(Value::object(
+                    mutator.new_array(vec![Value::object(class), enclosing]),
+                ));
+            }
+            let clauses = Value::object(mutator.new_array(pairs));
             vec![Value::boolean(true), epoch, clauses]
         }
         Err(diagnostic) => refusal(mutator, diagnostic),
@@ -218,14 +248,33 @@ fn epoch_value<'gc>(epoch: u64) -> Option<Value<'gc>> {
         .map(Value::small_integer)
 }
 
+/// `reflectionInstall:evaluateClause:epoch:ifFail:`: the activation of
+/// the new superclass clause of the argument, one of the class objects
+/// the preparation of the entries the subject stands for answered at the
+/// epoch, on its enclosing object (`Mutator::clause_evaluation`), whose
+/// value goes to the send as a method's does. Declined for entries it
+/// cannot read, an epoch that moved and an argument that is no such class
+/// object.
+fn evaluate_clause<'gc>(
+    mutator: &mut Mutator<'gc>,
+    subject: Value<'gc>,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<crate::interpreter::Step<'gc>> {
+    let entries = entries_from_value(mutator, subject)?;
+    let class = arguments.first(&mutator.heap)?.as_object()?;
+    let epoch = u64::try_from(arguments.try_get(&mutator.heap, 1)?.as_small_integer()?).ok()?;
+    mutator.clause_evaluation(&entries, class, epoch)
+}
+
 /// `reflectionInstall:commitEpoch:superclasses:ifFail:`: commits the
 /// install of the entries the subject stands for, given the epoch its
-/// preparation answered and an `Array` of the clauses' answers by index
-/// (`Mutator::commit_install`). Answers `{true. results}`, per entry
-/// `{declarationText. headerText}`, or `{false. diagnostic}` with nothing
-/// changed. Declined for entries it cannot read, an epoch that is no
-/// non-negative `SmallInteger`, and answers that are no `Array` of one
-/// per clause -- of none, while an edit keeps every clause.
+/// preparation answered and an `Array` of `{classObject. answer}` pairs,
+/// each class object the preparation answered with what its new clause
+/// answered (`Mutator::commit_install`). Answers `{true. results}`, per
+/// entry `{declarationText. headerText}`, or `{false. diagnostic}` with
+/// nothing changed. Declined for entries it cannot read, an epoch that is
+/// no non-negative `SmallInteger`, and pairs that are not each a distinct
+/// class object the preparation answers with its answer.
 fn commit_install<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
@@ -233,10 +282,18 @@ fn commit_install<'gc>(
 ) -> Option<Value<'gc>> {
     let entries = entries_from_value(mutator, subject)?;
     let epoch = u64::try_from(arguments.first(&mutator.heap)?.as_small_integer()?).ok()?;
-    let superclasses = mutator
+    let pairs = mutator
         .heap
         .array_elements(arguments.try_get(&mutator.heap, 1)?.as_object()?)?;
-    if !superclasses.is_empty() {
+    let mut superclasses = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let pair = mutator.heap.array_elements(pair.as_object()?)?;
+        let [class, answer] = pair.as_slice() else {
+            return None;
+        };
+        superclasses.push((class.as_object()?, *answer));
+    }
+    if !mutator.answers_name_clause_classes(&entries, epoch, &superclasses) {
         return None;
     }
     let answer = match mutator.commit_install(&entries, epoch, &superclasses) {

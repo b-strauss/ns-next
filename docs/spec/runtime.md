@@ -278,9 +278,7 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
    `replaces`) and change nothing. If a builder's class is the core
    library's, signal and change nothing; if an install removed it, or a
    class it is nested in, signal `Inner was removed by an install, and an
-   obsolete class is not edited` and change nothing. If a builder's header changes the class's
-   superclass, signal `the header changes the superclass of Inner; an
-   edit keeps it` and change nothing.
+   obsolete class is not edited` and change nothing.
 2. Prepare each module the list edits once: splice the staged edits of
    its builders into the module's current text, in the list's order,
    each starting from the text the one before it left, and compile the
@@ -317,10 +315,13 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
    (`as`) keeps that id, a rename replacing its last part, and takes the
    version its text declares. The manifest a program holds answers the
    module under the id it was assembled with.
-4. If anything was installed, or a module loaded, since step 2 -- the
-   install epoch moved -- signal `an install ran between the preparation
-   and the commit of Inner's install; nothing was installed` and change
-   nothing.
+4. If a staged declaration's superclass clause or `<:` clauses differ
+   from its current ones, evaluate them for each of its class objects
+   ([`runtime.install.superclass`](#r-runtime.install.superclass)). If
+   anything was installed, or a module loaded, since step 2 -- the
+   install epoch moved -- or a class object was made meanwhile, signal
+   and change nothing
+   ([`runtime.install.epoch`](#r-runtime.install.epoch)).
 5. At once and running no code, for every module's edits together: make
    each new mixin the mixin of every application of the old one; for
    every instance whose layout changed, make a new instance of the new
@@ -329,6 +330,39 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
    them. Then move the install epoch.
 6. A running activation finishes with the code it began with; every send
    after step 5 finds the new methods.
+
+r[runtime.install.superclass]
+An install whose staged declaration writes another superclass clause or
+other `<:` clauses than its current version evaluates the new clauses,
+before it installs anything, for every class object of the declaration:
+each as program code in the class object's enclosing object, as part of
+the class that declares it, against the world as it is before the
+install, and caching nothing. A clause that signals ends the install
+with what it signals, changing nothing. If an answer is no class, signal
+`the superclass clause of Inner answered 3, which is no class`; if it
+would make a class inherit from itself, signal `the superclass clause of
+Base answers a class that inherits from Base`; and change nothing. The
+commit then re-parents each class object over what its clauses answered
+-- the class object keeping its identity, its `<:` levels built anew --
+migrates every instance whose layout changed by slot name, a slot of a
+level it lost gone and one of a level it gained `nil`, and runs no
+initializer. A module's root evaluates nothing: it takes the superclass
+its new header names, `Object` or `Value`. A declaration that is a
+mixin application without a body of its own, before or after, cannot
+change its clauses: signal `Inner is a mixin application without a body
+of its own, whose superclass an install does not change`.
+
+r[runtime.install.epoch]
+Anything installed, or any module loaded, between an install's
+preparation and its commit -- by one of its own superclass clauses as by
+anything else -- fails the commit: signal `an install ran between the
+preparation and the commit of Inner's install; nothing was installed`.
+So does a class object of a declaration whose clauses the install
+evaluates that was made while they were evaluated, whose own clauses
+were never evaluated: signal `a class object of Inner was made while its
+superclass clauses were evaluated; nothing was installed`. Either way
+nothing changes. An install of no builders installs nothing and moves
+nothing, so it fails no install it runs within.
 
 ## Capabilities and limits
 

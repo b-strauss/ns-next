@@ -1677,7 +1677,15 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   ) (
     /// Installs every builder's staged edits as one change, and then
     /// hands each builder the texts of its installed declaration, so that
-    /// it stands for that declaration with nothing staged.
+    /// it stands for that declaration with nothing staged. A class whose
+    /// superclass clause or `<:` clauses the edits change has the new
+    /// clauses evaluated for each of its class objects, in its enclosing
+    /// object, as program code before anything is installed; the commit
+    /// then re-parents each class object over what its clauses answered,
+    /// keeping its identity, and migrates its instances by slot name,
+    /// running no initializer. A clause that signals propagates what it
+    /// signals, and nothing is installed. An install of no builders
+    /// installs nothing.
     ///
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, changing nothing --
@@ -1688,27 +1696,40 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// 'replaces') for a builder of a nested class, or of one nested in
     /// it, that another builder removes or replaces, 'an install ran
     /// between the preparation and the commit of <class name>'s install;
-    /// nothing was installed' when something was installed after the preparation, and
-    /// every diagnostic `ClassDeclarationBuilder>>install` lists; and the
-    /// one `refuseEntries` signals when the VM cannot read an entry.
+    /// nothing was installed' when something was installed after the
+    /// preparation -- by a superclass clause among others --, 'a class
+    /// object of <class name> was made while its superclass clauses were
+    /// evaluated; nothing was installed' when a clause brought a class
+    /// object of a changed class into being, 'the superclass clause of
+    /// <class name> answered <what it answered>, which is no class', 'the
+    /// superclass clause of <class name> answers a class that inherits
+    /// from <class name>', and every diagnostic
+    /// `ClassDeclarationBuilder>>install` lists; and the one
+    /// `refuseEntries` signals when the VM cannot read an entry.
     public install = (
       |
         entries = builders collect: [:builder | builder entryFor: self].
-        prepared = vmMirror reflectionPrepareInstall: entries ifFail: [^self refuseEntries].
+        prepared
         epoch
         superclasses
         committed
       |
+      /// Nothing to prepare or commit, so that an empty install moves no
+      /// epoch and fails no install whose clause it runs in.
+      builders isEmpty ifTrue: [^self].
+      prepared:: vmMirror reflectionPrepareInstall: entries ifFail: [^self refuseEntries].
       (prepared at: 1) ifFalse: [^Error signal: (prepared at: 2)].
       epoch:: prepared at: 2.
-      superclasses:: Array new: (prepared at: 3) size.
-      1 to: superclasses size do: [:index |
-        /// A clause the VM declines -- the epoch moved -- answers nil, and
-        /// the commit refuses the moved epoch.
-        superclasses at: index
-            put: (vmMirror reflectionInstall: entries evaluateClause: index epoch: epoch ifFail: [
-              nil.
-            ]).
+      /// Each class object with its clauses' answer, which the commit
+      /// pairs by the class object. A clause the VM declines -- the epoch
+      /// moved -- answers nil, and the commit refuses the moved epoch.
+      superclasses:: (prepared at: 3) collect: [:clause |
+        {
+          clause at: 1.
+          vmMirror reflectionInstall: entries evaluateClause: (clause at: 1) epoch: epoch ifFail: [
+            nil.
+          ].
+        }.
       ].
       committed:: vmMirror reflectionInstall: entries
           commitEpoch: epoch
@@ -1792,9 +1813,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// and holds the class's name, factory, superclass clause, slots and
     /// initializer: `public class Foo = Bar (| x |)`. A header that names
     /// the class otherwise renames it, one of another access changes the
-    /// access of its accessor, and a root's whose `:module:` declares
-    /// another id or version gives the module that identity, keeping its
-    /// path. A root's header given without the `(* :module: … *)` it
+    /// access of its accessor, one of another superclass clause or other
+    /// `<:` clauses gives every class object of the class the superclass
+    /// its new clauses answer, evaluated when the builder installs, and a
+    /// root's whose `:module:` declares another id or version gives the
+    /// module that identity, keeping its path. A root's header given without the `(* :module: … *)` it
     /// had removes it: the module becomes undeclared, its id the class's
     /// name and its version dropped. A module the project names with
     /// `as` keeps that id, its last part the class's name, and takes the
@@ -1805,10 +1828,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a
     /// header that does not parse or does not end where the members begin;
-    /// one that changes its superclass clause or its `<:` clauses ('the
-    /// header changes the superclass of <name>; an edit keeps it'), which
-    /// are compared as text, so a header that changes only the whitespace
-    /// or comments inside them is refused as well; one whose slots collide
+    /// one whose slots collide
     /// with a member staged or declared; one that renames the class to a
     /// name its enclosing class already declares ('<enclosing name>
     /// already has a member named <new name>'); and a root's whose

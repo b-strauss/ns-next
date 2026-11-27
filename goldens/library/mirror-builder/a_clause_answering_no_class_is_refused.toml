@@ -1,0 +1,6 @@
+rules = ["runtime.install.superclass"]
+stdout = '''
+the superclass clause of Inner answered 3, which is no class
+the superclass clause of Inner answered 3, which is no class
+#base true
+'''

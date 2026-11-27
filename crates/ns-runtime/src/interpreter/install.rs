@@ -4,6 +4,7 @@
 //! the complete install").
 
 pub(super) mod prepared;
+pub(super) mod superclasses;
 
 use std::rc::Rc;
 
@@ -15,6 +16,7 @@ use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::mixin::{DispatchId, Mixin, MixinApplication};
 use crate::types::Value;
 use prepared::PreparedInstall;
+use superclasses::Reparenting;
 
 /// What the migration answers: the instances it replaced, their copies in
 /// the new layout at the same positions, and the instances it kept.
@@ -39,24 +41,34 @@ impl<'gc> Mutator<'gc> {
     /// "The install is one leaf, and its commit has no safepoint"): every
     /// fresh mixin under its old id, every class object found re-applied
     /// superclasses first -- keeping its identity, as every class object
-    /// does -- the instances whose layout changed copied into the new one
-    /// by name and forwarded in one bulk forward, the others restamped;
-    /// and raises the epoch.
+    /// does, a class object whose superclass clause changed over what the
+    /// new clause answered -- the instances whose layout changed copied
+    /// into the new one by name and forwarded in one bulk forward, the
+    /// others restamped; and raises the epoch.
     ///
-    /// `superclasses` holds the answers of the superclass clauses the
-    /// preparation asked to evaluate, by index; an edit keeps every clause,
-    /// so the preparation asks none.
+    /// `superclasses` pairs each class object whose new superclass clause
+    /// the preparation asked to evaluate (`Mutator::clause_class_objects`)
+    /// with what the clause answered. A class object of such a declaration
+    /// the pairs lack was made while the clauses ran, and refuses the
+    /// install, as do an answer that is no class and one that would make a
+    /// class inherit from itself (`superclasses`).
+    ///
+    /// An install of no entries answers at once, installing nothing and
+    /// leaving the epoch, so that it fails no install it runs within.
     pub(crate) fn commit_install(
         &mut self,
         entries: &[InstallEntry],
         epoch: u64,
-        superclasses: &[Value<'gc>],
+        superclasses: &[(ClassReference<'gc>, Value<'gc>)],
     ) -> Result<Vec<EditedTexts>, String> {
-        debug_assert!(
-            superclasses.is_empty(),
-            "internal: an edit keeps every superclass clause, so no answer is read"
-        );
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
         let prepared = self.prepared_for_commit(entries, epoch)?;
+        let mut reparentings = self.clause_reparentings(&prepared, superclasses)?;
+        // Before any walk of a superclass chain, each of which assumes it
+        // ends.
+        self.refuse_a_cycle(&reparentings)?;
         let mut fresh_by_id: IdentityMap<MixinId, Rc<Mixin>> = IdentityMap::default();
         for (replaced, fresh) in &prepared.replacements {
             fresh_by_id.insert(*replaced, Rc::clone(fresh));
@@ -68,7 +80,19 @@ impl<'gc> Mutator<'gc> {
             .heap
             .classes_and_instances_over(|candidate| fresh_by_id.contains_key(&candidate));
         let class_positions = self.class_positions(&classes);
-        self.refuse_an_unmigratable_instance(&classes, &class_positions, &instances, &fresh_by_id)?;
+        reparentings.extend(self.root_reparentings(&prepared, &classes));
+        let reparented: IdentityMap<usize, usize> = reparentings
+            .iter()
+            .enumerate()
+            .map(|(index, reparenting)| (self.heap.object_identity_key(reparenting.class), index))
+            .collect();
+        self.refuse_an_unmigratable_instance(
+            &classes,
+            &class_positions,
+            &instances,
+            &fresh_by_id,
+            &reparented,
+        )?;
 
         // The commit: nothing below fails.
         let old_applications: Vec<Rc<MixinApplication>> = classes
@@ -83,7 +107,8 @@ impl<'gc> Mutator<'gc> {
         self.replace_versions(&prepared);
         // Every module text an agent holds may be this edit's.
         self.breakpoints.raise_text_revision();
-        let new_applications = self.reapply(&classes, &old_applications);
+        let new_applications =
+            self.reapply(&classes, &old_applications, &reparentings, &reparented);
         let migration = self.migrate(
             &classes,
             &class_positions,
@@ -173,6 +198,9 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         entries: &[InstallEntry],
     ) -> Result<Vec<EditedTexts>, String> {
+        if entries.is_empty() {
+            return self.commit_install(entries, self.install_epoch, &[]);
+        }
         let epoch = self.prepare_install(entries)?.epoch;
         self.commit_install(entries, epoch, &[])
     }
@@ -276,8 +304,9 @@ impl<'gc> Mutator<'gc> {
     /// anything is replaced, from the old and the fresh mixins, since the
     /// layouts themselves are known only once re-applied: conservatively,
     /// a class's layout may change when a replaced level of its chain has
-    /// another slot list or another nested list, so no instance the commit
-    /// migrates escapes the check.
+    /// another slot list or another nested list, or a level of its chain is
+    /// re-parented (`reparented`), so no instance the commit migrates
+    /// escapes the check.
     ///
     /// A defensive lock behind `may_be_forwarded`: no program instance is
     /// known to reach it, since a user subclass of `Array`, `String` or
@@ -292,10 +321,11 @@ impl<'gc> Mutator<'gc> {
         class_positions: &IdentityMap<usize, usize>,
         instances: &[ObjectReference<'gc>],
         fresh_by_id: &IdentityMap<MixinId, Rc<Mixin>>,
+        reparented: &IdentityMap<usize, usize>,
     ) -> Result<(), String> {
         let may_change: Vec<bool> = classes
             .iter()
-            .map(|class| self.layout_may_change(*class, fresh_by_id))
+            .map(|class| self.layout_may_change(*class, fresh_by_id, reparented))
             .collect();
         for instance in instances {
             let class = self.heap.object_class(*instance);
@@ -319,14 +349,18 @@ impl<'gc> Mutator<'gc> {
 
     /// Whether a replaced level of `class`'s chain declares other slots,
     /// by name and in order, or other nested classes than the fresh
-    /// version replacing it.
+    /// version replacing it, or a level of the chain is re-parented.
     fn layout_may_change(
         &self,
         class: ClassReference<'gc>,
         fresh_by_id: &IdentityMap<MixinId, Rc<Mixin>>,
+        reparented: &IdentityMap<usize, usize>,
     ) -> bool {
         let mut level = Some(class);
         while let Some(current) = level {
+            if reparented.contains_key(&self.heap.object_identity_key(current)) {
+                return true;
+            }
             if let Some(application) = self.heap.class_application(current) {
                 let fresh = self
                     .heap
@@ -404,15 +438,31 @@ impl<'gc> Mutator<'gc> {
     /// Gives every class object of `classes` an application of its mixin's
     /// current version over its superclass's application now, superclasses
     /// first, so a superclass found is re-applied before its subclasses;
-    /// its superclass clause is not evaluated again. Records an old level
-    /// whose slot base and own slots the edit kept as succeeded by the new
-    /// one, so an activation entered at it passes the slot check. Answers
-    /// the new applications, by position.
+    /// its superclass clause is not evaluated again. A class object of
+    /// `reparentings` (`reparented`, by identity key) gets its new
+    /// superclass first and its `<:` levels built anew over it
+    /// (`nested::build_applied_levels`); once any chain may have changed,
+    /// every nested class object has §3.1.1's verdict decided again.
+    /// Records an old level whose slot base and own slots the edit kept as
+    /// succeeded by the new one, so an activation entered at it passes the
+    /// slot check. Answers the new applications, by position.
     fn reapply(
         &mut self,
         classes: &[ClassReference<'gc>],
         old_applications: &[Rc<MixinApplication>],
+        reparentings: &[Reparenting<'gc>],
+        reparented: &IdentityMap<usize, usize>,
     ) -> Vec<Rc<MixinApplication>> {
+        // Before the sort, so that a re-parented class object sorts after
+        // its new superclass and every class object over it after it.
+        for reparenting in reparentings {
+            if !self
+                .heap
+                .class_set_superclass(reparenting.class, reparenting.superclass)
+            {
+                unreachable!("internal: a re-parented class is a class object");
+            }
+        }
         let mut order: Vec<usize> = (0..classes.len()).collect();
         order.sort_by_cached_key(|position| {
             let mut length = 0_usize;
@@ -427,10 +477,11 @@ impl<'gc> Mutator<'gc> {
         for position in order {
             let class = classes[position];
             let old = &old_applications[position];
-            let superclass = self
-                .heap
-                .class_superclass(class)
-                .and_then(|superclass| self.heap.class_application(superclass));
+            let mut superclass = self.heap.class_superclass(class).and_then(|superclass| {
+                self.heap
+                    .class_application(superclass)
+                    .map(|application| (superclass, application))
+            });
             let id = self
                 .heap
                 .known_mixin_id(&old.mixin)
@@ -439,9 +490,42 @@ impl<'gc> Mutator<'gc> {
                 .heap
                 .mixin(id)
                 .expect("internal: a registered mixin has a row");
-            let new = self.apply_mixin(&current, superclass.as_ref());
+            let reparenting = reparented
+                .get(&self.heap.object_identity_key(class))
+                .map(|index| &reparentings[*index]);
+            if let Some(reparenting) = reparenting
+                && !reparenting.applied.is_empty()
+            {
+                // Every applied class was found a class object before the
+                // commit began (`Mutator::clause_reparentings`).
+                let Ok(top) = super::nested::build_applied_levels(
+                    self,
+                    &current,
+                    superclass,
+                    &reparenting.applied,
+                ) else {
+                    unreachable!("internal: every applied class is a class object");
+                };
+                if let Some((level, _)) = &top
+                    && !self.heap.class_set_superclass(class, *level)
+                {
+                    unreachable!("internal: a re-parented class is a class object");
+                }
+                superclass = top;
+            }
+            let new = self.apply_mixin(
+                &current,
+                superclass.as_ref().map(|(_, application)| application),
+            );
             if !self.heap.class_install_application(class, Rc::clone(&new)) {
                 unreachable!("internal: the walk collects class objects");
+            }
+            if !reparentings.is_empty()
+                && self.heap.class_this_class(class).is_none()
+                && !self.heap.class_is_applied_level(class)
+                && let Some(enclosing) = self.heap.class_enclosing(class)
+            {
+                self.redecide_value_class(class, enclosing, new.inherits_value);
             }
             let same_own_slots = old.mixin.slots.iter().map(|slot| slot.name).eq(new
                 .mixin
@@ -3097,5 +3181,204 @@ mod tests {
         let inner = send(&mut interpreter, &inner_class, "new");
         let answer = send(&mut interpreter, &inner, "a");
         assert_eq!(string(&mut interpreter, &answer).as_deref(), Some("ö🙂"));
+    }
+
+    // A superclass change
+
+    /// A module whose classes' superclasses an install changes, through
+    /// the VM mirror's three install leaves as `Installer>>install` sends
+    /// them: each clause the preparation names evaluated, then the commit
+    /// given the class objects with their answers.
+    const REPARENTED: &str = indoc! {"
+        class Outer = Object new (
+          |
+          public count ::= 0.
+          |
+        ) (
+          public class Base = (| public base ::= 1. |) ()
+          public class Other = (| public other ::= 2. |) ()
+          public class Inner = Base new (| public own ::= bump. |) ()
+          public bump = (
+            count:: count + 1.
+            ^3
+          )
+          public install: header of: class using: mirror = (
+            | entries prepared answers committed |
+            entries:: {{mirror reflectionMixinOf: class ifFail: [nil]. {header. {}. {}. nil}}}.
+            prepared:: mirror reflectionPrepareInstall: entries ifFail: [^#declined].
+            (prepared at: 1) ifFalse: [^prepared at: 2].
+            answers:: (prepared at: 3) collect: [:clause |
+              {clause at: 1. mirror reflectionInstall: entries evaluateClause: (clause at: 1) epoch: (prepared at: 2) ifFail: [nil]}].
+            committed:: mirror reflectionInstall: entries commitEpoch: (prepared at: 2) superclasses: answers ifFail: [^#declined].
+            (committed at: 1) ifFalse: [^committed at: 2].
+            ^#installed
+          )
+        )
+    "};
+
+    /// The install of `header` as `class`'s header, through `outer`'s
+    /// `install:of:using:`: `installed`, or the diagnostic that refused it.
+    fn install_header(
+        interpreter: &mut Interpreter,
+        outer: &Root,
+        class: &Root,
+        header: &str,
+    ) -> String {
+        let (header, mirror) = interpreter.enter(|mutator| {
+            let header = mutator.new_string(header.to_string());
+            let header = mutator.stash(Value::object(header));
+            let mirror = mutator.vm_mirror();
+            (header, mutator.stash(mirror))
+        });
+        let answer = send_with(
+            interpreter,
+            outer,
+            "install:of:using:",
+            &[header, class.clone(), mirror],
+        );
+        interpreter.enter(|mutator| {
+            let object = mutator
+                .fetch(&answer)
+                .as_object()
+                .expect("a Symbol or a String");
+            mutator
+                .heap
+                .symbol_text(object)
+                .or_else(|| mutator.heap.str_value(object))
+                .expect("a Symbol or a String")
+        })
+    }
+
+    /// Whether `first` and `second` are one object.
+    fn same(interpreter: &mut Interpreter, first: &Root, second: &Root) -> bool {
+        interpreter.enter(|mutator| {
+            let key = |root: &Root| {
+                let object = mutator.fetch(root).as_object().expect("an object");
+                mutator.heap.object_identity_key(object)
+            };
+            key(first) == key(second)
+        })
+    }
+
+    /// `Inner = Base` becomes `Inner = Other`: the class object stays, an
+    /// instance made before loses `Base`'s slot, starts `Other`'s nil and
+    /// keeps its own, and no initializer runs -- the enclosing instance's
+    /// count of `Inner`'s own-slot initializers stays where it was.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_superclass_change_keeps_the_class_object_and_migrates_by_name() {
+        let (mut interpreter, outer_class) = load(REPARENTED);
+        let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &outer, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+        let answer = install_header(
+            &mut interpreter,
+            &outer,
+            &inner_class,
+            "public class Inner = Other new (| public own ::= bump. |)",
+        );
+        assert_eq!(answer, "installed");
+        assert_eq!(
+            interpreter.enter(|mutator| mutator.install_epoch),
+            epoch + 1
+        );
+        let again = send(&mut interpreter, &outer, "Inner");
+        assert!(same(&mut interpreter, &again, &inner_class));
+        let other_class = send(&mut interpreter, &outer, "Other");
+        let superclass = interpreter.enter(|mutator| {
+            let class = mutator.fetch(&inner_class).as_object().expect("a class");
+            let superclass = mutator.heap.class_superclass(class).expect("a superclass");
+            mutator.stash(Value::object(superclass))
+        });
+        assert!(same(&mut interpreter, &superclass, &other_class));
+        assert!(
+            send_error(&mut interpreter, &inner, "base").contains("#base"),
+            "Base's slot is gone"
+        );
+        let other = send(&mut interpreter, &inner, "other");
+        assert!(is_nil(&mut interpreter, &other), "Other's slot starts nil");
+        let own = send(&mut interpreter, &inner, "own");
+        assert_eq!(integer(&mut interpreter, &own), Some(3));
+        let count = send(&mut interpreter, &outer, "count");
+        assert_eq!(
+            integer(&mut interpreter, &count),
+            Some(1),
+            "no initializer ran"
+        );
+    }
+
+    /// A clause that answers a subclass of the class it is the clause of is
+    /// refused before anything changes: `Base = Object` becoming `Base =
+    /// Inner` while `Inner = Base`.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_cycle_changes_nothing() {
+        let (mut interpreter, outer_class) = load(REPARENTED);
+        let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+        let inner_class = send(&mut interpreter, &outer, "Inner");
+        let inner = send(&mut interpreter, &inner_class, "new");
+        let base_class = send(&mut interpreter, &outer, "Base");
+        let base_id = nested_id_of(&mut interpreter, &outer_class, "Base");
+        let inner_id = nested_id_of(&mut interpreter, &outer_class, "Inner");
+        let ids = [base_id, inner_id];
+        let before = snapshot(&mut interpreter, &ids, &[&base_class, &inner_class, &inner]);
+        let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+        let answer = install_header(
+            &mut interpreter,
+            &outer,
+            &base_class,
+            "public class Base = Inner new (| public base ::= 1. |)",
+        );
+        assert_eq!(
+            answer,
+            "the superclass clause of Base answers a class that inherits from Base"
+        );
+        assert_unchanged(
+            &mut interpreter,
+            &before,
+            &ids,
+            &[&base_class, &inner_class, &inner],
+        );
+        assert_eq!(interpreter.enter(|mutator| mutator.install_epoch), epoch);
+        let base = send(&mut interpreter, &inner, "base");
+        assert_eq!(integer(&mut interpreter, &base), Some(1));
+    }
+
+    /// An install of no entries answers at once: nothing is prepared or
+    /// committed, and the epoch stays, so that a clause that installs
+    /// nothing leaves the install it runs in free to commit.
+    // spec: runtime.install.epoch
+    #[test]
+    fn an_empty_install_moves_no_epoch() {
+        let (mut interpreter, _) = load(REPARENTED);
+        let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+        let installed = interpreter.enter(|mutator| mutator.install_entries(&[]));
+        match installed {
+            Ok(texts) => assert!(texts.is_empty()),
+            Err(diagnostic) => panic!("the empty install was refused: {diagnostic}"),
+        }
+        assert_eq!(interpreter.enter(|mutator| mutator.install_epoch), epoch);
+    }
+
+    /// A replacement that turns a class with a body into a mixin
+    /// application without one changes what its class object applies, so
+    /// it is refused, and nothing changes.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_class_that_becomes_body_less_is_refused() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Trait = () ()
+              public class Inner = () ()
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let outer_id = root_id_of(&mut interpreter, &outer);
+        let edit = add_class("public class Inner = Object new <: Trait.");
+        assert_eq!(
+            install_refusal(&mut interpreter, &[InstallEntry::Edit(outer_id, edit)]),
+            "Inner is a mixin application without a body of its own, whose superclass an install does not change"
+        );
     }
 }

@@ -1,0 +1,52 @@
+/// A superclass change migrates every instance by slot name: an instance
+/// made before the install no longer has the slot of the level it lost,
+/// which is no longer understood, starts the slot of the level it gained
+/// nil, the initializer not run, and keeps its own slot's value.
+class ASlotOfALostLevelGoesAndAGainedOneStartsNil = Object new () (
+  class Holder = Object new () (
+    public class Base = Object new (
+      |
+        public base ::= 1.
+      |
+    ) ()
+
+    public class Other = Object new (
+      |
+        public other ::= 2.
+      |
+    ) ()
+
+    public class Inner = Base new (
+      |
+        public own ::= 3.
+      |
+    ) ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder Inner new.
+      builder = (ClassMirror reflecting: holder Inner) mixin declaration asBuilder.
+    |
+    old own: 30.
+    builder header source: 'public class Inner = Other new (| public own ::= 3. |)'.
+    builder install.
+    transcript
+        show: (outcome: [old base]);
+        newLine.
+    transcript
+        print: old other;
+        show: ' ';
+        print: old own;
+        show: ' ';
+        print: holder Inner new other;
+        newLine.
+  )
+)

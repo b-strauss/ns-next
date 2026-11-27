@@ -7421,9 +7421,12 @@ impl<'gc> Heap<'gc> {
     /// Relinks `class`'s superclass pointer. Answers whether the write
     /// happened, mirroring `class_set_application` -- the matching relink on
     /// the application chain that carries the layout, called right alongside
-    /// this one. Two callers: the bootstrap's kernel phase, which links each
+    /// this one. Three callers: the bootstrap's kernel phase, which links each
     /// builtin class to the one its `Kernel.ns` clause names
-    /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
+    /// (`interpreter::kernel`); an install's commit, which re-parents a class
+    /// object whose declaration's superclass clause changed over what the new
+    /// clause answered and installs the application over it
+    /// (`Mutator::reapply`); and `tests/instantiate.rs`'s
     /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
     /// root class's superclass clause may name only `Object` or `Value`
     /// (the root rule, `resolver::root_clause_defect`), so linking a
@@ -7481,6 +7484,14 @@ impl<'gc> Heap<'gc> {
             class_field::VALUE_CLASS_REFUSAL,
             Value::object(refusal),
         )
+    }
+
+    /// Clears `class`'s verdict on §3.1.1's enclosing-object condition: an
+    /// install re-parented it over a chain whose enclosing objects are all
+    /// values (`Mutator::redecide_value_class`). Answers whether the write
+    /// happened, like the other class setters.
+    pub(crate) fn class_clear_value_refusal(&mut self, class: ClassReference<'gc>) -> bool {
+        self.set_class_field(class, class_field::VALUE_CLASS_REFUSAL, Value::nil())
     }
 
     /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
