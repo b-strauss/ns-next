@@ -106,6 +106,12 @@ impl InstanceHeader {
     }
 }
 
+/// The bound on an image's class records' creation stamps, 2^59: half the
+/// `SmallInteger` range a class object stores its stamp in, so that a
+/// world that loads an image still has 2^59 stamps above the image's
+/// highest to draw (`Heap::advance_class_stamp_past`).
+pub const CLASS_STAMP_LIMIT: u64 = 1 << 59;
+
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
 /// must agree with: a class object's fields, a closure's and a frame's
@@ -2849,16 +2855,26 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The next class object's creation stamp, drawn from the counter.
+    /// Two class objects never share one: a world that drew every stamp
+    /// below the `SmallInteger` ceiling -- 2^60 class objects, which no
+    /// heap holds -- stops rather than repeat one.
     fn allocate_class_stamp(&mut self) -> u64 {
         let stamp = self.next_class_stamp;
+        assert!(
+            i64::try_from(stamp).is_ok_and(fits_small_integer),
+            "internal: the class objects' creation stamps are exhausted"
+        );
         self.next_class_stamp += 1;
         stamp
     }
 
     /// Moves the class-stamp counter past `max`, the highest stamp an image
     /// brought with it, so that every class object made afterwards is
-    /// ordered after every decoded one; never backwards.
+    /// ordered after every decoded one; never backwards. `max` is below
+    /// `CLASS_STAMP_LIMIT`, which the decoder holds every record's stamp
+    /// to, so the world keeps 2^59 stamps to draw.
     pub(crate) fn advance_class_stamp_past(&mut self, max: u64) {
+        debug_assert!(max < CLASS_STAMP_LIMIT);
         if self.next_class_stamp <= max {
             self.next_class_stamp = max + 1;
         }

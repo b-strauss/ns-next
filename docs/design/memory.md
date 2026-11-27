@@ -1413,7 +1413,7 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 | Contribution | Release | Debug |
 |---|---|---|
 | A record's placeholder against its smallest record: a metaclass record of 17 bytes becomes a class object of 112 | 6.6x | 6.6x |
-| The same with the decoder's own tables -- a handle per record in the placeholder table (8 bytes in a release build, 16 in a debug one), the first pass's 8-byte size, a metaclass record's pending index | 7.5x | 8.0x |
+| The same with the decoder's own tables -- a handle per record in the placeholder table (8 bytes in a release build, 16 in a debug one), the first pass's 8-byte size, a metaclass record's pending index and its 8-byte creation stamp, held until the stamps are checked unique | 8.0x | 8.5x |
 | A value's word against its encoding: a one-byte `VALUE_NIL` becomes an 8-byte word | **8x** | 8x |
 | A UTF-8 byte of a string packed in the 32-bit form | 4x | 4x |
 | An allocating value: an `i64` beyond 61 bits, or a float outside the immediate range, 9 bytes for a word and a 24-byte object (the `i64`'s one digit held in a boxed slice until its object is made, 4.4x while it lives) | 3.6x | 3.6x |
@@ -1425,11 +1425,11 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 
 Every class object has the same 14 words, 112 bytes, whatever its kind, and
 the other class records stay below the metaclass record: a class record is
-at least 27 bytes (4.1x; 5.0x and 5.3x with the decoder's tables), a level
+at least 27 bytes (4.1x; 5.3x and 5.6x with the decoder's tables), a level
 a `<:` clause added at least 31, its clause and the class it named (3.6x;
-4.4x and 4.6x), a body-less declaration's class object at least 33, the
+4.6x and 4.9x), a body-less declaration's class object at least 33, the
 level's record and two presence flags for its declaration's scope (3.4x;
-4.1x and 4.4x), a frame record at least 21
+4.4x and 4.6x), a frame record at least 21
 for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
 closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
@@ -1445,13 +1445,13 @@ is five, a tag byte and a `u32` (`CLASS_RECORD`, `CLASS_SHIPPED`), and the
 byte-array record alone is counted at that. So every other record is at
 least three bytes longer per class it names than counted, each record's
 ratio above is an upper bound: a metaclass record is at least 23 bytes for
-its 112, 4.9x, and 5.6x and 5.9x with the decoder's tables. The bounds stay
+its 112, 4.9x, and 5.9x and 6.3x with the decoder's tables. The bounds stay
 safe; tightening the record figures in the doc comment and here together is
 open ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **So the transient peak of a rejected load is about 8x of the graph
-section's bytes in a release build (a graph of one-byte values, or one that
-is all root list) and about 16x in a debug one (a graph that is all root list), plus at most 4x of the
+section's bytes in a release build (a graph of one-byte values, one that is
+all root list, or one of metaclass records) and about 16x in a debug one (a graph that is all root list), plus at most 4x of the
 symbol section's bytes and, in an image with source, at most 6x of the
 text table's.** The texts are decoded and held to the rows before the
 graph pass, and a text belongs to one declaration, so the module texts

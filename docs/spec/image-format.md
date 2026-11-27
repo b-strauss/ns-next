@@ -757,8 +757,9 @@ r[image.verify.hashes]
 27. Every identity hash fits the 22 bits an object's header holds: it is
     below 4,194,304. A tag-named hash is never 0, and each shipped name
     has at most one. Every class, body-less class and metaclass record's
-    creation stamp fits a `SmallInteger`, and no two records have the
-    same.
+    creation stamp is below 2^59, half the `SmallInteger` range, so that
+    the loading world keeps stamps to draw above it, and no two records
+    have the same.
 
 r[image.verify.started-image-roots]
 28. A started image has exactly one root, the application `load` starts.

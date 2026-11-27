@@ -6561,43 +6561,78 @@ fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer))
     writer.into_bytes()
 }
 
-/// A class record and its metaclass record, each with the creation stamp
-/// given: one graph's two class records.
-fn class_pair_with_stamps(class_stamp: u64, metaclass_stamp: u64) -> Vec<u8> {
+/// `stamps.len()` class records, each followed by its metaclass record,
+/// the class records taking `stamps[2 * i]` and the metaclass records
+/// `stamps[2 * i + 1]`; one graph's records and no roots.
+fn class_pairs_with_stamps(stamps: &[u64]) -> Vec<u8> {
+    let pairs = u32::try_from(stamps.len() / 2).expect("a few pairs");
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
-    writer.write_u32(1);
-    writer.write_u32(7); // identity hash
-    writer.write_u8(OBJECT_CLASS);
-    writer.write_u64(class_stamp);
-    writer.write_u8(MIXIN_ROW);
-    writer.write_u32(0);
-    no_class_references(&mut writer);
-    writer.write_boolean(false); // not an applied level
-    writer.write_shipped(METACLASS_NAME);
-    writer.write_u32(8); // identity hash
-    writer.write_u8(OBJECT_METACLASS);
-    writer.write_u64(metaclass_stamp);
-    writer.write_u8(CLASS_RECORD); // its class: an object-table record
-    writer.write_u32(0);
+    graph_counts(&mut writer, 2 * pairs);
+    for (pair, stamp) in stamps.chunks(2).enumerate() {
+        let class = u32::try_from(2 * pair).expect("a few pairs");
+        writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+        writer.write_u32(class + 1);
+        writer.write_u32(7); // identity hash
+        writer.write_u8(OBJECT_CLASS);
+        writer.write_u64(stamp[0]);
+        writer.write_u8(MIXIN_ROW);
+        writer.write_u32(0);
+        no_class_references(&mut writer);
+        writer.write_boolean(false); // not an applied level
+        writer.write_shipped(METACLASS_NAME);
+        writer.write_u32(8); // identity hash
+        writer.write_u8(OBJECT_METACLASS);
+        writer.write_u64(stamp[1]);
+        writer.write_u8(CLASS_RECORD); // its class: an object-table record
+        writer.write_u32(class);
+    }
     writer.write_u32(0); // no roots
     writer.into_bytes()
 }
 
 /// A class record's creation stamp orders it among the image's class
-/// objects: two of one stamp, and one past the `SmallInteger` range the
-/// class object stores it as, are refused.
+/// objects: two of one stamp, and one at or past 2^59, which would leave
+/// the loading world too few stamps to draw above it, are refused; one
+/// just below the limit decodes.
 // spec: image.verify.hashes
 #[test]
 fn class_records_of_one_creation_stamp_or_a_wide_one_are_refused() {
+    const LIMIT: u64 = 1 << 59;
     assert_eq!(
-        GraphFixture::new().decode_error(&class_pair_with_stamps(5, 5)),
+        GraphFixture::new().decode_error(&class_pairs_with_stamps(&[5, 5])),
         decode::DecodeError::DuplicateClassStamp(5)
     );
+    for wide in [LIMIT, u64::MAX] {
+        assert_eq!(
+            GraphFixture::new().decode_error(&class_pairs_with_stamps(&[wide, 6])),
+            decode::DecodeError::ClassStampTooWide(wide)
+        );
+    }
+    GraphFixture::new().decoded(
+        &class_pairs_with_stamps(&[LIMIT - 1, 6]),
+        "a stamp just below the limit",
+        |_, graph| assert_eq!(graph.max_class_stamp, LIMIT - 1),
+    );
+}
+
+/// Many records whose stamps a hash keyed by the stamp would put in one
+/// probe chain -- every one a multiple of 2^40 -- decode, and one more
+/// repeating the first is refused: the stamps are checked unique by
+/// sorting them, not by a hash of keys the input chose.
+// spec: image.verify.hashes
+#[test]
+fn many_crafted_class_stamps_are_checked_unique() {
+    let stamps: Vec<u64> = (1..=4000_u64).map(|index| index << 40).collect();
+    GraphFixture::new().decoded(
+        &class_pairs_with_stamps(&stamps),
+        "two thousand class pairs of distinct stamps",
+        |_, graph| assert_eq!(graph.max_class_stamp, 4000 << 40),
+    );
+    let mut repeated = stamps.clone();
+    repeated[3999] = stamps[0];
     assert_eq!(
-        GraphFixture::new().decode_error(&class_pair_with_stamps(u64::MAX, 6)),
-        decode::DecodeError::ClassStampTooWide(u64::MAX)
+        GraphFixture::new().decode_error(&class_pairs_with_stamps(&repeated)),
+        decode::DecodeError::DuplicateClassStamp(1 << 40)
     );
 }
 

@@ -636,8 +636,10 @@ pub enum DecodeError {
     /// Refusing the image is the only answer that does not alias the hash
     /// to another one.
     IdentityHashTooWide(u32),
-    /// A class record's creation stamp past the `SmallInteger` range, which
-    /// the class object stores it as.
+    /// A class record's creation stamp at or past `CLASS_STAMP_LIMIT`: the
+    /// class object stores it as a `SmallInteger`, and the world that loads
+    /// the image draws every later stamp above the image's highest, so a
+    /// stamp near the top of that range would leave it none to draw.
     ClassStampTooWide(u64),
     /// Two class records of one creation stamp: the stamps order class
     /// objects by their creation, which two of one stamp would leave
@@ -1279,7 +1281,8 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ClassStampTooWide(stamp) => write!(
                 f,
-                "a class record's creation stamp {stamp} is past the SmallInteger range"
+                "a class record's creation stamp {stamp} is not below {}",
+                crate::heap::CLASS_STAMP_LIMIT
             ),
             DecodeError::DuplicateClassStamp(stamp) => {
                 write!(f, "two class records have the creation stamp {stamp}")
@@ -3336,13 +3339,15 @@ fn read_shipped_module<'gc>(
 ///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
 ///   pending index (8), a class record's pending entry (16), a frame
-///   record's handle and body offset (8 or 16, and 8). A graph of metaclass
-///   records then holds 112 + 8 + 8 = 128 bytes for 17, 7.5x in a release
-///   build, and 112 + 16 + 8 = 136, 8.0x in a debug one; every other record
-///   stays below (a class record 136 or 144 for 27, 5.0x or 5.3x; a level's
-///   136 or 144 for 31, 4.4x or 4.6x; a body-less declaration's class
-///   object's the same for 33, 4.1x or 4.4x; a frame record 120 or 136 for
-///   21, 5.7x or 6.5x).
+///   record's handle and body offset (8 or 16, and 8), and every class,
+///   body-less class and metaclass record's creation stamp (8, held until
+///   the stamps are checked unique once every record is read). A graph of
+///   metaclass records then holds 112 + 8 + 8 + 8 = 136 bytes for 17,
+///   8.0x in a release build, and 112 + 16 + 8 + 8 = 144, 8.5x in a debug
+///   one; every other record stays below (a class record 144 or 152 for
+///   27, 5.3x or 5.6x; a level's 144 or 152 for 31, 4.6x or 4.9x; a
+///   body-less declaration's class object's the same for 33, 4.4x or 4.6x;
+///   a frame record 120 or 136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
 ///   an 8-byte word, 8x, which a record of many values approaches from
@@ -3374,8 +3379,8 @@ fn read_shipped_module<'gc>(
 ///   release build, 8x, and 16 in a debug one, **16x**.
 ///
 /// So the peak is about **8x** in a release build (a graph of one-byte
-/// values, or one that is all root list) and **16x** in a debug one (a
-/// graph that is all root list), plus at most 4x of the symbol section and, in an image with
+/// values, one that is all root list, or one of metaclass records) and
+/// **16x** in a debug one (a graph that is all root list), plus at most 4x of the symbol section and, in an image with
 /// source, 6x of the text table (`texts::decode`). Not counted: each Rust
 /// allocation's own overhead in the allocator; a decoder table's `Vec`
 /// doubling as it grows, which holds both buffers for a moment; and the
@@ -5101,8 +5106,10 @@ pub fn decode_graph_section<'gc>(
     let tables = Tables { objects: &objects };
     let mut max_identity_hash = 0;
     let mut max_class_stamp = 0;
-    // Every class record's stamp, held unique.
-    let mut class_stamps: crate::hash::IdentityMap<u64, ()> = crate::hash::IdentityMap::default();
+    // Every class record's stamp, held unique once the records are read:
+    // sorted, not hashed, since the stamps are the input's to choose and a
+    // hash of chosen keys can be made to collide; 8 bytes a class record.
+    let mut class_stamps: Vec<u64> = Vec::new();
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
     let mut decoded_a_future = false;
@@ -5214,15 +5221,10 @@ pub fn decode_graph_section<'gc>(
             OBJECT_CLASS | OBJECT_BODY_LESS_CLASS | OBJECT_METACLASS
         ) {
             let stamp = reader.read_u64()?;
-            if i64::try_from(stamp)
-                .ok()
-                .is_none_or(|stamp| !crate::heap::fits_small_integer(stamp))
-            {
+            if stamp >= crate::heap::CLASS_STAMP_LIMIT {
                 return Err(DecodeError::ClassStampTooWide(stamp));
             }
-            if class_stamps.insert(stamp, ()).is_some() {
-                return Err(DecodeError::DuplicateClassStamp(stamp));
-            }
+            class_stamps.push(stamp);
             max_class_stamp = max_class_stamp.max(stamp);
             class_stamp = stamp;
         }
@@ -5504,6 +5506,11 @@ pub fn decode_graph_section<'gc>(
         };
         decode_frame(&mut body_reader, context, &tables, symbols, *frame)?;
     }
+    class_stamps.sort_unstable();
+    if let Some(pair) = class_stamps.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(DecodeError::DuplicateClassStamp(pair[0]));
+    }
+    drop(class_stamps);
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     check_program_instances(&context.mutator.heap, &objects)?;
     let roots = decode_values(reader, context, &tables)?;
