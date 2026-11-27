@@ -607,10 +607,6 @@ or writes outside the object.
 Protects: [`image.untrusted`](image-format.md#r-image.untrusted),
 [`image.verify.not-checked`](image-format.md#r-image.verify.not-checked)
 
-Undetected: no test yet: decode an image whose body's own-slot
-instruction names an index past its receiver's fields, run it, and check
-that the run neither aborts nor changes another object.
-
 r[vm.heap.bump-limit-within-committed]
 The bump cursor's limit never lies past committed read-write memory --
 every change of the committed pages clamps it -- and machine code moves
@@ -733,10 +729,6 @@ Protects:
 [`semantics.object`](language/semantics.md#r-semantics.object),
 [`image.untrusted`](image-format.md#r-image.untrusted)
 
-Undetected: no test yet: in a unit test of the heap, allocate a
-decoder's placeholder and read its class word before the record fills
-it, checking it names the builtin `Object`.
-
 r[vm.heap.class-word-is-metaclass]
 After the bootstrap every class object's class word names its own
 metaclass and every metaclass's names `Metaclass`; a metaclass is built
@@ -765,10 +757,6 @@ limits imply.
 
 Protects: [`image.untrusted`](image-format.md#r-image.untrusted),
 [`syntax.nesting-limit`](language/grammar.md#r-syntax.nesting-limit)
-
-Undetected: no test yet: build an object graph and an application chain
-a million deep on a small thread, collect and drop them, and check the
-process survives.
 
 r[vm.heap.stop-runs-no-code]
 While a program stands at a debugger's stop and the stop serves a
@@ -905,10 +893,6 @@ Protects:
 [`semantics.mixin.application`](language/semantics.md#r-semantics.mixin.application),
 [`runtime.install`](runtime.md#r-runtime.install)
 
-Undetected: no test yet: register a mixin tree in one interpreter, ask a
-second interpreter for an inner mixin's id, and check it registers the
-tree afresh rather than answering the first heap's id.
-
 ## Activations and frames
 
 r[vm.activation.frame-words-tagged]
@@ -1039,10 +1023,6 @@ or decoded from an image takes its body's count.
 Protects:
 [`bytecode.register.layout`](bytecode.md#r-bytecode.register.layout),
 [`image.verify.frames`](image-format.md#r-image.verify.frames)
-
-Undetected: no test yet: suspend and resume a frame of a body with
-arguments, and decode a frame record of one, then read its first
-argument through the resumed register base.
 
 r[vm.activation.offset-fixed]
 A frame's offset on the activation stack is fixed for its whole life and
@@ -1300,10 +1280,6 @@ Protects:
 [`image.verify.frames`](image-format.md#r-image.verify.frames),
 [`image.load`](image-format.md#r-image.load)
 
-Undetected: no test yet: write an image with a frame record from a debug
-build and load it in a build without debug assertions, as part of the
-release-checks group.
-
 r[vm.activation.debugger-reads-no-dead-register]
 Every debugger read of a frame's register -- a variable at a stop, the
 last call's value, a referrer from the stack -- reads only a register
@@ -1514,11 +1490,6 @@ Protects:
 [`semantics.block.closure`](language/semantics.md#r-semantics.block.closure),
 [`semantics.object`](language/semantics.md#r-semantics.object)
 
-Undetected: no test yet: compile a body whose captured mutable local
-lives in a vector and check, over the body's instructions, that the
-vector's register is read only by the vector instructions and the
-closure creation.
-
 r[vm.compiler.hop-count-counts-frames]
 An outer-local reference's run-time depth is the number of frame scopes
 among the innermost scopes the resolver counted, since an inlined block
@@ -1590,10 +1561,6 @@ method table, reached only by the initializing instructions.
 Protects: [`runtime.instantiate`](runtime.md#r-runtime.instantiate),
 [`semantics.instantiation.factory`](language/semantics.md#r-semantics.instantiation.factory),
 [`image.verify.initializers`](image-format.md#r-image.verify.initializers)
-
-Undetected: no test yet: build a class's factory through each path that
-attaches one (compiled, decoded from an image, decoded from the embedded
-code) and check that the three bodies compile alike.
 
 r[vm.compiler.mixin-relative-slot-index]
 Compiled code lives on its mixin and is shared by every application of
@@ -2904,10 +2871,6 @@ through that allocation.
 Protects: [`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror),
 [`runtime.instantiate`](runtime.md#r-runtime.instantiate)
 
-Undetected: no test yet: from a shipped-library test fixture that
-reaches the mirror's class, send it its factory and a host's
-instantiate, and check both are refused with an error naming no class.
-
 r[vm.mirror.no-wire-tag]
 The instruction that runs a leaf with no lookup has no wire tag, so no
 image decodes into one; the embedded shipped code carries it in a codec
@@ -2916,10 +2879,6 @@ of its own that only the boot reaches with the binary's own bytes.
 Protects: [`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror),
 [`bytecode.verify.tags`](bytecode.md#r-bytecode.verify.tags),
 [`bytecode.wire.tags`](bytecode.md#r-bytecode.wire.tags)
-
-Undetected: no test yet: encode a body holding a mirror send through the
-image encoder and check it is refused, and scan the pinned tag table for
-a mirror-send entry.
 
 r[vm.mirror.shipped-source-only-fast-paths]
 Only a method of the shipped core library's source carries a fast path

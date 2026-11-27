@@ -4644,6 +4644,116 @@ mod tests {
         );
     }
 
+    /// Checks `code`, and every block it makes, against the rule that an
+    /// indirection vector is never a value: `handed` are the registers its
+    /// maker handed it a vector in, and with the ones its own `MakeVector`s
+    /// write, nothing else writes them and only a vector instruction, as
+    /// its vector, and a closure's creation, which hands the vector on,
+    /// read them.
+    fn assert_vectors_are_no_values(code: &CompiledCode, handed: &[u16]) {
+        let instructions = code.instructions();
+        let mut vectors = handed.to_vec();
+        for instruction in &instructions {
+            if let Instruction::MakeVector { destination, .. } = instruction {
+                vectors.push(*destination);
+            }
+        }
+        for instruction in &instructions {
+            if let Some(written) = crate::bytecode::register_written(instruction) {
+                assert!(
+                    !vectors.contains(&written)
+                        || matches!(instruction, Instruction::MakeVector { .. }),
+                    "{instruction:?} overwrites the vector in register {written}"
+                );
+            }
+            for read in crate::bytecode::registers_read(instruction) {
+                if !vectors.contains(&read) {
+                    continue;
+                }
+                let as_vector = match instruction {
+                    Instruction::LoadVector { vector, .. } => *vector == read,
+                    Instruction::StoreVector { vector, source, .. } => {
+                        *vector == read && *source != read
+                    }
+                    Instruction::MakeClosure { copied, .. } => copied.contains(&read),
+                    _ => false,
+                };
+                assert!(
+                    as_vector,
+                    "{instruction:?} reads the vector in register {read} as a value"
+                );
+            }
+            if let Instruction::MakeClosure {
+                code: block,
+                copied,
+                ..
+            } = instruction
+            {
+                let handed_on: Vec<u16> = copied
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, source)| vectors.contains(source))
+                    .map(|(position, _)| {
+                        block.argument_count
+                            + crate::bytecode::HEADER_REGISTERS
+                            + u16::try_from(position).expect("a block copies few registers")
+                    })
+                    .collect();
+                assert_vectors_are_no_values(block, &handed_on);
+            }
+        }
+    }
+
+    /// A local a block writes after its capture lives in an indirection
+    /// vector, which is never a value: in the method and in the block,
+    /// only the vector instructions and the closure's creation read the
+    /// vector's register, and nothing writes the local's own register, so
+    /// it stays nil.
+    // spec: vm.compiler.vector-never-a-value
+    #[test]
+    fn an_indirection_vector_is_read_only_as_a_vector() {
+        let code = lower_whole_method(
+            indoc! {"
+                class X = Object new (
+                ) (
+                  foo = ( | t b | t:: 1. b:: [ t:: t + 1 ]. b value. ^t + 1 )
+                ) : ()
+            "},
+            0,
+        );
+        assert!(
+            code.instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })),
+            "`t` lives in a vector"
+        );
+        let block = code
+            .instructions()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::MakeClosure { code: block, .. } => Some(block.clone()),
+                _ => None,
+            })
+            .expect("the method makes the block");
+        assert!(
+            block
+                .instructions()
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::StoreVector { .. })),
+            "the block writes `t` through the vector it is handed"
+        );
+        assert_vectors_are_no_values(&code, &[]);
+        // `t`, the first temporary of a method without arguments.
+        let own_register = crate::bytecode::HEADER_REGISTERS;
+        assert!(
+            code.instructions()
+                .iter()
+                .all(|instruction| crate::bytecode::register_written(instruction)
+                    != Some(own_register)),
+            "the vector variable's own register stays nil"
+        );
+    }
+
     #[test]
     fn a_doubly_nested_block_is_handed_the_variable_by_the_block_between() {
         let code = lower_whole_method(

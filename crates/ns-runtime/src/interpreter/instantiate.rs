@@ -2481,6 +2481,70 @@ mod tests {
         });
     }
 
+    /// However the mirror's class is instantiated -- by a host, by a
+    /// factory send the interpreter runs, or by the same send in machine
+    /// code once its method is compiled -- the one allocation refuses it,
+    /// so there is exactly one mirror; and the refusal a handler catches
+    /// carries nil, never the class.
+    // spec: vm.mirror.not-instantiable
+    #[test]
+    fn the_mirrors_class_is_refused_however_it_is_instantiated() {
+        const REFUSAL: &str = "the VM mirror's class cannot be instantiated";
+        let source = indoc! {"
+            class Maker = Object new () (
+              public make: aClass = ( ^aClass new )
+              public behaviorRefusing: aClass = (
+                ^[ aClass new ] on: Error do: [ :refusal | refusal behavior ]
+              )
+            ) : ()
+        "};
+        let (mut interpreter, class) = load(source);
+        let maker = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Maker");
+        let mirror_class = interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::VmMirror);
+            mutator.stash(crate::Value::object(class))
+        });
+        let refusal = |result: HostResult, what: &str| match result {
+            Ok(_) => panic!("{what}: answered an instance of the mirror's class"),
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => error.message,
+        };
+        assert_eq!(
+            refusal(interpreter.instantiate(&mirror_class, &[]), "instantiate"),
+            REFUSAL
+        );
+        assert_eq!(
+            refusal(interpreter.send(&mirror_class, Symbol::NEW, &[]), "new"),
+            REFUSAL
+        );
+        // Sent again and again, so that machine code runs the send too.
+        for _ in 0..4 {
+            assert_eq!(
+                refusal(
+                    interpreter.send(
+                        &maker,
+                        Symbol::intern("make:"),
+                        std::slice::from_ref(&mirror_class)
+                    ),
+                    "make:"
+                ),
+                REFUSAL
+            );
+            let behavior = expect_ok(
+                interpreter.send(
+                    &maker,
+                    Symbol::intern("behaviorRefusing:"),
+                    std::slice::from_ref(&mirror_class),
+                ),
+                "behaviorRefusing:",
+            );
+            assert!(
+                interpreter.enter(|mutator| mutator.fetch(&behavior).is_nil()),
+                "the refusal carries nil as its behavior"
+            );
+        }
+    }
+
     /// A reified mixin is canonical, one per mixin, made only by the
     /// runtime: `Mixin new` is refused as `Symbol new` is, and the refusal
     /// names no behavior, since the class is private to the kernel.

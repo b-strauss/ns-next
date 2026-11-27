@@ -13993,6 +13993,102 @@ mod tests {
         collect_a_chain_of_ephemerons(512);
     }
 
+    /// A program chooses how deep its objects nest, so marking walks a
+    /// chain with a work list of its own and the compaction slides it in
+    /// address order: a chain a million arrays deep is collected whole on
+    /// a thread whose stack holds a few thousand frames at most.
+    // spec: vm.heap.no-recursion-over-input-depth
+    #[test]
+    fn a_chain_of_objects_deeper_than_the_stack_is_collected_on_a_small_thread() {
+        const DEPTH: usize = 1_000_000;
+        const STACK_BYTES: usize = 256 * 1024;
+        let collector = std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(|| {
+                let mut heap = Heap::new();
+                let array_class = named_class(&mut heap, "Array");
+                let mut head = Value::nil();
+                for _ in 0..DEPTH {
+                    head = Value::object(heap.allocate_array(array_class, &[head]));
+                }
+                heap.collect_for_test(&mut [&mut head]);
+                let mut length = 0;
+                let mut link = head;
+                while let Some(object) = link.as_object() {
+                    length += 1;
+                    link = heap
+                        .array_element(object, 0)
+                        .expect("each link is a one-element array");
+                }
+                length
+            })
+            .expect("the collecting thread starts");
+        let length = collector
+            .join()
+            .unwrap_or_else(|_| panic!("the collecting thread panicked"));
+        assert_eq!(length, DEPTH, "the collection kept every link");
+    }
+
+    /// `Outer`, declaring `Inner`, declaring `Innermost`: three mixins no
+    /// heap has registered yet, each linked to the one it is declared in.
+    fn three_nested_mixins() -> [Rc<Mixin>; 3] {
+        let innermost = Rc::new(Mixin::empty(Symbol::intern("Innermost")));
+        let inner = Rc::new(
+            Mixin::empty(Symbol::intern("Inner")).with_declared_nested(vec![innermost.clone()]),
+        );
+        Mixin::set_enclosing_of_children(&inner);
+        let outer = Rc::new(
+            Mixin::empty(Symbol::intern("Outer")).with_declared_nested(vec![inner.clone()]),
+        );
+        Mixin::set_enclosing_of_children(&outer);
+        [outer, inner, innermost]
+    }
+
+    /// Asked for the innermost of three nested declarations first, a heap
+    /// registers the whole tree, the outermost first, so that every row
+    /// names the row of the mixin it is declared in and answers the mixin
+    /// it was minted for.
+    // spec: vm.handle.mixin-registered-in-one-heap
+    #[test]
+    fn asking_for_an_inner_mixin_registers_its_whole_tree_enclosing_first() {
+        let [outer, inner, innermost] = three_nested_mixins();
+        let mut heap = Heap::new();
+        let rows_before = heap.mixin_ids().len();
+        let innermost_id = heap.mixin_id(&innermost);
+        let ids = [&outer, &inner, &innermost].map(|mixin| {
+            heap.known_mixin_id(mixin)
+                .expect("registering the innermost registered its whole tree")
+        });
+        assert_eq!(ids[2], innermost_id);
+        assert_eq!(heap.mixin_ids().len(), rows_before + 3);
+        assert!(
+            ids[0].index() < ids[1].index() && ids[1].index() < ids[2].index(),
+            "the enclosing mixins are registered first"
+        );
+        assert_eq!(heap.enclosing_mixin_id(ids[0]), None);
+        assert_eq!(heap.enclosing_mixin_id(ids[1]), Some(ids[0]));
+        assert_eq!(heap.enclosing_mixin_id(ids[2]), Some(ids[1]));
+        for (mixin, id) in [&outer, &inner, &innermost].into_iter().zip(ids) {
+            let registered = heap.mixin(id).expect("a live row");
+            assert!(Rc::ptr_eq(&registered, mixin), "each row answers its mixin");
+        }
+    }
+
+    /// A heap that registered a tree took its nested declarations, so a
+    /// second heap asked for one of its mixins is refused, rather than
+    /// minting an id whose row lacks the tree or answering another heap's.
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a mixin is registered in at most one heap")]
+    // spec: vm.handle.mixin-registered-in-one-heap
+    #[test]
+    fn a_second_heap_asked_for_a_registered_mixin_is_refused() {
+        let [_outer, inner, innermost] = three_nested_mixins();
+        let mut first = Heap::new();
+        first.mixin_id(&innermost);
+        let mut second = Heap::new();
+        second.mixin_id(&inner);
+    }
+
     /// The chain at a length whose square a rescan per round would make
     /// obvious: the fixpoint looks each object it marks up once and
     /// traces each ephemeron once.
@@ -20228,6 +20324,7 @@ mod tests {
     /// without the header's numbers, and resuming it gives every register
     /// back where its code numbers it.
     // spec: vm.activation.suspension-copies-registers
+    // spec: vm.activation.register-base-from-argument-count
     #[test]
     fn suspending_and_resuming_round_trips_every_register_past_the_header() {
         let mut heap = frame_heap();

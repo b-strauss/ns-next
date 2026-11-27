@@ -1348,6 +1348,43 @@ fn a_retired_send_tag_is_refused() {
     }
 }
 
+/// The instruction that runs a mirror leaf without a lookup has no wire
+/// tag, so no image can forge one: every byte in an instruction's tag
+/// position, followed by a payload that any layout reads in full, decodes
+/// into anything but a mirror send, or is refused.
+// spec: vm.mirror.no-wire-tag
+#[test]
+fn no_instruction_tag_decodes_into_a_mirror_send() {
+    const PAYLOAD_BYTES: usize = 64;
+    let mut decoded = 0;
+    for tag in 0..=u8::MAX {
+        let bytes = one_method_code_table(false, 1, |writer| {
+            writer.write_u8(tag);
+            for _ in 0..PAYLOAD_BYTES {
+                writer.write_u8(0);
+            }
+        });
+        let mut reader = decode::Reader::new(&bytes);
+        let Ok(table) = decode::decode_code_table(&mut reader, &table_with(&["size"])) else {
+            continue;
+        };
+        decoded += 1;
+        for code in &table.codes {
+            assert!(
+                !code
+                    .instructions()
+                    .iter()
+                    .any(|instruction| matches!(instruction, Instruction::SendMirror { .. })),
+                "tag {tag} decodes into a mirror send"
+            );
+        }
+    }
+    assert!(
+        decoded > 0,
+        "some tag decodes, so the payload is read in full"
+    );
+}
+
 /// Tag 2 was `LoadBuiltinClass` before a bare builtin class name became a
 /// send to `Object`'s accessor, answered without an activation (§3.2); a
 /// stale artifact's tag-2 bytes meet an unknown tag instead of decoding into
@@ -1783,6 +1820,104 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
     }
 }
 
+/// The decoder does not bound an own-slot instruction's index, so a
+/// crafted body can name a slot past its receiver's fields, just past
+/// them or far past: its write lands nowhere, its read answers nil, and
+/// the object laid after the receiver keeps its slots.
+// spec: vm.heap.field-access-total
+#[test]
+fn an_own_slot_past_its_receivers_fields_is_read_as_nil_and_written_nowhere() {
+    let source = indoc! {"
+        class X = Object new (
+          | public first ::= 1. public second ::= 2. |
+        ) (
+          public run = ( ^1 )
+        ) : ()
+    "};
+    for own_index in [2, 3, 1_000, u32::MAX] {
+        let doctored_body = Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: HEADER_REGISTERS,
+                    literal: Literal::SmallInteger(99),
+                },
+                Instruction::InitializeSlot {
+                    source: HEADER_REGISTERS,
+                    own_index,
+                },
+                Instruction::LoadOwnSlot {
+                    destination: HEADER_REGISTERS + 1,
+                    own_index,
+                },
+                Instruction::Return {
+                    register: HEADER_REGISTERS + 1,
+                },
+            ],
+            0,
+            HEADER_REGISTERS + 2,
+            0,
+            vec![(0, 0..4)],
+            Span::new(0, 0),
+        ));
+        let (mut interpreter, class) = load(source);
+        let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let neighbour = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let doctored = with_method_code(
+                mixin_of(mutator.heap(), class),
+                "run",
+                doctored_body.clone(),
+            );
+            install_mixin(mutator, class, doctored);
+            let receiver = mutator.fetch(&receiver);
+            let neighbour = mutator.fetch(&neighbour);
+            snapshot_one(mutator, false, "t.ns", class, &[receiver, neighbour]).expect("snapshot")
+        });
+        let mut loaded = image::load(&bytes).expect("load");
+        // Sent again, so that its body runs in machine code too, where the
+        // JIT compiles it.
+        let reads: Vec<Root> = (0..3)
+            .map(|_| {
+                expect_ok(
+                    loaded
+                        .interpreter
+                        .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+                    "run",
+                )
+            })
+            .collect();
+        let mut slots = Vec::new();
+        for root in [0, 1] {
+            for selector in ["first", "second"] {
+                let slot = expect_ok(
+                    loaded
+                        .interpreter
+                        .send(&loaded.roots[root], Symbol::intern(selector), &[]),
+                    selector,
+                );
+                slots.push(slot);
+            }
+        }
+        loaded.interpreter.enter(|mutator| {
+            assert!(
+                reads.iter().all(|read| mutator.fetch(read).is_nil()),
+                "own slot {own_index} reads as nil"
+            );
+            let values: Vec<Option<i64>> = slots
+                .iter()
+                .map(|slot| mutator.fetch(slot).as_small_integer())
+                .collect();
+            assert_eq!(
+                values,
+                [Some(1), Some(2), Some(1), Some(2)],
+                "own slot {own_index}'s write changed no slot"
+            );
+        });
+    }
+}
+
 /// A send passes exactly as many arguments as its selector takes, so a
 /// crafted body that sends `==` with no argument -- which `Object`'s leaf
 /// would read past -- or `printString` with one, which its leaf would
@@ -1889,6 +2024,50 @@ fn a_loaded_images_recursion_ends_at_the_depth_limit() {
         expect_error(result, "recurse"),
         "stack overflow: recursion too deep"
     );
+}
+
+/// A program chooses how deep its objects nest, so the encoder walks the
+/// graph with a stack of its own and the decoder reads it record by
+/// record: a chain a million arrays deep is written and read back whole
+/// on a thread whose stack holds a few thousand frames at most.
+// spec: vm.heap.no-recursion-over-input-depth
+#[test]
+fn a_chain_of_objects_deeper_than_the_stack_round_trips_on_a_small_thread() {
+    const DEPTH: usize = 1_000_000;
+    const STACK_BYTES: usize = 1024 * 1024;
+    let round_trip = std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(|| {
+            let (mut interpreter, class) = load(EMPTY);
+            let bytes = interpreter.enter(|mutator| {
+                let class = class_reference(mutator, &class);
+                let mut head = Value::nil();
+                for _ in 0..DEPTH {
+                    head = Value::object(mutator.new_array(vec![head]));
+                }
+                snapshot_one(mutator, false, "t.ns", class, &[head]).expect("snapshot")
+            });
+            let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+            let mut interpreter = loaded.interpreter;
+            let root = loaded.roots[0].clone();
+            interpreter.enter(|mutator| {
+                let mut length = 0;
+                let mut link = mutator.fetch(&root);
+                while let Some(object) = link.as_object() {
+                    length += 1;
+                    link = mutator
+                        .heap()
+                        .array_element(object, 0)
+                        .expect("each link is a one-element array");
+                }
+                length
+            })
+        })
+        .expect("the round-tripping thread starts");
+    let length = round_trip
+        .join()
+        .unwrap_or_else(|_| panic!("the round-tripping thread panicked"));
+    assert_eq!(length, DEPTH, "the loaded chain has every link");
 }
 
 /// The image's error for `source`'s module: a snapshot of its class alone,
@@ -6457,6 +6636,68 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     );
 }
 
+/// The decoder allocates every record's placeholder before it fills the
+/// first, so a section refused while it fills them leaves placeholders
+/// nothing filled in the space. Each names the builtin `Object` as its
+/// class: a walk of the space reads every object's class word, these
+/// included, and finds a class object in each.
+// spec: vm.heap.class-word-never-nil
+#[test]
+fn a_placeholder_a_refused_graph_left_unfilled_is_an_instance_of_object() {
+    // Two arrays, the first refused for its identity hash, which only the
+    // fill checks: neither placeholder is filled.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2);
+    for identity_hash in [u32::MAX, 1] {
+        writer.write_shipped(ARRAY_NAME);
+        writer.write_u32(identity_hash);
+        writer.write_u8(OBJECT_ARRAY); // object body: Array
+        writer.write_u32(0); // no elements
+    }
+    writer.write_u32(0); // no roots
+    let bytes = writer.into_bytes();
+    let mut fixture = GraphFixture::new();
+    let GraphFixture {
+        interpreter,
+        codes,
+        symbols,
+        mixins,
+        names,
+        module_roots,
+        ..
+    } = &mut fixture;
+    interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let before = mutator.heap().instances_of(object_class).len();
+        let shipped =
+            shipped_names::resolve_in(mutator, names, false).expect("the fixture's names resolve");
+        let refused = {
+            let mut context = decode::DecodeContext {
+                mutator,
+                module_roots,
+                codes,
+                mixins,
+                shipped: &shipped,
+            };
+            matches!(
+                decode::decode_graph_section(
+                    &mut decode::Reader::new(&bytes),
+                    &mut context,
+                    symbols
+                ),
+                Err(decode::DecodeError::IdentityHashTooWide(u32::MAX))
+            )
+        };
+        assert!(refused, "the first record's identity hash is refused");
+        let after = mutator.heap().instances_of(object_class).len();
+        assert_eq!(
+            after,
+            before + 2,
+            "the refused section left its two placeholders, each of `Object`"
+        );
+    });
+}
+
 // spec: image.verify.class-records
 #[test]
 fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
@@ -10129,6 +10370,62 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         assert!(
             mutator.fetch(&value).as_small_integer() == Some(7),
             "the loaded closure reads its captured local"
+        );
+    });
+}
+
+/// A frame record carries no argument count: a decoded frame takes its
+/// body's, and its registers are found from it. Under the reference
+/// lowering a block reaches its home's arguments by reference, so a
+/// closure over a returned method of two arguments, loaded from an image,
+/// reads both from the decoded frame, each where its number puts it.
+// spec: vm.activation.register-base-from-argument-count
+#[test]
+fn a_decoded_frame_finds_its_arguments_from_its_bodys_argument_count() {
+    let source = indoc! {"
+        class X = Object new (
+          | public held ::= nil. |
+        ) (
+          public keep: first and: second = ( held:: [ first + (second * 10) ] )
+        ) : ()
+    "};
+    let module = ns_syntax::parse(source).expect("parse");
+    let resolved = ns_runtime::resolve(
+        module,
+        Rc::from(source),
+        SourceOrigin::File(PathBuf::from("t.ns")),
+    )
+    .expect("resolve");
+    let mut interpreter = Interpreter::bootstrap_with(ns_runtime::Lowering::Reference);
+    let class = interpreter.load_module(&resolved);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let [first, second] =
+        interpreter.enter(|mutator| [3, 4].map(|value| mutator.stash(Value::small_integer(value))));
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern("keep:and:"), &[first, second]),
+        "keep:and:",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(mutator, false, "t.ns", class, &[instance]).expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    let value = expect_ok(
+        loaded.interpreter.send(&held, Symbol::intern("value"), &[]),
+        "value",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(
+            mutator.fetch(&value).as_small_integer(),
+            Some(43),
+            "the loaded closure reads both arguments of its decoded home"
         );
     });
 }
@@ -14523,6 +14820,117 @@ fn the_wire_format_matches_the_golden_fixture() {
         "the image wire format changed -- if that is intended, regenerate the \
          fixture in the same commit and say why"
     );
+}
+
+/// The factory body `selector` names on the class side `class`'s
+/// metaclass applies.
+fn factory_body_of<'gc>(
+    heap: &Heap<'gc>,
+    class: ClassReference<'gc>,
+    selector: &str,
+) -> Rc<CompiledCode> {
+    match class_side_of(heap, class)
+        .methods
+        .get(&Symbol::intern(selector))
+    {
+        Some(ns_runtime::mixin::MethodEntry::Factory(factory)) => factory.code.clone(),
+        _ => panic!("the class side has no factory `{selector}`"),
+    }
+}
+
+/// A factory's body is synthesized from its arity alone, whoever attaches
+/// it: a program's class compiled from source, the same class decoded
+/// from an image, which carries no factory body, and a class of the core
+/// library, which the boot decodes from the embedded shipped code. Each
+/// is the body of one argument `compiler::factory_body` makes.
+// spec: vm.compiler.factory-body-synthesized
+#[test]
+fn every_path_that_builds_a_factory_attaches_the_body_its_arity_synthesizes() {
+    let source = indoc! {"
+        class X usingPlatform: p = Object new (
+          | public builder = p kernel StringBuilder. |
+        ) (
+        ) : ()
+    "};
+    let synthesized = ns_runtime::compiler::factory_body(1);
+    let assert_synthesized = |code: &CompiledCode, path: &str| {
+        assert_eq!(code.instructions(), synthesized.instructions(), "{path}");
+        assert_eq!(
+            (code.argument_count, code.register_count, code.local_count),
+            (
+                synthesized.argument_count,
+                synthesized.register_count,
+                synthesized.local_count
+            ),
+            "{path}"
+        );
+    };
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let builder = expect_ok(
+        interpreter.send(&instance, Symbol::intern("builder"), &[]),
+        "builder",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let builder = class_reference(mutator, &builder);
+        assert_synthesized(
+            &factory_body_of(mutator.heap(), class, "usingPlatform:"),
+            "compiled from source",
+        );
+        assert_synthesized(
+            &factory_body_of(mutator.heap(), builder, "new:"),
+            "decoded from the embedded shipped code",
+        );
+        module_only_image(mutator, false, "t.ns", class).expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    let class = loaded.modules[0].class.clone();
+    loaded.interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        assert_synthesized(
+            &factory_body_of(mutator.heap(), class, "usingPlatform:"),
+            "decoded from an image",
+        );
+    });
+}
+
+/// A frame's header is part of compiled code, every register past it
+/// numbered from its end, so it is one size in every build: the golden
+/// fixture, which a build with debug assertions writes, loads and runs in
+/// whichever build runs this test -- the release-checks gate's, without
+/// debug assertions, among them -- and the header is thirteen words in
+/// each.
+// spec: vm.activation.header-one-size
+#[test]
+fn an_image_a_build_with_debug_assertions_wrote_runs_in_every_build() {
+    let mut loaded = image::load(include_bytes!("fixtures/golden-image.bin")).expect("load");
+    let root = loaded.roots[0].clone();
+    let mut answers = Vec::new();
+    for selector in ["increment", "doubled"] {
+        answers.push(expect_ok(
+            loaded
+                .interpreter
+                .send(&root, Symbol::intern(selector), &[]),
+            selector,
+        ));
+    }
+    loaded.interpreter.enter(|mutator| {
+        let answers: Vec<Option<i64>> = answers
+            .iter()
+            .map(|answer| mutator.fetch(answer).as_small_integer())
+            .collect();
+        assert_eq!(
+            answers,
+            [Some(2), Some(4)],
+            "the fixture's code runs as written"
+        );
+    });
+    assert_eq!(HEADER_REGISTERS, 13, "the header is thirteen words");
 }
 
 /// `NESTED_MODULE` written with source, outside any run: a root declaration

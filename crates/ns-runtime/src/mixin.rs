@@ -2020,3 +2020,54 @@ mod applied_clause_tests {
         assert_eq!(AppliedClause::unpack(packed), None);
     }
 }
+
+#[cfg(test)]
+mod application_chain_tests {
+    use super::{DispatchIds, LevelFacts, Mixin, MixinApplication};
+    use crate::Symbol;
+    use crate::hash::IdentityMap;
+    use crate::heap::ApplicationIndex;
+    use std::rc::Rc;
+
+    /// An image chooses how long an application chain is, one link per
+    /// class record, so dropping one releases it in a loop: a chain a
+    /// million links long is released on a thread whose stack holds a few
+    /// thousand frames at most.
+    // spec: vm.heap.no-recursion-over-input-depth
+    #[test]
+    fn an_application_chain_deeper_than_the_stack_is_dropped_on_a_small_thread() {
+        const DEPTH: usize = 1_000_000;
+        const STACK_BYTES: usize = 256 * 1024;
+        let dropper = std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(|| {
+                let mixin = Rc::new(Mixin::empty(Symbol::intern("Link")));
+                let level_facts = LevelFacts::of_mixin(&mixin);
+                let mut chain: Option<Rc<MixinApplication>> = None;
+                for _ in 0..DEPTH {
+                    chain = Some(Rc::new(MixinApplication {
+                        index: ApplicationIndex::UNREGISTERED,
+                        mixin: Rc::clone(&mixin),
+                        superclass: chain.take(),
+                        inherits_value: false,
+                        first_mutable_slot: None,
+                        instantiation_refusal: None,
+                        nested_slot: IdentityMap::default(),
+                        declared_slots: Vec::new(),
+                        slot_count: 0,
+                        own_slot_base: 0,
+                        dispatch_ids: DispatchIds::NONE,
+                        instance_header: None,
+                        level_facts,
+                    }));
+                }
+                drop(chain);
+                Rc::strong_count(&mixin)
+            })
+            .expect("the dropping thread starts");
+        let holders = dropper
+            .join()
+            .unwrap_or_else(|_| panic!("the dropping thread panicked"));
+        assert_eq!(holders, 1, "every link of the chain was released");
+    }
+}
