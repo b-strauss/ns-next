@@ -165,7 +165,7 @@ end-of-batch gates:
    pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install") resumes now that the fifth is built, and changes the
+"Planned: the complete install") is the next batch, and changes the
 specification as it changes the runtime.
 
 ## The fifth batch's decisions

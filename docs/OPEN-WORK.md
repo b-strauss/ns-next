@@ -15,6 +15,18 @@ when they were written.
 
 ## Next
 
+**The complete install, the first of hot swap's three batches** (decisions
+taken with the user on 2026-11-22 but for one, the change of a module's
+identity; the branch `feature/complete-install` is parked with batch A's
+decisions; [liveness-and-reflection.md](design/liveness-and-reflection.md),
+"Planned: the complete install"): the install that changes everything --
+a superclass, a class added or removed, a method added, changed or
+removed, the factory and the initializer -- atomically through the
+MirrorBuilder. It is the next batch; the specification of the current
+state it waited for is built ([specification.md](design/specification.md),
+"The order of building it"), and it changes the book as it changes the
+runtime.
+
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
 user on 2026-11-11: the debugger goes on before road step 9 resumes;
@@ -37,10 +49,7 @@ Hot swap is split into three batches, the complete install, hot swap in
 the debugger and developing in an empty world, and the first one's
 decisions are taken but for one, the change of a module's identity
 ([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: the complete install"); the complete install is the next batch, the
-specification of the current state, which came first, being built
-([specification.md](design/specification.md), "The order of building
-it").
+"Planned: the complete install"); the first of the three is the complete install, the item above.
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
 at the safepoint", "Launching, the start and the end", "The MCP
 server", "The JetBrains plugin"): stage 5 evaluates expressions, sets

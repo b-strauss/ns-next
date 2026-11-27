@@ -8991,4 +8991,4 @@ pointer.
   the rules.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-debugger's stage 6 and the complete install.
+complete install, then the debugger's stage 6.

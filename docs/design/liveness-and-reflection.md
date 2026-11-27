@@ -932,8 +932,8 @@ changed or removed, the factory and the initializer. The Newspeak
 implementations are the models (`prior-art/newspeak/AtomicInstaller.ns`,
 `prior-art/primordialsoup/newspeak/Mirrors.ns`); JVMTI's
 `RedefineClasses`, which permits only method bodies to change, is not.
-Batch A waits for the specification of the current state, which comes
-first (decided with the user on 2026-11-23). Its decisions so far, each
+The specification of the current state is built, and batch A is the next
+batch to build. Its decisions so far, each
 taken with the user on 2026-11-22:
 
 1. **A superclass change re-evaluates the clause for every existing
