@@ -299,8 +299,10 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
    version another module of the world has -- or an id another has where
    either has no version -- signal the loader's message, the last naming
    both paths, ``two modules are `com.acme.Util@2.0.0`: v1/Util.ns and
-   v2/Util.ns``, and change nothing. The manifest a program holds answers
-   the module under the id it was assembled with.
+   v2/Util.ns``, and change nothing. A module whose id the project gave
+   (`as`) keeps that id, a rename replacing its last part, and takes the
+   version its text declares. The manifest a program holds answers the
+   module under the id it was assembled with.
 4. If anything was installed, or a module loaded, since step 2 -- the
    install epoch moved -- signal `an install ran between the preparation
    and the commit of Inner's install; nothing was installed` and change

@@ -926,7 +926,20 @@ fn rename_declaration(
     let Some(comment) = crate::mixin::source_text(text, metadata.span) else {
         return renamed;
     };
-    let Some(payload_start) = comment.find(&metadata.payload) else {
+    // The payload follows the tag's closing colon; searched only there, so
+    // that a payload that spells the tag, `(* :module: module *)`, is not
+    // found in the tag.
+    let Some(tag_end) = comment.find(':').and_then(|open| {
+        comment[open + 1..]
+            .find(':')
+            .map(|close| open + 1 + close + 1)
+    }) else {
+        return renamed;
+    };
+    let Some(payload_start) = comment[tag_end..]
+        .find(&metadata.payload)
+        .map(|offset| tag_end + offset)
+    else {
         return renamed;
     };
     let id = metadata
@@ -1659,6 +1672,27 @@ mod tests {
         assert_eq!(
             renamed.texts[0].header,
             "(* :module: com.acme.Codec@1.0.0 *)\nclass Codec = Object new () "
+        );
+    }
+
+    /// A root's rename rewrites the id's last part in the `:module:`
+    /// payload, never the tag, even where the payload spells the tag.
+    // spec: runtime.install
+    #[test]
+    fn a_root_rename_rewrites_the_payload_not_the_tag() {
+        let source = indoc! {"
+            (* :module: module *)
+            class module = Object new () ()
+        "};
+        let (mut interpreter, outer) = load(source);
+        let root_id = interpreter.enter(|mutator| {
+            let root = root_mixin(mutator, &outer);
+            mutator.heap.mixin_id(&root)
+        });
+        let renamed = prepare(&mut interpreter, root_id, &rename("codec"));
+        assert_eq!(
+            &*renamed.module_texts[0],
+            "(* :module: codec *)\nclass codec = Object new () ()\n"
         );
     }
 

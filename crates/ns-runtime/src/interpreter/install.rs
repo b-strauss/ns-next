@@ -895,12 +895,70 @@ mod tests {
             &identity_of(&mut interpreter, &first),
             &identity
         ));
+        let malformed =
+            header_edit("(* :module: com.acme.Util@1.0 *)\nclass Util = Object new () ");
+        let refused = interpreter.enter(|mutator| mutator.install_one(root_id, &malformed));
+        match refused {
+            Ok(_) => panic!("the malformed version was installed"),
+            Err(diagnostic) => assert!(
+                diagnostic.starts_with("`1.0` is no version: "),
+                "{diagnostic}"
+            ),
+        }
         let reserved = header_edit("(* :module: newspeak.Util *)\nclass Util = Object new () ");
         let refused = interpreter.enter(|mutator| mutator.install_one(root_id, &reserved));
         match refused {
             Ok(_) => panic!("the reserved identity was installed"),
             Err(diagnostic) => assert!(diagnostic.contains("lies in the namespace `newspeak.`")),
         }
+    }
+
+    /// A rename to the id of a module that declares no version is
+    /// refused, whatever version the renamed one declares, with the
+    /// loader's message naming both paths.
+    // spec: runtime.install
+    #[test]
+    fn a_rename_to_a_versionless_module_s_id_changes_nothing() {
+        let mut interpreter = Interpreter::bootstrap();
+        let util = load_identified(
+            &mut interpreter,
+            indoc! {"
+                (* :module: com.acme.Util@1.0.0 *)
+                class Util = Object new () ()
+            "},
+            "a/Util.ns",
+        );
+        load_identified(
+            &mut interpreter,
+            indoc! {"
+                (* :module: com.acme.Tool *)
+                class Tool = Object new () ()
+            "},
+            "b/Tool.ns",
+        );
+        let (root_id, before) = interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, &util);
+            (mutator.heap.mixin_id(&mixin), mixin)
+        });
+        let identity = identity_of(&mut interpreter, &util);
+        let edit = Edit {
+            header: None,
+            instance_side: Vec::new(),
+            class_side: Vec::new(),
+            new_name: Some(Symbol::intern("Tool")),
+        };
+        match interpreter.enter(|mutator| mutator.install_one(root_id, &edit)) {
+            Ok(_) => panic!("the colliding rename was installed"),
+            Err(diagnostic) => assert_eq!(
+                diagnostic,
+                "two modules are `com.acme.Tool` and one of them has no version: a/Util.ns and \
+                 b/Tool.ns"
+            ),
+        }
+        interpreter.enter(|mutator| {
+            assert!(Rc::ptr_eq(&mixin_of(mutator, &util), &before));
+        });
+        assert!(Rc::ptr_eq(&identity_of(&mut interpreter, &util), &identity));
     }
 
     /// An edited nested class is written and loads edited: its added

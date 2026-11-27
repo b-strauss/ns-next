@@ -1782,7 +1782,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// the class otherwise renames it, one of another access changes the
     /// access of its accessor, and a root's whose `:module:` declares
     /// another id or version gives the module that identity, keeping its
-    /// path.
+    /// path. A root's header given without the `(* :module: … *)` it
+    /// had removes it: the module becomes undeclared, its id the class's
+    /// name and its version dropped. A module the project names with
+    /// `as` keeps that id, its last part the class's name, and takes the
+    /// version its text declares.
     ///
     /// @param aString the header's text, a String or a Symbol, sent
     /// `asString`.
