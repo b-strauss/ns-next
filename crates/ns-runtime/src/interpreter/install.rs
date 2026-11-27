@@ -13,7 +13,7 @@ use super::edit::{EditedTexts, InstallEntry};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::StaleIds;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
-use crate::mixin::{DispatchId, Mixin, MixinApplication};
+use crate::mixin::{DispatchId, FieldName, LevelName, Mixin, MixinApplication};
 use crate::types::Value;
 use prepared::PreparedInstall;
 use superclasses::Reparenting;
@@ -114,6 +114,12 @@ impl<'gc> Mutator<'gc> {
                     .expect("internal: the walk collects class objects")
             })
             .collect();
+        // Before anything is replaced or re-parented, while each class
+        // object's chain is still the one its instances were laid out by.
+        let old_names: Vec<Vec<FieldName>> = classes
+            .iter()
+            .map(|class| self.field_names_of_class(*class))
+            .collect();
         let stale = self.stale_after(&prepared, &old_applications);
         self.replace_versions(&prepared);
         // Each module declared from source joins the heap with its tree of
@@ -123,15 +129,8 @@ impl<'gc> Mutator<'gc> {
         }
         // Every module text an agent holds may be this edit's.
         self.breakpoints.raise_text_revision();
-        let new_applications =
-            self.reapply(&classes, &old_applications, &reparentings, &reparented);
-        let migration = self.migrate(
-            &classes,
-            &class_positions,
-            &old_applications,
-            &new_applications,
-            &instances,
-        );
+        self.reapply(&classes, &old_applications, &reparentings, &reparented);
+        let migration = self.migrate(&classes, &class_positions, &old_names, &instances);
         // An unmoved instance, a class object whose metaclass was re-applied
         // among them, carries its class's old guard until restamped.
         self.heap.stamp_dispatch_ids(&migration.kept);
@@ -496,14 +495,14 @@ impl<'gc> Mutator<'gc> {
     /// every nested class object has §3.1.1's verdict decided again.
     /// Records an old level whose slot base and own slots the edit kept as
     /// succeeded by the new one, so an activation entered at it passes the
-    /// slot check. Answers the new applications, by position.
+    /// slot check.
     fn reapply(
         &mut self,
         classes: &[ClassReference<'gc>],
         old_applications: &[Rc<MixinApplication>],
         reparentings: &[Reparenting<'gc>],
         reparented: &IdentityMap<usize, usize>,
-    ) -> Vec<Rc<MixinApplication>> {
+    ) {
         // Before the sort, so that a re-parented class object sorts after
         // its new superclass and every class object over it after it.
         for reparenting in reparentings {
@@ -524,7 +523,6 @@ impl<'gc> Mutator<'gc> {
             }
             length
         });
-        let mut new_applications: Vec<Option<Rc<MixinApplication>>> = vec![None; classes.len()];
         for position in order {
             let class = classes[position];
             let old = &old_applications[position];
@@ -555,7 +553,6 @@ impl<'gc> Mutator<'gc> {
             {
                 let new = self.reparent_body_less(class, reparenting, superclass);
                 self.redecide_value_class(class, new.inherits_value);
-                new_applications[position] = Some(new);
                 continue;
             }
             if let Some(reparenting) = reparenting
@@ -601,36 +598,111 @@ impl<'gc> Mutator<'gc> {
             if old.own_slot_base == new.own_slot_base && same_own_slots {
                 self.heap.record_successor(old.index(), new.index());
             }
-            new_applications[position] = Some(new);
         }
-        new_applications
-            .into_iter()
-            .map(|new| new.expect("internal: every class object is re-applied"))
-            .collect()
+    }
+
+    /// Every field of an instance of `class`, by index, named by its level
+    /// as `LevelName` says: the levels read off `class`'s chain of class
+    /// objects, each owned by the declaration its applied clause names or,
+    /// for a level no clause added, by its own mixin's declaration. A
+    /// declaration's levels are its clauses' in text order and then its
+    /// own, so a level of the owner of the level below begins another
+    /// group of it where its clause does not follow that level's -- a
+    /// second class object of the declaration, which another applies.
+    fn field_names_of_class(&self, class: ClassReference<'gc>) -> Vec<FieldName> {
+        let mut chain = Vec::new();
+        let mut level = Some(class);
+        while let Some(current) = level {
+            chain.push(current);
+            level = self.heap.class_superclass(current);
+        }
+        let mut groups: IdentityMap<MixinId, u32> = IdentityMap::default();
+        // The open group: its owner, its number among the owner's groups,
+        // the last clause it took and its mixins' counts.
+        let mut open: Option<(MixinId, u32, usize, IdentityMap<MixinId, u32>)> = None;
+        let mut levels: Vec<(Rc<MixinApplication>, LevelName)> = Vec::with_capacity(chain.len());
+        for current in chain.into_iter().rev() {
+            let application = self
+                .heap
+                .class_application(current)
+                .expect("internal: a chain's levels are class objects with an application");
+            let mixin = self
+                .heap
+                .known_mixin_id(&application.mixin)
+                .expect("internal: an applied mixin is registered");
+            let clause = self.heap.class_applied_declaration(current);
+            let owner = clause.map_or(mixin, |(declaration, _)| declaration);
+            let continues = open.as_ref().is_some_and(|(open_owner, _, last, _)| {
+                *open_owner == owner && clause.is_none_or(|(_, index)| index > *last)
+            });
+            if !continues {
+                let count = groups.entry(owner).or_insert(0);
+                open = Some((owner, *count, 0, IdentityMap::default()));
+                *count += 1;
+            }
+            let Some((_, group, last, mixins)) = open.as_mut() else {
+                unreachable!("internal: a group is open");
+            };
+            let count = mixins.entry(mixin).or_insert(0);
+            let occurrence = *count;
+            *count += 1;
+            levels.push((
+                application,
+                LevelName {
+                    owner,
+                    owner_occurrence: *group,
+                    mixin,
+                    occurrence,
+                },
+            ));
+            match clause {
+                Some((_, index)) => *last = index,
+                // A declaration's own level is its group's last.
+                None => open = None,
+            }
+        }
+        // Counted from the top, so that a superclass change, which
+        // rebuilds only the levels below the class it changes, shifts no
+        // level's name above them.
+        for (_, name) in &mut levels {
+            let total = groups[&name.owner];
+            name.owner_occurrence = total - 1 - name.owner_occurrence;
+        }
+        let slot_count = levels
+            .last()
+            .map_or(0, |(application, _)| application.slot_count);
+        crate::mixin::lay_out_fields(
+            levels
+                .iter()
+                .map(|(application, name)| (application.as_ref(), *name)),
+            slot_count,
+        )
+        .into_iter()
+        .map(|field| field.name)
+        .collect()
     }
 
     /// Allocates each instance whose class's fields changed in the new
     /// layout and copies its fields into it by their `FieldName` -- a slot
-    /// by its declaring level and its name -- leaving nil a field the edit
-    /// added, or moved to another level; runs no initializer and sends
-    /// nothing.
+    /// by its declaring level and its name, the levels named as
+    /// `old_names` named them before the commit changed any chain --
+    /// leaving nil a field the edit added, or moved to another level; runs
+    /// no initializer and sends nothing.
     fn migrate(
         &mut self,
         classes: &[ClassReference<'gc>],
         class_positions: &IdentityMap<usize, usize>,
-        old_applications: &[Rc<MixinApplication>],
-        new_applications: &[Rc<MixinApplication>],
+        old_names: &[Vec<FieldName>],
         instances: &[ObjectReference<'gc>],
     ) -> Migration<'gc> {
         // Per class, for each new field, the old field it takes; `None`
         // where the layout stayed.
-        let copies: Vec<Option<Vec<Option<usize>>>> = old_applications
+        let copies: Vec<Option<Vec<Option<usize>>>> = classes
             .iter()
-            .zip(new_applications)
-            .map(|(old, new)| {
-                let old_names = old.field_names(&self.heap);
-                let new_names = new.field_names(&self.heap);
-                (old_names != new_names).then(|| {
+            .zip(old_names)
+            .map(|(class, old_names)| {
+                let new_names = self.field_names_of_class(*class);
+                (*old_names != new_names).then(|| {
                     new_names
                         .iter()
                         .map(|name| old_names.iter().position(|old_name| old_name == name))

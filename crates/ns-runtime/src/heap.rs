@@ -6535,6 +6535,21 @@ impl<'gc> Heap<'gc> {
         declaration.mixin_applications.get(index).cloned()
     }
 
+    /// The id of the declaration whose `<:` clause added `class` and the
+    /// clause's position in it, for an install, which names a level by its
+    /// owner (`Mutator::field_names_of_class`); `None` for a class object no
+    /// mixin application added.
+    pub(crate) fn class_applied_declaration(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<(MixinId, usize)> {
+        let packed = self
+            .class_field(class, class_field::APPLIED_CLAUSE)?
+            .as_small_integer()?;
+        let (mixin, index, _) = crate::mixin::AppliedClause::unpack(packed)?;
+        Some((mixin, index))
+    }
+
     /// Which `<:` clause added `class` -- the applying declaration and the
     /// clause's position in it -- for the image encoder, which names a level's
     /// clause that way; `None` for a class object no mixin application added.

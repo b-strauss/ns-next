@@ -927,13 +927,25 @@ below):
   before the install does next" below).
 - *Migrate*: each instance of a class object whose fields changed is
   allocated in the new shape, and its fields are copied by what they are
-  named (`r[vm.heap.migration-by-declared-name]`; `mixin.rs`'s `FieldName`,
-  `MixinApplication::field_names`): a
-  slot by the id of the level declaring it, that id's occurrence counted
-  from the chain's root -- one chain may apply a mixin twice through `<:`
-  clauses -- and its name; a hidden nested-class slot
-  by the nested declaration's id and the occurrence of the level caching
-  it. A slot the edit adds, or moves to another level, or of a level a
+  named (`r[vm.heap.migration-by-declared-name]`; `mixin.rs`'s `FieldName`
+  and `LevelName`, `Mutator::field_names_of_class`): a slot by the level
+  declaring it and its name, a hidden nested-class slot by the level
+  caching it and the nested declaration's id. One chain may apply a mixin
+  twice through `<:` clauses, so a level is named by its owner -- the
+  declaration whose clause applies it, read off the level's class object
+  (`Heap::class_applied_declaration`), or whose own mixin it is -- that
+  owner's occurrence counted from the instance's class down, the level's
+  mixin and that mixin's occurrence among the owner's levels in the text
+  order of its clauses, all read before the commit re-parents anything.
+  A count from the chain's root would shift when a superclass gains or
+  loses a clause applying a mixin a subclass's clause applies too, and
+  hand the subclass's untouched level the lost one's values; a
+  re-parenting rebuilds only the levels below the class it changes, so a
+  count from the top shifts none above it. Where an owner's own clauses
+  change, its first remaining `<: M` takes the values of its first
+  former one, in text order (the goldens
+  `a_lost_mixin_level_leaves_a_subclass_level_its_values` and
+  `a_gained_mixin_level_starts_nil_beside_a_subclass_level`). A slot the edit adds, or moves to another level, or of a level a
   re-parented chain gains, is `nil`, and its
   initializer does not run, so a new lazy slot is computed on its first
   read; a slot of a level the chain loses, and the hidden slot of a

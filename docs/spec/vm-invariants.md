@@ -497,12 +497,19 @@ Protects: [`runtime.install`](runtime.md#r-runtime.install),
 
 r[vm.heap.migration-by-declared-name]
 An install migrates each instance whose layout changed by copying every
-field by the id of the level that declares it (that level's occurrence
-counted from the chain's root) and its name, a hidden nested-class slot
-by the nested declaration's id; a slot the edit adds or moves starts nil
-with no initializer run, shadowing slots of one name stay apart, fields
-are written through the store accessors, and only instances are
-forwarded.
+field by the name of the level that lays it down and, for a declared
+slot, the slot's name, for a hidden nested-class slot the nested
+declaration's id. A level is named by its owner -- the declaration whose
+`<:` clause applies it, or whose own mixin it is -- that owner's
+occurrence in the chain counted from the instance's class down, the
+level's mixin and that mixin's occurrence among the owner's levels in the
+text order of its clauses, all read before the commit changes any chain;
+so no superclass change of one class shifts the name of a level another
+declaration owns, and where an owner's own clauses change, its first
+remaining `<: M` takes the values of its first former one. A slot the
+edit adds or moves starts nil with no initializer run, shadowing slots of
+one name stay apart, fields are written through the store accessors, and
+only instances are forwarded.
 
 Protects: [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
