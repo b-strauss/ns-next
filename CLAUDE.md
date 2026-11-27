@@ -463,11 +463,18 @@ on a body, the tables held to the code by tests -- the image format --
 its encodings, header, sections, tags and structure, the tags and the
 structure held to the code by tests, the rules the decoder checks on an
 image, the bounds of a load and the operations that load and write one
--- and the VM invariants (not written yet), each normative rule preceded by an identifier line
+-- and the VM invariants, the internal rules whose breach makes a rule
+of the other parts false without a program seeing why, each `vm.*` rule
+saying what it protects and what finds its breach -- tests, the
+chapter's table of detectors (the stress modes, a debug build's checks,
+the Rust compiler's) or an `Undetected:` line with the reason --, each
+normative rule preceded by an identifier line
 `r[lex.comment.line]`, and an appendix of the differences from Bracha's
 Newspeak -- the ones adopted as ns-next's own rules and the gaps, the
 constructs not built yet, each a rule whose identifier holds `gap` --
 which is the book's source and no longer its measure (`docs/design/specification.md`).
+The design documents and `CLAUDE.md` point at a rule as `` `r[image.bound.sizing]` ``,
+and `cargo xtask spec` refuses a pointer that names no rule of the book.
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -528,9 +535,13 @@ the rounds run on.
 
 ## Invariants that are easy to break
 
-Each has already produced a real defect. The rule is stated here; the mechanism
-and its history are in the design document named with it. Read that section
-before changing code the rule governs.
+Each has already produced a real defect. An entry states its rule in short
+and points at the book's rules that state it in full, as
+`` `r[vm.heap.barrier]` `` --
+the `vm.*` ones in `docs/spec/vm-invariants.md`, each saying what it
+protects and what finds its breach -- then names the code that enforces
+it and the design document's section with the mechanism and its history.
+Read that section before changing code the rule governs.
 
 **Program outcomes are pinned, not re-derived.** Every `goldens/**/*.ns`
 is held to the `status`, `stdout` and `stderr` in the `.toml` beside it, under
@@ -543,169 +554,147 @@ interpreter, so that machine code is held to what it never produced.
 
 **`vm.rs` holds no dispatch logic.** Send, `doesNotUnderstand:`, lexical, super
 and native dispatch, frame construction, `instantiate` and the inline caches live
-in `interpreter/`; the VM's loop only calls them, so the reference lowering and a
-later JIT reach the same dispatch and raise the same errors. Never copy dispatch
-logic, lookup logic or error text into `vm.rs` or `compiler/`; widen to
-`pub(crate)` instead. A send hands `feedback_base`, `family_size` and the
-`CallSite` to `interpreter/inline_cache.rs` and does nothing else with them;
-`SendMirror`'s arm calls `interpreter::mirror::send_inlined`, which decides the
-leaf.
+in `interpreter/`; the VM's loop only calls them, so both lowerings and
+machine code reach the same dispatch and raise the same errors
+(`r[runtime.send]`, `r[runtime.lookup]`, `r[vm.dispatch.cache-records-lookup]`).
+Never copy dispatch logic, lookup logic or error text into `vm.rs` or
+`compiler/`; widen to `pub(crate)` instead. A send hands `feedback_base`,
+`family_size` and the `CallSite` to `interpreter/inline_cache.rs` and does
+nothing else with them; `SendMirror`'s arm calls
+`interpreter::mirror::send_inlined`, which decides the leaf.
 
 **Compiling an already-resolved module can never raise a `NewspeakError`.** It is
 a total, deterministic lowering; a compiler-invariant violation is `panic!` /
-`debug_assert!`. A program-level error is deferred to execution
-(`Literal::UnresolvedIdentifier`, `Literal::BodyTooLarge` for a body past
-the `u16` register ceiling, and `Literal::Unbuilt` for an asynchronous send
-or a pattern literal), so a method never run never fails.
+`debug_assert!`, and a program-level error is deferred into a literal that
+raises when it runs (`Literal::UnresolvedIdentifier`, `Literal::BodyTooLarge`,
+`Literal::Unbuilt`), so a method never run never fails (`r[vm.compiler.total]`,
+`r[vm.compiler.register-count-checked]`, `r[bytecode.limit.too-large]`;
+`compiler.md`, "Compilation cannot fail").
 
 **An expression's value register must still hold that value when its consumer
-executes.** A named local's register is live storage; `lower_operand` copies it,
-and an assignment through a setter copies its value, whenever something lowered
-afterwards can write that register — including when a setter send runs user code
-before the very next instruction. Whether something can write it is a question
-about the register (`a_send_can_write(register)`), not the send: only an
-assignment in the same body (inlined blocks included) and the fallback closure
-of an inlinable conditional that assigns the local can. Parameters and immutable
-locals are never copied; that rests on `ScopeStack::resolve_setter` and is
-checked by `lower_assign`'s `debug_assert!`s against `read_only_locals`. Getting
-it wrong is silent wrong output at exit status 0 (`execution.md`, "Fewer
+executes.** A named local's register is live storage, which `lower_operand`
+and an assignment through a setter copy whenever something lowered afterwards
+can write it -- a question about the register (`a_send_can_write(register)`),
+not the send -- while parameters and immutable locals are never copied
+(`ScopeStack::resolve_setter`, `lower_assign`'s `debug_assert!`s against
+`read_only_locals`). Getting it wrong is silent wrong output at exit status 0
+(`r[vm.compiler.value-register]`, `r[vm.compiler.read-only-locals]`,
+`r[vm.compiler.simultaneous-temporary-writable]`; `execution.md`, "Fewer
 protective copies").
 
 **A register a frame does not read before it writes it is dead, and only
-the collector's pre-pass makes it safe to trace.** Neither a push nor a
-pop writes a scratch register -- at or above its body's `local_count` --
-nor the registers a callee that lay on its sender's slots gives back, so
-such a word may be one a callee or a popped frame left. The pre-pass,
-which every trace of the stack makes over each frame before it traces
-the frame's words (`Heap::trace_stack`), nils every register
-`bytecode::leftovers` finds tainted before the program counter the frame
-stores; a suspension nils the same in its copy, a divorce every scratch
-register. The decoder refuses image code that reads a tainted register,
-both lowerings `debug_assert!` it on every body, and a debug build writes
-a poison word no value can be into dead registers and refuses an
-instruction's read of it. A new instruction declares its register
-effects in `bytecode.rs`'s exhaustive matches (`registers_read`,
-`register_written`, `jump_target`, `falls_through`, `successors`, and
-`Instruction::argument_slots` for a send, and `Instruction::sent_message`,
-the selector and arguments a send delivers, which the decoder's arity
-check and both lowerings' assertion read), or the analysis misjudges
-it. A miss is a stale handle traced -- an object since moved or
-reclaimed -- or an object nothing reaches kept alive, which a
-`WeakArray` shows (`compiler.md`, "What a callee leaves"; `memory.md`,
-"What the collector traces").
+the collector's pre-pass makes it safe to trace.** Neither a push nor a pop
+writes a scratch register or the slots a callee gives back, so the pre-pass
+every trace of the stack makes (`Heap::trace_stack`) nils what
+`bytecode::leftovers` finds tainted, a suspension the same in its copy and a
+divorce every scratch register; a miss is a stale handle traced or an object
+nothing reaches kept alive. A new instruction declares its register effects
+in `bytecode.rs`'s exhaustive matches (`registers_read`, `register_written`,
+`jump_target`, `falls_through`, `successors`, `Instruction::argument_slots`,
+`Instruction::sent_message`), or the analysis misjudges it
+(`r[vm.activation.dead-registers-nilled]`, `r[vm.activation.top-at-window-end]`,
+`r[vm.compiler.register-effects-declared]`,
+`r[vm.compiler.argument-slots-top-live-registers]`,
+`r[bytecode.register.leftovers]`, `r[bytecode.register-effects]`,
+`r[bytecode.verify.leftovers]`; `compiler.md`, "What a callee leaves";
+`memory.md`, "What the collector traces").
 
 **An image is untrusted input.** No byte sequence may panic or abort the
 process: validate every id, tag, count and length before it indexes, allocates
-or slices; bound any recursion the input controls; never add a pre-allocation
-not bounded by `bounded_count`. `image::load` verifies structure and reconciles
-mixins before any decoded code runs (`image-format.md`, "Verification"). The
-decoder sizes every record from its own bytes in a first pass and allocates
-nothing before it (`image-format.md`, "Two passes"), then fills each
-placeholder in place, so no record is built beside its placeholder. The
-decoder allocates its graph only after a tenure between entries: before
-the tenure the loader checks every shipped name against the binary's
-declarations, refusing an unknown one before it builds anything, then
-builds the binary's own modules and classes the image names that the boot
-did not -- the binary's code, which the image only selects -- and
-resolves each name by table lookup; nothing allocates between the tenure
-and the graph pass, which allocates old and never polls a safepoint, so
-nothing collects while its placeholders exist and the peak argument stands
-(`image-format.md`, "The image under generations"). The
-transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
-of the symbol section in a release build, and about 16x of the graph bytes
-plus ≤4x of the symbol section in a debug one, plus ≤6x of the text table
-in an image with source in both, plus the leftover analysis's fixed term
-of at most 2.02 MiB (3.02 MiB in a debug build), one body at a time and
-before the graph pass (`memory.md`, "The
-amplification bound of a rejected load", has the breakdown and what is not
-counted; `decode_value`'s doc comment the derivation, `texts::decode`'s
-the text table's; both count a class
-tag at two bytes where every live one is five, so the figures are upper
-bounds). The guarantee
-covers decoding only: `ns-next load` runs the packaged application's code,
-recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
-(`execution.md`, "The depth limit"), and an image that names the shipped
-world has the loader build what it names by the binary's own code and look
-its names up, running nothing of the image's before the application starts.
+or slices, bound any recursion the input controls, and never add a
+pre-allocation not bounded by `bounded_count`; the decoder sizes every record
+from its own bytes before it allocates and fills each placeholder in place,
+and `image::load` verifies and reconciles before any decoded code runs
+(`r[image.untrusted]`, `r[image.bound.sizing]`, `r[image.bound.linear]`,
+`r[vm.heap.no-recursion-over-input-depth]`, `r[vm.image.code-runs-after-stamping]`;
+`image-format.md`, "Verification", "Two passes"). The graph is allocated old
+after one tenure between entries, the shipped names checked and the binary's
+own objects built before it, so nothing collects while its placeholders exist
+(`r[image.load.shipped-world]`, `r[vm.image.nothing-collects-while-placeholders]`;
+`image-format.md`, "The image under generations"); the peak of a rejected load
+is `memory.md`'s, "The amplification bound of a rejected load", derived in
+`decode_value`'s and `texts::decode`'s doc comments. The guarantee covers
+decoding only: `ns-next load` runs the application's code under the depth
+limit (`r[image.run]`, `r[runtime.depth-limit]`).
 
 **Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier, or, in machine code, through the
 inline barrier (`MacroAssembler::store_with_barrier`), which makes the
-same decision and calls `Heap::remember` through a leaf.** A scavenge
-reads only the young
-objects and the remembered old ones, so a store that writes a word into an
-old object any other way leaves the young object it names unreachable to
-the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
-initializing store into an object just allocated skips the barrier, the
-interpreter's and machine code's alike, which
-is why every old allocation outside the image decoder is born remembered;
-besides those, only the collector's own rewrites (a scavenge, a
-compaction, a move) and the bulk forward behind `become:`
-(`Heap::forward_identity`), which keep the remembered set themselves, and
-the replacement of resolved futures, which runs only before a full
-collection empties the nursery, write words without it.
-`NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
-debug build's poison over the nursery a scavenge vacated, are what find a
-breach (`memory.md`, "Generations").
+same decision and calls `Heap::remember` through a leaf.** A scavenge reads
+only the young objects and the remembered old ones, so a store into an old
+object any other way leaves the young object it names unreachable --
+moved or reclaimed, silently, at exit status 0. Only an initializing store
+into an object just allocated (which is why every old allocation outside the
+image decoder is born remembered), the collector's own rewrites, the bulk
+forward behind `become:` (`Heap::forward_identity`) and the replacement of
+resolved futures write words without it (`r[vm.heap.barrier]`,
+`r[vm.heap.frame-copies-remembered]`, `r[vm.heap.old-allocations-born-remembered]`,
+`r[vm.heap.remembered-set-exact]`, `r[vm.heap.bulk-forward-atomic]`,
+`r[vm.heap.resolved-future-replaced-in-fields]`; `memory.md`, "Generations").
 
 **Every mover realigns an `AlignedBytes` object's data.** A `ByteArray`'s
-data begin at the first 32-byte address in its block, an offset computed
-from the block's address and never stored, so whoever copies such an
-object to another address -- the scavenger's `copy`, the compaction's
-slide, the move stress mode's shift -- moves its data to the new block's
-alignment (`heap/object.rs`'s `realign`). A mover that skips it leaves the
-data at the old offset within the block: wrong bytes at exit status 0. A
-new mover, or a new format with data aligned the same way, takes the same
-fix-up (`memory.md`, "Every mover realigns a `ByteArray`'s data").
+data begin at the first 32-byte address in its block, an offset never stored,
+so whoever copies such an object to another address -- the scavenger's
+`copy`, the compaction's slide, the move stress mode's shift, and any new
+mover or format aligned the same way -- realigns it through
+`heap/object.rs`'s `realign`, or the data read wrong bytes at exit status 0
+(`r[vm.heap.every-mover-realigns]`; `memory.md`, "Every mover realigns a
+`ByteArray`'s data").
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
-`crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
-tag takes the next free number, a removed one retires its number. Renumbering
-would let a stale artifact decode into a different, valid program.
+`crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`, so
+that a stale artifact never decodes into a different, valid program
+(`r[bytecode.wire.tag-assigned-once]`, `r[image.tags]`).
 
 **A handle means nothing against a `Heap` that did not mint it, nor across a
-move.** An `ObjectReference`, `ClassReference` or `FrameReference` is a 64-bit
-byte offset into its heap's object space, an `ActivationReference` the word
-offset of a frame on its activation stack. Never hold one across the death of
-its interpreter — the offset answers a different, valid object in another
-heap. Reach the real `Heap` (a `&Heap`
-parameter, or read through `interpreter.enter` while it lives); a reader of
-compiled code alone takes the mixin, which holds no handle (`compiler.md`,
-"Readers of compiled code take the mixin"). A host keeps a value across a run
-only as a `Root`. The debug-only origin guard, move epochs and the stress modes
-catch mistakes; a release build does not. A new Rust-side field holding a
-handle or a stored `Word` needs its `Trace` impl, and a new pointer word in an
-object its format's arm in `heap/object.rs`'s `pointer_ranges`, which marking
-and forwarding both read (`memory.md`, "A handle is space-relative", "What
-the collector traces", "The move stress mode").
+move.** An `ObjectReference`, `ClassReference` or `FrameReference` is a byte
+offset into its heap's object space, an `ActivationReference` a word offset on
+its activation stack: never hold one across the death of its interpreter, reach
+the real `Heap` (a `&Heap` parameter, or `interpreter.enter` while it lives),
+let a reader of compiled code alone take the mixin (`compiler.md`, "Readers of
+compiled code take the mixin"), and keep a value across a run only as a `Root`.
+A new Rust-side field holding a handle or a stored `Word` needs its `Trace`
+impl, and a new pointer word in an object its format's arm in
+`heap/object.rs`'s `pointer_ranges`; the origin guard, the move epochs and the
+stress modes catch a miss in a debug build only (`r[vm.handle.space-relative]`,
+`r[vm.handle.host-holds-only-roots]`, `r[vm.handle.stored-only-when-current]`,
+`r[vm.handle.only-where-rewritable]`, `r[vm.heap.roots-complete]`,
+`r[vm.heap.format-decides-pointer-words]`, `r[vm.compiler.code-holds-no-handle]`;
+`memory.md`, "A handle is space-relative", "What the collector traces", "The
+move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
-`Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
+`Mutator` to a closure generic over `'gc`, in safe Rust: never add a public way
 to change a handle's brand (`heap::value`'s `pub(super)` `at_rest`/`branded` are
-the only conversions; there is no `unbind`), and never give `Mutator` a way to
-reach the `Interpreter`. A stored `Word` carries no brand, so `Heap::load` and
-`Heap::store` are part of the seam and stay `pub(crate)`. Three `compile_fail`
-doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
+the only conversions; there is no `unbind`), never give `Mutator` a way to
+reach the `Interpreter`, and keep `Heap::load` and `Heap::store`, whose `Word`
+carries no brand, `pub(crate)`. Three `compile_fail` doctests on
+`Interpreter::enter` pin it (`r[vm.handle.nothing-carried-across-safepoint]`,
+`r[vm.heap.no-native-frame-below-safepoint]`; `memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is
-ever stored.** An activation's offset is reused after its pop; a closure's
-captured frame, a frame object's sender and home, and image records take a
-`FrameReference`, the handle of a frame object in the object space
-(`Heap::reify`; there is no separate store for frames). The run loop
-pops every activation it runs on every exit. **Every instruction that reads or
-writes another frame's registers by reference must answer its depth, never 0,
-in `bytecode::outer_reach_of`, and its eight-byte form in
-`bytecode::compact::narrow_outer_reach`**, or the frame drops its registers on
-return and every read answers `nil` at exit status 0. Both matches are
-exhaustive, so the compiler makes a new instruction decide; the round-trip
-tests' `assert_derived_as_decoded` holds the two to each other
-(`execution.md`, "Activations", "Closure conversion").
+ever stored.** An activation's offset is reused after its pop, so a closure's
+captured frame, a frame object's sender and home and an image record take a
+`FrameReference` (`Heap::reify`), and the run loop pops every activation it
+runs on every exit (`r[vm.handle.activation-never-stored]`,
+`r[vm.activation.reify-once]`, `r[vm.activation.marriage]`,
+`r[vm.activation.divorce-on-pop]`, `r[vm.activation.run-balanced]`). **Every
+instruction that reads or writes another frame's registers by reference must
+answer its depth, never 0, in `bytecode::outer_reach_of`, and its eight-byte
+form in `bytecode::compact::narrow_outer_reach`**, or the frame drops its
+registers on return and every read answers `nil` at exit status 0; both
+matches are exhaustive, and the round-trip tests' `assert_derived_as_decoded`
+holds the two to each other (`r[vm.activation.outer-reach]`,
+`r[vm.compiler.reach-derived-never-read]`; `execution.md`, "Activations",
+"Closure conversion").
 
 **An unwind target is a `FrameReference`.** Non-local return, `return:`,
 `resume:`, `retry` and the depth reserve name the target's frame; the unwinder
 asks `Heap::frame_activation` afresh each time it carries on, because `ensure:`
 and `ifCurtailed:` blocks run meanwhile and can reuse the offset. Release builds
-do not check generations (`execution.md`, "Unwinding").
+do not check generations (`r[vm.activation.unwind-target-is-frame]`,
+`r[vm.activation.depth-reserve-held-by-frame]`, `r[runtime.unwind]`;
+`execution.md`, "Unwinding").
 
 **Never `{:?}` a `Value`, and never `.unwrap()` / `.expect()` / `{:?}` an
 `EvaluationResult`.** Use `Heap::describe` in Newspeak-facing text. `Signal`,
@@ -715,246 +704,200 @@ compile; tests use a local `expect_ok` helper — copy a neighbour's.
 **A class object is per enclosing instance; behaviour is the
 `MixinApplication`, shared.** The application cache is keyed by the
 superclass's *application*, never by its class object, or every instance mints
-its own application (`object-model.md`, "Three layers, not one").
+its own application (`r[semantics.class.per-enclosing-object]`,
+`r[vm.dispatch.application-cache-key]`, `r[vm.dispatch.guard-names-dependency]`;
+`object-model.md`, "Three layers, not one").
 
 **Compiled code lives on the mixin, and `Instruction::InitializeSlot`'s
-`own_index` is mixin-relative**, resolved against the activation's `slot_base`
-at run time, because one mixin's code is shared by every application of it;
-`vm_initializer.rs` pins it (`compiler.md`). The slot base is that of the
-application the activation was *entered* at, never the class object's
-current one, and **every slot access whose index was decided without looking
-at the receiver checks a recorded guard first** -- the own-slot
-instructions, a private or super slot accessor, and a super send's
-`doesNotUnderstand:` slot handler by a walk -- or a receiver the bulk
-forward replaced is written in the old layout at exit status 0. A guard
-is recorded only for a receiver verified to have the level (the push,
-and a cache fill, walk for it), and a nested class's hidden cache slot is
-looked up again after its superclass clause ran
-(`object-model.md`, "What a slot access checks"). A customized copy's
-own-slot reads (`Node::OwnSlotLoad`, `End::ReturnUnlessNil`) need no
-guard: the copy's entry verified the receiver's application, any
-forward of the receiver runs in a mirror leaf machine code exits for,
-which ends the frame's optimized code, and the decoder holds every
-instance of a program class to its application's slot count
-(`execution.md`, "Speculation", "Own slots at fixed offsets";
-`image-format.md`, "Verification"). Nor do an inlined callee's slot
-accesses: an always-inlined getter's, setter's and lazy getter's
-field (`Node::FieldLoad`, `Node::FieldStore`), the one the lookup
-resolved for the arm's receiver application -- a private or super
-accessor taken without a test included -- and an inlined scope's
-own-slot read (`Node::OwnSlotLoad` at the plan's base for that
-application), since the type-case's guard, or the scope's known
-receiver where no test is taken, verified the object's application,
-and the same forward and decoder rules hold (`execution.md`,
-"Inlining", "The snapshot tree and the plan"). An inlined scope's
-own-slot templates keep their guard, reset at the scope's entry.
+`own_index` is mixin-relative**, resolved against the `slot_base` of the
+application the activation was *entered* at, never the class object's current
+one, because one mixin's code is shared by every application of it
+(`vm_initializer.rs` pins it; `r[vm.compiler.mixin-relative-slot-index]`,
+`r[vm.dispatch.entered-level-successor]`; `compiler.md`, "One body per mixin").
+**Every slot access whose index was decided without looking at the receiver
+checks a recorded guard first** -- the own-slot instructions, a private or
+super slot accessor, a super send's `doesNotUnderstand:` slot handler -- a guard
+recorded only for a receiver verified to have the level and a nested class's
+hidden cache slot looked up again after its superclass clause ran, or a
+receiver the bulk forward replaced is written in the old layout at exit status
+0 (`r[runtime.slot.guard]`, `r[vm.dispatch.slot-guard-checked]`,
+`r[vm.dispatch.nested-cache-slot-relooked]`, `r[vm.machine.own-slot-access-guarded]`;
+`object-model.md`, "What a slot access checks"). A customized copy's own-slot
+reads and an inlined callee's field accesses (`Node::OwnSlotLoad`,
+`End::ReturnUnlessNil`, `Node::FieldLoad`, `Node::FieldStore`) take no guard,
+since the copy's entry or the type-case verified the application, a forward
+ends the frame's optimized code and the decoder holds every program instance
+to its application's slot count; an inlined scope's own-slot templates keep
+theirs (`r[vm.machine.unguarded-slot-reads-verified]`,
+`r[vm.machine.copy-per-receiver-and-level]`, `r[image.verify.program-instances]`,
+`r[vm.heap.instance-has-application-layout]`; `execution.md`, "Speculation",
+"Own slots at fixed offsets", "Inlining", "The snapshot tree and the plan";
+`image-format.md`, "Verification").
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic
 class** — `current_class`, then each class object's declaring-class field
-(`Heap::class_declaring`). A level a `<:`
-clause adds takes its enclosing object and declaring class from the class the
-clause names (`interpreter/nested.rs`, `build_applied_levels`). A body-less
-declaration's class object is the level its last clause adds, so its own
-code -- its full initializer at that class object, and a block created in
-it -- starts its walk at the declaration's own enclosing object and
-declaring class, which the class object records (`interpreter/sends.rs`,
-`lexical_origin`, decided from the code:
-`CompiledCode::is_declaration_code`), while the applied mixin's code there
-starts at the level's; its `super` starts at the class object's
-superclass, as every code's does (§5.10; `object-model.md`, "Mixin
+(`Heap::class_declaring`), a level a `<:` clause adds taking its enclosing
+object and declaring class from the class the clause names
+(`interpreter/nested.rs`, `build_applied_levels`). A body-less declaration's
+own code -- its full initializer and every block created in it -- starts the
+walk at the declaration's own enclosing object and declaring class, decided
+from the code (`interpreter/sends.rs`, `lexical_origin`,
+`CompiledCode::is_declaration_code`), the applied mixin's code at the level's,
+and every code's `super` at the class object's superclass
+(`r[semantics.outer.lexical]`, `r[semantics.class.declaring]`, `r[runtime.outer]`,
+`r[vm.dispatch.lexical-origin-from-code]`; §5.10; `object-model.md`, "Mixin
 application").
 
 **A `<:` clause's message runs with the applying class's factory arguments, just
 before the initializer of the level it adds**: its arguments are lowered into
 the applying declaration's full initializer, right before the
-`InitializeAppliedLevel` that runs that level's own part (§6.2;
-`object-model.md`, "Mixin application"; `compiler.md`, "The three initializer
-bodies"; pinned by `goldens/language/class/mixin/mixin_initializer_order.ns`).
-A level a `<:` clause added that a program reaches from outside -- through a
-mirror -- runs its mixin's standalone body instead, never the clause's
-message.
+`InitializeAppliedLevel` that runs that level's own part, and a level a program
+reaches from outside -- through a mirror -- runs its mixin's standalone body
+instead, never the clause's message (`r[semantics.mixin.clause-order]`,
+`r[semantics.instantiation.initializer-order]`, `r[semantics.mixin.standalone]`,
+`r[runtime.apply-mixin]`; §6.2; `object-model.md`, "Mixin application";
+`compiler.md`, "The three initializer bodies"; pinned by
+`goldens/language/class/mixin/mixin_initializer_order.ns`).
 
 **The VM mirror is a capability.** Whoever holds it runs every leaf, so only the
-shipped core-library modules reach it. Six locks keep it there; never loosen one
-and never add a way for a program to obtain the mirror, its class or a
-`MirrorSend` binding: (1) only `resolver::resolve_kernel` records
-`Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
-the mirror slot of `Kernel` is checked at boot, and that of every shipped
-module given the mirror (`PlatformFactory`, `TranscriptFactory`,
-`TimeFactory`, `TypedArraysFactory`, `MirrorsFactory`) whenever its instance is recorded --
-at boot, by `recordShippedModule:` on first demand, or by the loader -- so
-no instance that fails it is ever recorded, and no program reaches a
-shipped root (the factory pattern), nor the mirror or the kernel instance
-as the argument of a send its receiver may not understand; (3) the encoder
-names a shipped object by its declaration and refuses one the rule of what
-may be named where does not allow (`image/shipped_names.rs`); (4) no
-program can name the mirror's class or `Top`: the VM mirror's class has no
-declaration and so no name, and the decoder refuses `Top`, `Activation` and
-every other shipped name in a position the rule does not allow; (5) the
-encoder refuses a graph reaching the mirror, its class, `Top` or their
-metaclasses, and the factory body's allocation
-(`instantiate::allocate_for_factory`, which `AllocateInstance` runs for a
-send and a host's `instantiate` alike) refuses to instantiate the mirror's class;
-(6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the
-whole Rust boundary"). The bulk-forward leaf
-(`elementsOf:forwardIdentityToElementsOf:ifFail:`) refuses the mirror,
-every withheld value and every builtin or shipped instance on either side
-(`builtins/reflection.rs`'s `may_be_forwarded`), so a forward can never put
-the mirror where a program reaches it; never loosen it either. The
-MirrorBuilder refuses every edit to a shipped mixin, in `asBuilder` and
-again on the Rust side (`interpreter/edit.rs`'s `prepare_edit`), and
-resolves an edit with `resolve`, never `resolve_kernel`, so no edit
-records a `MirrorSend` binding.
+shipped core-library modules reach it (`r[runtime.vm-mirror]`; `core-library.md`,
+"The VM mirror is the whole Rust boundary"). Never loosen one of the locks that
+keep it there, and never add a way for a program to obtain the mirror, its class
+or a `MirrorSend` binding: only `resolver::resolve_kernel` records
+`Binding::MirrorSend`, and an edit resolves with `resolve`
+(`r[vm.mirror.binding-only-in-shipped-resolution]`); every shipped module's
+mirror slot is checked before its instance is recorded -- at boot, by
+`recordShippedModule:` or by the loader -- and no program reaches a shipped
+root (`r[vm.mirror.slot-checked-before-recording]`,
+`r[vm.mirror.one-instance-per-shipped-module]`, `r[vm.mirror.root-instance-unreachable]`,
+`r[vm.mirror.facet-classes-private]`); the mirror's class and `Top` have no name
+a program can write, and the factory body's allocation
+(`instantiate::allocate_for_factory`) refuses the mirror's class
+(`r[vm.mirror.class-unnameable]`, `r[vm.mirror.not-instantiable]`); the encoder
+names a shipped object by its declaration (`image/shipped_names.rs`) and refuses
+a graph reaching the mirror, its class, `Top` or their metaclasses, the decoder
+refuses a shipped name where the position rule forbids it, and `SendMirror` has
+no wire tag (`r[image.verify.mirror]`, `r[image.shipped.positions]`,
+`r[image.write.refusals]`, `r[vm.mirror.no-wire-tag]`); the bulk-forward leaf
+refuses the mirror, every withheld value and every builtin or shipped instance
+on either side (`builtins/reflection.rs`'s `may_be_forwarded`;
+`r[vm.mirror.forward-refuses-shipped]`, `r[runtime.forward-identity]`); and the
+MirrorBuilder refuses every edit to a shipped mixin, in `asBuilder` and again in
+`interpreter/edit.rs`'s `prepare_edit` (`r[vm.mirror.shipped-mixins-never-edited]`).
 
 **A cache records what the lookup decided; it never decides.** An inline-cache
-hit is `act` on the resolution `resolve_*` answered for the same key; an entry
-holds no handle. Anything the key does not cover is read afresh on every
-send — today a primitive's payload check, in `act`, and the class object's
-builtin field (`Heap::class_builtin`), which the factory body's
-`AllocateInstance` reads on every instantiation; a method's `MethodFastPath`
-is read off the entry's method on every hit, by the interpreter's `act`
-and machine code's stub alike -- a method whose fast path only the
-debugger changes, switching it off while a breakpoint stands in the body,
-and invalidating every cache and every optimized copy when it does
-(`MixinMethod::switch_fast_path`; `debugger.md`, "A breakpoint in a
-method with a fast path"). Add such a read and its per-send re-check goes with
-it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
-instead). The reference lowering runs every send uncached and is the oracle
-(`dispatch.md`, "Primitive methods", "3b — The caches").
+hit is `act` on the resolution `resolve_*` answered for the same key, and an
+entry holds no handle; anything the key does not cover -- a primitive's payload
+check, the class object's builtin field (`Heap::class_builtin`), a method's
+`MethodFastPath` -- is read afresh on every send, by `act` and machine code's
+stubs alike, and a new such read takes its per-send re-check with it. A method
+is changed in place only by the debugger's switch of its fast path, which
+invalidates every cache and every optimized copy (`MixinMethod::switch_fast_path`;
+`debugger.md`, "A breakpoint in a method with a fast path"); a lazy slot's getter
+has no fast path (`Instruction::ReturnSlotIfFilled` instead), and the reference
+lowering runs every send uncached and is the oracle
+(`r[vm.dispatch.cache-records-lookup]`, `r[vm.dispatch.key-covers-every-dependency]`,
+`r[vm.dispatch.caches-hold-no-handle]`, `r[vm.dispatch.method-never-changed-in-place]`,
+`r[vm.dispatch.invalidation-after-change]`; `dispatch.md`, "Primitive methods",
+"3b — The caches").
 
 **Machine code is a lowering of the interpreter's instructions, never a
-second interpreter.** Four rules keep the baseline JIT
-(`crates/ns-runtime/src/jit/`) exact. A template (`baseline.rs`) stores
-into the frame only after its last decline or exit, so an exit, which
-hands the instruction to the interpreter, never re-applies it. A leaf
-(`leaves.rs`) runs no Newspeak code, cannot collect, reads no other
-activation and never pushes; only the miss leaf, the initializer leaf
-and the forcing leaf compile and install a callee, and the twin leaf
-the running body's twin -- the budget leaf only parks or re-arms its body's
-budget and answers whether an optimization is due, whose exit
-(`ExitKind::BudgetSpent`) the run loop takes to walk up the stack for
-the frame to request (`jit::find_recompilee`) and record its request
--- under the optimize stress mode the leaf records the spending
-frame's own request -- which the run loop's safepoint compiles and
-installs (`jit::optimize_requested`), or points its own body's budget
-word and dispatching word, the latter at its code id's block of
-dispatching rows (`jit::point_budget_word`); and a leaf answers "re-execute" only
-before it changed anything but a send's argument slots, which the mirror
-leaf places as the interpreter does and which nothing reads after the
-send but the send re-executed. Every body compiles lean, and its
-`MakeClosure` transfers the frame into the body's reifying twin, so a
-lean body's frame is never reified: whether a frame reifies is decided
-by the copy it runs (`MachineFrame::reifies`), the run loop goes on in
-the twin with a frame the interpreter reified, and no leaf reifies a
-frame running lean code, whose return divorces nothing and whose frame
-object would stay married to a popped offset; a debug build asserts it
-as the leaf's view is released. A twin is freed, abandoned and replaced
-with its lean body, never alone, and the lean body's transfer words are
-written afresh wherever the twin moves (`execution.md`, "A frame reifies
-only in its body's twin").
-The cut (`cut.rs`), which carries out a non-local return in machine
-code, is the one routine that reads and pops activations other than
-its own: it runs no Newspeak code, never collects, never pushes, reads
-only the compiled frames of the current stretch and pops only those
-above the home and a home machine code pushed -- each as its return pops
-it, a reified one divorced and its count taken off -- while a home that
-is the stretch's entry frame it divorces and uncounts as that frame's
-return does, and returns through the entry stub, whose run loop pops
-it. It changes nothing before it has found the home among them, and
-answers the exit -- so that the interpreter's one unwinder carries the
-return -- for a body that is no block's, a block that is the entry
-frame, a home not running, suspended or below the entry frame, an
-unwind marker's activation between, a return address into a stub
-before the home, a home that catches no return, and a frame of a
-method a method breakpoint names, whose exit only the unwinder reports.
-A slot a breakpoint patched lowers as an exit, whatever its instruction,
-so that the interpreter's `Breakpoint` arm stops there; patching or
-restoring a slot frees the body's machine code and every optimized copy
-that inlined it first (`jit::free_for_patch`), and the optimizing tier
-neither optimizes nor inlines a patched body (`debugger.md`, "Where the
-original lives").
-A new instruction is one arm of `jit::baseline::lower` plus the
-macro-assembler idioms it lacks, never a second dispatch, and optimized
-code (`jit/optimizing/emit.rs`) emits every instruction it does not
-lower as a simple node -- register arithmetic that emits no call --
-through the very template function the baseline's arm for it calls,
-after writing back into the frame every value it holds that the frame
-word does not hold yet, so that at every interrupt point the frame is
-the interpreter's word for word -- every scope's, an inlined scope's
-receiver and current class among its bindings, the current class
-computed only before the scope's frame nodes and by the exit's walk
-before it writes the scope's header; it leaves no store out, its code is
-entered only at its prologue, or just past it at a push, or at the
-entry of the poll a frame left it at, once the safepoint is served,
-where the entry restores every value the code past the poll reads
-from a frame word the frame kept or a constant's (`metadata::poll_restores`,
-which the emitter and the replay share) and a poll it cannot restore has no
-entry; never otherwise mid-body, and a frame that goes on mid-body goes on in the baseline code (`execution.md`, "The optimizing tier's
-foundation", "Inlining"); the run loop
-enters machine code through `jit::entered` and `jit::resumed`, a send it
-delivers through `jit::called` and `jit::called_closure` (`mod.rs`);
-the entry block's lasting words -- what does not move between entries --
-are written only when what they name changes, which must mark the block
-stale (`JitState::mark_block_stale`; only a debug build's check at every
-entry catches a missed mark), the frame's and the code's words at each
-entry, and it holds no handle. A cache cell is written only from its
-entry -- beside it, or afresh when the JIT's state under it changes --
-its entry address a function of the entry -- its guard and its target
--- and the JIT's state,
-and a stub does what `Mutator::act_with_base` does for its target and
-nothing more. A row of the machine entry table, which the closure stubs
-jump through (`heap/machine_entries.rs`), is written only from the
-body its code id names, and cleared wherever that stops naming its
-machine code: the id freed, the body abandoned or freed by a
-compaction or a slide of its feedback base, the zone replaced, the
-JIT switched on or off -- a stale row is a jump into another body's
-code. A method body's dispatching rows (`heap/optimized_copies.rs`),
-which the dispatching stub jumps through, are written only from the
-copies of the body whose dispatching word names them
-(`JitState::write_dispatching_rows`), each row from the copy its key
-names, written afresh at every install and wherever a copy stops
-naming its machine code -- retired, invalidated, freed or moved by a
-compaction -- and cleared when the zone is replaced; a stale row is a
-jump into another copy's code.
-The code zone is compacted only at the run loop's safepoint, when no
-return address into it exists. A compaction remaps every cell, machine
-entry row, dispatching row and record that names an address in it, and a body holds no
-address of its own but those relative to `rip`.
-No word machine code reads or writes between two leaf calls lives inline
-in `Mutator`: frame registers and object fields lie in the activation
-stack's and the object space's reservations, the cells, the
-application id table, the machine entry table and the optimization
-budget rows in reservations of their own, a body's closure and
-outer-local sites among its data words in the code zone, moved and
-freed with it and written only through the zone's writer
-(`JitState::write_body_words`), and each copy's budget word, the
-address of its body's budget row, among them, written through the same
-writer by `JitState::write_budget_word` -- once the code is installed,
-afresh after every full collection, which may free the code id the row
-is indexed by (`jit::point_budget_words_after_collection`), or the word
-names another body's row, and by the budget leaf when the word named no
-row of its body's (`jit::budget_spent`) -- all outside it, and
-every other such word lives in the heap's machine words
-(`heap/machine_words.rs`, atomics behind an `Arc`, which the debugger's
-agent arms from its own thread, every hot access to them `Relaxed`) or
-the entry block (`ns_memory::EntryBlock`, `Cell`s behind an `Rc`).
-`CodeZone::enter` holds the mutator as a
-protected `&mut`, so machine code's access to a word inside it is
-undefined behaviour once a leaf has written that word, which no test and
-no tool detects (`execution.md`, "The baseline JIT's foundation", "The
-machine words"). No file under `jit/` but `macro_assembler.rs` names an
-architecture's registers or its encoder (`x64`, `aarch64`) outside a test
-module: a template, a send or a stub uses the macro assembler's idioms
-and its `Roles`, and a new register need is a new named role, held by
-`crates/ns-runtime/tests/jit_architecture_split.rs`. Every address a
-call reaches begins with `enter_called`, which on AArch64 stores the
-return address in a 16-byte slot on `sp`; a stub's tail jump into one is
-`jump_into_called`, and a call into a body's middle -- the entry at a
-push, an on-stack replacement, a resumption -- is `call_unentered`, or the
-return address is saved twice or not at all and every walk of the native
-stack reads the wrong frame, invisibly on x64, where all three are the
-plain `call` and `jmp` (`execution.md`, "The native stack carries the
-return addresses").
+second interpreter.** Wherever anything observes a frame -- an exit, a leaf, a
+safepoint -- the frame is the interpreter's word for word, so the interpreter
+carries on from any exit (`r[vm.machine.observers-after-exit]`,
+`r[vm.machine.baseline-frame-current]`, `r[vm.machine.optimized-frame-is-interpreters]`;
+`execution.md`, "The baseline JIT's foundation"). What keeps it so
+(`crates/ns-runtime/src/jit/`):
+
+- A template (`baseline.rs`) stores into the frame only after its last decline
+  or exit, and a leaf (`leaves.rs`) runs no Newspeak code, cannot collect, reads
+  no other activation and never pushes; only the miss, initializer, forcing and
+  twin leaves compile and install code, the budget leaf's exit
+  (`ExitKind::BudgetSpent`) leaves the request to the run loop
+  (`jit::find_recompilee`, `jit::optimize_requested`, `jit::point_budget_word`),
+  and a leaf answers "re-execute" only before it changed anything but a send's
+  argument slots (`r[vm.machine.decline-before-write]`, `r[vm.machine.leaf-contract]`,
+  `r[vm.activation.reexecuted-instruction-wrote-nothing]`,
+  `r[vm.dispatch.declining-leaf-changes-nothing]`).
+- Every body compiles lean and its `MakeClosure` transfers the frame into the
+  body's reifying twin, so whether a frame reifies is decided by the copy it
+  runs (`MachineFrame::reifies`) and no leaf reifies a frame running lean code;
+  a twin is freed, abandoned and replaced with its lean body, never alone, the
+  lean body's transfer words written afresh wherever the twin moves
+  (`r[vm.machine.reify-only-in-twin]`; `execution.md`, "A frame reifies only in
+  its body's twin").
+- The cut (`cut.rs`), machine code's non-local return, is the one routine that
+  reads and pops activations other than its own: it changes nothing before it
+  has found the home among the current stretch's compiled frames, pops each as
+  its return would, and otherwise answers the exit, so that the one unwinder
+  carries the return (`r[vm.machine.cut-pops-as-returns-pop]`; `execution.md`,
+  "Stage 4: closures, non-local return, allocation and the barrier").
+- A slot a breakpoint patched lowers as an exit, patching or restoring a slot
+  frees the body's machine code and every optimized copy that inlined it first
+  (`jit::free_for_patch`), and the optimizing tier neither optimizes nor
+  inlines a patched body (`r[vm.compiler.patched-slot-runs-original-once]`,
+  `r[vm.compiler.patch-kept-with-its-body]`, `r[vm.machine.stale-copies-freed]`;
+  `debugger.md`, "Where the original lives").
+- A new instruction is one arm of `jit::baseline::lower` plus the
+  macro-assembler idioms it lacks, never a second dispatch. Optimized code
+  (`jit/optimizing/emit.rs`) emits every instruction it does not lower as a
+  simple node through the baseline's own template, after writing back every
+  value the frame word does not hold yet -- an inlined scope's receiver and
+  current class among them -- and is entered only at its prologue, just past it
+  at a push, or at the entry of the poll a frame left it at, restoring what
+  `metadata::poll_restores` names; a frame that goes on mid-body otherwise goes
+  on in the baseline code (`r[vm.machine.registers-held-between-frame-nodes]`,
+  `r[vm.machine.inlined-scope-current-class]`, `r[vm.machine.exit-writes-every-scope]`,
+  `r[vm.machine.entered-only-at-entries]`, `r[vm.machine.back-into-optimized-code]`;
+  `execution.md`, "The optimizing tier's foundation", "Inlining").
+- The run loop enters machine code through `jit::entered` and `jit::resumed`
+  and delivers a send through `jit::called` and `jit::called_closure`
+  (`mod.rs`); the entry block's lasting words are written only when what they
+  name changes, which marks the block stale (`JitState::mark_block_stale`), and
+  hold no handle (`r[vm.machine.entry-block-current]`,
+  `r[vm.machine.entry-returns-to-its-caller]`). A cache cell is written only
+  from its entry and the JIT's state, and a stub does what
+  `Mutator::act_with_base` does for its target and nothing more
+  (`r[vm.machine.cells-follow-entries]`, `r[vm.machine.stub-does-what-act-does]`).
+  A row of the machine entry table (`heap/machine_entries.rs`) is written only
+  from the body its code id names, a dispatching row (`heap/optimized_copies.rs`,
+  `JitState::write_dispatching_rows`) only from the copy its key names, each
+  cleared or written afresh wherever that stops naming its machine code -- a
+  stale row is a jump into another body's code
+  (`r[vm.machine.machine-entry-rows]`, `r[vm.machine.dispatching-rows]`,
+  `r[vm.machine.code-ids-kept-with-code]`).
+- The code zone is compacted only at the run loop's safepoint, where no return
+  address into it exists, and a compaction remaps every cell, row and record
+  naming an address in it; a body holds no handle and no address of its own but
+  those relative to `rip` (`r[vm.machine.zone-compacted-at-safepoint]`,
+  `r[vm.machine.no-return-address-at-safepoint]`,
+  `r[vm.machine.compaction-remaps-every-holder]`, `r[vm.machine.code-holds-no-handle]`;
+  `execution.md`, "The code zone").
+- No word machine code reads or writes between two leaf calls lives inline in
+  `Mutator`, which `CodeZone::enter` holds as a protected `&mut`: frame
+  registers, object fields, the cells, the id and entry tables and the budget
+  rows lie in reservations of their own, a body's closure and outer-local sites
+  and each copy's budget word among its data words, written only through the
+  zone's writer (`JitState::write_body_words`, `JitState::write_budget_word`,
+  pointed afresh after every full collection by
+  `jit::point_budget_words_after_collection`), every other such word in the
+  heap's machine words (`heap/machine_words.rs`) or the entry block
+  (`ns_memory::EntryBlock`). A breach is undefined behaviour no test and no tool
+  detects (`r[vm.machine.machine-words-outside-mutator]`,
+  `r[vm.machine.budget-words-name-own-row]`, `r[vm.machine.code-ids-read-from-sites]`;
+  `execution.md`, "The baseline JIT's foundation", "The machine words").
+- No file under `jit/` but `macro_assembler.rs` names an architecture's
+  registers or its encoder (`x64`, `aarch64`) outside a test module: a
+  template, a send or a stub uses the macro assembler's idioms and its `Roles`,
+  and a new register need is a new named role, held by
+  `crates/ns-runtime/tests/jit_architecture_split.rs`.
+- Every address a call reaches begins with `enter_called`, a stub's tail jump
+  into one is `jump_into_called`, and a call into a body's middle -- the entry
+  at a push, an on-stack replacement, a resumption -- is `call_unentered`, or on
+  AArch64 the return address is saved twice or not at all and every walk of the
+  native stack reads the wrong frame, invisibly on x64, where all three are the
+  plain `call` and `jmp` (`r[vm.machine.return-address-slot]`; `execution.md`,
+  "The native stack carries the return addresses").
 
 **A chain of messages is walked link by link.** `a b + c …` is a left-nested
 `Send` as deep as the chain is long, and every chain length is valid
@@ -1051,9 +994,10 @@ A commit that changes observable behaviour, a format or an invariant
 changes the rule for it in the specification (`docs/spec/`) in the same
 commit, for every part the book already writes -- today the lexical
 structure, the grammar, the semantics, the run-time semantics, the
-bytecode and the image format. A new test names the rules it checks: a
+bytecode, the image format and the VM invariants. A new test names the rules it checks: a
 golden in its `.toml`, `rules = ["syntax.outer.alone"]`, a Rust test in a
-comment line `// spec: syntax.outer.alone` directly above its `#[test]`;
+comment line `// spec: syntax.outer.alone` directly above its `#[test]`,
+or, for a test written inside `for_each_lowering!`, directly above its `fn`;
 a reference to a rule the book does not declare, and a `// spec:` line
 above no test, fail the suite (`xtask/src/spec.rs`).
 
