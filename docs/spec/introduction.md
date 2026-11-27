@@ -36,6 +36,15 @@ how it differs and why. A section of Bracha's document is cited as
 The first is the language every implementation of it would share; the
 other four are this implementation's.
 
+The fifth part's rules each have a line `Protects:` linking the rules of
+the first four parts they keep true, and either a test or a *detector*
+that finds their breach -- a stress mode, a check of a debug build or a
+check of the compiler, listed in the chapter's table of detectors -- or
+a line `Undetected:` with the reason none exists. The rendered book lists
+a rule's detectors beside its tests. The design documents and `CLAUDE.md`
+point at a rule by its line in backticks, as `` `r[vm.heap.roots-complete]` ``,
+and `cargo xtask spec` refuses a pointer that names no rule.
+
 ### Conventions
 
 **Rules.** Every normative rule is preceded by its identifier, a line of

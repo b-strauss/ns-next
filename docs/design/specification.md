@@ -4,7 +4,7 @@ ns-next gets a specification of its own: the language it runs, the
 run-time semantics, the bytecode, the image format and the invariants the
 implementation keeps, written in Markdown, rendered as an HTML book, and
 bound to the tests that check each rule. This document records what was
-decided and in which order it is built. The first four batches are
+decided and in which order it is built. All five batches are
 built. The first: the book under `docs/spec/`, its title page and introduction followed by an
 informal overview of the language that states no rule
 (`docs/spec/overview.md`), `cargo xtask spec`, which checks its rule
@@ -39,8 +39,18 @@ checks on an image, numbered; the bounds of a load; and the operations
 *LoadImage* and *WriteImage*, every refusal of the writer stated with its
 text -- all normative (below, "The fourth batch's decisions"), and the
 decoder refusing a send and a method record whose argument count is not
-their selector's. The VM invariants say what they will cover and are
-not written yet.
+their selector's. The fifth: the VM invariants
+(`docs/spec/vm-invariants.md`) -- 227 `vm.*` rules in eight sections, the
+heap and the collector, handles and the brand, activations and frames,
+the compiler, dispatch and the caches, machine code, the VM mirror and
+the image loader, after a section of the terms they are stated in, each
+rule naming no code, with a `Protects:` line linking the rules of the
+first four parts it keeps true, and named by tests, by a detector of the
+table of detectors (a stress mode, a check of a debug build, a check of
+the compiler) or by an `Undetected:` line with its reason; `cargo xtask
+spec` checks all of it (below, "The fifth batch's decisions"), and the
+design documents and `CLAUDE.md` point at the rules by
+their identifiers in backticks.
 
 ## Why
 
@@ -151,11 +161,11 @@ end-of-batch gates:
 4. **The image format**, built: the structure, the tags, the validation
    rules, the bounds of a load, and the load and the write as abstract
    operations.
-5. **The VM invariants**, and the design documents and `CLAUDE.md`
+5. **The VM invariants**, built, and the design documents and `CLAUDE.md`
    pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install") resumes after the fifth, and changes the
+"Planned: the complete install") resumes now that the fifth is built, and changes the
 specification as it changes the runtime.
 
 ## The fifth batch's decisions
