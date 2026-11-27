@@ -935,8 +935,16 @@ below):
   declaration whose clause applies it, read off the level's class object
   (`Heap::class_applied_declaration`), or whose own mixin it is -- that
   owner's occurrence counted from the instance's class down, the level's
-  mixin and that mixin's occurrence among the owner's levels in the text
-  order of its clauses, all read before the commit re-parents anything.
+  mixin and its place among the owner's levels (`LevelPlace`), all read
+  before the commit re-parents anything: while the install leaves the
+  owner's own clauses as they were, the index of the clause applying it,
+  or the owner's own level -- a count of the mixin's levels would shift
+  onto an untouched clause's level when the class an earlier clause names
+  gains or loses a body and so starts or stops applying the same mixin
+  (the goldens
+  `an_untouched_clause_level_keeps_its_values_when_a_named_class_loses_its_body`
+  and `…_gains_a_body`) -- and only where the owner's clauses change, the
+  mixin's occurrence among its levels in the text order of its clauses.
   A count from the chain's root would shift when a superclass gains or
   loses a clause applying a mixin a subclass's clause applies too, and
   hand the subclass's untouched level the lost one's values; a

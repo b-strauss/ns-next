@@ -502,11 +502,16 @@ slot, the slot's name, for a hidden nested-class slot the nested
 declaration's id. A level is named by its owner -- the declaration whose
 `<:` clause applies it, or whose own mixin it is -- that owner's
 occurrence in the chain counted from the instance's class down, the
-level's mixin and that mixin's occurrence among the owner's levels in the
-text order of its clauses, all read before the commit changes any chain;
-so no superclass change of one class shifts the name of a level another
-declaration owns, and where an owner's own clauses change, its first
-remaining `<: M` takes the values of its first former one. A slot the
+level's mixin and its place among the owner's levels, all read before
+the commit changes any chain: while the install leaves the owner's own
+clauses as they were, the index of the clause that applies the level, or
+the owner's own level; where it changes them, the mixin's occurrence
+among the owner's levels in the text order of its clauses. So no
+superclass change of one class shifts the name of a level another
+declaration owns, a clause's level keeps its name when the class an
+earlier clause names gains or loses a body, and where an owner's own
+clauses change, its first remaining `<: M` takes the values of its first
+former one. A slot the
 edit adds or moves starts nil with no initializer run, shadowing slots of
 one name stay apart, fields are written through the store accessors, and
 only instances are forwarded.

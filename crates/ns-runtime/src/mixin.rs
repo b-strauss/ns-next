@@ -1595,8 +1595,8 @@ pub(crate) enum FieldName {
 /// One level of a chain, by what names it rather than where it lies
 /// (`r[vm.heap.migration-by-declared-name]`): its owner -- the declaration
 /// whose `<:` clause applies it, or whose own mixin it is -- that owner's
-/// occurrence in the chain, the level's mixin and that mixin's occurrence
-/// among the owner's levels.
+/// occurrence in the chain, the level's mixin and its place among the
+/// owner's levels (`LevelPlace`).
 ///
 /// One chain may apply a mixin twice (`<:` clauses), and then two levels
 /// declare the same names; the owner tells them apart where the mixin
@@ -1606,15 +1606,31 @@ pub(crate) enum FieldName {
 /// counted from the chain's top, the instance's class, since a superclass
 /// change of a class rebuilds only the levels below it; it tells apart the
 /// levels of one declaration's two class objects that a chain holds one
-/// over the other. The mixin's occurrence is counted in the text order of
-/// the owner's clauses, so that where an owner's own clauses change, its
-/// first remaining `<: M` keeps the first one's values.
+/// over the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LevelName {
     pub(crate) owner: MixinId,
     pub(crate) owner_occurrence: u32,
     pub(crate) mixin: MixinId,
-    pub(crate) occurrence: u32,
+    pub(crate) place: LevelPlace,
+}
+
+/// A level's place among its owner's levels (`LevelName`).
+///
+/// While the install leaves the owner's own clauses as they were, a level
+/// is the level of its clause, by the clause's index, or the owner's own:
+/// the mixin a clause applies may change under it -- the class it names
+/// gaining or losing a body -- and a count of the mixin's levels would
+/// then shift onto another clause's level, one nothing touched. Only
+/// where the owner's clauses themselves change, so that an index no
+/// longer names the same clause, is a level placed by its mixin's
+/// occurrence among the owner's levels in the text order of its clauses:
+/// the owner's first remaining `<: M` keeps the first former one's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LevelPlace {
+    Clause(usize),
+    Own,
+    Occurrence(u32),
 }
 
 impl MixinApplication {
@@ -1657,7 +1673,7 @@ impl MixinApplication {
                     owner: id,
                     owner_occurrence: occurrence,
                     mixin: id,
-                    occurrence: 0,
+                    place: LevelPlace::Occurrence(0),
                 },
             ));
         }

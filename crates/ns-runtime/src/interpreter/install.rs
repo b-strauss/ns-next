@@ -13,7 +13,7 @@ use super::edit::{EditedTexts, InstallEntry};
 use crate::hash::IdentityMap;
 use crate::heap::reclaim::StaleIds;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
-use crate::mixin::{DispatchId, FieldName, LevelName, Mixin, MixinApplication};
+use crate::mixin::{DispatchId, FieldName, LevelName, LevelPlace, Mixin, MixinApplication};
 use crate::types::Value;
 use prepared::PreparedInstall;
 use superclasses::Reparenting;
@@ -118,7 +118,7 @@ impl<'gc> Mutator<'gc> {
         // object's chain is still the one its instances were laid out by.
         let old_names: Vec<Vec<FieldName>> = classes
             .iter()
-            .map(|class| self.field_names_of_class(*class))
+            .map(|class| self.field_names_of_class(*class, &prepared.clauses_changed))
             .collect();
         let stale = self.stale_after(&prepared, &old_applications);
         self.replace_versions(&prepared);
@@ -136,7 +136,13 @@ impl<'gc> Mutator<'gc> {
             &reparentings,
             &reparented,
         );
-        let migration = self.migrate(&classes, &class_positions, &old_names, &instances);
+        let migration = self.migrate(
+            &classes,
+            &class_positions,
+            &old_names,
+            &prepared.clauses_changed,
+            &instances,
+        );
         // An unmoved instance, a class object whose metaclass was re-applied
         // among them, carries its class's old guard until restamped.
         self.heap.stamp_dispatch_ids(&migration.kept);
@@ -760,7 +766,13 @@ impl<'gc> Mutator<'gc> {
     /// own, so a level of the owner of the level below begins another
     /// group of it where its clause does not follow that level's -- a
     /// second class object of the declaration, which another applies.
-    fn field_names_of_class(&self, class: ClassReference<'gc>) -> Vec<FieldName> {
+    /// `clauses_changed`, the declarations whose own clauses the install
+    /// changes, decides how a level is placed in its group (`LevelPlace`).
+    fn field_names_of_class(
+        &self,
+        class: ClassReference<'gc>,
+        clauses_changed: &[MixinId],
+    ) -> Vec<FieldName> {
         let mut chain = Vec::new();
         let mut level = Some(class);
         while let Some(current) = level {
@@ -797,13 +809,18 @@ impl<'gc> Mutator<'gc> {
             let count = mixins.entry(mixin).or_insert(0);
             let occurrence = *count;
             *count += 1;
+            let place = if clauses_changed.contains(&owner) {
+                LevelPlace::Occurrence(occurrence)
+            } else {
+                clause.map_or(LevelPlace::Own, |(_, index)| LevelPlace::Clause(index))
+            };
             levels.push((
                 application,
                 LevelName {
                     owner,
                     owner_occurrence: *group,
                     mixin,
-                    occurrence,
+                    place,
                 },
             ));
             match clause {
@@ -844,6 +861,7 @@ impl<'gc> Mutator<'gc> {
         classes: &[ClassReference<'gc>],
         class_positions: &IdentityMap<usize, usize>,
         old_names: &[Vec<FieldName>],
+        clauses_changed: &[MixinId],
         instances: &[ObjectReference<'gc>],
     ) -> Migration<'gc> {
         // Per class, for each new field, the old field it takes; `None`
@@ -852,7 +870,7 @@ impl<'gc> Mutator<'gc> {
             .iter()
             .zip(old_names)
             .map(|(class, old_names)| {
-                let new_names = self.field_names_of_class(*class);
+                let new_names = self.field_names_of_class(*class, clauses_changed);
                 (*old_names != new_names).then(|| {
                     new_names
                         .iter()

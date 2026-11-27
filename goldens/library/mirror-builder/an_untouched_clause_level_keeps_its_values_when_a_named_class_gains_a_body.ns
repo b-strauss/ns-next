@@ -1,0 +1,40 @@
+/// Within one declaration, a `<:` level is named by its clause while that
+/// declaration's own clauses stay: when the class an earlier clause names
+/// gains a body and that level stops applying the mixin a later clause
+/// applies too, the later clause's level, which nothing touched, keeps its
+/// slot values.
+class AnUntouchedClauseLevelKeepsItsValuesWhenANamedClassGainsABody = Object new () (
+  class Holder = Object new () (
+    public class Trait = Object new (
+      |
+        public mark ::= #initialized.
+      |
+    ) ()
+
+    public class Inner = Object new <: Trait.
+
+    public class User = Object new <: Inner <: Trait () ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder User new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    old mark: 'kept'.
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class Inner = Object new () ( public inner = ( ^#inner ) )'.
+    builder install.
+    transcript
+        print: old mark;
+        show: ' ';
+        print: old inner;
+        show: ' ';
+        print: holder User new mark;
+        newLine.
+  )
+)
