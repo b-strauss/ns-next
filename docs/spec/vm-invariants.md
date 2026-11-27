@@ -24,7 +24,10 @@ the callee is pushed. Where a routine of the virtual machine would have
 to run a block or a method, it answers instead a **step** the run loop
 schedules. The **bootstrap** builds the kernel's classes before anything
 runs; the **shipped modules** are the core library the binary embeds,
-the **kernel** first among them.
+the **kernel** first among them. The terms of the language and the
+run-time semantics -- a factory, a lazy slot, an ephemeron and its
+finalizer, the handler search, a module's version, a breakpoint, an
+evaluation at a stop -- keep the meaning those parts give them.
 
 The **object space** is the one region of memory every heap object lives
 in. An **object** is a sequence of **words**: a header word, which holds
@@ -33,7 +36,13 @@ its class word, which names its class object; and its fields. The
 **format** decides which words are pointers the collector reads, which
 are weak, and which are numbers or bytes it never reads as pointers. A
 value is one tagged **word**: an immediate small integer, an immediate
-float, an immediate character, or a pointer to an object.
+float, an immediate character, or a pointer to an object. Every region
+of the virtual machine -- the object space, the activation stack, the
+cells, the tables of machine code, the code zone -- lies in a
+**reservation** of address space, of which only a prefix is
+**committed**, backed by memory; a region grows by committing more and
+gives memory back by decommitting it. A **boxed float** is a float
+outside the immediate range, held in an object of its own.
 
 A **handle** names an object, or a frame on the activation stack, by its
 offset from the start of the space it lies in. It means something only
@@ -71,7 +80,13 @@ its push, which may hold a word a callee or a popped frame left: those
 registers are **tainted**, and a tainted register is dead. A block's
 **home** is the activation of the method it was made in, which its
 non-local return returns from; an **unwind marker** marks an activation
-an unwind stops at -- an `on:do:`, `ensure:` or `ifCurtailed:`.
+an unwind stops at -- an `on:do:`, `ensure:` or `ifCurtailed:`. The
+**unwinder** is the one routine that carries out every unwind -- a
+non-local return, an exception's return or retry, a debugger's restart
+-- and the **depth count** is the number of activations the depth limit
+is held to, from which a few block activations are **exempt**. The
+**native stack** is the processor's stack, on which the host, the run
+loop and compiled frames' **return addresses** lie.
 
 The object space holds a **nursery** -- **eden**, where new objects are
 allocated, and two **survivor** spaces -- below the **old space**. A
@@ -87,7 +102,19 @@ objects, finds every young object an old one reaches. The **write
 barrier** is the decision every store into an existing object makes to
 keep that set exact. The **bulk forward** is the one operation that
 rewrites every reference to a group of objects to name others, behind
-`become:` and every install of an edit.
+`become:` and every install of an edit. New objects are allocated by the
+**bump cursor**, which moves eden's top up towards its **limit**;
+machine code allocates inline only below the **fast limit**, which lies
+below the **scavenge threshold**, the top past which an allocation
+requests a scavenge. Each object's header carries a **mark bit**, set
+while a full collection marks it, and a **remembered bit**, set while it
+is in the remembered set. The **forwarding table** maps, chunk by chunk,
+each survivor of a full collection to its new offset. An ephemeron whose
+key nothing else reaches is **mourned**: queued for its finalizer. The
+**canonical table** holds the one symbol object of each interned text,
+and a **weak table** holds the symbols a program makes until the
+canonical table adopts them; a **reified mixin** is the object that
+stands for a mixin in reflection.
 
 A **safepoint** is the point between two instructions of the run loop --
 at a switch to another activation and at a backward jump -- where the
@@ -105,7 +132,12 @@ that every instance's header carries and every cache compares. A
 whose caches lie at its **feedback base** in the heap's cache space. A
 **code id** names a body in the per-heap table of compiled code. A
 nested class's class object is cached in a **hidden slot** of its
-enclosing object, which marks it while the class is being created.
+enclosing object, which marks it while the class is being created. A
+family's **family size** is the number of its send sites. An install of
+an edit replaces a mixin by a new version under its id, the old one
+**superseded**. The **code table** holds the heap's compiled bodies by
+code id, and the **application id table** holds each application's row
+for machine code.
 
 The **compiler** lowers a resolved module's bodies into instructions, by
 one of two **lowerings**: the **optimized lowering**, which inlines
@@ -119,7 +151,14 @@ An application's **slot base** is the index of its level's first own
 slot in an instance; a mixin's instructions name its own slots relative
 to it. Before it, the **resolver** binds each name of the module -- to a
 slot, a lexical send, a send to the VM mirror -- and the compiler lowers
-the bindings it recorded.
+the bindings it recorded. An **own-slot instruction** reads or writes a
+slot of the receiver by its index from the slot base. A block that
+captures a local its home may write after the capture reaches it **by
+reference**: in the reference lowering and in a **fallback closure** --
+the closure an inlined conditional makes when its receiver is no boolean
+-- through the home's registers, whose depth is the instruction's
+**outer reach**; in **converted** code, a captured local is copied into
+the closure or shared through a **vector**, an object holding it.
 
 A **cache entry** records, for one send site and one key -- the
 receiver's guard, and whatever else the lookup's answer depends on --
@@ -166,21 +205,27 @@ machine code without an exit.
 The **baseline compiler** compiles a body's instructions one by one into
 **baseline code**, which keeps every value in the frame. A **poll** is
 the check of the safepoint request word machine code makes at a backward
-jump, taking its exit when a safepoint is requested. A body's **data words** lie in the code zone beside its code;
-among them its lean copy's **transfer words**, which name its twin, and
-its **budget word**, which names the body's row of **optimization
-budget**, the count its baseline code spends until it requests an
-optimized copy. The optimizing compile reads a **snapshot** of the body
-and of its callees, builds an **SSA graph** -- whose **frame nodes**
-store values into the frame -- inlines callees as **inlined scopes**
-behind a **type-case** on the receiver's application, and records at
-each interrupt point the **write-backs** that make the frame the
-interpreter's; a guard that fails **traps**, leaving the copy for the
-baseline code. A **stretch** is the run of compiled frames machine code
-pushed since it was entered, at its **entry frame**. A body that keeps
-exiting is **abandoned** -- its code freed -- and **revived** later. A
-method body's **dispatching word**, among its data words, names its
-block of dispatching rows.
+jump, taking its exit when a safepoint is requested. A body's **data
+words** lie in the code zone beside its code; among them its lean copy's
+**transfer words**, which name its twin, and its **budget word**, which
+names the body's row of **optimization budget**, the count its baseline
+code spends until it requests an optimized copy. The optimizing compile
+reads a **snapshot** of the body and of its callees, builds an **SSA
+graph** -- whose **frame nodes** store values into the frame -- inlines
+callees as **inlined scopes** behind a **type-case** on the receiver's
+application, and records at each interrupt point the **write-backs**
+that make the frame the interpreter's; a guard that fails **traps**,
+leaving the copy for the baseline code. A **stretch** is the run of
+compiled frames machine code pushed since it was entered, at its **entry
+frame**. A body that keeps exiting is **abandoned** -- its code freed --
+and **revived** later. A method body's **dispatching word**, among its
+data words, names its block of dispatching rows. An optimized copy
+records its **dependencies** -- what it inlined and what it assumed --
+and is **invalidated** when one changes, **retired** when it keeps
+trapping or exiting; a cache's **executed** and **trapped** bits say
+whether its site ran and whether a guard there failed. The code zone is
+**compacted** -- its live bodies slid together -- when a compile finds
+no room.
 
 The **VM mirror** is the one object through which the shipped core
 library reaches the virtual machine's leaves. The **image loader**
@@ -191,7 +236,14 @@ a move, a collection, an exit -- forced at the safepoints it picks; a
 **debug build** adds checks a release build leaves out. A value the
 debugger **withholds** is never handed out for a client to act on. A
 **trace event** or a **listing** of a body's code is queued where it is
-recorded and delivered to the host's sink at a flush.
+recorded and delivered to the host's sink at a flush. A **mirror send**
+is a send to the VM mirror, which only the shipped modules can make;
+each selector the mirror understands is a **mirror row**, carried out by
+its leaf. The image **encoder** writes an image and the **decoder**
+reads one; a **module instance** is the object a module's root class
+makes for a program. The **embedded code** is the shipped modules'
+compiled code the binary carries, with a **fingerprint** of the sources
+it was compiled from.
 
 ## The heap and the collector
 
