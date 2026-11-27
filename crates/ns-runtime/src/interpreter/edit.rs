@@ -554,8 +554,8 @@ impl<'gc> Mutator<'gc> {
     /// nested one's over what its new clauses answer in each enclosing
     /// instance, a root over its new static superclass. A mixin
     /// application without a body of its own is re-parented as any other
-    /// declaration; one that gains or loses its body is refused, since its
-    /// class objects would have to become objects of another shape.
+    /// declaration, and so is one that gains or loses its body: every class
+    /// object has the fields of both shapes.
     fn clauses_changed(
         &self,
         original_text: &str,
@@ -601,12 +601,6 @@ impl<'gc> Mutator<'gc> {
                 && clauses_as_written(original_text, written) == clauses_as_written(text, edited)
             {
                 continue;
-            }
-            if current.has_body != fresh.has_body {
-                return Err(format!(
-                    "{} gains or loses a body of its own, which an install does not change",
-                    current.reflected_name()
-                ));
             }
             changed.push(*id);
         }

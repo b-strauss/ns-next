@@ -1442,7 +1442,7 @@ is the nearest to `C`.
   error, raised where the levels are built. The level's metaclass applies
   the named class's class side, so its factory and its name are the named
   class's (`Heap::class_factory`, `Heap::class_name`), and the level keeps
-  the named class itself in one field more than a class object has
+  the named class itself in a field every other class object leaves nil
   (`class_field::NAMED_CLASS`), which the clause's check reads and the image
   rebuilds the metaclass from. Its own part runs with the clause's
   arguments, their count checked against the factory of the mixin it
@@ -1484,7 +1484,8 @@ and declaring class are `M1`'s so that `M1`'s methods walk `M1`'s lexical
 chain, and the declaration `M3`, a member class of the class it is written
 in, whose clause messages and arguments were written in `M3`'s scope (§6:
 the factory's parameters "are in scope throughout the mixin
-application"). So the class object keeps two fields more, `M3`'s own
+application"). So the class object keeps two fields more than a level
+uses, `M3`'s own
 enclosing object and declaring class (`class_field::DECLARATION_ENCLOSING`,
 `Heap::class_declaration_scope`), written by `nested::body_less_class`
 once the superclass clause has run and nil for a module's root, which §3.3
@@ -2536,18 +2537,22 @@ clause added the clause that added it (the applying declaration's mixin id,
 the clause index and the named builtin tag packed into one `SmallInteger`, or
 `nil`, since an `Rc<Mixin>` cannot live in the words), and its application
 as a `SmallInteger` full-width index, separate from the 22-bit guard id in
-instances' headers; the behaviour stays Rust. A class object is 80 bytes
-with its header and class word. The builtin tag, the applied clause and the
-application are numbers, the other five fields objects or `nil`, and the
-tracer sees only those. Two kinds of class object carry more, and only they
-grow, so the image's amplification bound does not move
-([memory.md](memory.md), "The amplification bound of a rejected load"): a
-level a `<:` clause added has a ninth field, the class object its clause
-named (`NAMED_CLASS`, 88 bytes), and a body-less declaration's class object
-two fields more, its declaration's enclosing object and declaring class
-(`DECLARATION_ENCLOSING`, `DECLARATION_DECLARING_CLASS`, 104 bytes; "Mixin
-application" above). All three are pointer fields, and on a shorter class
-object their ranges are empty (`pointer_ranges`). The applied clause packs the named builtin into a
+instances' headers; the behaviour stays Rust. Then three fields only some
+class objects use, `nil` on the others: for a level a `<:` clause added the
+class object its clause named (`NAMED_CLASS`), and for a body-less
+declaration's class object its declaration's enclosing object and declaring
+class (`DECLARATION_ENCLOSING`, `DECLARATION_DECLARING_CLASS`; "Mixin
+application" above); and last the creation stamp (`CREATION_STAMP`), a
+`SmallInteger` drawn from the heap's counter when the class object is made
+and kept by every move and by an image, which orders class objects by their
+creation -- the order in which an install evaluates superclass clauses
+([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: the
+complete install"). Every class object has all twelve fields, 112 bytes with
+its header and class word, so that an install can turn a class object of a
+declaration with a body into a body-less declaration's and back in place,
+keeping its identity. The builtin tag, the applied clause, the application
+and the stamp are numbers, the other eight fields objects or `nil`, and the
+tracer sees only those. The applied clause packs the named builtin into a
 6-bit field, as its position in `BuiltinClass::ALL` plus one (0 for none),
 which caps the builtins: `mixin.rs`'s compile-time assertion keeps
 `BuiltinClass::ALL` shorter than 63, so there are at most 62.

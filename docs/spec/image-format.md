@@ -407,14 +407,14 @@ object-body/object-body/string             text:text
 object-body/object-body/symbol             symbol:symbol
 object-body/object-body/array              count:u32  element:value*count
 object-body/object-body/closure            code:code-id  frame:object-id  copied_count:u16  copied:value*copied_count
-object-body/object-body/class              record:class-record
-object-body/object-body/metaclass          class:class-reference
+object-body/object-body/class              stamp:u64  record:class-record
+object-body/object-body/metaclass          stamp:u64  class:class-reference
 object-body/object-body/byte-array         bytes:bytes
 object-body/object-body/weak-array         count:u32  element:value*count
 object-body/object-body/ephemeron          count:u32  field:value*count
 object-body/object-body/mixin              mixin:reified-mixin  side:mixin-side
 object-body/object-body/frame              frame:frame
-object-body/object-body/body-less-class    record:class-record  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class
+object-body/object-body/body-less-class    stamp:u64  record:class-record  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class
 class-record/mixin-reference
 class-record/mixin-reference/row           row:row-id  has_superclass:u8  superclass:class-reference?has_superclass  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class  has_clause:u8  applying_row:row-id?has_clause  clause:u32?has_clause  named:class-reference?has_clause
 class-record/mixin-reference/shipped       name:shipped-index  has_superclass:u8  superclass:class-reference?has_superclass  applying_row:row-id  clause:u32  named:class-reference
@@ -756,7 +756,9 @@ r[image.verify.numbers]
 r[image.verify.hashes]
 27. Every identity hash fits the 22 bits an object's header holds: it is
     below 4,194,304. A tag-named hash is never 0, and each shipped name
-    has at most one.
+    has at most one. Every class, body-less class and metaclass record's
+    creation stamp fits a `SmallInteger`, and no two records have the
+    same.
 
 r[image.verify.started-image-roots]
 28. A started image has exactly one root, the application `load` starts.
@@ -959,6 +961,13 @@ the load. A shipped object a tag-named hash names answers that hash; one
 none names is as the loading world's boot left it. A hash given after the
 load is past every hash the image holds, so it collides with none of them
 until the 22-bit hashes wrap.
+
+r[image.load.class-stamps]
+A class object loaded from a record keeps the creation stamp the record
+was written with, so that the class objects of an image keep the order
+they were made in; a class object made after the load is ordered after
+every one the image holds
+([`runtime.install.superclass`](runtime.md#r-runtime.install.superclass)).
 
 r[image.load.symbols]
 A symbol record's object is new, and it becomes the loading world's
@@ -1285,7 +1294,7 @@ refuses:
   what no host can reach today: a body-less declaration's class object
   without its declaration's scope, with
   `image encoding cannot serialize a body-less declaration's class object without its declaration's scope`,
-  since such a class object is always made with the room for its scope;
+  since every class object has the room for one;
   a reified mixin of a class side whose instance side is gone, with
   `image encoding cannot serialize the reified mixin of a class side whose instance side no longer exists`,
   since a class side lives no longer than its instance side; and a row

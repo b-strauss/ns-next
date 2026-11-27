@@ -31,6 +31,14 @@ use ns_runtime::{
 use ns_syntax::Span;
 use ns_syntax::ast::AccessModifier;
 
+/// A creation stamp no other class record of the test's images carries:
+/// the decoder holds every class record's stamp unique.
+fn next_stamp() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 // spec: image.header
 #[test]
 fn header_round_trips() {
@@ -6524,6 +6532,7 @@ fn class_record(
     writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(mixin_id);
     references(writer);
@@ -6536,6 +6545,7 @@ fn metaclass_record(writer: &mut encode::Writer, class_id: u32) {
     writer.write_shipped(METACLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS); // object body: Metaclass
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(CLASS_RECORD); // its class: an object-table record
     writer.write_u32(class_id);
 }
@@ -6549,6 +6559,46 @@ fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer))
     metaclass_record(&mut writer, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
+}
+
+/// A class record and its metaclass record, each with the creation stamp
+/// given: one graph's two class records.
+fn class_pair_with_stamps(class_stamp: u64, metaclass_stamp: u64) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2);
+    writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+    writer.write_u32(1);
+    writer.write_u32(7); // identity hash
+    writer.write_u8(OBJECT_CLASS);
+    writer.write_u64(class_stamp);
+    writer.write_u8(MIXIN_ROW);
+    writer.write_u32(0);
+    no_class_references(&mut writer);
+    writer.write_boolean(false); // not an applied level
+    writer.write_shipped(METACLASS_NAME);
+    writer.write_u32(8); // identity hash
+    writer.write_u8(OBJECT_METACLASS);
+    writer.write_u64(metaclass_stamp);
+    writer.write_u8(CLASS_RECORD); // its class: an object-table record
+    writer.write_u32(0);
+    writer.write_u32(0); // no roots
+    writer.into_bytes()
+}
+
+/// A class record's creation stamp orders it among the image's class
+/// objects: two of one stamp, and one past the `SmallInteger` range the
+/// class object stores it as, are refused.
+// spec: image.verify.hashes
+#[test]
+fn class_records_of_one_creation_stamp_or_a_wide_one_are_refused() {
+    assert_eq!(
+        GraphFixture::new().decode_error(&class_pair_with_stamps(5, 5)),
+        decode::DecodeError::DuplicateClassStamp(5)
+    );
+    assert_eq!(
+        GraphFixture::new().decode_error(&class_pair_with_stamps(u64::MAX, 6)),
+        decode::DecodeError::ClassStampTooWide(u64::MAX)
+    );
 }
 
 /// `superclass`, `enclosing` and `declaring_class` all absent.
@@ -12090,7 +12140,9 @@ fn a_root_record_over_kernel_array_breaks_the_root_rule() {
     };
     let row = mixin_table_of(&bytes).module_rows[0];
     let superclass = |index: u32| {
-        let mut record = vec![OBJECT_CLASS, MIXIN_ROW];
+        // From the mixin reference on: the creation stamp between it and
+        // the body tag is the encoder's.
+        let mut record = vec![MIXIN_ROW];
         record.extend(row.to_le_bytes());
         record.push(1);
         record.push(CLASS_SHIPPED);
@@ -16388,6 +16440,7 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     writer.write_shipped(CLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS);
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(CLASS_RECORD);
     writer.write_u32(0);
     writer.write_u32(0); // no roots
@@ -16825,6 +16878,7 @@ fn applied_level_record_naming(
     writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(mixin_row);
     match superclass {
@@ -17051,6 +17105,7 @@ fn body_less_class_section(
         writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(body);
+        writer.write_u64(next_stamp()); // creation stamp
         writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
         writer.write_u32(marker);
         writer.write_boolean(false); // no superclass
@@ -17320,6 +17375,7 @@ fn an_unknown_mixin_reference_tag_is_a_decode_error_not_a_panic() {
             writer.write_shipped(OBJECT_NAME);
             writer.write_u32(7); // identity hash
             writer.write_u8(OBJECT_CLASS); // object body: Class
+            writer.write_u64(next_stamp()); // creation stamp
             writer.write_u8(tag);
             writer.write_u32(0);
             no_class_references(writer);
@@ -17345,6 +17401,7 @@ fn shipped_mixin_record(name: u32, (row, index): (u32, u32)) -> Vec<u8> {
         writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(OBJECT_CLASS); // object body: Class
+        writer.write_u64(next_stamp()); // creation stamp
         writer.write_u8(MIXIN_SHIPPED); // mixin reference: a shipped class's
         writer.write_u32(name);
         writer.write_boolean(false); // no superclass

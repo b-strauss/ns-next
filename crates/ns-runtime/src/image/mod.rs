@@ -731,6 +731,7 @@ fn decode_graph_phase<'gc>(
         .map_err(|error| error.to_string())?;
     decode::verify_graph(&mutator.heap, &graph, table).map_err(|error| error.to_string())?;
     mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
+    mutator.heap.advance_class_stamp_past(graph.max_class_stamp);
     // A byte sequence past the last section is refused, not ignored: an
     // unchecked tail would let a padded image load as something its author
     // did not write.

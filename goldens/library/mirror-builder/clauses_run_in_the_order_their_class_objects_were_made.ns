@@ -1,0 +1,49 @@
+/// An install evaluates the new superclass clause for the class objects of
+/// its class in the order they were made, whatever the collector did to
+/// them since: three enclosing instances, made in one order, bring their
+/// class objects into being in another, and the clause runs in that
+/// other order.
+class ClausesRunInTheOrderTheirClassObjectsWereMade = Object new (
+  |
+    /// The tags of the enclosing instances the clause ran in, in order.
+    public order ::= ''.
+  |
+) (
+  class Holder tag: aString = Object new (
+    |
+      /// What the clause records of this enclosing instance.
+      public tag = aString.
+    |
+  ) (
+    public class Base = Object new () ()
+
+    public class Other = Object new () ()
+
+    public class Inner = Base new () ()
+
+    public recording = (
+      order:: order , tag.
+      ^Other.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      first = Holder tag: 'a'.
+      second = Holder tag: 'b'.
+      third = Holder tag: 'c'.
+      builder
+    |
+    second Inner.
+    third Inner.
+    first Inner.
+    builder:: (ClassMirror reflecting: first Inner) mixin declaration asBuilder.
+    builder header source: 'public class Inner = recording new ()'.
+    builder install.
+    transcript
+        show: order;
+        newLine.
+  )
+)

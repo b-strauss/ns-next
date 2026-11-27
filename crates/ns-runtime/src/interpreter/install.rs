@@ -483,23 +483,35 @@ impl<'gc> Mutator<'gc> {
                     .class_application(superclass)
                     .map(|application| (superclass, application))
             });
-            let id = self
-                .heap
-                .known_mixin_id(&old.mixin)
-                .expect("internal: an applied mixin is registered");
+            let reparenting = reparented
+                .get(&self.heap.object_identity_key(class))
+                .map(|index| &reparentings[*index]);
+            // A re-parented class object applies its declaration's fresh
+            // version, which a body-less declaration's class object did not
+            // apply before: it applied its last clause's mixin.
+            let id = match reparenting {
+                Some(reparenting) => reparenting.declaration,
+                None => self
+                    .heap
+                    .known_mixin_id(&old.mixin)
+                    .expect("internal: an applied mixin is registered"),
+            };
             let current = self
                 .heap
                 .mixin(id)
                 .expect("internal: a registered mixin has a row");
-            let reparenting = reparented
-                .get(&self.heap.object_identity_key(class))
-                .map(|index| &reparentings[*index]);
             if let Some(reparenting) = reparenting
-                && let Some(declaration) = reparenting.body_less
+                && reparenting.becomes_body_less
             {
-                new_applications[position] =
-                    Some(self.reparent_body_less(class, declaration, reparenting, superclass));
+                let new = self.reparent_body_less(class, reparenting, superclass);
+                self.redecide_value_class(class, new.inherits_value);
+                new_applications[position] = Some(new);
                 continue;
+            }
+            if let Some(reparenting) = reparenting
+                && let Some(scope) = reparenting.previous_scope
+            {
+                self.gain_a_body(class, scope);
             }
             if let Some(reparenting) = reparenting
                 && !reparenting.applied.is_empty()
@@ -3206,6 +3218,7 @@ mod tests {
             public traitMethod = ( ^#trait )
           )
           public class Mixed = Base new <: Trait.
+          public class Bodied = Base new (| public own ::= 5. |) ()
           public bump = (
             count:: count + 1.
             ^3
@@ -3387,25 +3400,144 @@ mod tests {
         assert_eq!(interpreter.enter(|mutator| mutator.install_epoch), epoch);
     }
 
-    /// A replacement that turns a class with a body into a mixin
-    /// application without one would make its class objects objects of
-    /// another shape, so it is refused, and nothing changes.
+    /// The class object `name` of `outer`, and an instance of it when
+    /// `with_instance` asks for one.
+    fn class_and_instance(
+        interpreter: &mut Interpreter,
+        outer: &Root,
+        name: &str,
+        with_instance: bool,
+    ) -> (Root, Option<Root>) {
+        let class = send(interpreter, outer, name);
+        let instance = with_instance.then(|| send(interpreter, &class, "new"));
+        (class, instance)
+    }
+
+    /// Whether `class` is a body-less declaration's class object.
+    fn is_body_less(interpreter: &mut Interpreter, class: &Root) -> bool {
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(class).as_object().expect("a class");
+            mutator.heap.class_body_less_declaration(class).is_some()
+        })
+    }
+
+    /// A class with a body that becomes a mixin application without one,
+    /// `Bodied = Base (| own |) ()` to `Bodied = Other <: Trait.`, keeps its
+    /// class object, which becomes the level its clause adds: an instance
+    /// made before loses its own slot and that of `Base`, starts those of
+    /// `Other` and `Trait` nil and answers the applied mixin's methods;
+    /// with no instance the class object changes all the same.
     // spec: runtime.install.superclass
     #[test]
-    fn a_class_that_becomes_body_less_is_refused() {
-        let source = indoc! {"
-            class Outer = Object new () (
-              public class Trait = () ()
-              public class Inner = () ()
-            )
-        "};
-        let (mut interpreter, outer) = load(source);
-        let outer_id = root_id_of(&mut interpreter, &outer);
-        let edit = add_class("public class Inner = Object new <: Trait.");
-        assert_eq!(
-            install_refusal(&mut interpreter, &[InstallEntry::Edit(outer_id, edit)]),
-            "Inner gains or loses a body of its own, which an install does not change"
-        );
+    fn a_class_that_becomes_body_less_keeps_its_class_object() {
+        for with_instance in [true, false] {
+            let (mut interpreter, outer_class) = load(REPARENTED);
+            let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+            let (class, instance) =
+                class_and_instance(&mut interpreter, &outer, "Bodied", with_instance);
+            let answer = install_through(
+                &mut interpreter,
+                &outer,
+                "installClass:in:using:",
+                &outer_class,
+                "public class Bodied = Other new <: Trait.",
+            );
+            assert_eq!(answer, "installed");
+            let again = send(&mut interpreter, &outer, "Bodied");
+            assert!(same(&mut interpreter, &again, &class));
+            assert!(is_body_less(&mut interpreter, &class));
+            if let Some(instance) = instance {
+                assert!(send_error(&mut interpreter, &instance, "own").contains("#own"));
+                assert!(send_error(&mut interpreter, &instance, "base").contains("#base"));
+                let other = send(&mut interpreter, &instance, "other");
+                assert!(is_nil(&mut interpreter, &other));
+                let trait_slot = send(&mut interpreter, &instance, "trait");
+                assert!(is_nil(&mut interpreter, &trait_slot));
+                drop(send(&mut interpreter, &instance, "traitMethod"));
+            }
+            let fresh = send(&mut interpreter, &class, "new");
+            let trait_slot = send(&mut interpreter, &fresh, "trait");
+            assert_eq!(integer(&mut interpreter, &trait_slot), Some(3));
+            let other = send(&mut interpreter, &fresh, "other");
+            assert_eq!(integer(&mut interpreter, &other), Some(2));
+        }
+    }
+
+    /// A mixin application without a body that gains one, `Mixed = Base <:
+    /// Trait.` to `Mixed = Other <: Trait (| own |) ()`, keeps its class
+    /// object, which becomes an ordinary class object over the level its
+    /// clause adds: an instance made before keeps the applied mixin's slot,
+    /// loses that of `Base` and starts its own and that of `Other` nil.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_body_less_class_that_gains_a_body_keeps_its_class_object() {
+        for with_instance in [true, false] {
+            let (mut interpreter, outer_class) = load(REPARENTED);
+            let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+            let (class, instance) =
+                class_and_instance(&mut interpreter, &outer, "Mixed", with_instance);
+            let answer = install_through(
+                &mut interpreter,
+                &outer,
+                "installClass:in:using:",
+                &outer_class,
+                "public class Mixed = Other new <: Trait (| public own ::= 7. |) ()",
+            );
+            assert_eq!(answer, "installed");
+            let again = send(&mut interpreter, &outer, "Mixed");
+            assert!(same(&mut interpreter, &again, &class));
+            assert!(!is_body_less(&mut interpreter, &class));
+            let trait_class = send(&mut interpreter, &outer, "Trait");
+            let named = interpreter.enter(|mutator| {
+                let class = mutator.fetch(&class).as_object().expect("a class");
+                let level = mutator.heap.class_superclass(class).expect("a superclass");
+                let named = mutator.heap.class_named(level).expect("a level");
+                mutator.stash(Value::object(named))
+            });
+            assert!(same(&mut interpreter, &named, &trait_class));
+            if let Some(instance) = instance {
+                let trait_slot = send(&mut interpreter, &instance, "trait");
+                assert_eq!(integer(&mut interpreter, &trait_slot), Some(3));
+                let own = send(&mut interpreter, &instance, "own");
+                assert!(is_nil(&mut interpreter, &own));
+                assert!(send_error(&mut interpreter, &instance, "base").contains("#base"));
+            }
+            let fresh = send(&mut interpreter, &class, "new");
+            let own = send(&mut interpreter, &fresh, "own");
+            assert_eq!(integer(&mut interpreter, &own), Some(7));
+        }
+    }
+
+    /// A body-less class re-parented over `Value` in an enclosing instance
+    /// that is no value records §3.1.1's refusal on its class object, and
+    /// re-parented back over `Base` clears it again.
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_reparented_body_less_class_decides_its_value_verdict_again() {
+        let (mut interpreter, outer_class) = load(REPARENTED);
+        let outer = expect_ok(interpreter.instantiate(&outer_class, &[]), "an Outer");
+        let class = send(&mut interpreter, &outer, "Mixed");
+        let refused = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                let class = mutator.fetch(&class).as_object().expect("a class");
+                mutator.heap.class_has_value_refusal(class)
+            })
+        };
+        assert!(!refused(&mut interpreter));
+        for (text, expected) in [
+            ("public class Mixed = Value new <: Trait.", true),
+            ("public class Mixed = Base new <: Trait.", false),
+        ] {
+            let answer = install_through(
+                &mut interpreter,
+                &outer,
+                "installClass:in:using:",
+                &outer_class,
+                text,
+            );
+            assert_eq!(answer, "installed");
+            assert_eq!(refused(&mut interpreter), expected, "{text}");
+        }
     }
 
     /// A mixin application without a body of its own, `Mixed = Base <:
@@ -3520,5 +3652,47 @@ mod tests {
         assert_eq!(below, Some(BuiltinClass::Object));
         let answer = send(&mut interpreter, &instance, "a");
         assert_eq!(integer(&mut interpreter, &answer), Some(1));
+    }
+
+    /// The creation stamp of the class object `class`.
+    fn stamp_of(interpreter: &mut Interpreter, class: &Root) -> u64 {
+        interpreter.enter(|mutator| {
+            let class = mutator.fetch(class).as_object().expect("a class");
+            mutator.heap.class_creation_stamp(class).expect("a stamp")
+        })
+    }
+
+    /// Every class object draws a creation stamp from the heap's counter,
+    /// so the stamps order class objects by their creation; an image keeps
+    /// them, and a class object made after the load is ordered after every
+    /// one the image holds.
+    // spec: image.load.class-stamps
+    // spec: runtime.install.superclass
+    #[test]
+    fn a_loaded_image_keeps_its_class_objects_creation_order() {
+        let source = indoc! {"
+            class Outer = Object new () (
+              public class Inner = () ()
+              public class Other = () ()
+            )
+        "};
+        let (mut interpreter, outer) = load(source);
+        let first = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let second = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let second_inner = send(&mut interpreter, &second, "Inner");
+        let first_inner = send(&mut interpreter, &first, "Inner");
+        assert!(
+            stamp_of(&mut interpreter, &second_inner) < stamp_of(&mut interpreter, &first_inner)
+        );
+        let bytes = image_of(&mut interpreter, &outer, &[first, second]);
+        let mut image = loaded(&bytes);
+        let (first, second) = (image.roots[0].clone(), image.roots[1].clone());
+        let first_inner = send(&mut image.interpreter, &first, "Inner");
+        let second_inner = send(&mut image.interpreter, &second, "Inner");
+        let first_stamp = stamp_of(&mut image.interpreter, &first_inner);
+        let second_stamp = stamp_of(&mut image.interpreter, &second_inner);
+        assert!(second_stamp < first_stamp, "the image keeps the order");
+        let made_after = send(&mut image.interpreter, &first, "Other");
+        assert!(stamp_of(&mut image.interpreter, &made_after) > first_stamp);
     }
 }

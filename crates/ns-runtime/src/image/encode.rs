@@ -1879,6 +1879,7 @@ fn encode_object<'gc>(
             // refused as a record's class would be.
             Some(this_class) => {
                 writer.write_u8(OBJECT_METACLASS);
+                write_class_stamp(writer, heap, object);
                 encode_class_tag(writer, this_class, NamePosition::Header, context)?;
             }
             // A body-less declaration's class object carries its
@@ -1891,11 +1892,13 @@ fn encode_object<'gc>(
                             .to_string());
                     };
                     writer.write_u8(OBJECT_BODY_LESS_CLASS);
+                    write_class_stamp(writer, heap, object);
                     encode_class_record(writer, object, context)?;
                     encode_declaration_scope(writer, scope, context)?;
                 }
                 None => {
                     writer.write_u8(OBJECT_CLASS);
+                    write_class_stamp(writer, heap, object);
                     encode_class_record(writer, object, context)?;
                 }
             },
@@ -1954,6 +1957,16 @@ fn encode_object<'gc>(
         }
     }
     Ok(())
+}
+
+/// A class record's creation stamp, right after its body tag: an image of
+/// a running world keeps the order in which its class objects were made
+/// (`Heap::class_creation_stamp`).
+fn write_class_stamp<'gc>(writer: &mut Writer, heap: &Heap<'gc>, class: ObjectReference<'gc>) {
+    let stamp = heap
+        .class_creation_stamp(class)
+        .expect("internal: a class record is written for a class object");
+    writer.write_u64(stamp);
 }
 
 /// The mixin whose reference an `OBJECT_MIXIN` record of the reified mixin

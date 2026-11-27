@@ -333,9 +333,10 @@ list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 
 r[runtime.install.superclass]
 An install whose staged declaration writes another superclass clause or
-other `<:` clauses than its current version evaluates the new clauses,
-before it installs anything, once for every class object of the
-declaration the program reaches when the install begins -- a class
+other `<:` clauses than its current version, or gains or loses a body of
+its own, evaluates the new clauses, before it installs anything, once for
+every class object of the declaration the program reaches when the
+install begins, in the order the class objects were made -- a class
 object nothing reaches is never evaluated, however long the memory
 still holds it: each as program code in the enclosing object its
 declaration was evaluated in, as part of the class that declares it,
@@ -350,11 +351,12 @@ migrates every instance whose layout changed by slot name, a slot of a
 level it lost gone and one of a level it gained `nil`, and runs no
 initializer. A mixin application without a body of its own is
 re-parented as any class: its class object, the level its last clause
-adds, becomes the level of the new last clause. A module's root
+adds, becomes the level of the new last clause. A declaration that loses
+its body keeps its class objects, each becoming the level its last clause
+adds, and one that gains a body keeps them too, each becoming the class
+of its own body over the levels its clauses add. A module's root
 evaluates nothing: it takes the superclass its new header names,
-`Object`, `Value` or `Value` applied over `Object`. A declaration that
-gains or loses a body of its own cannot be installed: signal `Inner
-gains or loses a body of its own, which an install does not change`.
+`Object`, `Value` or `Value` applied over `Object`.
 
 r[runtime.install.epoch]
 Anything installed, or any module loaded, between an install's

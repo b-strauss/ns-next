@@ -123,8 +123,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// before any builder is read.
     /// @signals Error with the VM's diagnostic, changing nothing, for the
     /// first edit the install refuses: 'two builders edit <class name>'
-    /// for two builders of one declaration, and every diagnostic a
-    /// builder's own `install` signals.
+    /// for two builders of one declaration, 'the builder of <class name>
+    /// edits a class the builder of <other class name> removes' (or
+    /// 'replaces') for a builder of a class another builder removes or
+    /// replaces, or of one nested in it, and every diagnostic a builder's
+    /// own `install` signals.
     /// @see `ClassDeclarationBuilder>>install`.
     public installAtomically: aCollection = (
       |
@@ -1505,7 +1508,10 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// not run. A method or a closure already running finishes with the
     /// code it was running. A nested class removed lives on obsolete, its
     /// name no longer understood by the declaration, and one replaced
-    /// keeps its class objects and its instances.
+    /// keeps its class objects and its instances. A staged superclass
+    /// clause runs for every class object the program reaches before
+    /// anything is installed, and one that signals propagates what it
+    /// signals, installing nothing.
     ///
     /// An install of the receiver alone, as `Mirrors>>installAtomically:`
     /// installs several builders.
@@ -1518,10 +1524,18 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// when another builder's install gave the class a slot of the name of
     /// a staged method; '<class name> was removed by an install, and an
     /// obsolete class is not edited' once an install removed the
-    /// declaration, or one it is nested in; and 'cannot migrate an
-    /// instance of <class name>, which is not an ordinary object' when an
-    /// instance whose layout would change cannot be copied into the new
-    /// one.
+    /// declaration, or one it is nested in; 'cannot migrate an instance of
+    /// <class name>, which is not an ordinary object' when an instance
+    /// whose layout would change cannot be copied into the new one; and,
+    /// for a staged superclass clause or `<:` clauses, 'the superclass
+    /// clause of <class name> answered <what it answered>, which is no
+    /// class', 'the superclass clause of <class name> answers a class that
+    /// inherits from <class name>', 'an install ran between the preparation
+    /// and the commit of <class name>'s install; nothing was installed'
+    /// when a clause installed, and 'a class object of <class name> was
+    /// made while its superclass clauses were evaluated; nothing was
+    /// installed' when a clause brought a class object of the class into
+    /// being that the program still reaches at the commit.
     /// @see `Mirrors>>installAtomically:`.
     public install = (
       (Installer builders: {self}) install.
@@ -1678,10 +1692,12 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// Installs every builder's staged edits as one change, and then
     /// hands each builder the texts of its installed declaration, so that
     /// it stands for that declaration with nothing staged. A class whose
-    /// superclass clause or `<:` clauses the edits change has the new
-    /// clauses evaluated for each of its class objects, in its enclosing
-    /// object, as program code before anything is installed; the commit
-    /// then re-parents each class object over what its clauses answered,
+    /// superclass clause or `<:` clauses the edits change, or which gains
+    /// or loses a body of its own, has the new clauses evaluated for each
+    /// of its class objects the program reaches, in the order they were
+    /// made and in the enclosing object its declaration was evaluated in,
+    /// as program code before anything is installed; the commit then
+    /// re-parents each class object over what its clauses answered,
     /// keeping its identity, and migrates its instances by slot name,
     /// running no initializer. A clause that signals propagates what it
     /// signals, and nothing is installed. An install of no builders
@@ -1700,7 +1716,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// preparation -- by a superclass clause among others --, 'a class
     /// object of <class name> was made while its superclass clauses were
     /// evaluated; nothing was installed' when a clause brought a class
-    /// object of a changed class into being, 'the superclass clause of
+    /// object of a changed class into being that the program still reaches
+    /// at the commit, 'the superclass clause of
     /// <class name> answered <what it answered>, which is no class', 'the
     /// superclass clause of <class name> answers a class that inherits
     /// from <class name>', and every diagnostic

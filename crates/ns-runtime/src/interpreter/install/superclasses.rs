@@ -13,7 +13,7 @@
 
 use super::prepared::PreparedInstall;
 use crate::hash::IdentityMap;
-use crate::heap::{ClassReference, MixinId, ObjectReference};
+use crate::heap::{ClassReference, DeclarationScope, MixinId, ObjectReference};
 use crate::interpreter::edit::InstallEntry;
 use crate::interpreter::{Mutator, Step};
 use std::rc::Rc;
@@ -32,11 +32,20 @@ pub(super) struct Reparenting<'gc> {
     /// clause order, from which the commit builds the levels anew
     /// (`nested::build_applied_levels`).
     pub(super) applied: Vec<(usize, Value<'gc>)>,
-    /// For a body-less declaration's class object, the declaration's id:
-    /// the class object is the level its last clause adds, so the commit
-    /// builds the levels below it anew and makes the class object itself
-    /// the level of the new last clause.
-    pub(super) body_less: Option<MixinId>,
+    /// The declaration the class object is the class object of, whose
+    /// fresh version it applies once re-parented.
+    pub(super) declaration: MixinId,
+    /// Whether the fresh declaration is a mixin application without a body
+    /// of its own: the class object is then the level its last clause
+    /// adds, so the commit builds the levels below anew and makes the class
+    /// object itself the level of the new last clause.
+    pub(super) becomes_body_less: bool,
+    /// For a class object of a body-less declaration before the install,
+    /// its declaration's scope, read before the fresh version replaces it:
+    /// it becomes the class object's own enclosing object and declaring
+    /// class when the declaration gains a body, and is kept when it stays
+    /// body-less.
+    pub(super) previous_scope: Option<DeclarationScope<'gc>>,
 }
 
 impl<'gc> Mutator<'gc> {
@@ -133,6 +142,9 @@ impl<'gc> Mutator<'gc> {
             .map(|(class, answer)| (self.heap.object_identity_key(*class), *answer))
             .collect();
         let mut reparentings = Vec::new();
+        // In the order the class objects were made, as the installer
+        // evaluated them: the commit reads nothing else of the order, but
+        // the walk's own is the space's, which a collection changes.
         for class in self.clause_class_objects(prepared) {
             let id = self
                 .clause_declaration(prepared, class)
@@ -152,7 +164,9 @@ impl<'gc> Mutator<'gc> {
                 class,
                 superclass,
                 applied,
-                body_less: (!fresh.has_body).then_some(id),
+                declaration: id,
+                becomes_body_less: !fresh.has_body,
+                previous_scope: self.heap.class_declaration_scope(class),
             });
         }
         Ok(reparentings)
@@ -242,7 +256,9 @@ impl<'gc> Mutator<'gc> {
                     class: *class,
                     superclass,
                     applied,
-                    body_less: (!fresh.has_body).then_some(id),
+                    declaration: id,
+                    becomes_body_less: !fresh.has_body,
+                    previous_scope: self.heap.class_declaration_scope(*class),
                 })
             })
             .collect()
@@ -302,27 +318,32 @@ impl<'gc> Mutator<'gc> {
         Ok(())
     }
 
-    /// Re-parents `class`, the class object of the body-less declaration
-    /// `declaration` -- the level its last `<:` clause adds -- as
+    /// Re-parents `class`, a class object of a declaration that is a
+    /// mixin application without a body of its own once installed, as
     /// `reparenting` says, over `superclass` and its application: the
     /// levels of every clause but the last built anew over it, then the
     /// class object itself made the level of the new last clause, keeping
-    /// its identity and its declaration's scope: the applied class's
-    /// mixin applied over the levels below, the clause, the class it names
-    /// and that class's enclosing object and declaring class, which the
-    /// applied mixin's code walks out from (§6.2). Answers the class
-    /// object's new application.
+    /// its identity: the applied class's mixin applied over the levels
+    /// below, the clause, the class it names and that class's enclosing
+    /// object and declaring class, which the applied mixin's code walks
+    /// out from (§6.2). Its declaration's scope is the one it had as a
+    /// body-less declaration's class object, or, for a declaration that
+    /// lost its body, its own enclosing object and declaring class until
+    /// now. Answers the class object's new application.
     pub(super) fn reparent_body_less(
         &mut self,
         class: ClassReference<'gc>,
-        declaration: MixinId,
         reparenting: &Reparenting<'gc>,
         superclass: Option<(ClassReference<'gc>, Rc<MixinApplication>)>,
     ) -> Rc<MixinApplication> {
         let current = self
             .heap
-            .mixin(declaration)
+            .mixin(reparenting.declaration)
             .expect("internal: a re-parented declaration has a row");
+        let scope = reparenting.previous_scope.unwrap_or(DeclarationScope {
+            enclosing: self.heap.class_enclosing(class),
+            declaring_class: self.heap.class_declaring(class),
+        });
         let Some((&(last_index, last_applied), below)) = reparenting.applied.split_last() else {
             unreachable!("internal: a body-less declaration writes a `<:` clause");
         };
@@ -357,13 +378,29 @@ impl<'gc> Mutator<'gc> {
             && self.heap.class_install_application(class, Rc::clone(&new))
             && self.heap.class_set_applied_clause(class, clause)
             && self.heap.class_set_named_class(class, named)
+            && self.heap.class_set_declaration_scope(class, scope)
             && self
                 .heap
                 .class_set_lexical_context(class, enclosing, declaring_class);
         if !written {
-            unreachable!("internal: a body-less declaration's class object is a level");
+            unreachable!("internal: a re-parented class is a class object");
         }
         new
+    }
+
+    /// Makes `class`, a body-less declaration's class object until the
+    /// install whose declaration now has a body of its own, an ordinary
+    /// class object in place: no clause, no named class, and its
+    /// declaration's scope, `scope`, its own enclosing object and declaring
+    /// class, which its declaration's code walks out from.
+    pub(super) fn gain_a_body(&mut self, class: ClassReference<'gc>, scope: DeclarationScope<'gc>) {
+        let written = self.heap.class_clear_applied_level(class)
+            && self
+                .heap
+                .class_set_lexical_context(class, scope.enclosing, scope.declaring_class);
+        if !written {
+            unreachable!("internal: a re-parented class is a class object");
+        }
     }
 
     /// The reflected name of the declaration `id`'s current version.

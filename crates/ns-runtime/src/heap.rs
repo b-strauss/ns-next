@@ -113,14 +113,9 @@ impl InstanceHeader {
 /// the words a block of so many fields occupies in all, its header and
 /// class word included.
 pub(crate) mod record_size {
+    /// Every class object's: an ordinary one, a metaclass, a level a `<:`
+    /// clause added and a body-less declaration's have the same fields.
     pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
-    /// A level a `<:` clause added: a class object's fields and the class
-    /// its clause named (`Heap::allocate_applied_level`).
-    pub(crate) const APPLIED_LEVEL_FIELDS: usize = super::class_field::APPLIED_LEVEL_COUNT;
-    /// A body-less declaration's class object: a level's fields and its
-    /// declaration's enclosing object and declaring class
-    /// (`Heap::class_declaration_scope`).
-    pub(crate) const BODY_LESS_CLASS_FIELDS: usize = super::class_field::BODY_LESS_CLASS_COUNT;
     /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
     pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
@@ -2173,6 +2168,10 @@ pub struct Heap<'gc> {
     /// collector and a snapshot (`docs/design/memory.md`) and allocation
     /// order stays unobservable (`docs/design/object-model.md`).
     next_identity_hash: u32,
+    /// The next class object's creation stamp (`class_field::CREATION_STAMP`):
+    /// every class object draws one when it is made, so that the stamps
+    /// order class objects by their creation whatever moved them since.
+    next_class_stamp: u64,
     /// Every live activation. A frame is popped when its activation
     /// returns, so -- unlike `space` -- this is bounded by the deepest the
     /// program has been, not by everything it has run.
@@ -2750,6 +2749,7 @@ impl<'gc> Heap<'gc> {
         );
         let mut heap = Heap {
             next_identity_hash: 1,
+            next_class_stamp: 1,
             stack: ActivationStack::new(&machine_words),
             suspensions: Suspensions::default(),
             continuations: Continuations::default(),
@@ -2846,6 +2846,30 @@ impl<'gc> Heap<'gc> {
         if self.next_identity_hash <= max {
             self.next_identity_hash = Self::identity_hash_after(max);
         }
+    }
+
+    /// The next class object's creation stamp, drawn from the counter.
+    fn allocate_class_stamp(&mut self) -> u64 {
+        let stamp = self.next_class_stamp;
+        self.next_class_stamp += 1;
+        stamp
+    }
+
+    /// Moves the class-stamp counter past `max`, the highest stamp an image
+    /// brought with it, so that every class object made afterwards is
+    /// ordered after every decoded one; never backwards.
+    pub(crate) fn advance_class_stamp_past(&mut self, max: u64) {
+        if self.next_class_stamp <= max {
+            self.next_class_stamp = max + 1;
+        }
+    }
+
+    /// `class`'s creation stamp (`class_field::CREATION_STAMP`); `None` for
+    /// a handle that is no class object.
+    pub(crate) fn class_creation_stamp(&self, class: ClassReference<'gc>) -> Option<u64> {
+        self.class_field(class, class_field::CREATION_STAMP)?
+            .as_small_integer()
+            .and_then(|stamp| u64::try_from(stamp).ok())
     }
 
     // ---------- Object construction ----------
@@ -3339,7 +3363,8 @@ impl<'gc> Heap<'gc> {
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
     ) -> ClassReference<'gc> {
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let (object, fields) =
             self.allocate_object(metaclass, Format::Class, 0, false, class_field::COUNT);
         write_words(&mut self.space.words_mut()[fields], fixed);
@@ -3347,33 +3372,25 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A level a `<:` clause added (`newspeak-spec.pdf` §6.2): a class object
-    /// as `allocate_class` makes one, and one field more, the class object
-    /// `named` its clause named (`class_field::NAMED_CLASS`). The clause
-    /// itself is set after, as every class object's later fields are.
-    ///
-    /// A body-less declaration's class object (`body_less`) has two fields
-    /// more, its declaration's enclosing object and declaring class, nil
-    /// until `class_set_declaration_scope` writes them: the declaration
-    /// that becomes this class object knows them only once its superclass
+    /// as `allocate_class` makes one, `named` the class object its clause
+    /// named (`class_field::NAMED_CLASS`). The clause itself is set after,
+    /// as every class object's later fields are, and so is a body-less
+    /// declaration's scope (`class_set_declaration_scope`): the declaration
+    /// that becomes this class object knows it only once its superclass
     /// clause has run.
     pub(crate) fn allocate_applied_level(
         &mut self,
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
         named: ClassReference<'gc>,
-        body_less: bool,
     ) -> ClassReference<'gc> {
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let named = self.store(Value::object(named));
-        let field_count = if body_less {
-            class_field::BODY_LESS_CLASS_COUNT
-        } else {
-            class_field::APPLIED_LEVEL_COUNT
-        };
         let (object, fields) =
-            self.allocate_object(metaclass, Format::Class, 0, false, field_count);
+            self.allocate_object(metaclass, Format::Class, 0, false, class_field::COUNT);
         let words = &mut self.space.words_mut()[fields];
-        write_words(&mut words[..class_field::COUNT], fixed);
+        write_words(words, fixed);
         words[class_field::NAMED_CLASS] = named.bits();
         object
     }
@@ -3394,10 +3411,11 @@ impl<'gc> Heap<'gc> {
     /// A class object's fields from its record, stored: the one place they
     /// are laid out, for a new class object and for a placeholder filled in
     /// place (`fill_placeholder_class`). Every field set after creation
-    /// starts nil: `this_class`, the applied clause and the value-class
-    /// verdict each have their setter. The application is named by its
-    /// index, so it must be the table's own entry.
-    fn class_fixed_words(&self, class: NewClass<'gc>) -> [Word; class_field::COUNT] {
+    /// starts nil: `this_class`, the applied clause, the named class, the
+    /// declaration's scope and the value-class verdict each have their
+    /// setter. The application is named by its index, so it must be the
+    /// table's own entry; `stamp` is the creation stamp.
+    fn class_fixed_words(&self, class: NewClass<'gc>, stamp: u64) -> [Word; class_field::COUNT] {
         let NewClass {
             application,
             enclosing,
@@ -3426,6 +3444,8 @@ impl<'gc> Heap<'gc> {
             fields[class_field::BUILTIN] = count_word(builtin as usize);
         }
         fields[class_field::APPLICATION] = count_word(application.index().index());
+        fields[class_field::CREATION_STAMP] =
+            count_word(usize::try_from(stamp).expect("internal: a creation stamp fits a word"));
         fields
     }
 
@@ -3442,7 +3462,8 @@ impl<'gc> Heap<'gc> {
     pub fn allocate_self_referential_class(&mut self, class: NewClass<'gc>) -> ClassReference<'gc> {
         // It is an instance of itself, so its id is its own instances id.
         let dispatch_id = class.application.dispatch_ids.instances;
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let (object, fields) =
             self.allocate_self_referential_guarded(dispatch_id, Format::Class, class_field::COUNT);
         write_words(&mut self.space.words_mut()[fields], fixed);
@@ -3513,11 +3534,15 @@ impl<'gc> Heap<'gc> {
     /// runs -- `class` may itself be a still-placeholder record with no
     /// application yet -- and must not be dispatched on before then.
     ///
-    /// `named` is a level's named class (`allocate_applied_level`), and the
-    /// placeholder has that field exactly when it is given; `scope` is a
-    /// body-less declaration's (`class_declaration_scope`), given only with
-    /// `named`, and the placeholder has its two fields exactly when it is
-    /// given.
+    /// `named` is a level's named class (`allocate_applied_level`) and
+    /// `scope` a body-less declaration's (`class_declaration_scope`), given
+    /// only with `named`; every class object has both fields, nil where
+    /// neither is given. `stamp` is the record's creation stamp, which the
+    /// decoder held unique.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a class record's parts, each read from the record"
+    )]
     pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
@@ -3526,9 +3551,10 @@ impl<'gc> Heap<'gc> {
         record: NewClass<'gc>,
         named: Option<ClassReference<'gc>>,
         scope: Option<DeclarationScope<'gc>>,
+        stamp: u64,
     ) -> bool {
         self.check_object_origin(object);
-        let fields = self.class_fixed_words(record);
+        let fields = self.class_fixed_words(record, stamp);
         let named = named.map(|named| self.store(Value::object(named)));
         let scope = scope.map(|scope| self.declaration_scope_words(scope));
         for word in fields
@@ -3538,17 +3564,14 @@ impl<'gc> Heap<'gc> {
         {
             self.debug_assert_tenured(*word);
         }
-        let expected = match (named, scope) {
-            (Some(_), Some(_)) => class_field::BODY_LESS_CLASS_COUNT,
-            (Some(_), None) => class_field::APPLIED_LEVEL_COUNT,
-            (None, None) => class_field::COUNT,
-            (None, Some(_)) => return false,
-        };
-        let placeholder = self.fields_mut(object);
-        if placeholder.len() != expected {
+        if named.is_none() && scope.is_some() {
             return false;
         }
-        write_words(&mut placeholder[..class_field::COUNT], fields);
+        let placeholder = self.fields_mut(object);
+        if placeholder.len() != class_field::COUNT {
+            return false;
+        }
+        write_words(placeholder, fields);
         if let Some(named) = named {
             placeholder[class_field::NAMED_CLASS] = named.bits();
         }
@@ -6631,9 +6654,9 @@ impl<'gc> Heap<'gc> {
         first: ClassReference<'gc>,
         second: ClassReference<'gc>,
     ) -> bool {
-        // Told by size first, one header read each: only a body-less
-        // declaration's class object has the declaration's scope, and only
-        // two of them need their declarations looked up.
+        // Told by the applied clause first, one read each: only a
+        // body-less declaration's class object has the declaration's
+        // scope, and only two of them need their declarations looked up.
         match (
             self.class_has_declaration_scope(first),
             self.class_has_declaration_scope(second),
@@ -6670,12 +6693,13 @@ impl<'gc> Heap<'gc> {
 
     /// Whether `class` is a body-less declaration's class object, the one
     /// class object with its declaration's scope
-    /// (`class_declaration_scope`), told by its size alone, one read of
-    /// the class object's header.
+    /// (`class_declaration_scope`): told first by its applied clause, one
+    /// read, which every class object but a level leaves nil.
     #[inline(always)]
     pub(crate) fn class_has_declaration_scope(&self, class: ClassReference<'gc>) -> bool {
-        self.pointer_words(class, Format::Class)
-            .is_some_and(|words| words.len() == class_field::BODY_LESS_CLASS_COUNT)
+        self.class_field(class, class_field::APPLIED_CLAUSE)
+            .is_some_and(|clause| !clause.is_nil())
+            && self.class_body_less_declaration(class).is_some()
     }
 
     /// For a body-less declaration's class object
@@ -6710,9 +6734,6 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         scope: DeclarationScope<'gc>,
     ) -> bool {
-        if !self.class_has_declaration_scope(class) {
-            return false;
-        }
         let DeclarationScope {
             enclosing,
             declaring_class,
@@ -7504,8 +7525,23 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         named: ClassReference<'gc>,
     ) -> bool {
-        self.class_is_applied_level(class)
-            && self.set_class_field(class, class_field::NAMED_CLASS, Value::object(named))
+        self.set_class_field(class, class_field::NAMED_CLASS, Value::object(named))
+    }
+
+    /// Makes `class` a class object no `<:` clause added: its applied
+    /// clause, named class and declaration's scope nil. An install turns a
+    /// body-less declaration's class object into the class object of the
+    /// declaration with a body it became, in place. Answers whether the
+    /// writes happened.
+    pub(crate) fn class_clear_applied_level(&mut self, class: ClassReference<'gc>) -> bool {
+        [
+            class_field::APPLIED_CLAUSE,
+            class_field::NAMED_CLASS,
+            class_field::DECLARATION_ENCLOSING,
+            class_field::DECLARATION_DECLARING_CLASS,
+        ]
+        .into_iter()
+        .all(|field| self.set_class_field(class, field, Value::nil()))
     }
 
     /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
@@ -16253,6 +16289,7 @@ mod tests {
             },
             None,
             None,
+            1,
         );
         assert!(!filled);
         assert!(!heap.is_class(placeholder));

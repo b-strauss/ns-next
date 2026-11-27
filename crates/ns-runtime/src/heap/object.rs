@@ -845,21 +845,21 @@ pub(in crate::heap) mod class_field {
     /// A `SmallInteger`, the `ApplicationIndex` of the class's behaviour:
     /// code, layout and the superclass chain.
     pub(in crate::heap) const APPLICATION: usize = 7;
-    /// How many fields every class object has.
-    pub(in crate::heap) const COUNT: usize = 8;
-    /// For a level a `<:` clause added, and only there, one field past
-    /// `COUNT`: the class object the clause named. §6.1 checks the clause
-    /// against that class's primary factory, which is not always the
-    /// level's own -- a body-less declaration's class object is the level
-    /// its last clause adds and has its declaration's factory -- and the
-    /// image rebuilds the level's metaclass from it
-    /// (`Heap::class_named`). Only a level pays the word, so a metaclass,
-    /// the smallest class record an image writes, keeps its size.
-    pub(in crate::heap) const NAMED_CLASS: usize = COUNT;
-    /// How many fields a level a `<:` clause added has.
-    pub(in crate::heap) const APPLIED_LEVEL_COUNT: usize = COUNT + 1;
+    /// For a level a `<:` clause added, the class object the clause named;
+    /// nil for every other class object. §6.1 checks the clause against
+    /// that class's primary factory, which is not always the level's own
+    /// -- a body-less declaration's class object is the level its last
+    /// clause adds and has its declaration's factory -- and the image
+    /// rebuilds the level's metaclass from it (`Heap::class_named`).
+    ///
+    /// Every class object has this field and the two after it, nil where
+    /// they mean nothing, so that an install can turn a class object of a
+    /// declaration with a body into a body-less declaration's and back in
+    /// place, keeping its identity (`docs/design/liveness-and-reflection.md`,
+    /// "Planned: the complete install", decision 2).
+    pub(in crate::heap) const NAMED_CLASS: usize = 8;
     /// For a body-less declaration's class object (`Mixin::has_body`), and
-    /// only there, two fields past `NAMED_CLASS`: the enclosing object the
+    /// nil on every other: the enclosing object the
     /// declaration was evaluated in, nil for a module's root -- §3.3's
     /// "object of which C is a member", which a body version of the
     /// declaration would have as its own -- and the class object of the
@@ -870,15 +870,19 @@ pub(in crate::heap) mod class_field {
     /// clause messages and their arguments, and the blocks in it -- walks
     /// out from these (`Heap::class_declaration_scope`,
     /// `interpreter::sends::lexical_origin`).
-    pub(in crate::heap) const DECLARATION_ENCLOSING: usize = APPLIED_LEVEL_COUNT;
+    pub(in crate::heap) const DECLARATION_ENCLOSING: usize = 9;
     /// See `DECLARATION_ENCLOSING`.
-    pub(in crate::heap) const DECLARATION_DECLARING_CLASS: usize = APPLIED_LEVEL_COUNT + 1;
-    /// How many fields a body-less declaration's class object has.
-    pub(in crate::heap) const BODY_LESS_CLASS_COUNT: usize = APPLIED_LEVEL_COUNT + 2;
+    pub(in crate::heap) const DECLARATION_DECLARING_CLASS: usize = 10;
+    /// A `SmallInteger`, the class object's creation stamp: drawn from the
+    /// heap's counter when the class object is made, and kept by every
+    /// move and by an image, so that the order of two class objects'
+    /// creation is known whatever the collector did since
+    /// (`Heap::class_creation_stamp`). An install evaluates superclass
+    /// clauses in this order. Past every field machine code reads.
+    pub(in crate::heap) const CREATION_STAMP: usize = 11;
+    /// How many fields every class object has.
+    pub(in crate::heap) const COUNT: usize = 12;
     /// The fields that hold an object or nil; the others are numbers.
-    /// `NAMED_CLASS` and the two declaration fields lie past an ordinary
-    /// class object's fields, and the declaration fields past a level's,
-    /// where `pointer_ranges` clamps their ranges to nothing.
     pub(in crate::heap) const POINTERS: [usize; 8] = [
         ENCLOSING,
         DECLARING_CLASS,
@@ -922,31 +926,12 @@ mod tests {
                 FIELDS + closure_field::COUNT
             ]
         );
-        // An ordinary class object has no named class; a level has it.
+        // Every class object has the same fields, its named class and its
+        // declaration's scope among them, nil on an ordinary one.
         let class = block(Format::Class, class_field::COUNT);
         let mut expected = vec![CLASS];
-        expected.extend(
-            class_field::POINTERS
-                .iter()
-                .filter(|field| **field < class_field::COUNT)
-                .map(|field| FIELDS + field),
-        );
-        assert_eq!(covered(&class), expected);
-        let level = block(Format::Class, class_field::APPLIED_LEVEL_COUNT);
-        let mut expected = vec![CLASS];
-        expected.extend(
-            class_field::POINTERS
-                .iter()
-                .filter(|field| **field < class_field::APPLIED_LEVEL_COUNT)
-                .map(|field| FIELDS + field),
-        );
-        assert_eq!(covered(&level), expected);
-        // A body-less declaration's class object has its declaration's
-        // enclosing object and declaring class besides.
-        let body_less = block(Format::Class, class_field::BODY_LESS_CLASS_COUNT);
-        let mut expected = vec![CLASS];
         expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
-        assert_eq!(covered(&body_less), expected);
+        assert_eq!(covered(&class), expected);
         // A frame's registers count only once it is no longer married.
         let mut frame = block(Format::Frame, frame_field::COUNT + 2);
         assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);

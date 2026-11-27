@@ -578,9 +578,13 @@ fn walk_graph(
                 format!("ephemeron {{{}}}", read_values(reader, targets)?.join(", "))
             }
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
-            opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
+            opcodes::OBJECT_CLASS => {
+                let stamp = reader.read_u64()?;
+                format!("{} (made {stamp})", read_class_record(reader, targets)?)
+            }
             opcodes::OBJECT_BODY_LESS_CLASS => {
-                let record = read_class_record(reader, targets)?;
+                let stamp = reader.read_u64()?;
+                let record = format!("{} (made {stamp})", read_class_record(reader, targets)?);
                 let enclosing = if reader.read_boolean()? {
                     read_value(reader, targets)?
                 } else {
@@ -593,7 +597,11 @@ fn walk_graph(
                 )
             }
             opcodes::OBJECT_METACLASS => {
-                format!("metaclass of {}", read_class_tag(reader, targets)?)
+                let stamp = reader.read_u64()?;
+                format!(
+                    "metaclass of {} (made {stamp})",
+                    read_class_tag(reader, targets)?
+                )
             }
             opcodes::OBJECT_FRAME => {
                 let (record, code_offset) = read_frame_record(reader, symbols, targets)?;

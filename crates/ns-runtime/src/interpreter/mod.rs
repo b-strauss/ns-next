@@ -3720,8 +3720,6 @@ impl<'gc> Mutator<'gc> {
         // The level a body-less declaration's last clause adds is the
         // declaration's class object, which also keeps the declaration's
         // scope (`Heap::class_declaration_scope`).
-        let body_less = !clause.declaration.has_body
-            && clause.index + 1 == clause.declaration.mixin_applications.len();
         let class = self.heap.allocate_applied_level(
             object,
             crate::heap::NewClass {
@@ -3732,7 +3730,6 @@ impl<'gc> Mutator<'gc> {
                 builtin: None,
             },
             named,
-            body_less,
         );
         if !self.heap.class_set_applied_clause(class, clause) {
             unreachable!("internal: a level is a class object");

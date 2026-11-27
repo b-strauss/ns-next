@@ -191,7 +191,8 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The class objects whose superclass clauses an install of `prepared`
-    /// evaluates before its commit, in the space's order: every class
+    /// evaluates before its commit, in the order they were made
+    /// (`Heap::class_creation_stamp`): every class
     /// object of a nested declaration whose clauses it changes -- no
     /// metaclass, and no level a `<:` clause added but a body-less
     /// declaration's class object, the level its last clause adds. A
@@ -219,6 +220,9 @@ impl<'gc> Mutator<'gc> {
                 classes.push(object);
             }
         });
+        // Creation order, which no collection changes, where the space's
+        // order is the movers'.
+        classes.sort_by_key(|class| self.heap.class_creation_stamp(*class));
         classes
     }
 

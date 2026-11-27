@@ -778,12 +778,12 @@ named by its own shipped name, of kind metaclass or level metaclass, under
 record whose class object has no metaclass rather than write a header the
 decoder could not pair. A metaclass
 record is a record like any other, sized and allocated as one placeholder, and
-the smallest record there is: counted with a two-byte class tag, 9 bytes
-for a class object of 80, about 8.9x, which with the decoder's own tables
-sets the bound a rejected load reaches in a release build, about 10.7x of
-the graph section's bytes; in a debug one the root list sets it, at 16x.
-Every live class tag is five bytes, so a metaclass record is at least 15
-and the release figure an upper bound ([memory.md](memory.md), "The
+the smallest class record: counted with a two-byte class tag, 17 bytes --
+its creation stamp among them -- for a class object of 112, about 6.6x, and
+7.5x with the decoder's own tables, below the 8x of a value's word, which
+sets the bound a rejected load reaches in a release build; in a debug one
+the root list sets it, at 16x. Every live class tag is five bytes, so a
+metaclass record is at least 23 and its figure an upper bound ([memory.md](memory.md), "The
 amplification bound of a rejected load"); a shipped metaclass is no
 record at all and allocates nothing.
 

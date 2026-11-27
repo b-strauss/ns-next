@@ -276,7 +276,7 @@ Decided with the user on 2026-11-26:
    object of the graph when the sized objects would take more than eight
    words a byte of the input left, and what a rejected load allocates is
    bounded by a constant multiple of the image's length plus a constant.
-   The factors -- 10.7x of the graph bytes and the rest -- stay in
+   The factors -- 8x of the graph bytes and the rest -- stay in
    [memory.md](memory.md), "The amplification bound of a rejected
    load", as the implementation's derivation. The alternatives weighed:
    the factors as the rule, which depend on the build and which no test

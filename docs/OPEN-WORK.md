@@ -4255,17 +4255,16 @@ Small, deliberately left, none affecting an outcome.
   [core-library.md](design/core-library.md), "`class` and the class
   accessors are protected".
 
-- **The amplification bound of a rejected load is counted with two-byte
-  class tags.** `decode_value`'s doc comment (`image/decode.rs`), the
-  table in [memory.md](design/memory.md), "The amplification bound of a
-  rejected load", and `CLAUDE.md`'s image invariant take a class tag at
-  two bytes, the builtin class tag's size, where every live tag is five
-  (`CLASS_RECORD`, `CLASS_SHIPPED`); only the byte-array record is counted
-  at five. The figures are safe upper bounds, not tight ones: the
-  smallest metaclass record is 15 bytes, not 9, and the release peak
-  about 8x, not 10.7x. Redoing the derivation and the three statements
-  together, in one commit that runs the gates, would make them tight.
-  Noted 2026-10-13.
+- **The amplification bound of a rejected load counts records with
+  two-byte class tags.** `decode_value`'s doc comment (`image/decode.rs`)
+  and the table in [memory.md](design/memory.md), "The amplification bound
+  of a rejected load", take a class tag at two bytes, the builtin class
+  tag's size, where every live tag is five (`CLASS_RECORD`,
+  `CLASS_SHIPPED`); only the byte-array record is counted at five. The
+  record figures are safe upper bounds, not tight ones: the smallest
+  metaclass record is 23 bytes, not 17. The peak, 8x in a release build,
+  is a value's word's either way. Redoing the record figures in both
+  places together would make them tight. Noted 2026-10-13.
 
 - `goldens/language/class/class-side/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
   comment citing §6.3.
