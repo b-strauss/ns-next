@@ -878,7 +878,7 @@ carries on from any exit (`r[vm.machine.observers-after-exit]`,
   (`r[vm.machine.entry-block-current]`). A cache cell is written only
   from its entry and the JIT's state, and a stub does what
   `Mutator::act_with_base` does for its target and nothing more
-  (`r[vm.machine.cells-follow-entries]`, `r[vm.machine.stub-does-what-act-does]`).
+  (`r[vm.machine.cells-follow-entries]`, `r[vm.machine.stub-acts-as-interpreter]`).
   A row of the machine entry table (`heap/machine_entries.rs`) is written only
   from the body its code id names, a dispatching row (`heap/optimized_copies.rs`,
   `JitState::write_dispatching_rows`) only from the copy its key names, each

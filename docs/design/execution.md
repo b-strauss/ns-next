@@ -7908,7 +7908,7 @@ measurement above:
   leaf clobbered, so it never ran but at site 0 (where no slot accessor lay)
   and could have run another site's entry. With the send entering its callee
   with its own site's cell and the miss stub clearing the role (`7f8ebdee`;
-  `r[vm.machine.stub-does-what-act-does]`), the path runs: measured
+  `r[vm.machine.stub-acts-as-interpreter]`), the path runs: measured
   afterwards, three builds a side, five rounds, against the tree without it
   working, Havlak 3,269 ms to 3,070 (-6.1%, now 3.4% faster than `master`'s
   3,176), Richards 62.88 to 61.54 (-2.1%, level with `master`), `bench_loop`
@@ -14307,7 +14307,7 @@ sends and the inline caches in machine code.
   accessor; and the refusing stub, which exits so that the interpreter runs
   the send. Every decline refuses the call before anything is written
   (`r[vm.machine.decline-before-write]`). A stub stores into no frame
-  (`r[vm.machine.stub-does-what-act-does]`). A send enters its callee with its
+  (`r[vm.machine.stub-acts-as-interpreter]`). A send enters its callee with its
   own site's cell's address in the `send_cells` role, a stub with the block's
   cell or the global row it found, and the miss stub with 0, since after a
   miss the site's entry need not be the decision for this receiver; the leaf

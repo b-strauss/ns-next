@@ -3870,7 +3870,7 @@ ns_runtime::for_each_lowering! {
     /// A setter's call stores in the setter stub, which writes the field
     /// through the inline barrier and answers the receiver, so that the
     /// next message sent to the setter's answer goes to it.
-    // spec: vm.machine.stub-does-what-act-does
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_setter_runs_in_the_setter_stub(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -4574,7 +4574,7 @@ ns_runtime::for_each_lowering! {
     /// A public getter runs in its stub: the third run's thousand sends of
     /// `count` and `yourself` leave machine code for nothing and call no
     /// leaf, and the sum is the interpreter's.
-    // spec: vm.machine.stub-does-what-act-does
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_getter_runs_in_its_stub(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(GETTERS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(GETTERS, lowering, false);
@@ -5674,7 +5674,7 @@ ns_runtime::for_each_lowering! {
     /// the body's family, never site 0. Two subjects with private slots at
     /// different fields share no site, so a stub or a leaf that read
     /// another site's cell or entry would answer the other's field.
-    // spec: vm.machine.stub-does-what-act-does
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_private_accessor_runs_from_its_own_sites_entry(lowering) {
         let source = indoc! {"
             class Subject = Object new (
@@ -6864,7 +6864,7 @@ ns_runtime::for_each_lowering! {
     /// The nested class accessor's stub: in the third run every `Point`
     /// and `Point3` send answers the cached class in machine code, and
     /// nothing leaves it but a safepoint.
-    // spec: vm.machine.stub-does-what-act-does
+    // spec: vm.machine.stub-acts-as-interpreter
     fn a_nested_class_accessor_answers_its_cached_class_in_its_stub(lowering) {
         let (compiled, statistics) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, true);
         let (interpreted, _) = run_thrice_on_one_instance(IMPLICIT_POINTS, lowering, false);
