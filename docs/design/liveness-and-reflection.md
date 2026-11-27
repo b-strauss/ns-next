@@ -1276,13 +1276,11 @@ boundary by copy rather than by far reference (§3.7).
 
 The notion itself is built. `Kernel.ns` declares `Value` with the value classes
 beneath it; `Value` derives `=` and `hash` from an instance's state and declares
-§3.1.1's identity method as a send of `=`, so a copy of a value is equal to, and
-hashes like, its original — a value has no observable identity
-(`r[semantics.value.identity]`; [core-library.md](core-library.md)). All of
-§3.1.1's second bullet is
-enforced (`r[semantics.value]`, `r[semantics.value.conditions]`), each
-condition refused where an instance would come into being
-([object-model.md](object-model.md), "A value object's four conditions"). So
+§3.1.1's identity method as a send of `=`, so a value has no observable
+identity (`r[semantics.value.identity]`; [core-library.md](core-library.md)).
+All of §3.1.1's second bullet is enforced (`r[semantics.value]`,
+`r[semantics.value.conditions]`;
+[object-model.md](object-model.md), "A value object's four conditions"). So
 a value class lives in a module that declares itself a value, `= Value` as
 `Kernel.ns` does, or with §6.2's mixin application, `= Object <: Value`.
 
