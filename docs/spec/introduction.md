@@ -55,10 +55,10 @@ no test names yet.
 `.toml`, `rules = ["syntax.outer.alone"]`; a Rust test in a comment line
 `// spec: syntax.outer.alone` directly above its `#[test]` -- or, for a
 test `for_each_lowering!` makes under both lowerings, directly above its
-function -- one line per rule, which the book lists with the test's name. A reference to an
-identifier the book does not declare, or a `// spec:` line above no test,
-fails the suite, and so does a link to a chapter or a rule the book does
-not have.
+function -- one line per rule, which the book lists with the test's
+name. A reference to an identifier the book does not declare, or a
+`// spec:` line above no test, fails the suite, and so does a link to a
+chapter or a rule the book does not have.
 
 **Gaps.** Where this book describes a construct ns-next does not build --
 one Bracha marks *Unimplemented*, or one a decision left open -- the rule

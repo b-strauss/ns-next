@@ -4040,7 +4040,6 @@ mod encoding_tests {
     /// so that a leaf call keeps it; and the two free survivors, `x22` and
     /// `x23` as `r13` and `rbp` under x64, are preserved too and play no
     /// role.
-    // spec: vm.machine.return-address-slot
     #[test]
     fn the_aapcs64_roles_alias_as_x64_s_do() {
         let mut x64 = played(Roles::of_abi(Abi::SystemV));

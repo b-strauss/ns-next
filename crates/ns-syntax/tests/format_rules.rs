@@ -932,7 +932,6 @@ fn rule_25_sends_in_superclass_clauses_and_statements() {
     assert_eq!(formatted(input), expected);
 }
 
-// spec: vm.compiler.only-error-free-source
 #[test]
 fn a_source_with_an_error_is_refused() {
     assert!(ns_syntax::format("class A = (").is_err());

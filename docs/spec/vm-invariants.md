@@ -15,6 +15,17 @@ reasoning, its mechanism and the defects it has produced.
 
 ## The model
 
+The **interpreter** runs bytecode: its **run loop** fetches each
+instruction of the running activation's body and executes it. A **host**
+is the program that embeds the virtual machine; it enters the run loop
+only through the one **host entry**, and each entry is a **run**. A
+send's **decision** -- the lookup and what it answers -- is made before
+the callee is pushed. Where a routine of the virtual machine would have
+to run a block or a method, it answers instead a **step** the run loop
+schedules. The **bootstrap** builds the kernel's classes before anything
+runs; the **shipped modules** are the core library the binary embeds,
+the **kernel** first among them.
+
 The **object space** is the one region of memory every heap object lives
 in. An **object** is a sequence of **words**: a header word, which holds
 its format, its size in words, its dispatch id and the collector's bits;
@@ -29,7 +40,9 @@ offset from the start of the space it lies in. It means something only
 against the heap that minted it, and only until the next move of what it
 names. A **root** is a place outside the object space that the collector
 enumerates and every move rewrites; a host keeps a value across a run
-only in one.
+only in one. Every move advances the heap's **move epoch**. Inside an
+entry a handle carries the **brand** of that entry, which keeps it from
+leaving it; at rest, between entries, a value is held only in a root.
 
 The **activation stack** is a region of its own holding one **frame**
 per running **activation**: a header -- its body, its receiver, its
@@ -45,6 +58,20 @@ copied into it and taken off the stack to be resumed later. A
 when the activation below it is next resumed. The **depth reserve** is
 the room past the depth limit kept for the handler that runs when the
 limit is reached.
+
+An activation's registers begin at its **register base**: its arguments
+and the locals its body declares lie below the body's local count, the
+**scratch registers** above it, and its **program counter** names the
+instruction it stands at. A **side table** lies beside the activation
+stack and holds rows its frames name: the continuations' rows, the
+suspension table of suspended activations, and the rows that hold what a
+frame's header does not. The **leftover analysis** computes, for each
+program counter of a body, the registers the frame has not written since
+its push, which may hold a word a callee or a popped frame left: those
+registers are **tainted**, and a tainted register is dead. A block's
+**home** is the activation of the method it was made in, which its
+non-local return returns from; an **unwind marker** marks an activation
+an unwind stops at -- an `on:do:`, `ensure:` or `ifCurtailed:`.
 
 The object space holds a **nursery** -- **eden**, where new objects are
 allocated, and two **survivor** spaces -- below the **old space**. A
@@ -76,7 +103,23 @@ that every instance's header carries and every cache compares. A
 **body** is a compiled method, block or initializer; it belongs to a
 **family**, the body and the blocks in it, whose sends are numbered and
 whose caches lie at its **feedback base** in the heap's cache space. A
-**code id** names a body in the per-heap table of compiled code.
+**code id** names a body in the per-heap table of compiled code. A
+nested class's class object is cached in a **hidden slot** of its
+enclosing object, which marks it while the class is being created.
+
+The **compiler** lowers a resolved module's bodies into instructions, by
+one of two **lowerings**: the **optimized lowering**, which inlines
+control flow and caches its sends, and the **reference lowering**, which
+emits every send uncached and is the oracle the optimized lowering is
+held to. A body is stored and run in the instructions' **eight-byte
+form**, with a **wide form** for an operand past its range. A body's
+**debug tables** -- its statement table and its variables' metadata --
+say where its statements begin and which register holds which variable.
+An application's **slot base** is the index of its level's first own
+slot in an instance; a mixin's instructions name its own slots relative
+to it. Before it, the **resolver** binds each name of the module -- to a
+slot, a lexical send, a send to the VM mirror -- and the compiler lowers
+the bindings it recorded.
 
 A **cache entry** records, for one send site and one key -- the
 receiver's guard, and whatever else the lookup's answer depends on --
@@ -93,6 +136,13 @@ and that runs no Newspeak code. A **stub** is a piece of shared machine
 code that a cell or an instruction jumps to: a polymorphic or
 megamorphic dispatch, an accessor, a closure's call, the entry and the
 exit.
+
+A **primitive method** begins with a leaf and runs its body only when
+the leaf declines; a **quick method** answers a constant, a slot or the
+receiver. Both carry a **fast path** a send takes without pushing an
+activation. A **verified slot-level pair** records that a receiver's
+application was verified to have a level, so its slot accesses there
+need no further check.
 
 Machine code lives in the **code zone**, one region mapped twice, an
 executable view and a writable one. A body compiled by the baseline
@@ -113,9 +163,35 @@ at any depth **materializes** every compiled frame above it as the
 interpreter's frames. The **cut** carries out a non-local return in
 machine code without an exit.
 
+The **baseline compiler** compiles a body's instructions one by one into
+**baseline code**, which keeps every value in the frame. A **poll** is
+the check of the safepoint request word machine code makes at a backward
+jump, taking its exit when a safepoint is requested. A body's **data words** lie in the code zone beside its code;
+among them its lean copy's **transfer words**, which name its twin, and
+its **budget word**, which names the body's row of **optimization
+budget**, the count its baseline code spends until it requests an
+optimized copy. The optimizing compile reads a **snapshot** of the body
+and of its callees, builds an **SSA graph** -- whose **frame nodes**
+store values into the frame -- inlines callees as **inlined scopes**
+behind a **type-case** on the receiver's application, and records at
+each interrupt point the **write-backs** that make the frame the
+interpreter's; a guard that fails **traps**, leaving the copy for the
+baseline code. A **stretch** is the run of compiled frames machine code
+pushed since it was entered, at its **entry frame**. A body that keeps
+exiting is **abandoned** -- its code freed -- and **revived** later. A
+method body's **dispatching word**, among its data words, names its
+block of dispatching rows.
+
 The **VM mirror** is the one object through which the shipped core
 library reaches the virtual machine's leaves. The **image loader**
-decodes an image, which is untrusted input, into a heap.
+decodes an image, which is untrusted input, into a heap; each record's
+object is first allocated as a **placeholder** and filled in place. A
+**stress mode** runs the suite with one action of the virtual machine --
+a move, a collection, an exit -- forced at the safepoints it picks; a
+**debug build** adds checks a release build leaves out. A value the
+debugger **withholds** is never handed out for a client to act on. A
+**trace event** or a **listing** of a body's code is queued where it is
+recorded and delivered to the host's sink at a flush.
 
 ## The heap and the collector
 
@@ -153,7 +229,7 @@ bootstrap roots, the depth reserve's frame, every word of the activation
 stack below its top, the side tables of continuations and of suspended
 activations, the host's root table, the frame class, the remembered set
 (for a scavenge) and the weak tables (forwarded, not marked); marking,
-forwarding and the scavenge reach the step state's roots through one
+forwarding and the scavenge reach the mutator's roots through one
 enumeration. A continuation's row is freed only by the pop of its
 activation or moved into a suspension's row and back, and a suspended
 chain nothing else names stays alive while its rows remain.
@@ -462,9 +538,9 @@ r[vm.heap.access-within-object]
 Every field, element and register access through an object indexes that
 object's own block, which ends where its header says, so no access
 through one object -- a crafted image's by-reference register write
-included -- reaches another object's words; every slice of a reservation
-is lent only over committed accessible memory and none outlives a change
-of what is accessible.
+included -- reaches another object's words; every view of a reservation
+covers only committed accessible memory and none outlives a change of
+what is accessible.
 
 Protects: [`image.untrusted`](image-format.md#r-image.untrusted),
 [`semantics.object`](language/semantics.md#r-semantics.object)
@@ -480,7 +556,7 @@ Protects: [`image.untrusted`](image-format.md#r-image.untrusted),
 
 Undetected: no test yet: decode an image whose body's own-slot
 instruction names an index past its receiver's fields, run it, and check
-that the run neither panics nor changes another object.
+that the run neither aborts nor changes another object.
 
 r[vm.heap.bump-limit-within-committed]
 The bump cursor's limit never lies past committed read-write memory --
@@ -724,7 +800,7 @@ Protects:
 r[vm.handle.only-where-rewritable]
 A handle is held only where the tracer can rewrite it in place -- an
 object's pointer words, a stack frame's word, a continuation one
-activation's side-table row owns, or the step state's own roots -- never
+activation's side-table row owns, or the mutator's own roots -- never
 behind shared ownership; a closure keeps its captured frame and copied
 values in its object's words and names its body, which holds no handle,
 by a code id.
@@ -1276,11 +1352,11 @@ Protects:
 
 r[vm.compiler.total]
 Compiling a resolved module is total and deterministic: it never raises
-a program error, a compiler-invariant violation is a panic, and every
-program error is deferred into a literal that raises when, and only if,
-it runs -- an unbound name, a body past a limit, an unbuilt construct --
-so loading a module evaluates nothing and a method never run never
-fails.
+a program error, a compiler-invariant violation aborts the compile, and
+every program error is deferred into a literal that raises when, and
+only if, it runs -- an unbound name, a body past a limit, an unbuilt
+construct -- so loading a module evaluates nothing and a method never
+run never fails.
 
 Protects:
 [`bytecode.limit.too-large`](bytecode.md#r-bytecode.limit.too-large),
@@ -1590,8 +1666,8 @@ Compiling a declaration's level again for the debugger registers nothing
 nothing, its result only compared; a program's text is resolved by the
 ordinary resolver, never the kernel's, a lowering given a debugger
 collector emits exactly the code it emits without one, and a text that
-does not parse, resolve or hold the declaration answers no tables, never
-a panic.
+does not parse, resolve or hold the declaration answers no tables and
+never aborts.
 
 Protects: [`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror),
 [`image.untrusted`](image-format.md#r-image.untrusted),
@@ -2378,8 +2454,8 @@ r[vm.machine.entry-returns-to-its-caller]
 Every entry into machine code returns to the native frame that made it:
 no native frame lies between an entry and its compiled frames but a leaf
 call that returned before any exit, the exit resets the native stack
-pointer to the one the entry saved, and a panic in a leaf aborts the
-process at the shim rather than unwind through machine code.
+pointer to the one the entry saved, and a failure of an internal check
+in a leaf aborts the process before it unwinds through machine code.
 
 Protects: [`runtime.send`](runtime.md#r-runtime.send),
 [`runtime.unwind`](runtime.md#r-runtime.unwind)
@@ -2405,15 +2481,15 @@ outside the mutator: the machine words in a shared allocation accessed
 with relaxed order but for the request word's atomic changes, the entry
 block, eden's cursor, the cells, the id and entry tables, the budget
 rows and the reservations of the object space and the activation stack,
-whose addresses come from each reservation's own pointer, no slice of
-one alive while machine code runs.
+whose addresses come from each reservation's own base, no view of a
+reservation alive while machine code runs.
 
 Protects: [`runtime.send`](runtime.md#r-runtime.send),
 [`semantics.object`](language/semantics.md#r-semantics.object)
 
-Undetected: an access against the protected reference to the mutator is
-undefined behaviour invisible to every processor, and no sanitizer runs
-machine code.
+Undetected: machine code's access to a word inside the mutator, which
+the run loop holds exclusively while it runs, is undefined behaviour
+invisible to every processor, and no sanitizer runs machine code.
 
 r[vm.machine.class-words-rewritten]
 The class objects machine code writes into new objects and compares
@@ -2876,8 +2952,8 @@ Protects: [`image.load`](image-format.md#r-image.load),
 
 What finds the breach of a rule beside its tests: each stress mode the
 stress gate runs the suite under, each check a debug build makes, and
-each check the Rust compiler makes, with the rules whose breach it
-finds.
+each check the compiler of the implementation's language makes, with the
+rules whose breach it finds.
 
 ```spec-table vm-detectors
 | Detector | Kind | What it checks | Rules |
@@ -2897,10 +2973,10 @@ finds.
 | PAUSE | stress | Stops the run as for a debugger's pause at the safepoints its schedule picks, reads the whole stack and every value one level deep, evaluates in the top frame, and continues. | `vm.heap.stop-runs-no-code`, `vm.handle.debugger-holds-no-bare-handle`, `vm.activation.debugger-reads-no-dead-register`, `vm.activation.evaluation-above-every-window`, `vm.compiler.debug-tables-describe-their-body`, `vm.machine.observers-after-exit`, `vm.machine.written-frame-goes-on-interpreted`, `vm.machine.safepoint-request-bits`, `vm.machine.no-return-address-at-safepoint` |
 | BREAKPOINTS | stress | At every safepoint patches every statement start of each running body not yet patched with a breakpoint that never stops, so every golden runs through the breakpoint arm and patched bodies. | `vm.compiler.patched-slot-runs-original-once`, `vm.compiler.patch-kept-with-its-body`, `vm.compiler.slot-readers-see-original`, `vm.dispatch.method-never-changed-in-place` |
 | STEP | stress | At the safepoints its schedule picks, stops the run and takes a burst of steps into, over and out, reading the stack at every stop. | `vm.heap.stop-runs-no-code`, `vm.handle.debugger-holds-no-bare-handle`, `vm.activation.debugger-reads-no-dead-register`, `vm.activation.rewound-push-ran-nothing`, `vm.compiler.patched-slot-runs-original-once`, `vm.machine.safepoint-request-bits` |
-| dead-register poison | debug | A push hands out and a pop gives back dead registers holding a poison word no value can be, and an instruction's read of that word panics. | `vm.activation.dead-registers-nilled`, `vm.activation.top-at-window-end`, `vm.activation.program-counter-before-observation`, `vm.activation.debugger-reads-no-dead-register`, `vm.compiler.register-effects-declared` |
+| dead-register poison | debug | A push hands out and a pop gives back dead registers holding a poison word no value can be, and an instruction's read of that word aborts. | `vm.activation.dead-registers-nilled`, `vm.activation.top-at-window-end`, `vm.activation.program-counter-before-observation`, `vm.activation.debugger-reads-no-dead-register`, `vm.compiler.register-effects-declared` |
 | leftover check of both lowerings | debug | Both lowerings assert on every body they emit that no instruction reads a register the leftover analysis taints and that every register above a send's slots is dead. | `vm.activation.dead-registers-nilled`, `vm.compiler.argument-slots-top-live-registers`, `vm.compiler.register-effects-declared` |
 | activation generation | debug | An activation handle and a register base carry the generation of the frame they were minted for, in its flags word; every access checks it, and checks the index against the top, the frame's window and its header. | `vm.handle.space-relative`, `vm.handle.activation-never-stored`, `vm.activation.register-in-window`, `vm.activation.unwind-target-is-frame` |
-| origin guard and move epoch | debug | Every handle carries the heap that minted it and the move epoch it was minted in; storing, comparing or reading one of another heap or an older epoch panics. | `vm.heap.collection-only-at-safepoint`, `vm.handle.nothing-carried-across-safepoint`, `vm.handle.space-relative`, `vm.handle.stored-only-when-current`, `vm.handle.only-where-rewritable`, `vm.handle.debugger-holds-no-bare-handle` |
+| origin guard and move epoch | debug | Every handle carries the heap that minted it and the move epoch it was minted in; storing, comparing or reading one of another heap or an older epoch aborts. | `vm.heap.collection-only-at-safepoint`, `vm.handle.nothing-carried-across-safepoint`, `vm.handle.space-relative`, `vm.handle.stored-only-when-current`, `vm.handle.only-where-rewritable`, `vm.handle.debugger-holds-no-bare-handle` |
 | vacated nursery poison | debug | A scavenge fills the nursery space it vacated with poison, so a word left naming it reads poison where it is next used. | `vm.heap.barrier`, `vm.heap.no-forwarder-reached`, `vm.heap.weak-settled-before-compaction`, `vm.heap.weak-settled-before-nursery-vacated`, `vm.machine.allocation-as-interpreter` |
 | host entry checks | debug | The host entry asserts that the run loop is not already running, that the activation stack is as deep as it found it, that no suspension row is left and that no nested class's creation mark is outstanding. | `vm.heap.no-native-frame-below-safepoint`, `vm.activation.run-balanced`, `vm.activation.no-suspension-outlives-run`, `vm.activation.abandoned-continuation-undone` |
 | mark bit check | debug | Every marking begins by checking that no object carries the mark bit. | `vm.heap.mark-bit-clear-outside-collection` |

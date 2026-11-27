@@ -2207,6 +2207,7 @@ mod class_tests {
     }
 
     // spec: syntax.compilation-unit
+    // spec: vm.compiler.only-error-free-source
     #[test]
     fn trailing_garbage_is_an_error() {
         assert!(
@@ -2222,6 +2223,7 @@ mod class_tests {
     // `parse_expression` can return a recovery node without consuming a token,
     // so `parse_header_body`'s loop needs an explicit forward-progress guard.
     // spec: syntax.instance-side
+    // spec: vm.compiler.only-error-free-source
     #[test]
     fn malformed_body_caret_is_error() {
         assert!(
@@ -2233,6 +2235,7 @@ mod class_tests {
     }
 
     // spec: syntax.instance-side
+    // spec: vm.compiler.only-error-free-source
     #[test]
     fn malformed_body_semicolon_is_error() {
         assert!(
@@ -2244,6 +2247,7 @@ mod class_tests {
     }
 
     // spec: syntax.instance-side
+    // spec: vm.compiler.only-error-free-source
     #[test]
     fn malformed_body_binary_selector_is_error() {
         assert!(
@@ -2256,6 +2260,7 @@ mod class_tests {
 
     // A `|..|` slot section inside G2 is malformed (it belongs to G1).
     // spec: syntax.instance-side
+    // spec: vm.compiler.only-error-free-source
     #[test]
     fn slot_section_in_g2_is_error() {
         assert!(
