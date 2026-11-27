@@ -5,7 +5,7 @@
 //! compiled on its own (`Mutator::prepare_source_module`); the install epoch that tells a
 //! commit whether anything was installed since its preparation; and the
 //! one prepared install kept between the leaves that prepare and commit
-//! it (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+//! it (`docs/design/liveness-and-reflection.md`, "The complete
 //! install", decision 8).
 
 use std::rc::Rc;

@@ -75,7 +75,7 @@ pub(crate) fn entries_from_value<'gc>(
 /// added, replaced or removed on the instance side only, where §6.3
 /// declares classes; a replaced one keeps its id, its class objects and
 /// its instances, and a removed one lives on obsolete
-/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// (`docs/design/liveness-and-reflection.md`, "The complete
 /// install", decisions 2 and 3).
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum MemberEdit {
@@ -558,7 +558,7 @@ impl<'gc> Mutator<'gc> {
 
     /// The module `text` declares, compiled as the loader compiles a
     /// program's module, or the diagnostic that refuses it
-    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// (`docs/design/liveness-and-reflection.md`, "The complete
     /// install", decision 7): a text that is not one class declaration,
     /// one that does not parse or resolve, and an id or version the
     /// loader's own rules refuse -- a malformed `:module:` and an id under
@@ -1256,7 +1256,7 @@ fn rename_declaration(
 /// had while its text declares what it declared, so that an id the
 /// project gave it (`as`) stays; otherwise one of the same path -- an
 /// install changes a module's attributes, never which module it is
-/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// (`docs/design/liveness-and-reflection.md`, "The complete
 /// install", decision 9) -- with the declared version and the declared
 /// id, or for an id the project gave, that id ending in the class's new
 /// name. The loader's own refusals refuse it, with their messages: a

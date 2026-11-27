@@ -1,7 +1,7 @@
 //! Installing the edits of several builders atomically: the commit after
 //! `Mutator::prepare_install` (`docs/design/liveness-and-reflection.md`,
-//! "The install is one leaf, and its commit has no safepoint", "Planned:
-//! the complete install").
+//! "A MirrorBuilder and an atomic install", "The commit runs nothing and
+//! has no safepoint"; "The complete install", "The three leaves").
 
 pub(super) mod prepared;
 pub(super) mod superclasses;
@@ -47,7 +47,7 @@ impl<'gc> Mutator<'gc> {
     /// module's replacements together, without running Newspeak code,
     /// sending to a user object or polling a safepoint, so that no program
     /// observes a half-installed edit (`docs/design/liveness-and-reflection.md`,
-    /// "The install is one leaf, and its commit has no safepoint"): every
+    /// "The commit runs nothing and has no safepoint"): every
     /// fresh mixin under its old id, every class object found re-applied
     /// superclasses first -- keeping its identity, as every class object
     /// does, a class object whose superclass clause changed over what the

@@ -856,7 +856,7 @@ pub(in crate::heap) mod class_field {
     /// they mean nothing, so that an install can turn a class object of a
     /// declaration with a body into a body-less declaration's and back in
     /// place, keeping its identity (`docs/design/liveness-and-reflection.md`,
-    /// "Planned: the complete install", decision 2).
+    /// "The complete install", decision 2).
     pub(in crate::heap) const NAMED_CLASS: usize = 8;
     /// For a body-less declaration's class object (`Mixin::has_body`), and
     /// nil on every other: the enclosing object the

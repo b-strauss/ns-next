@@ -530,7 +530,7 @@ pub const SLOT_LAZY_MUTABLE: u8 = 3;
 /// followed by the file name of a module the binary holds -- `Manifest.ns`
 /// -- whose path is `core:` and that name, or `ORIGIN_NONE`, followed by
 /// nothing, for a module a program declared from source, which has no path
-/// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+/// (`docs/design/liveness-and-reflection.md`, "The complete
 /// install", decision 7). Next free number: 5.
 pub const ORIGIN_PROJECT: u8 = 2;
 pub const ORIGIN_CORE: u8 = 3;

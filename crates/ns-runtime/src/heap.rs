@@ -5768,7 +5768,7 @@ impl<'gc> Heap<'gc> {
 
     /// Makes the nested declaration `id` obsolete, as an install that
     /// removed it from its enclosing declaration leaves it
-    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// (`docs/design/liveness-and-reflection.md`, "The complete
     /// install", decision 3): its id leaves its parent's nested list, so
     /// no new application of the parent reserves it a hidden slot and no
     /// assembled text holds it, and its row and every row declared in it
@@ -7500,11 +7500,15 @@ impl<'gc> Heap<'gc> {
         self.set_class_field(class, class_field::SUPERCLASS, Value::nil())
     }
 
-    /// Sets `class`'s enclosing object and declaring class. The bootstrap's
-    /// kernel phase is the one caller: a builtin class object exists before
-    /// the kernel instance that encloses it can, because a literal needs its
-    /// class from the first instruction on. Answers whether the write
-    /// happened, like the other class setters.
+    /// Sets `class`'s enclosing object and declaring class, for the three
+    /// that set them after a class object exists: the bootstrap's kernel
+    /// phase, since a builtin class object exists before the kernel
+    /// instance that encloses it can, because a literal needs its class
+    /// from the first instruction on; the image decoder, which gives a
+    /// decoded metaclass its class's, once that class is filled; and an
+    /// install that re-parents a class object, or a level following one,
+    /// whose code walks out from another context then (§6.2). Answers
+    /// whether the write happened, like the other class setters.
     pub fn class_set_lexical_context(
         &mut self,
         class: ClassReference<'gc>,
@@ -7690,8 +7694,8 @@ impl<'gc> Heap<'gc> {
     ///
     /// The install's walk: there is no registry of a mixin's applications
     /// or a class's instances, so the space is the one place that holds
-    /// them all (`docs/design/liveness-and-reflection.md`, "The install is
-    /// one leaf, and its commit has no safepoint"). An object nothing
+    /// them all (`docs/design/liveness-and-reflection.md`, "The commit runs
+    /// nothing and has no safepoint"). An object nothing
     /// reaches any more is found as well, since only a collection tells
     /// the two apart, and none runs inside a leaf; a forwarder and a gap
     /// are no objects and are skipped.

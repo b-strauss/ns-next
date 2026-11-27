@@ -9,7 +9,7 @@
 //! (`Mutator::reapply`), running no code. A module's root evaluates
 //! nothing: its superclass follows its fresh `root_shape`
 //! (`root_reparentings`). `docs/design/liveness-and-reflection.md`,
-//! "Planned: the complete install", decision 1.
+//! "The complete install", decision 1.
 
 use super::prepared::PreparedInstall;
 use crate::hash::IdentityMap;

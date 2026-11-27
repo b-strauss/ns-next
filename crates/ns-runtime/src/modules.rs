@@ -337,7 +337,7 @@ pub struct ModuleIdentity {
     /// shipped module and `core:Manifest.ns` for the manifest; `None` for a
     /// module a program declared from source (`ClassDeclarationBuilder
     /// fromSource:`), which no file holds
-    /// (`docs/design/liveness-and-reflection.md`, "Planned: the complete
+    /// (`docs/design/liveness-and-reflection.md`, "The complete
     /// install", decision 7).
     pub path: Option<String>,
     pub id: ModuleId,
