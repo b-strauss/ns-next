@@ -643,6 +643,14 @@ pub struct Mutator<'gc> {
     /// same entries at the same epoch (`install::prepared`): ids, texts
     /// and mixins, no handle, so nothing traces it.
     pub(crate) prepared_install: install::prepared::PreparedInstallCache,
+    /// Whether the install stress mode is on (`NS_NEXT_STRESS_INSTALL`, or
+    /// `Interpreter::set_stress_install`): after every install's commit,
+    /// every cache entry is checked against a fresh lookup
+    /// (`Mutator::verify_caches_against_lookups`). On the mutator, since
+    /// the commit runs inside a mirror leaf and reaches nothing else.
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_install: bool,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -820,6 +828,7 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             interpreter.hold_safepoints_for_stress();
+            interpreter.set_stress_install(safepoint::stress_install_from_env());
             // The collect stress mode slides the site ranges at every
             // collection that finds one free, so that its collections
             // exercise every slide (`InlineCaches::plan_slide`).
@@ -1778,6 +1787,15 @@ impl Interpreter {
     pub fn set_stress_caches(&mut self, enabled: bool) {
         self.stress_caches = enabled;
         self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the install stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_INSTALL` says: after every install's
+    /// commit, every cache entry checked against a fresh lookup and a
+    /// difference a panic. For tests. It holds no safepoint: the check
+    /// runs inside the install's leaf.
+    pub fn set_stress_install(&mut self, enabled: bool) {
+        self.enter(|mutator| mutator.stress_install = enabled);
     }
 
     /// How many times the cache stress mode has invalidated the caches since

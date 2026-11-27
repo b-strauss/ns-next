@@ -401,6 +401,19 @@ pub(crate) fn stress_breakpoints_from_env() -> bool {
         .is_some_and(|value| !value.is_empty() && value != "0")
 }
 
+/// Whether `NS_NEXT_STRESS_INSTALL` asks for the install stress mode:
+/// set, and neither empty nor `0`. Debug builds only. After every
+/// install's commit it checks every cache entry the scoped vacate kept
+/// against a fresh lookup and panics on a difference, so that an entry
+/// the install should have vacated is found where it was kept, not at
+/// the hit that would run it (`docs/design/dispatch.md`, "Invalidation").
+/// It holds no safepoint: the check runs inside the install's leaf.
+#[cfg(debug_assertions)]
+pub(crate) fn stress_install_from_env() -> bool {
+    std::env::var_os("NS_NEXT_STRESS_INSTALL")
+        .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
 /// Whether `NS_NEXT_STRESS_WIDE` asks for every instruction in a wide
 /// form: set, and neither empty nor `0`. Debug builds only, like the other
 /// stress modes; read once per process, since every body asks.

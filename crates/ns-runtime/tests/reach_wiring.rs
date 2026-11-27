@@ -231,11 +231,16 @@ const RECORDING_READERS: [(&str, &str); 9] = [
 
 /// The readers called only from `with_kernel`: each one's file, signature
 /// and how a call of it is written.
-const KERNEL_READERS: [(&str, &str, &str); 5] = [
+const KERNEL_READERS: [(&str, &str, &str); 6] = [
     (
         "ns-runtime/src/interpreter/safepoint.rs",
         "fn stress_caches_from_env()",
         "stress_caches_from_env(",
+    ),
+    (
+        "ns-runtime/src/interpreter/safepoint.rs",
+        "fn stress_install_from_env()",
+        "stress_install_from_env(",
     ),
     (
         "ns-runtime/src/interpreter/safepoint.rs",

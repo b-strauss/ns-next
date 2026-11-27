@@ -9,6 +9,8 @@
 //! not (`resolve.rs`).
 
 pub(crate) mod cells;
+#[cfg(debug_assertions)]
+mod verify;
 
 use super::Arguments;
 use std::collections::{BTreeMap, BTreeSet};

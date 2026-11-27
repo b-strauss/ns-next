@@ -176,6 +176,8 @@ impl World {
                 reclaim_buffers: crate::interpreter::ReclaimBuffers::default(),
                 install_epoch: 0,
                 prepared_install: None,
+                #[cfg(debug_assertions)]
+                stress_install: false,
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();

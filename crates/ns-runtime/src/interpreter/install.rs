@@ -152,6 +152,17 @@ impl<'gc> Mutator<'gc> {
         // epoch tells a commit so, and the one cached is dropped.
         self.install_epoch += 1;
         self.prepared_install = None;
+        // The install stress mode: every entry the scoped vacate kept is
+        // what a lookup decides now, and every cell still copies its entry.
+        #[cfg(debug_assertions)]
+        if self.stress_install {
+            let checked = self
+                .verify_caches_against_lookups()
+                .and_then(|()| self.caches.verify_cells(&self.heap, &self.jit));
+            if let Err(problem) = checked {
+                panic!("internal: after an install, {problem}");
+            }
+        }
         Ok(prepared.texts.clone())
     }
 

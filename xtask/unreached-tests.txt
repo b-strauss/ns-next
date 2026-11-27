@@ -1995,7 +1995,7 @@ xtask::bin/xtask tests::the_end_of_batch_runs_no_docker_group
 xtask::bin/xtask tests::the_end_of_batch_runs_the_runtime_gates_and_the_stress_runs
 xtask::bin/xtask tests::the_shipped_code_runs_once_right_after_formatting
 xtask::bin/xtask tests::the_stress_group_also_runs_the_suite_without_the_jit
-xtask::bin/xtask tests::the_stress_group_runs_fifteen_modes
+xtask::bin/xtask tests::the_stress_group_runs_sixteen_modes
 xtask::bin/xtask tests::the_stress_suites_share_the_threads_by_their_lengths
 xtask::bin/xtask tests::the_stress_workflow_runs_every_stress_run
 xtask::bin/xtask tests::the_usage_names_every_group

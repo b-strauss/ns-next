@@ -2403,7 +2403,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are fifteen stress modes, each a gate of its own at the end of a batch,
+There are sixteen stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2443,7 +2443,11 @@ optimize stress mode too and makes optimized code leave for a
 safepoint at every tenth interrupt point it passes, which frees every
 body's copies -- a body freed often sitting out ever more rounds --
 before it installs what was requested since
-([execution.md](execution.md), "Speculation", "Verification").
+([execution.md](execution.md), "Speculation", "Verification"), and
+`NS_NEXT_STRESS_INSTALL`, which holds no safepoint and, after every
+install's commit, checks every cache entry the install kept against a
+fresh lookup for its key and every cell against its entry, panicking on
+a difference ([dispatch.md](dispatch.md), "Invalidation").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like the move stress mode but with floor
@@ -3103,7 +3107,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name fifteen stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name sixteen stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

@@ -73,6 +73,7 @@ jobs:
           - PAUSE
           - BREAKPOINTS
           - STEP
+          - INSTALL
           - NO_JIT
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240

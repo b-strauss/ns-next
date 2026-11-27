@@ -457,11 +457,12 @@ NS_NEXT_STRESS_INVALIDATE=1 cargo nextest run --workspace # OPTIMIZE, and optimi
 NS_NEXT_STRESS_PAUSE=1 cargo nextest run --workspace    # stopping as for a debugger's pause at safepoints, the whole stack and every value one level deep read, the top frame's named variables evaluated, then continuing
 NS_NEXT_STRESS_BREAKPOINTS=1 cargo nextest run --workspace # every statement start of every body found running at a safepoint -- every body whose first entry is interpreted -- patched with a breakpoint that never stops, each gone past through the run loop's arm
 NS_NEXT_STRESS_STEP=1 cargo nextest run --workspace     # stopping as for a pause at safepoints and taking a burst of steps into, over and out from there, the shipped filter on and off, the stack read at every stop
+NS_NEXT_STRESS_INSTALL=1 cargo nextest run --workspace  # after every install's commit, every cache entry checked against a fresh lookup for its key and every cell against its entry
 NS_NEXT_NO_JIT=1 cargo nextest run --workspace          # the JIT off: every body interpreted, in every build
 # and `cargo run -p ns-cli -- run-corpus corpus/modules` under each mode, as
 # plain: "ran 6, failed 0, skipped 205" -- every row under both lowerings
-# `cargo xtask gates stress` runs the sixteen suites at once, the machine's
-# threads shared among them by each suite's measured length (32 on 24
+# `cargo xtask gates stress` runs the seventeen suites at once, the machine's
+# threads shared among them by each suite's measured length (34 on 24
 # cores, one to four a suite: at 18 each, 288 test processes stalled tests
 # that wait on a process they start past their bounds), each into its own log, `.temp/stress-NO_JIT.log` the last's
 # (`--only "stress <MODE>"` runs one alone, on every thread, its output shown), in the nextest profile `stress`

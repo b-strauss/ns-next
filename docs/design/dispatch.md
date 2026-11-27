@@ -1603,6 +1603,23 @@ factory entry stays: its class side is not the one replaced. The dependency key 
 of [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
 their dependency keys": the application, never the class object.
 
+The install stress mode, `NS_NEXT_STRESS_INSTALL=1` (debug builds,
+`Interpreter::set_stress_install` for a test), checks the criterion after
+every commit, the suite's installs all among them: every entry the
+caches kept -- each site's, each polymorphic slot's, each global entry
+and the verified pair -- is compared with what a fresh lookup decides for
+its key, and every cell with its entry, and a difference panics, naming
+the entry (`Mutator::verify_caches_against_lookups`,
+`interpreter/inline_cache/verify.rs`). An entry's key names applications
+by their dispatch ids, so the check finds one live object of each id in
+one walk of the space and looks up from it with the lookups alone, never
+`act`, so that it changes nothing it inspects; an entry whose guard no
+live object has can never hit and is skipped, as is a site of a loose
+range, whose body no family names. A lexical site's non-private entry
+is keyed by its receiver alone, so its lookup is made without N's
+private member, which the global entry of the same send, whose rule
+names N, is checked with.
+
 **A collection scrubs selectively**
 (`r[vm.dispatch.freed-ids-scrubbed]`). A full collection that frees a guard id
 or an application index ([object-model.md](object-model.md), "An
