@@ -659,9 +659,11 @@ Bracha requires that ns-next does not build yet, a *gap*, whose rule
 (an identifier with the segment `gap`) says what ns-next does instead.
 Two of the adopted rules answer a program written to Bracha's
 specification differently at exit status 0: a non-integral literal is a
-binary `Float`, and a string literal is not normalized to NFC. Of the
-gaps a program meets, an asynchronous send and a pattern literal signal
-an error naming the gap, and a tuple literal answers a mutable `Array`.
+binary `Float` (`r[semantics.literal.float]`), and a string literal is
+not normalized to NFC (`r[semantics.literal.string]`). Of the gaps a
+program meets, an asynchronous send and a pattern literal signal an
+error naming the gap (`r[semantics.gap.pattern]`), and a tuple literal
+answers a mutable `Array` (`r[semantics.gap.immutable-array]`).
 
 A gap whose program has an answer Bracha's specification fixes may have
 a golden recorded as `skipped`, stating that answer, so that closing the
