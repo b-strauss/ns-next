@@ -1,0 +1,6 @@
+rules = ["runtime.install.superclass", "vm.heap.migration-by-declared-name"]
+stdout = '''
+#trait an object does not understand #inner nil 5 6 nil an object does not understand #base
+#trait an object does not understand #inner #initialized 3 4 2 an object does not understand #base
+#trait an object does not understand #inner #initialized 3 4 2 an object does not understand #base
+'''

@@ -1,0 +1,91 @@
+/// One install may change both a class whose `<:` clause names another
+/// and the class it names: here `User` gets another superclass, still
+/// applying `Inner`, while `Inner` loses its body. The commit builds what
+/// each class object is built over first, so an instance of a subclass
+/// made before the install answers as one made after it does, but for
+/// the slots it keeps or starts nil.
+class AnApplyingAndANamedClassChangeInOneInstall = Object new () (
+  class Holder = Object new () (
+    public class Base = Object new (
+      |
+        public base ::= 1.
+      |
+    ) ()
+
+    public class Other = Object new (
+      |
+        public other ::= 2.
+      |
+    ) ()
+
+    public class Trait = Object new (
+      |
+        public mark ::= #initialized.
+      |
+    ) (
+      public trait = (
+        ^#trait.
+      )
+    )
+
+    public class Inner = Object new () (
+      public inner = (
+        ^#inner.
+      )
+    )
+
+    public class User = Base new <: Inner (
+      |
+        public own ::= 3.
+      |
+    ) ()
+
+    public class Third = User new (
+      |
+        public third ::= 4.
+      |
+    ) ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: instance on: transcript = (
+    transcript
+        show: (outcome: [instance trait]);
+        show: ' ';
+        show: (outcome: [instance inner]);
+        show: ' ';
+        show: (outcome: [instance mark]);
+        show: ' ';
+        show: (outcome: [instance own]);
+        show: ' ';
+        show: (outcome: [instance third]);
+        show: ' ';
+        show: (outcome: [instance other]);
+        show: ' ';
+        show: (outcome: [instance base]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder Third new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    old own: 5.
+    old third: 6.
+    builder instanceSide nestedClasses addFromSource: 'public class Inner = Object new <: Trait.'.
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class User = Other new <: Inner (| public own ::= 3. |) ()'.
+    builder install.
+    show: old on: transcript.
+    show: holder Third new on: transcript.
+    show: Holder new Third new on: transcript.
+  )
+)
