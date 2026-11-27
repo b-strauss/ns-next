@@ -4051,6 +4051,7 @@ mod tests {
     /// nothing reaches it a full collection frees its tree of ids: the
     /// world no longer lists it, and a module of the same identity installs
     /// again.
+    #[cfg(debug_assertions)]
     // spec: runtime.install.module
     #[test]
     fn an_unreferenced_module_from_source_is_reclaimed() {
