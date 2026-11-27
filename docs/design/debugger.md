@@ -4553,10 +4553,10 @@ frame's receiver and variables, and the value a call in a shipped frame
 answered at a step's stop -- or through a field a shipped mixin declares
 -- every field of the platform object, and the platform module's private
 `vmMirror`, which a shipped frame of that module shows among its
-receiver's fields, among them -- or is a value the shipped world
-withholds from every program (`Mutator::is_withheld`: the VM mirror and
-every recorded shipped module instance, the kernel's among them); a child
-inherits its parent's withholding (`the_platform_s_mirror_field_is_withheld`).
+receiver's fields -- or is a value the shipped world withholds from every
+program (`Mutator::is_withheld`: the VM mirror and every recorded shipped
+module instance, the kernel's among them); a child inherits its parent's
+withholding (`the_platform_s_mirror_field_is_withheld`).
 An evaluation runs only in a program's frame, so what it answers is
 withheld only where `Mutator::is_withheld` holds. A `String`, an
 `Array` or a number a program frame shows is marked like any value: the
@@ -4954,9 +4954,9 @@ refused leaves the program stopped where it was, nothing begun.
   are refused in a shipped module's frame, as evaluation is
   (`r[vm.mirror.debugger-acts-in-program-frames]`): forcing
   `signal` or an `ensure:` marker to return would break the kernel's own
-  invariants. A frame whose body belongs to a shipped module is refused
-  with "the frame is the core library's", decided from its declaration's
-  module before anything is begun. The one exception, planned with
+  invariants. Such a frame is refused with "the frame is the core
+  library's", decided from its declaration's module before anything is
+  begun. The one exception, planned with
   "Create Method", is the forced `nil` from
   `Object>>doesNotUnderstand:` when "Create Method" is declined
   ("Exceptions"), which the debugger will issue itself.
