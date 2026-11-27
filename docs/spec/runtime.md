@@ -267,24 +267,34 @@ The bulk `become:`, reached only through the VM mirror by the install.
 ### Install(edits)
 
 r[runtime.install]
-A `ClassDeclarationBuilder`'s `install`
+The install of a list of builders' edits: `installAtomically:` given the
+list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 ([`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)).
 
-1. If the builder's class is the core library's, signal and change
-   nothing. If its header changes the class's name, access or superclass,
-   signal `the header renames Inner to Renamed; an edit keeps a class's
-   name`, `the header changes the access of Inner; an edit keeps it` or
-   `the header changes the superclass of Inner; an edit keeps it`, and
-   change nothing.
-2. Compile the staged declaration against the module's current text; if
-   it does not compile, signal and change nothing.
-3. At once and running no code: make the new mixin the mixin of every
-   application of the old one; for every instance whose layout changed,
-   make a new instance of the new layout holding each slot of the same
-   name and `nil` in each new one, and
-   [ForwardIdentity](#r-runtime.forward-identity) the old instances to them.
-4. A running activation finishes with the code it began with; every send
-   after step 3 finds the new methods.
+1. If two builders of the list edit one class, signal `two builders edit
+   Inner` and change nothing. If a builder's class is the core library's,
+   signal and change nothing. If a builder's header changes the class's
+   name, access or superclass, signal `the header renames Inner to
+   Renamed; an edit keeps a class's name`, `the header changes the access
+   of Inner; an edit keeps it` or `the header changes the superclass of
+   Inner; an edit keeps it`, and change nothing.
+2. Prepare each module the list edits once: splice the staged edits of
+   its builders into the module's current text, in the list's order,
+   each starting from the text the one before it left, and compile the
+   staged declarations against the result; if one does not compile,
+   signal and change nothing.
+3. If anything was installed, or a module loaded, since step 2 -- the
+   install epoch moved -- signal `an install ran between the preparation
+   and the commit of Inner's install; nothing was installed` and change
+   nothing.
+4. At once and running no code, for every module's edits together: make
+   each new mixin the mixin of every application of the old one; for
+   every instance whose layout changed, make a new instance of the new
+   layout holding each slot of the same name and `nil` in each new one,
+   and [ForwardIdentity](#r-runtime.forward-identity) the old instances to
+   them. Then move the install epoch.
+5. A running activation finishes with the code it began with; every send
+   after step 4 finds the new methods.
 
 ## Capabilities and limits
 

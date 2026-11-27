@@ -33,6 +33,9 @@ impl Mutator<'_> {
         mut gathered: GatheredIds,
         carried_budgets: &mut IdentityMap<usize, i64>,
     ) {
+        // A prepared install names ids this collection may reclaim and
+        // mint again for other declarations; its commit prepares afresh.
+        self.prepared_install = None;
         let stack = self.heap.stack_roots();
         // A running activation names its body by id, beside the marked
         // closures and frames: step 3 asks which bodies run, step 4 frees
@@ -808,7 +811,7 @@ mod tests {
     }
 
     fn install(interpreter: &mut Interpreter, id: MixinId, edit: &Edit) {
-        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, edit)) {
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_one(id, edit)) {
             panic!("the install was refused: {diagnostic}");
         }
     }
@@ -818,6 +821,7 @@ mod tests {
             header: None,
             instance_side: vec![MemberEdit::AddMethod(text.to_string())],
             class_side: Vec::new(),
+            new_name: None,
         }
     }
 

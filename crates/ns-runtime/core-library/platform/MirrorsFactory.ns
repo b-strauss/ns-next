@@ -84,8 +84,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
 ) (
   /// `platform mirrors`: the namespace of the two classes a program
   /// makes mirrors with, `ObjectMirror` and `ClassMirror`, one accessor
-  /// each; nothing else. Its own class is not among them, so a program makes no
-  /// second namespace.
+  /// each, and the install of several builders as one,
+  /// `installAtomically:`; nothing else. Its own class is not among them,
+  /// so a program makes no second namespace.
   private class Mirrors = Value () (
     /// Hands out the class a program makes object mirrors with: it
     /// instantiates it with `reflecting:` any object.
@@ -102,6 +103,65 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     public ClassMirror = (
       ^outer MirrorsFactory ClassMirror.
     )
+
+    /// Installs the staged edits of every ClassDeclarationBuilder of
+    /// `aCollection` as one change: each builder's edits are spliced into
+    /// its module's current text in the order the builders are given, the
+    /// builders of one module composing on one text, and the install
+    /// either makes every edit visible at once, as each builder's
+    /// `install` would make its own, or changes nothing. Afterwards each
+    /// builder stands for its installed declaration, with nothing staged.
+    ///
+    /// The collection is copied first, so a change to it while the
+    /// install runs reaches nothing.
+    ///
+    /// @param aCollection a collection of this module's
+    /// ClassDeclarationBuilders, read with `size` and `do:`.
+    /// @answers nil.
+    /// @signals ArgumentError carrying the element, 'installAtomically:
+    /// requires ClassDeclarationBuilders', for an element that is none,
+    /// before any builder is read.
+    /// @signals Error with the VM's diagnostic, changing nothing, for the
+    /// first edit the install refuses: 'two builders edit <class name>'
+    /// for two builders of one declaration, and every diagnostic a
+    /// builder's own `install` signals.
+    /// @see `ClassDeclarationBuilder>>install`.
+    public installAtomically: aCollection = (
+      |
+        builders = Array withAll: aCollection.
+      |
+      builders do: [:each |
+        (outer MirrorsFactory isClassDeclarationBuilder: each) ifFalse: [
+          ^(ArgumentError value: each) signal: 'installAtomically: requires ClassDeclarationBuilders'.
+        ].
+      ].
+      (outer MirrorsFactory Installer builders: builders) install.
+      ^nil.
+    )
+  )
+
+  /// Decides, sending it nothing, whether `anObject` is an instance of
+  /// this module's ClassDeclarationBuilder, so that an install hands its
+  /// Installer to no other object.
+  ///
+  /// @param anObject any object.
+  /// @answers whether `anObject` is a ClassDeclarationBuilder, a Boolean.
+  private isClassDeclarationBuilder: anObject = (
+    ^vmMirror reflectionObject: (vmMirror objectClass: anObject ifFail: [nil])
+        identicalTo: ClassDeclarationBuilder
+        ifFail: [false].
+  )
+
+  /// Decides, sending it nothing, whether `anObject` is an instance of
+  /// this module's Installer, the one object a ClassDeclarationBuilder
+  /// hands its reified mixin to.
+  ///
+  /// @param anObject any object.
+  /// @answers whether `anObject` is an Installer, a Boolean.
+  private isInstaller: anObject = (
+    ^vmMirror reflectionObject: (vmMirror objectClass: anObject ifFail: [nil])
+        identicalTo: Installer
+        ifFail: [false].
   )
 
   /// A mirror on one object: its class, as a class mirror, and the values
@@ -1405,7 +1465,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
           mixin: (MixinMirror reflecting: (vmMirror reflectionMixinClassSide: aReifiedMixin
               ifFail: [nil])).
     |
-    self check: {nil. {}. {}}.
+    self check: {nil. {}. {}. nil}.
   ) (
     /// Shows the declaration as the staged edits make it: its text, from
     /// its access modifier, or `class` when it has none, to its closing
@@ -1429,6 +1489,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// not run. A method or a closure already running finishes with the
     /// code it was running.
     ///
+    /// An install of the receiver alone, as `Mirrors>>installAtomically:`
+    /// installs several builders.
+    ///
     /// @answers the receiver, which then stands for the installed
     /// declaration, with nothing staged.
     /// @signals Error with the VM's diagnostic, changing nothing -- neither
@@ -1438,26 +1501,51 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// a staged method; and 'cannot migrate an instance of <class name>,
     /// which is not an ordinary object' when an instance whose layout would
     /// change cannot be copied into the new one.
+    /// @see `Mirrors>>installAtomically:`.
     public install = (
-      |
-        answer = vmMirror reflectionMixin: subject installEdit: self edit ifFail: [
-          ^self refuseEdit.
-        ].
-      |
-      (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
+      (Installer builders: {self}) install.
+    )
+
+    /// Hands an install the receiver's entry: the reified mixin of its
+    /// declaration and its staged edit, as the VM reads them. The reified
+    /// mixin is never handed out, so the entry goes to this module's
+    /// Installer alone.
+    ///
+    /// @param anInstaller the Installer installing the receiver's edit;
+    /// sent nothing.
+    /// @answers a new two-element Array, the reified mixin and the staged
+    /// edit as `edit` answers it, when `anInstaller` is an Installer; nil
+    /// for any other object.
+    public entryFor: anInstaller = (
+      (isInstaller: anInstaller) ifFalse: [^nil].
+      ^{subject. self edit}.
+    )
+
+    /// Makes `texts` what the receiver stands for once the install of the
+    /// Installer `anInstaller` committed the receiver's edit: the installed
+    /// declaration, with nothing staged.
+    ///
+    /// @param texts a two-element Array, the installed declaration's text
+    /// and its header's, each a String, as the commit answered them.
+    /// @param anInstaller the Installer that installed the edit; sent
+    /// nothing. For any other object nothing changes.
+    /// @answers the receiver.
+    public installed: texts by: anInstaller = (
+      (isInstaller: anInstaller) ifFalse: [^self].
       headerText:: nil.
       instanceOperations:: {}.
       classOperations:: {}.
-      stagedSource:: answer at: 2.
-      stagedHeader:: answer at: 3.
+      stagedSource:: texts at: 1.
+      stagedHeader:: texts at: 2.
     )
 
     /// Assembles the staged edit in the form the VM reads.
     ///
     /// @answers a new Array of the header's text or nil, the instance
-    /// side's operations and the class side's.
+    /// side's operations, the class side's and the new name, nil to keep
+    /// the class's.
     private edit = (
-      ^{headerText. instanceOperations. classOperations}.
+      ^{headerText. instanceOperations. classOperations. nil}.
     )
 
     /// Stages `operation` on one side, after every operation staged
@@ -1472,9 +1560,9 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @see `check:`.
     private stage: operation onClassSide: classSide = (
       classSide ifTrue: [
-        self check: {headerText. instanceOperations. classOperations , {operation}}.
+        self check: {headerText. instanceOperations. classOperations , {operation}. nil}.
       ] ifFalse: [
-        self check: {headerText. instanceOperations , {operation}. classOperations}.
+        self check: {headerText. instanceOperations , {operation}. classOperations. nil}.
       ].
     )
 
@@ -1487,7 +1575,7 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals Error the one `check:` signals, staging nothing.
     /// @see `check:`.
     private stageHeader: text = (
-      self check: {text. instanceOperations. classOperations}.
+      self check: {text. instanceOperations. classOperations. nil}.
     )
 
     /// Checks `newState` against the module's current text and, when the
@@ -1496,7 +1584,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// header's `source`. Nothing else changes either way.
     ///
     /// @param newState an Array of the header's text or nil, the instance
-    /// side's operations and the class side's, as `edit` answers them.
+    /// side's operations, the class side's and the new name or nil, as
+    /// `edit` answers them.
     /// @answers the receiver, once the VM accepted `newState`.
     /// @signals Error with the VM's diagnostic, leaving the staged state as
     /// it was, when the check refuses the edit; and the one `refuseEdit`
@@ -1521,6 +1610,85 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals Error 'a MirrorBuilder takes a member or a header as a
     /// String and a name as a Symbol'.
     private refuseEdit = (
+      ^Error signal: 'a MirrorBuilder takes a member or a header as a String and a name as a Symbol'.
+    )
+  )
+
+  /// The install of several ClassDeclarationBuilders' staged edits as one
+  /// change, which `ClassDeclarationBuilder>>install` makes of one builder
+  /// and `Mirrors>>installAtomically:` of several. The VM prepares every
+  /// builder's edit -- spliced into its module's current text in the
+  /// builders' order, the builders of one module composing on one text --
+  /// then evaluates each superclass clause the preparation names, as
+  /// program code against the unchanged world, then commits everything
+  /// at once without running any code, or changes nothing. A commit
+  /// after anything else was installed, a clause's own install among
+  /// them, is refused.
+  ///
+  /// It holds the builders and hands them nothing but itself, which no
+  /// other object receives, so a builder hands its reified mixin to an
+  /// Installer alone.
+  ///
+  /// @factory makes the install of `anArray`'s builders, kept in their
+  /// order.
+  /// @param anArray an Array of this module's ClassDeclarationBuilders.
+  private class Installer builders: anArray = Object (
+    |
+      /// The builders whose staged edits install as one, in the order
+      /// their edits are spliced.
+      private builders = anArray.
+    |
+  ) (
+    /// Installs every builder's staged edits as one change, and then
+    /// hands each builder the texts of its installed declaration, so that
+    /// it stands for that declaration with nothing staged.
+    ///
+    /// @answers the receiver.
+    /// @signals Error with the VM's diagnostic, changing nothing --
+    /// neither a class, nor its instances, nor what a builder stages --
+    /// when the install refuses an edit: 'two builders edit <class name>'
+    /// for two builders of one declaration, 'an install ran between the
+    /// preparation and the commit of <class name>'s install; nothing was
+    /// installed' when something was installed after the preparation, and
+    /// every diagnostic `ClassDeclarationBuilder>>install` lists; and the
+    /// one `refuseEntries` signals when the VM cannot read an entry.
+    public install = (
+      |
+        entries = builders collect: [:builder | builder entryFor: self].
+        prepared = vmMirror reflectionPrepareInstall: entries ifFail: [^self refuseEntries].
+        epoch
+        superclasses
+        committed
+      |
+      (prepared at: 1) ifFalse: [^Error signal: (prepared at: 2)].
+      epoch:: prepared at: 2.
+      superclasses:: Array new: (prepared at: 3) size.
+      1 to: superclasses size do: [:index |
+        /// A clause the VM declines -- the epoch moved -- answers nil, and
+        /// the commit refuses the moved epoch.
+        superclasses at: index
+            put: (vmMirror reflectionInstall: entries evaluateClause: index epoch: epoch ifFail: [
+              nil.
+            ]).
+      ].
+      committed:: vmMirror reflectionInstall: entries
+          commitEpoch: epoch
+          superclasses: superclasses
+          ifFail: [^self refuseEntries].
+      (committed at: 1) ifFalse: [^Error signal: (committed at: 2)].
+      (committed at: 2) keysAndValuesDo: [:index :texts |
+        (builders at: index) installed: texts by: self.
+      ].
+    )
+
+    /// Refuses an install the VM cannot read: an edit whose text, after
+    /// `asString`, is no String, or whose name, after `asSymbol`, is no
+    /// Symbol. It never returns: an Error is not resumable.
+    ///
+    /// @answers nothing; it never returns.
+    /// @signals Error 'a MirrorBuilder takes a member or a header as a
+    /// String and a name as a Symbol'.
+    private refuseEntries = (
       ^Error signal: 'a MirrorBuilder takes a member or a header as a String and a name as a Symbol'.
     )
   )

@@ -1,0 +1,7 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+two builders edit Subject
+an object does not understand #first an object does not understand #second
+true
+1
+'''

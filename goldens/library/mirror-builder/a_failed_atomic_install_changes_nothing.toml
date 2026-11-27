@@ -1,0 +1,6 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+Second's edited source does not resolve: class `Second` has multiple definitions of `x` (line 12)
+an object does not understand #answer 2
+true
+'''

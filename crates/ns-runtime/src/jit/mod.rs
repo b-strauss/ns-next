@@ -9068,7 +9068,7 @@ fn carry_armings(
 
 /// Frees every customized copy whose key names one of `rebuilt` -- the
 /// instances ids of the applications an install replaced
-/// (`Mutator::install_edit`) -- as its receiver's or its entered
+/// (`Mutator::commit_install`) -- as its receiver's or its entered
 /// application: each was compiled against a layout, a lookup or an outer
 /// structure the install changed -- and every copy, of any key, whose
 /// dependencies name one (`CopyDependencies::applications`), since an arm

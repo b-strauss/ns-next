@@ -12829,7 +12829,7 @@ tracing").
 Four events make copies stale, and each frees exactly those, counted
 in `JitStatistics::invalidated_copies`:
 
-- **An install** (`installEdit:`) frees every copy whose key names an
+- **An install** (`Mutator::commit_install`) frees every copy whose key names an
   application it rebuilt, as receiver or as entered application
   (`invalidate_applications`), each compiled against a layout, a lookup
   or an outer structure the install changed, with every pending request

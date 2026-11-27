@@ -653,17 +653,19 @@ modules: a shipped class reached by navigation is held back.
 r[semantics.reflection.atomic-install]
 Several reflective changes are applied simultaneously and atomically: if
 any fails, none takes place (Bracha §8.2). ns-next applies the edits of
-one `ClassDeclarationBuilder` so: a class's slots, factory and
-initializer, its methods on either side and its lazy slots, changed for
-every application of its mixin at once, the instances whose layout
-changed migrated with their identity, and a running activation finishing
-with the code it began with. A failed install changes nothing, and the
-core library's classes cannot be edited.
+one `ClassDeclarationBuilder`, or of several given to
+`installAtomically:`, so: a class's slots, factory and initializer, its
+methods on either side and its lazy slots, changed for every application
+of its mixin at once, the instances whose layout changed migrated with
+their identity, and a running activation finishing with the code it
+began with. Several builders' edits are one change: each is spliced into
+its module's text in the order the builders are given, and two builders
+of one class are refused. A failed install changes nothing, and the core
+library's classes cannot be edited.
 
 r[semantics.gap.reflection.several-builders]
-ns-next installs one builder's edits at a time: several builders' edits
-are not one atomic change, and a superclass change, the nested classes
-and a class declared from source with no predecessor cannot be edited.
+A superclass change, the nested classes and a class declared from
+source with no predecessor cannot be edited.
 The complete install closes this gap
 (`docs/design/liveness-and-reflection.md`, "Planned: the complete
 install").

@@ -12286,7 +12286,7 @@ impl<'gc> Heap<'gc> {
     /// The hash is copied whether or not the old object has one, so a new
     /// object that was hashed already takes the old one's absence of a
     /// hash and answers another hash afterwards: a caller forwards only to
-    /// objects nothing has hashed yet, as the install (`install_edit`) does
+    /// objects nothing has hashed yet, as the install (`commit_install`) does
     /// to the fresh ones it builds.
     /// Last, one walk rewrites every handle the heap itself holds
     /// (`forward_everything`) and remembers every old holder that names a

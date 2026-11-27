@@ -342,7 +342,9 @@ impl Primitive {
                 | ReflectionPrimitive::SymbolText
                 | ReflectionPrimitive::ForwardIdentity
                 | ReflectionPrimitive::CheckEdit
-                | ReflectionPrimitive::InstallEdit,
+                | ReflectionPrimitive::PrepareInstall
+                | ReflectionPrimitive::EvaluateClause
+                | ReflectionPrimitive::CommitInstall,
             ) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -934,11 +936,25 @@ pub enum ReflectionPrimitive {
     /// stands for its instance side's declaration. Declined for any other
     /// subject and a malformed edit.
     CheckEdit,
-    /// Installs an edit of a reified mixin's declaration atomically
-    /// (`Mutator::install_edit`), answering as `CheckEdit` does:
-    /// `{true. declarationText. headerText}` once installed, `{false. diagnostic}`
-    /// with nothing changed. Declined as `CheckEdit` is.
-    InstallEdit,
+    /// Prepares an install of several builders as one
+    /// (`Mutator::prepare_install`), the subject an `Array` of entries
+    /// (`interpreter::edit::entries_from_value`): `{true. epoch. clauses}`,
+    /// the install epoch and the `{classObject. enclosingObject}` pairs whose
+    /// superclass clauses are to be evaluated, or `{false. diagnostic}`;
+    /// nothing changes either way. Declined for a subject it cannot read.
+    PrepareInstall,
+    /// Evaluates one superclass clause an install's preparation answered,
+    /// by its 1-based index, at the epoch the preparation answered.
+    /// Declined for a stale epoch and an index out of range, which every
+    /// index is while an edit keeps every clause.
+    EvaluateClause,
+    /// Commits an install of several builders atomically
+    /// (`Mutator::commit_install`), given the epoch its preparation answered
+    /// and the clauses' answers by index: `{true. results}`, per entry its
+    /// `{declarationText. headerText}`, or `{false. diagnostic}` with nothing
+    /// changed, a moved epoch among the refusals. Declined for entries,
+    /// an epoch or answers it cannot read.
+    CommitInstall,
 }
 
 /// A row of `MIRROR`. A `u16`, so the table may hold 65,536 rows: two bytes
@@ -3275,18 +3291,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         "forwardIdentityTo:",
         Primitive::Reflection(ReflectionPrimitive::ForwardIdentity),
     ),
-    // Reported `checkEdit:` and `installEdit:`, no kernel selectors, for
-    // the forward's reason: the subject and one argument, and no error
-    // raised whose text names them.
+    // Reported `checkEdit:`, no kernel selector, for the forward's
+    // reason: the subject and one argument, and no error raised whose
+    // text names it.
     mirror(
         "reflectionMixin:checkEdit:ifFail:",
         "checkEdit:",
         Primitive::Reflection(ReflectionPrimitive::CheckEdit),
-    ),
-    mirror(
-        "reflectionMixin:installEdit:ifFail:",
-        "installEdit:",
-        Primitive::Reflection(ReflectionPrimitive::InstallEdit),
     ),
     // Leaf: reads a class object's name, application, enclosing object or
     // superclass, allocating at most the name's String (`builtins::behavior`).
@@ -3321,6 +3332,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         "block:valueWithArguments:ifFail:",
         "valueWithArguments:",
         Primitive::Block(BlockPrimitive::ValueWithArguments),
+    ),
+    // The install's three rows, reported by no kernel selector, for the
+    // forward's reason: the subject, the entries, and the arguments of
+    // each, and no error raised whose text names them. No leaf: the
+    // commit allocates migrated instances and forwards them, and the
+    // clause's row activates a clause body.
+    mirror(
+        "reflectionPrepareInstall:ifFail:",
+        "prepareInstall",
+        Primitive::Reflection(ReflectionPrimitive::PrepareInstall),
+    ),
+    mirror(
+        "reflectionInstall:evaluateClause:epoch:ifFail:",
+        "evaluateClause:epoch:",
+        Primitive::Reflection(ReflectionPrimitive::EvaluateClause),
+    ),
+    mirror(
+        "reflectionInstall:commitEpoch:superclasses:ifFail:",
+        "commitEpoch:superclasses:",
+        Primitive::Reflection(ReflectionPrimitive::CommitInstall),
     ),
 ];
 

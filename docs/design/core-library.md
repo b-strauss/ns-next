@@ -661,9 +661,12 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 270 rows of `builtins/primitive.rs`'s `MIRROR` table, the
-last two the MirrorBuilder's, `reflectionMixin:checkEdit:ifFail:` and
-`reflectionMixin:installEdit:ifFail:` ([liveness-and-reflection.md](liveness-and-reflection.md),
+The leaves are the 277 rows of `builtins/primitive.rs`'s `MIRROR` table,
+among them the MirrorBuilder's, `reflectionMixin:checkEdit:ifFail:`, and
+the last three the install's, `reflectionPrepareInstall:ifFail:`,
+`reflectionInstall:evaluateClause:epoch:ifFail:` and
+`reflectionInstall:commitEpoch:superclasses:ifFail:`
+([liveness-and-reflection.md](liveness-and-reflection.md),
 "A MirrorBuilder and an atomic install"). A
 row names the **mirror selector** (`collection:at:put:ifFail:`), the
 **reported selector** — the kernel selector every error text of that leaf
@@ -2865,11 +2868,11 @@ lets a program claim every primitive:
   that only the boot reaches with the binary's own bytes, so this lock
   stays structural ("The embedded shipped code" below).
 
-Beside the six, the mirrors module's two edit leaves,
-`reflectionMixin:checkEdit:ifFail:` and
-`reflectionMixin:installEdit:ifFail:`, which only `MirrorsFactory.ns`'s
-`ClassDeclarationBuilder` sends, refuse every edit of a shipped mixin
-(`Mutator::prepare_edit`, after `asBuilder`), and resolve an edited module
+Beside the six, the mirrors module's edit leaves,
+`reflectionMixin:checkEdit:ifFail:` and the install's three, which only
+`MirrorsFactory.ns`'s `ClassDeclarationBuilder` and `Installer` send,
+refuse every edit of a shipped mixin
+(`Mutator::editable_declaration`, after `asBuilder`), and resolve an edited module
 through `resolve`, never `resolve_kernel`, so no edit records a
 `MirrorSend` or changes the mirror's class, whose table stays the one the
 bootstrap built ([dispatch.md](dispatch.md), "Primitives";

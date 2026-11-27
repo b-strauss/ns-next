@@ -6,8 +6,10 @@
 //! anything else; none raises. Two leaves serve the module beside them:
 //! identity and a Symbol's text, which the kernel's rows answer too, but
 //! seen through a future. One writes: the bulk forward, `become:`
-//! (`forward_identity`). Two serve the MirrorBuilder: one checks an edit
-//! of a class, the other installs it (`edit`).
+//! (`forward_identity`). Four serve the MirrorBuilder: one checks an edit
+//! of a class (`check_edit`), and three install the edits of several
+//! builders as one -- prepare, evaluate a superclass clause, commit
+//! (`prepare_install`, `commit_install`).
 //!
 //! A future is read as the object it is, never as the value it stands
 //! for: the failure path sees through no leaf of this family
@@ -31,7 +33,7 @@ use ns_syntax::ast;
 
 use crate::builtins::primitive::ReflectionPrimitive;
 use crate::heap::{Heap, MixinId};
-use crate::interpreter::edit::{Edit, EditedTexts};
+use crate::interpreter::edit::{Edit, EditedTexts, InstallEntry, entries_from_value};
 use crate::mixin::{Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::{Mutator, Symbol};
@@ -130,51 +132,124 @@ pub(crate) fn execute<'gc>(
             Some(Value::object(mutator.new_string(text)))
         }
         ReflectionPrimitive::ForwardIdentity => forward_identity(mutator, receiver, arguments),
-        ReflectionPrimitive::CheckEdit => {
-            edit(mutator, receiver, arguments, |mutator, id, edit| {
-                mutator
-                    .prepare_edit(id, edit)
-                    .map(|prepared| prepared.texts)
-            })
-        }
-        ReflectionPrimitive::InstallEdit => {
-            edit(mutator, receiver, arguments, |mutator, id, edit| {
-                mutator.install_edit(id, edit)
-            })
-        }
+        ReflectionPrimitive::CheckEdit => check_edit(mutator, receiver, arguments),
+        ReflectionPrimitive::PrepareInstall => prepare_install(mutator, receiver),
+        // An edit keeps every superclass clause, so the preparation answers
+        // no clause to evaluate and every index is out of range.
+        ReflectionPrimitive::EvaluateClause => None,
+        ReflectionPrimitive::CommitInstall => commit_install(mutator, receiver, arguments),
     }
 }
 
-/// `reflectionMixin:checkEdit:ifFail:` and
-/// `reflectionMixin:installEdit:ifFail:`: `run` -- preparing or
-/// installing -- on the declaration the subject, a reified mixin, belongs
-/// to, a class side's being its instance side's, and the edit the
-/// argument stands for (`Edit::from_value`). Answers `{true.
-/// declarationText. headerText}` or `{false. diagnostic}`, one shape for
-/// both, so that the builder reads a check and an install alike, and
-/// takes the header from the parse rather than reading syntax itself; a
-/// refusal is an
-/// answer rather than a decline because a failure block receives no
-/// argument to carry the diagnostic in. Declined for any other subject
-/// and for a malformed edit.
-fn edit<'gc>(
+/// `reflectionMixin:checkEdit:ifFail:`: prepares the edit the argument
+/// stands for (`Edit::from_value`) of the declaration the subject, a
+/// reified mixin, belongs to, a class side's being its instance side's,
+/// as an install of it alone would, and commits nothing. Answers `{true.
+/// declarationText. headerText}` or `{false. diagnostic}`, so that the
+/// builder takes the header from the parse rather than reading syntax
+/// itself; a refusal is an answer rather than a decline because a
+/// failure block receives no argument to carry the diagnostic in.
+/// Declined for any other subject and for a malformed edit.
+///
+/// Prepared through the install's cache, so that an install of exactly
+/// the state the builder last checked compiles nothing again.
+fn check_edit<'gc>(
     mutator: &mut Mutator<'gc>,
     subject: Value<'gc>,
     arguments: Arguments<'_, 'gc>,
-    run: impl FnOnce(&mut Mutator<'gc>, MixinId, &Edit) -> Result<EditedTexts, String>,
 ) -> Option<Value<'gc>> {
     let id = instance_side_id(&mutator.heap, reified_id(mutator, subject)?)?;
     let edit = Edit::from_value(&mutator.heap, arguments.first(&mutator.heap)?)?;
-    let answer = match run(mutator, id, &edit) {
-        Ok(texts) => {
-            let declaration = Value::object(mutator.new_string(texts.declaration));
-            let header = Value::object(mutator.new_string(texts.header));
+    let answer = match mutator.prepare_install(&[InstallEntry::Edit(id, edit)]) {
+        Ok(prepared) => {
+            let texts = prepared
+                .texts
+                .first()
+                .cloned()
+                .expect("internal: a prepared entry answers its texts");
+            let [declaration, header] = texts_values(mutator, texts);
             vec![Value::boolean(true), declaration, header]
         }
-        Err(diagnostic) => {
-            let diagnostic = Value::object(mutator.new_string(diagnostic));
-            vec![Value::boolean(false), diagnostic]
+        Err(diagnostic) => refusal(mutator, diagnostic),
+    };
+    Some(Value::object(mutator.new_array(answer)))
+}
+
+/// A declaration's text and its header's, as Strings.
+fn texts_values<'gc>(mutator: &mut Mutator<'gc>, texts: EditedTexts) -> [Value<'gc>; 2] {
+    [
+        Value::object(mutator.new_string(texts.declaration)),
+        Value::object(mutator.new_string(texts.header)),
+    ]
+}
+
+/// A refusal's answer, `{false. diagnostic}`'s elements.
+fn refusal<'gc>(mutator: &mut Mutator<'gc>, diagnostic: String) -> Vec<Value<'gc>> {
+    let diagnostic = Value::object(mutator.new_string(diagnostic));
+    vec![Value::boolean(false), diagnostic]
+}
+
+/// `reflectionPrepareInstall:ifFail:`: prepares the install of the
+/// entries the subject stands for (`entries_from_value`), committing
+/// nothing. Answers `{true. epoch. clauses}` -- the install epoch the
+/// commit is to name, and the `{classObject. enclosingObject}` pairs
+/// whose superclass clauses the builder evaluates before it commits,
+/// none while an edit keeps every clause -- or `{false. diagnostic}`.
+/// Declined for a subject it cannot read and an epoch past the
+/// `SmallInteger` range.
+fn prepare_install<'gc>(mutator: &mut Mutator<'gc>, subject: Value<'gc>) -> Option<Value<'gc>> {
+    let entries = entries_from_value(mutator, subject)?;
+    let answer = match mutator.prepare_install(&entries) {
+        Ok(prepared) => {
+            let epoch = epoch_value(prepared.epoch)?;
+            let clauses = Value::object(mutator.new_array(Vec::new()));
+            vec![Value::boolean(true), epoch, clauses]
         }
+        Err(diagnostic) => refusal(mutator, diagnostic),
+    };
+    Some(Value::object(mutator.new_array(answer)))
+}
+
+/// The install epoch as a `SmallInteger`; `None` past its range.
+fn epoch_value<'gc>(epoch: u64) -> Option<Value<'gc>> {
+    i64::try_from(epoch)
+        .ok()
+        .filter(|epoch| crate::heap::fits_small_integer(*epoch))
+        .map(Value::small_integer)
+}
+
+/// `reflectionInstall:commitEpoch:superclasses:ifFail:`: commits the
+/// install of the entries the subject stands for, given the epoch its
+/// preparation answered and an `Array` of the clauses' answers by index
+/// (`Mutator::commit_install`). Answers `{true. results}`, per entry
+/// `{declarationText. headerText}`, or `{false. diagnostic}` with nothing
+/// changed. Declined for entries it cannot read, an epoch that is no
+/// non-negative `SmallInteger`, and answers that are no `Array` of one
+/// per clause -- of none, while an edit keeps every clause.
+fn commit_install<'gc>(
+    mutator: &mut Mutator<'gc>,
+    subject: Value<'gc>,
+    arguments: Arguments<'_, 'gc>,
+) -> Option<Value<'gc>> {
+    let entries = entries_from_value(mutator, subject)?;
+    let epoch = u64::try_from(arguments.first(&mutator.heap)?.as_small_integer()?).ok()?;
+    let superclasses = mutator
+        .heap
+        .array_elements(arguments.try_get(&mutator.heap, 1)?.as_object()?)?;
+    if !superclasses.is_empty() {
+        return None;
+    }
+    let answer = match mutator.commit_install(&entries, epoch, &superclasses) {
+        Ok(installed) => {
+            let mut results = Vec::with_capacity(installed.len());
+            for texts in installed {
+                let pair = texts_values(mutator, texts);
+                results.push(Value::object(mutator.new_array(pair.to_vec())));
+            }
+            let results = Value::object(mutator.new_array(results));
+            vec![Value::boolean(true), results]
+        }
+        Err(diagnostic) => refusal(mutator, diagnostic),
     };
     Some(Value::object(mutator.new_array(answer)))
 }
@@ -207,7 +282,7 @@ fn forward_identity<'gc>(
     .ok()?;
     // Any forwarded object may be what an optimized copy was verified for
     // or reached, so every copy goes; an install's own migration frees
-    // only those of the classes it rebuilt (`Mutator::install_edit`).
+    // only those of the classes it rebuilt (`Mutator::commit_install`).
     crate::jit::invalidate_all_optimized(
         mutator,
         crate::trace_events::InvalidationCause::BulkForward,
@@ -286,7 +361,7 @@ fn reified_id<'gc>(mutator: &Mutator<'gc>, subject: Value<'gc>) -> Option<MixinI
 
 /// The id of the instance side the mixin `id` belongs to: `id` itself, or
 /// a class side's instance side's.
-fn instance_side_id(heap: &Heap<'_>, id: MixinId) -> Option<MixinId> {
+pub(crate) fn instance_side_id(heap: &Heap<'_>, id: MixinId) -> Option<MixinId> {
     if heap.mixin(id)?.is_class_side() {
         heap.enclosing_mixin_id(id)
     } else {
@@ -705,6 +780,11 @@ mod tests {
     /// above it are the kernel's `Error` and `Exception`, which declare
     /// slots.
     fn a_fixture() -> (Interpreter, Root) {
+        a_fixture_in(Interpreter::bootstrap())
+    }
+
+    /// `a_fixture`, loaded into `interpreter`.
+    fn a_fixture_in(mut interpreter: Interpreter) -> (Interpreter, Root) {
         let source = indoc! {"
             class Fixture usingPlatform: platform = Object new (
               | public transcript = platform transcript. public collections = platform collections. |
@@ -739,7 +819,6 @@ mod tests {
             Ok(resolved) => resolved,
             Err(_) => panic!("the fixture resolves"),
         };
-        let mut interpreter = Interpreter::bootstrap();
         let class = interpreter.load_module(&resolved);
         let platform = interpreter.platform();
         let fixture = expect_ok(
@@ -3017,11 +3096,57 @@ mod tests {
     }
 
     const CHECK: &str = "reflectionMixin:checkEdit:ifFail:";
-    const INSTALL: &str = "reflectionMixin:installEdit:ifFail:";
+    const PREPARE: &str = "reflectionPrepareInstall:ifFail:";
+    const EVALUATE: &str = "reflectionInstall:evaluateClause:epoch:ifFail:";
+    const COMMIT: &str = "reflectionInstall:commitEpoch:superclasses:ifFail:";
 
-    /// An edit on the wire, `{ header. instanceOperations. classOperations }`,
-    /// built on the host side: each operation's kind a Symbol, its argument a
-    /// String for an addition and a Symbol for a removal.
+    /// An install's entries on the wire, `{ {subject. edit}. … }`, built on
+    /// the host side.
+    fn entries_of(interpreter: &mut Interpreter, entries: &[(&Root, &Root)]) -> Root {
+        interpreter.enter(|mutator| {
+            let pairs: Vec<Value<'_>> = entries
+                .iter()
+                .map(|(subject, edit)| {
+                    let pair = vec![mutator.fetch(subject), mutator.fetch(edit)];
+                    Value::object(mutator.new_array(pair))
+                })
+                .collect();
+            let entries = mutator.new_array(pairs);
+            mutator.stash(Value::object(entries))
+        })
+    }
+
+    /// An empty `Array`, the answers of no superclass clause.
+    fn no_answers(interpreter: &mut Interpreter) -> Root {
+        interpreter.enter(|mutator| {
+            let array = mutator.new_array(Vec::new());
+            mutator.stash(Value::object(array))
+        })
+    }
+
+    /// The install of `edit` of `mixin`'s declaration alone, through the
+    /// leaves as `Installer>>install` sends them: the preparation's answer
+    /// when it refuses, the commit's otherwise.
+    fn installed(interpreter: &mut Interpreter, mixin: &Root, edit: &Root) -> String {
+        let entries = entries_of(interpreter, &[(mixin, edit)]);
+        let prepared = answer_of(interpreter, PREPARE, &entries, &[]);
+        let epoch = interpreter.enter(|mutator| {
+            let answer = mutator.fetch(&prepared).as_object()?;
+            let elements = mutator.heap().array_elements(answer)?;
+            let epoch = (elements.len() == 3).then(|| elements[1])?;
+            Some(mutator.stash(epoch))
+        });
+        let Some(epoch) = epoch else {
+            return interpreter.enter(|mutator| render(mutator, mutator.fetch(&prepared)));
+        };
+        let answers = no_answers(interpreter);
+        rendered(interpreter, COMMIT, &entries, &[epoch, answers])
+    }
+
+    /// An edit on the wire, `{ header. instanceOperations. classOperations.
+    /// newName }`, built on the host side: each operation's kind a Symbol, its
+    /// argument a String for an addition and a Symbol for a removal, and no
+    /// new name.
     fn an_edit(
         interpreter: &mut Interpreter,
         header: Option<&str>,
@@ -3049,6 +3174,7 @@ mod tests {
                 }
                 elements.push(Value::object(mutator.new_array(pairs)));
             }
+            elements.push(Value::nil());
             let edit = mutator.new_array(elements);
             mutator.stash(Value::object(edit))
         })
@@ -3140,16 +3266,17 @@ mod tests {
             &[("addMethod", "public b = ( ^ )")],
             &[],
         );
-        for selector in [CHECK, INSTALL] {
-            let answer = rendered(
-                &mut interpreter,
-                selector,
-                &mixin,
-                std::slice::from_ref(&broken),
-            );
+        let checked = rendered(
+            &mut interpreter,
+            CHECK,
+            &mixin,
+            std::slice::from_ref(&broken),
+        );
+        let installed = installed(&mut interpreter, &mixin, &broken);
+        for answer in [checked, installed] {
             assert!(
                 answer.starts_with("{false. 'Derived's edited source does not parse: "),
-                "{selector}: {answer}"
+                "{answer}"
             );
         }
         assert_eq!(
@@ -3165,7 +3292,7 @@ mod tests {
         assert_eq!(rendered_send(&mut interpreter, &derived, "b"), "1");
     }
 
-    /// The install leaf answers the installed declaration, and an instance
+    /// The install leaves answer the installed declaration, and an instance
     /// made before answers the new method; a class side's subject edits
     /// its instance side's declaration.
     #[test]
@@ -3179,13 +3306,16 @@ mod tests {
             &[("addMethod", "public b = ( ^5 )")],
             &[("addMethod", "public other = ( ^6 )")],
         );
-        let answer = rendered(&mut interpreter, INSTALL, &mixin, &[edit]);
+        let answer = installed(&mut interpreter, &mixin, &edit);
         assert!(
-            answer.starts_with("{true. 'public class Derived = Base ("),
+            answer.starts_with("{true. {{'public class Derived = Base ("),
             "{answer}"
         );
         assert!(answer.contains("public b = ( ^5 )"), "{answer}");
-        assert!(answer.ends_with(DERIVED_HEADER_ANSWERED), "{answer}");
+        assert!(
+            answer.ends_with(&format!("{DERIVED_HEADER_ANSWERED}}}}}")),
+            "{answer}"
+        );
         assert_eq!(rendered_send(&mut interpreter, &derived, "b"), "5");
         let class = send(&mut interpreter, &fixture, "Derived");
         assert_eq!(rendered_send(&mut interpreter, &class, "other"), "6");
@@ -3197,17 +3327,61 @@ mod tests {
             &[],
         );
         let edit = an_edit(&mut interpreter, None, &[("removeMethod", "b")], &[]);
-        let answer = rendered(&mut interpreter, INSTALL, &class_side, &[edit]);
+        let answer = installed(&mut interpreter, &class_side, &edit);
         assert!(
-            answer.starts_with("{true. 'public class Derived"),
+            answer.starts_with("{true. {{'public class Derived"),
             "{answer}"
         );
         let result = interpreter.send(&derived, Symbol::intern("b"), &[]);
         error_text(result, "b");
     }
 
+    crate::for_each_lowering! {
+        /// The preparation answers the install epoch and no clause to
+        /// evaluate, since an edit keeps every superclass clause; the clause
+        /// leaf declines every index; and the commit at that epoch answers
+        /// each entry's declaration and header.
+        // spec: runtime.install
+        fn the_install_leaves_answer_under_both_lowerings(lowering) {
+            let (mut interpreter, fixture) = a_fixture_in(Interpreter::bootstrap_with(lowering));
+            let mixin = fixture_mixin(&mut interpreter, &fixture, "Derived");
+            let edit = an_edit(&mut interpreter, None, &[("addMethod", "public d = ( ^4 )")], &[]);
+            let entries = entries_of(&mut interpreter, &[(&mixin, &edit)]);
+            let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+            let prepared = rendered(&mut interpreter, PREPARE, &entries, &[]);
+            assert_eq!(prepared, format!("{{true. {epoch}. {{}}}}"));
+            let epoch_root = integer_root(&mut interpreter, epoch);
+            let first = integer_root(&mut interpreter, 1);
+            assert_eq!(
+                rendered(&mut interpreter, EVALUATE, &entries, &[first, epoch_root.clone()]),
+                "declined"
+            );
+            let answers = no_answers(&mut interpreter);
+            let committed = rendered(&mut interpreter, COMMIT, &entries, &[epoch_root, answers]);
+            assert!(
+                committed.starts_with("{true. {{'public class Derived = Base ("),
+                "{committed}"
+            );
+            assert!(committed.contains("public d = ( ^4 )"), "{committed}");
+            assert!(
+                committed.ends_with(&format!("{DERIVED_HEADER_ANSWERED}}}}}")),
+                "{committed}"
+            );
+            let derived = send(&mut interpreter, &fixture, "derived");
+            assert_eq!(rendered_send(&mut interpreter, &derived, "d"), "4");
+            assert_eq!(interpreter.enter(|mutator| mutator.install_epoch), epoch + 1);
+        }
+    }
+
+    /// The install epoch as a root.
+    fn integer_root(interpreter: &mut Interpreter, value: u64) -> Root {
+        let value = i64::try_from(value).expect("an epoch fits");
+        interpreter.stash(Value::small_integer(value))
+    }
+
     /// Anything but a reified mixin and an edit on the wire is declined by
-    /// both leaves, with nothing changed.
+    /// the check and the install leaves, with nothing changed; so are an
+    /// epoch and answers the commit cannot read.
     #[test]
     fn a_malformed_edit_is_declined() {
         let (mut interpreter, fixture) = a_fixture();
@@ -3244,20 +3418,55 @@ mod tests {
             ("a nil subject", &nothing, &well_formed),
             ("a class for the subject", &class, &well_formed),
         ];
-        for selector in [CHECK, INSTALL] {
-            for (name, subject, edit) in cases {
-                assert_eq!(
-                    rendered(
-                        &mut interpreter,
-                        selector,
-                        subject,
-                        std::slice::from_ref(edit)
-                    ),
-                    "declined",
-                    "{selector}: {name}"
-                );
-            }
+        let epoch = interpreter.enter(|mutator| mutator.install_epoch);
+        let epoch = integer_root(&mut interpreter, epoch);
+        let answers = no_answers(&mut interpreter);
+        for (name, subject, edit) in cases {
+            assert_eq!(
+                rendered(&mut interpreter, CHECK, subject, std::slice::from_ref(edit)),
+                "declined",
+                "{CHECK}: {name}"
+            );
+            let entries = entries_of(&mut interpreter, &[(subject, edit)]);
+            assert_eq!(
+                rendered(&mut interpreter, PREPARE, &entries, &[]),
+                "declined",
+                "{PREPARE}: {name}"
+            );
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    COMMIT,
+                    &entries,
+                    &[epoch.clone(), answers.clone()]
+                ),
+                "declined",
+                "{COMMIT}: {name}"
+            );
         }
+        let entries = entries_of(&mut interpreter, &[(&mixin, &well_formed)]);
+        let negative = interpreter.stash(Value::small_integer(-2));
+        let one_answer = an_array(&mut interpreter, &[&class]);
+        let unread: [(&str, &Root, [&Root; 2]); 5] = [
+            ("entries that are no Array", &text, [&epoch, &answers]),
+            ("an entry that is no pair", &mixin, [&epoch, &answers]),
+            ("a negative epoch", &entries, [&negative, &answers]),
+            ("answers that are no Array", &entries, [&epoch, &nothing]),
+            ("an answer to no clause", &entries, [&epoch, &one_answer]),
+        ];
+        for (name, subject, [first, second]) in unread {
+            assert_eq!(
+                rendered(
+                    &mut interpreter,
+                    COMMIT,
+                    subject,
+                    &[first.clone(), second.clone()]
+                ),
+                "declined",
+                "{COMMIT}: {name}"
+            );
+        }
+        assert_eq!(rendered(&mut interpreter, PREPARE, &text, &[]), "declined");
         assert_eq!(
             rendered(
                 &mut interpreter,
@@ -3276,32 +3485,30 @@ mod tests {
             class Installing = Object new () (
               public class Kept usingMirror: mirror = (
                 |
-                public first = mirror
-                  reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
-                  installEdit: {nil. {{#addMethod. 'public added = ( ^#added )'}}. {}}
-                  ifFail: [#declined].
+                public first = install: {nil. {{#addMethod. 'public added = ( ^#added )'}}. {}. nil} of: self class using: mirror.
                 public second = 2.
                 |
               ) ()
               public class Grown usingMirror: mirror = (
                 |
-                public first = mirror
-                  reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
-                  installEdit: {'public class Grown usingMirror: mirror = (| public first = nil. public second = 2. public third = 3. |)'. {}. {}}
-                  ifFail: [#declined].
+                public first = install: {'public class Grown usingMirror: mirror = (| public first = nil. public second = 2. public third = 3. |)'. {}. {}. nil} of: self class using: mirror.
                 public second = 2.
                 |
               ) ()
               public class Changing = () (
                 public run: mirror = (
                   | answer |
-                  answer:: mirror
-                    reflectionMixin: (mirror reflectionMixinOf: self class ifFail: [nil])
-                    installEdit: {nil. {{#addMethod. 'public run: mirror = ( ^#replaced )'}. {#addMethod. 'public helper = ( ^#newHelper )'}}. {}}
-                    ifFail: [^#declined].
+                  answer:: install: {nil. {{#addMethod. 'public run: mirror = ( ^#replaced )'}. {#addMethod. 'public helper = ( ^#newHelper )'}}. {}. nil} of: self class using: mirror.
                   ^{#oldRemainder. helper. answer at: 1}
                 )
                 public helper = ( ^#oldHelper )
+              )
+              public install: edit of: class using: mirror = (
+                | entries prepared |
+                entries:: {{mirror reflectionMixinOf: class ifFail: [nil]. edit}}.
+                prepared:: mirror reflectionPrepareInstall: entries ifFail: [^#declined].
+                (prepared at: 1) ifFalse: [^prepared].
+                ^mirror reflectionInstall: entries commitEpoch: (prepared at: 2) superclasses: {} ifFail: [^#declined]
               )
               public kept: mirror = (^Kept usingMirror: mirror)
               public grown: mirror = (^Grown usingMirror: mirror)
@@ -3338,7 +3545,7 @@ mod tests {
             );
             let first = rendered_send(&mut interpreter, &kept, "first");
             assert!(
-                first.starts_with("{true. 'public class Kept usingMirror: mirror"),
+                first.starts_with("{true. {{'public class Kept usingMirror: mirror"),
                 "{first}"
             );
             assert_eq!(rendered_send(&mut interpreter, &kept, "second"), "2");

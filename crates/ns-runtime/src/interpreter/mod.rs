@@ -633,6 +633,16 @@ pub struct Mutator<'gc> {
     /// The applications' liveness buffers a full collection reuses
     /// (`reclaim::ReclaimBuffers`).
     pub(crate) reclaim_buffers: reclaim::ReclaimBuffers,
+    /// The install epoch: raised by every install's commit and by every
+    /// module that joins the heap, so that a commit tells whether the
+    /// world moved since its preparation (`install::prepared`). Distinct
+    /// from the debugger's text revision, which also moves without an
+    /// install.
+    pub(crate) install_epoch: u64,
+    /// The last install prepared, for its commit or a preparation of the
+    /// same entries at the same epoch (`install::prepared`): ids, texts
+    /// and mixins, no handle, so nothing traces it.
+    pub(crate) prepared_install: install::prepared::PreparedInstallCache,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -3845,7 +3855,7 @@ impl<'gc> Mutator<'gc> {
     /// synthesized class side built from the previous one, so that the
     /// next application of the id applies the replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
-    /// (`install_edit`) re-applies those. Answers the replacement's
+    /// (`commit_install`) re-applies those. Answers the replacement's
     /// declared nested declarations, which `Heap::adopt_nested` gives the
     /// id's row; until then the row names the previous version's.
     pub(crate) fn replace_mixin(
@@ -4242,7 +4252,7 @@ mod tests {
     /// A class object built after a replacement applies the replacement,
     /// though the enclosing mixin still holds the version it was built
     /// with; one built before keeps the application it was built from
-    /// until the install (`install_edit`) re-applies it.
+    /// until the install (`commit_install`) re-applies it.
     #[test]
     fn a_nested_class_created_after_a_replacement_is_the_replacement() {
         let (mut interpreter, outer) = load(OUTER);

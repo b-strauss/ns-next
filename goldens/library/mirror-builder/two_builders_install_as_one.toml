@@ -1,0 +1,17 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+an object does not understand #answer an object does not understand #answer
+nil
+#local #other
+#kept
+class Local = Object new () (
+    public kept = (
+      ^#kept.
+    )
+  
+public answer = (^#local)
+)
+class Other = Object new () (
+public answer = (^#other)
+)
+'''

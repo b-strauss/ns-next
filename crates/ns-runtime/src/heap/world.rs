@@ -154,6 +154,8 @@ impl World {
                 stepping: None,
                 mixin_reclaim: crate::interpreter::MixinReclaimMemo::default(),
                 reclaim_buffers: crate::interpreter::ReclaimBuffers::default(),
+                install_epoch: 0,
+                prepared_install: None,
             },
         };
         let machine_words = world.mutator.heap.machine_words_handle();

@@ -1,14 +1,19 @@
-//! Installing an edit of a class atomically: the commit after
-//! `Mutator::prepare_edit` (`docs/design/liveness-and-reflection.md`, "The
-//! install is one leaf, and its commit has no safepoint").
+//! Installing the edits of several builders atomically: the commit after
+//! `Mutator::prepare_install` (`docs/design/liveness-and-reflection.md`,
+//! "The install is one leaf, and its commit has no safepoint", "Planned:
+//! the complete install").
+
+pub(super) mod prepared;
 
 use std::rc::Rc;
 
 use super::Mutator;
-use super::edit::{Edit, EditedTexts, PreparedEdit};
+use super::edit::{EditedTexts, InstallEntry};
 use crate::hash::IdentityMap;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::mixin::{DispatchId, Mixin, MixinApplication};
+use crate::types::Value;
+use prepared::PreparedInstall;
 
 /// What the migration answers: the instances it replaced, their copies in
 /// the new layout at the same positions, and the instances it kept.
@@ -19,21 +24,38 @@ struct Migration<'gc> {
 }
 
 impl<'gc> Mutator<'gc> {
-    /// Answers the edited declaration's text, or a diagnostic with
-    /// nothing changed.
+    /// Answers each entry's edited declaration's texts, in order, or a
+    /// diagnostic with nothing changed.
     ///
-    /// Prepares the edit and finds what it reaches, which is where
-    /// everything that can fail fails; then commits without running
-    /// Newspeak code, sending to a user object or polling a safepoint, so
-    /// that no program observes a half-installed edit
-    /// (`docs/design/liveness-and-reflection.md`, "The install is one
-    /// leaf, and its commit has no safepoint"): every fresh mixin under
-    /// its old id, every class object found re-applied superclasses first
-    /// -- keeping its identity, as every class object does -- the
-    /// instances whose layout changed copied into the new one by name and
-    /// forwarded in one bulk forward, the others restamped.
-    pub(crate) fn install_edit(&mut self, id: MixinId, edit: &Edit) -> Result<EditedTexts, String> {
-        let prepared = self.prepare_edit(id, edit)?;
+    /// Refuses an `epoch` an install or a module load has moved since the
+    /// preparation that answered it; takes the prepared install the
+    /// leaves cached for the same entries and epoch, or prepares them
+    /// again; and finds what the install reaches, which is where
+    /// everything that can fail fails. Then commits, once for every
+    /// module's replacements together, without running Newspeak code,
+    /// sending to a user object or polling a safepoint, so that no program
+    /// observes a half-installed edit (`docs/design/liveness-and-reflection.md`,
+    /// "The install is one leaf, and its commit has no safepoint"): every
+    /// fresh mixin under its old id, every class object found re-applied
+    /// superclasses first -- keeping its identity, as every class object
+    /// does -- the instances whose layout changed copied into the new one
+    /// by name and forwarded in one bulk forward, the others restamped;
+    /// and raises the epoch.
+    ///
+    /// `superclasses` holds the answers of the superclass clauses the
+    /// preparation asked to evaluate, by index; an edit keeps every clause,
+    /// so the preparation asks none.
+    pub(crate) fn commit_install(
+        &mut self,
+        entries: &[InstallEntry],
+        epoch: u64,
+        superclasses: &[Value<'gc>],
+    ) -> Result<Vec<EditedTexts>, String> {
+        debug_assert!(
+            superclasses.is_empty(),
+            "internal: an edit keeps every superclass clause, so no answer is read"
+        );
+        let prepared = self.prepared_for_commit(entries, epoch)?;
         let mut fresh_by_id: IdentityMap<MixinId, Rc<Mixin>> = IdentityMap::default();
         for (replaced, fresh) in &prepared.replacements {
             fresh_by_id.insert(*replaced, Rc::clone(fresh));
@@ -108,16 +130,53 @@ impl<'gc> Mutator<'gc> {
         // Every span counts in the module's text, which the edit changed.
         self.debug_metadata.clear();
         self.breakpoints.forget_filter_decisions();
-        // The edited class's breakpoints stand on bodies the install
+        // The edited classes' breakpoints stand on bodies the install
         // replaced: each is set again by its offset on the new ones.
         if !self.has_no_breakpoints() {
-            let (module_root, _) = self.path_from_module_root(id);
-            if let Some(root) = self.heap.mixin(module_root) {
-                let module = crate::debugger::ModuleName::of_root(&root);
-                crate::debugger::breakpoints::module_built(self, &module);
+            let mut module_roots: Vec<MixinId> = Vec::new();
+            for entry in entries {
+                if let InstallEntry::Edit(id, _) = entry {
+                    let (module_root, _) = self.path_from_module_root(*id);
+                    if !module_roots.contains(&module_root) {
+                        module_roots.push(module_root);
+                    }
+                }
+            }
+            for module_root in module_roots {
+                if let Some(root) = self.heap.mixin(module_root) {
+                    let module = crate::debugger::ModuleName::of_root(&root);
+                    crate::debugger::breakpoints::module_built(self, &module);
+                }
             }
         }
-        Ok(prepared.texts)
+        // A preparation of the world before this commit is stale: the
+        // epoch tells a commit so, and the one cached is dropped.
+        self.install_epoch += 1;
+        self.prepared_install = None;
+        Ok(prepared.texts.clone())
+    }
+
+    /// Prepares and commits `entries`, as the install leaves do between
+    /// them when no clause is evaluated.
+    #[cfg(test)]
+    pub(crate) fn install_entries(
+        &mut self,
+        entries: &[InstallEntry],
+    ) -> Result<Vec<EditedTexts>, String> {
+        let epoch = self.prepare_install(entries)?.epoch;
+        self.commit_install(entries, epoch, &[])
+    }
+
+    /// Installs `edit` of the declaration `id` alone, as a builder's
+    /// `install` does.
+    #[cfg(test)]
+    pub(crate) fn install_one(
+        &mut self,
+        id: MixinId,
+        edit: &super::edit::Edit,
+    ) -> Result<EditedTexts, String> {
+        let mut texts = self.install_entries(&[InstallEntry::Edit(id, edit.clone())])?;
+        Ok(texts.remove(0))
     }
 
     /// Each class object's position in `classes`, by its identity key.
@@ -221,7 +280,7 @@ impl<'gc> Mutator<'gc> {
     /// side under the old one's, so that every metaclass keeps its mixin's
     /// id. Each holds its own text, so the module's text, assembled from
     /// its declarations' current versions, holds the edit from here on.
-    fn replace_versions(&mut self, prepared: &PreparedEdit) {
+    fn replace_versions(&mut self, prepared: &PreparedInstall) {
         let mut adopted = Vec::with_capacity(prepared.replacements.len());
         for (id, fresh) in &prepared.replacements {
             let children = self.replace_mixin(*id, Rc::clone(fresh));
@@ -371,7 +430,7 @@ mod tests {
     use super::*;
     use crate::heap::{ActivationHeader, ApplicationIndex};
     use crate::interpreter::Arguments;
-    use crate::interpreter::edit::MemberEdit;
+    use crate::interpreter::edit::{Edit, MemberEdit};
     use crate::interpreter::{HostResult, HostSignal, Interpreter};
     use crate::mixin::Mixin;
     use crate::types::{ActivationKind, BuiltinClass, Continuation, SourceOrigin, Value};
@@ -468,7 +527,7 @@ mod tests {
     }
 
     fn install(interpreter: &mut Interpreter, id: MixinId, edit: &Edit) -> String {
-        match interpreter.enter(|mutator| mutator.install_edit(id, edit)) {
+        match interpreter.enter(|mutator| mutator.install_one(id, edit)) {
             Ok(texts) => texts.declaration,
             Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
         }
@@ -479,6 +538,7 @@ mod tests {
             header: None,
             instance_side: operations,
             class_side: Vec::new(),
+            new_name: None,
         }
     }
 
@@ -491,6 +551,7 @@ mod tests {
             header: Some(text.to_string()),
             instance_side: Vec::new(),
             class_side: Vec::new(),
+            new_name: None,
         }
     }
 
@@ -1238,6 +1299,7 @@ mod tests {
                 class_side: vec![MemberEdit::AddMethod(
                     "public makeAnother = ( ^self new )".into(),
                 )],
+                new_name: None,
             },
         );
         let both = send(&mut interpreter, &sub, "both");
@@ -1365,7 +1427,7 @@ mod tests {
                     0,
                 )
                 .expect("the stack holds the frame");
-            if let Err(diagnostic) = mutator.install_edit(item_id, &edit) {
+            if let Err(diagnostic) = mutator.install_one(item_id, &edit) {
                 panic!("the install was refused: {diagnostic}");
             }
             let heap = mutator.heap();
@@ -1457,6 +1519,270 @@ mod tests {
         })
     }
 
+    /// Whether `snapshot` still holds of `ids` and `objects`: the same
+    /// version of each id, application of each class object and guard of
+    /// each object.
+    fn assert_unchanged(
+        interpreter: &mut Interpreter,
+        before: &Snapshot,
+        ids: &[MixinId],
+        objects: &[&Root],
+    ) {
+        let after = snapshot(interpreter, ids, objects);
+        for (old, new) in before.versions.iter().zip(&after.versions) {
+            assert!(Rc::ptr_eq(old, new), "a version changed");
+        }
+        assert_eq!(before.applications, after.applications);
+        assert!(before.guards == after.guards, "a guard changed");
+    }
+
+    /// The id of the module root `class` applies.
+    fn root_id_of(interpreter: &mut Interpreter, class: &Root) -> MixinId {
+        interpreter.enter(|mutator| {
+            let mixin = mixin_of(mutator, class);
+            mutator.heap.mixin_id(&mixin)
+        })
+    }
+
+    /// A refused install's diagnostic.
+    fn install_refusal(interpreter: &mut Interpreter, entries: &[InstallEntry]) -> String {
+        match interpreter.enter(|mutator| mutator.install_entries(entries)) {
+            Ok(_) => panic!("the install succeeded"),
+            Err(diagnostic) => diagnostic,
+        }
+    }
+
+    /// Two entries of one module, of `Outer` and of its nested `Inner`,
+    /// compose on one text in their order: both methods answer, the
+    /// module's text holds both, and each entry answers its own
+    /// declaration's text.
+    // spec: semantics.reflection.atomic-install
+    // spec: runtime.install
+    #[test]
+    fn two_edits_of_one_module_compose_on_one_text() {
+        let (mut interpreter, outer_instance, _, inner, inner_id) = outer_and_inner(OUTER);
+        let outer_id = interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .enclosing_mixin_id(inner_id)
+                .expect("Inner is nested in Outer")
+        });
+        let entries = [
+            InstallEntry::Edit(outer_id, add_method("public fromOuter = ( ^10 )")),
+            InstallEntry::Edit(inner_id, add_method("public fromInner = ( ^x + 19 )")),
+        ];
+        let texts = match interpreter.enter(|mutator| mutator.install_entries(&entries)) {
+            Ok(texts) => texts,
+            Err(diagnostic) => panic!("the install was refused: {diagnostic}"),
+        };
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].declaration.starts_with("class Outer"));
+        assert!(texts[0].declaration.contains("public fromOuter = ( ^10 )"));
+        assert!(
+            texts[0]
+                .declaration
+                .contains("public fromInner = ( ^x + 19 )")
+        );
+        assert!(texts[1].declaration.starts_with("public class Inner"));
+        assert!(
+            texts[1]
+                .declaration
+                .contains("public fromInner = ( ^x + 19 )")
+        );
+        assert!(!texts[1].declaration.contains("fromOuter"));
+        let from_outer = send(&mut interpreter, &outer_instance, "fromOuter");
+        assert_eq!(integer(&mut interpreter, &from_outer), Some(10));
+        let from_inner = send(&mut interpreter, &inner, "fromInner");
+        assert_eq!(integer(&mut interpreter, &from_inner), Some(20));
+        interpreter.enter(|mutator| {
+            let module = mutator
+                .heap
+                .module_source(outer_id)
+                .expect("the module has text");
+            assert!(module.contains("public fromOuter = ( ^10 )"), "{module}");
+            assert!(
+                module.contains("public fromInner = ( ^x + 19 )"),
+                "{module}"
+            );
+        });
+    }
+
+    /// Two entries of one declaration are refused, naming it, before any
+    /// text is read, and nothing changes.
+    // spec: semantics.reflection.atomic-install
+    #[test]
+    fn two_edits_of_one_declaration_are_refused() {
+        let (mut interpreter, outer_instance, inner_class, inner, inner_id) =
+            outer_and_inner(OUTER);
+        let objects = [&outer_instance, &inner_class, &inner];
+        let before = snapshot(&mut interpreter, &[inner_id], &objects);
+        let entries = [
+            InstallEntry::Edit(inner_id, add_method("public b = ( ^2 )")),
+            InstallEntry::Edit(inner_id, add_method("public c = ( ^3 )")),
+        ];
+        assert_eq!(
+            install_refusal(&mut interpreter, &entries),
+            "two builders edit Inner"
+        );
+        assert_unchanged(&mut interpreter, &before, &[inner_id], &objects);
+        assert!(interpreter.send(&inner, Symbol::intern("b"), &[]).is_err());
+    }
+
+    /// An entry that fails fails the whole install: the second module's
+    /// syntax error leaves the first module's method uninstalled and every
+    /// version, application and guard as it was.
+    // spec: semantics.reflection.atomic-install
+    // spec: runtime.install
+    #[test]
+    fn a_failed_entry_fails_the_whole_install() {
+        let (mut interpreter, outer_instance, inner_class, inner, inner_id) =
+            outer_and_inner(OUTER);
+        let other = load_into(
+            &mut interpreter,
+            indoc! {"
+                class Other = Object new () (
+                  public a = ( ^1 )
+                )
+            "},
+        );
+        let other_instance = expect_ok(interpreter.instantiate(&other, &[]), "an Other");
+        let other_id = root_id_of(&mut interpreter, &other);
+        let ids = [inner_id, other_id];
+        let objects = [&outer_instance, &inner_class, &inner, &other_instance];
+        let before = snapshot(&mut interpreter, &ids, &objects);
+        let entries = [
+            InstallEntry::Edit(inner_id, add_method("public b = ( ^2 )")),
+            InstallEntry::Edit(other_id, add_method("public broken = ( ^ )")),
+        ];
+        let diagnostic = install_refusal(&mut interpreter, &entries);
+        assert!(
+            diagnostic.starts_with("Other's edited source does not parse: "),
+            "{diagnostic}"
+        );
+        assert_unchanged(&mut interpreter, &before, &ids, &objects);
+        assert!(interpreter.send(&inner, Symbol::intern("b"), &[]).is_err());
+        interpreter.enter(|mutator| {
+            let module = mutator
+                .heap
+                .module_source(other_id)
+                .expect("the module has text");
+            assert!(!module.contains("broken"));
+        });
+    }
+
+    /// A commit whose epoch an install moved since its preparation is
+    /// refused, naming the first entry's declaration, and installs
+    /// nothing: the world stays as the other install left it.
+    // spec: semantics.reflection.atomic-install
+    // spec: runtime.install
+    #[test]
+    fn a_commit_after_another_install_is_refused() {
+        let (mut interpreter, outer_instance, inner_class, inner, inner_id) =
+            outer_and_inner(OUTER);
+        let outer_id = interpreter.enter(|mutator| {
+            mutator
+                .heap
+                .enclosing_mixin_id(inner_id)
+                .expect("Inner is nested in Outer")
+        });
+        let entries = [InstallEntry::Edit(
+            inner_id,
+            add_method("public b = ( ^2 )"),
+        )];
+        let epoch = match interpreter.enter(|mutator| mutator.prepare_install(&entries)) {
+            Ok(prepared) => prepared.epoch,
+            Err(diagnostic) => panic!("the preparation was refused: {diagnostic}"),
+        };
+        install(
+            &mut interpreter,
+            outer_id,
+            &add_method("public between = ( ^7 )"),
+        );
+        let ids = [inner_id, outer_id];
+        let objects = [&outer_instance, &inner_class, &inner];
+        let before = snapshot(&mut interpreter, &ids, &objects);
+        let refused = interpreter.enter(|mutator| mutator.commit_install(&entries, epoch, &[]));
+        match refused {
+            Ok(_) => panic!("a stale commit installed"),
+            Err(diagnostic) => assert_eq!(
+                diagnostic,
+                "an install ran between the preparation and the commit of Inner's install; \
+                 nothing was installed"
+            ),
+        }
+        assert_unchanged(&mut interpreter, &before, &ids, &objects);
+        assert!(interpreter.send(&inner, Symbol::intern("b"), &[]).is_err());
+        let between = send(&mut interpreter, &outer_instance, "between");
+        assert_eq!(integer(&mut interpreter, &between), Some(7));
+    }
+
+    /// The epoch rises at every commit and every module load, and neither
+    /// at a preparation nor at a refused install.
+    // spec: runtime.install
+    #[test]
+    fn the_epoch_rises_at_a_commit_and_a_module_load() {
+        let (mut interpreter, _, _, _, inner_id) = outer_and_inner(OUTER);
+        let epoch =
+            |interpreter: &mut Interpreter| interpreter.enter(|mutator| mutator.install_epoch);
+        let loaded = epoch(&mut interpreter);
+        let entries = [InstallEntry::Edit(
+            inner_id,
+            add_method("public b = ( ^2 )"),
+        )];
+        let prepared = interpreter.enter(|mutator| {
+            mutator
+                .prepare_install(&entries)
+                .map(|prepared| prepared.epoch)
+        });
+        assert_eq!(prepared.ok(), Some(loaded));
+        assert_eq!(epoch(&mut interpreter), loaded);
+        install_refusal(
+            &mut interpreter,
+            &[InstallEntry::Edit(inner_id, add_method("public c = ( ^ )"))],
+        );
+        assert_eq!(epoch(&mut interpreter), loaded);
+        install(&mut interpreter, inner_id, &add_method("public b = ( ^2 )"));
+        assert_eq!(epoch(&mut interpreter), loaded + 1);
+        load_into(
+            &mut interpreter,
+            indoc! {"
+                class Other = Object new () ()
+            "},
+        );
+        assert_eq!(epoch(&mut interpreter), loaded + 2);
+    }
+
+    /// A preparation of the entries and the epoch the cache holds answers
+    /// the cached one, which a commit drops.
+    // spec: runtime.install
+    #[test]
+    fn a_preparation_is_cached_until_a_commit() {
+        let (mut interpreter, _, _, _, inner_id) = outer_and_inner(OUTER);
+        let entries = [InstallEntry::Edit(
+            inner_id,
+            add_method("public b = ( ^2 )"),
+        )];
+        let prepare = |interpreter: &mut Interpreter| match interpreter
+            .enter(|mutator| mutator.prepare_install(&entries))
+        {
+            Ok(prepared) => prepared,
+            Err(diagnostic) => panic!("the preparation was refused: {diagnostic}"),
+        };
+        let first = prepare(&mut interpreter);
+        let second = prepare(&mut interpreter);
+        assert!(Rc::ptr_eq(&first, &second));
+        let other = [InstallEntry::Edit(
+            inner_id,
+            add_method("public c = ( ^3 )"),
+        )];
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_entries(&other)) {
+            panic!("the install was refused: {diagnostic}");
+        }
+        assert!(interpreter.enter(|mutator| mutator.prepared_install.is_none()));
+        let third = prepare(&mut interpreter);
+        assert!(!Rc::ptr_eq(&first, &third));
+    }
+
     /// Two edits that collide only together -- a method and a lazy slot of
     /// one name, a header slot and a method of one name -- are refused
     /// with the resolver's diagnostic, and the install leaves every
@@ -1486,13 +1812,14 @@ mod tests {
             header: Some("public class Inner = (| public x ::= 1. public y = 2. |)".to_string()),
             instance_side: vec![MemberEdit::AddMethod("public y = ( ^3 )".to_string())],
             class_side: Vec::new(),
+            new_name: None,
         };
         for edit in [colliding, header_and_method] {
-            let diagnostic =
-                match interpreter.enter(|mutator| mutator.install_edit(inner_id, &edit)) {
-                    Ok(texts) => panic!("the install succeeded: {}", texts.declaration),
-                    Err(diagnostic) => diagnostic,
-                };
+            let diagnostic = match interpreter.enter(|mutator| mutator.install_one(inner_id, &edit))
+            {
+                Ok(texts) => panic!("the install succeeded: {}", texts.declaration),
+                Err(diagnostic) => diagnostic,
+            };
             assert!(
                 diagnostic.starts_with("Inner's edited source does not resolve: "),
                 "{diagnostic}"
@@ -1597,7 +1924,7 @@ mod tests {
                 )
                 .expect("the stack holds the frame");
             assert_eq!(mutator.heap().activation_slot_base(activation), 1);
-            if let Err(diagnostic) = mutator.install_edit(base_id, &edit) {
+            if let Err(diagnostic) = mutator.install_one(base_id, &edit) {
                 panic!("the install was refused: {diagnostic}");
             }
             let current = mutator.heap().class_application(class).expect("a class");
@@ -1835,7 +2162,7 @@ mod tests {
         let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
         let refused = image
             .interpreter
-            .enter(|mutator| mutator.install_edit(inner_id, &add_method("public b = ( ^2 )")));
+            .enter(|mutator| mutator.install_one(inner_id, &add_method("public b = ( ^2 )")));
         match refused {
             Err(message) => assert_eq!(message, "Inner has no source text to edit"),
             Ok(_) => panic!("a program without source was edited"),
@@ -1864,7 +2191,7 @@ mod tests {
         let inner_id = nested_id_of(&mut image.interpreter, &outer, "Inner");
         let refused = image
             .interpreter
-            .enter(|mutator| mutator.install_edit(inner_id, &add_method("public b = ( ^2 )")));
+            .enter(|mutator| mutator.install_one(inner_id, &add_method("public b = ( ^2 )")));
         match refused {
             Err(message) => {
                 assert_eq!(message, "Inner's source text does not hold its declaration");
