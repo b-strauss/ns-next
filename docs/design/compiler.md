@@ -302,7 +302,8 @@ stored on it, and shared by every application. §6.2: "they all share their code
 structural definition with the mixin." Storing it per class object would recompile
 the same body per enclosing instance, since a class object is per-instance.
 
-**`InitializeSlot`'s `own_index` is therefore mixin-relative.** An absolute field index
+**`InitializeSlot`'s `own_index` is therefore mixin-relative**
+(`r[vm.compiler.mixin-relative-slot-index]`). An absolute field index
 baked into shared code would be wrong the moment a second application inserts
 different inherited slots ahead of it. The VM resolves `own_index` against the
 executing activation's slot base — the own `own_slot_base` of the
@@ -373,7 +374,8 @@ writing a value answered at once to the instruction's destination or
 pushing the activation decided, whose answer goes there too and is not
 used.
 
-**A factory's body is synthesized, not lowered.** `compiler::factory_body`
+**A factory's body is synthesized, not lowered**
+(`r[vm.compiler.factory-body-synthesized]`). `compiler::factory_body`
 of the factory's arity is three instructions whatever the arity: it
 allocates an instance of the class object the factory was sent to
 (`AllocateInstance`), runs that class's initializer on it with the
@@ -447,8 +449,10 @@ numbers — because such a closure reaches the frame whose common path it
 stands in for by reference.
 
 **Every register above a send's argument slots is dead when the send
-executes**: the callee's header and window go over them. The bump allocator
-makes it true -- nothing is allocated below a slot after it, and what an
+executes** (`r[vm.compiler.argument-slots-top-live-registers]`,
+`r[bytecode.register.leftovers]`): the callee's header and window go over
+them. The bump allocator makes it true -- nothing is allocated below a slot
+after it, and what an
 argument is computed with lands above -- and both lowerings check it on every
 body in a debug build (`reference::check_leftovers`, which runs the leftover
 analysis, "What a callee leaves"): no instruction after a send reads a
@@ -479,7 +483,8 @@ already-evaluated sibling argument.
 ### The value-register invariant
 
 **An expression's value register must still hold that value when its consumer
-executes.** This follows directly from "a read of a local needs no instruction":
+executes** (`r[vm.compiler.value-register]`). This follows directly from
+"a read of a local needs no instruction":
 because a named local's register *is* its value, that register is live storage,
 not scratch, and anything that writes the local writes the expression's value too.
 
@@ -527,7 +532,8 @@ top-level `^`, which returns nothing. Getting this wrong is silent wrong
 output with exit status 0, not a crash — which is why it is an invariant in
 `CLAUDE.md` rather than a comment.
 
-**A read-only local is never copied.** A setter send passes by every local
+**A read-only local is never copied**
+(`r[vm.compiler.read-only-locals]`). A setter send passes by every local
 that declares no setter ([dispatch.md](dispatch.md), "Setter sends"), so a
 parameter's register and an immutable local's are written by their
 initialization and by nothing after it -- no assignment binds to them, in
@@ -577,7 +583,8 @@ around the two bodies lowered inline — no `MakeClosure`, no new `Frame` — an
 critically, **an else branch falling back to a real virtual send** with the
 original selector and now-materialized block arguments. The compile-time gate and
 the run-time guard are two independent checks, and the fallback is what preserves
-"every send is virtual" exactly: a program that overrides `ifTrue:ifFalse:` on a
+"every send is virtual" exactly (`r[semantics.send.ordinary]`): a program
+that overrides `ifTrue:ifFalse:` on a
 non-Boolean receiver observes identical behaviour to an uninlined send, just
 slower on the rare path.
 
@@ -600,8 +607,9 @@ iteration. A non-Boolean condition cannot fall back to re-sending `whileTrue:` t
 a materialized closure, because that would re-run the condition body and duplicate
 its side effects before the method could report anything — an observable
 difference. Instead the guard-failure path is the single instruction
-`SignalNonBoolean`, which signals a `NonBooleanReceiver` carrying the offending
-value, built by the one function `interpreter::unwind::non_boolean_condition`,
+`SignalNonBoolean` (`r[bytecode.instruction.signal-non-boolean]`), which
+signals a `NonBooleanReceiver` carrying the offending value, built by the one
+function `interpreter::unwind::non_boolean_condition`,
 and ends the path as a return does. `Closure>>whileTrue:` and `whileFalse:`
 are this same inlined loop -- `^[self value] whileTrue: [body value]` --, so a
 loop over blocks held in variables meets the same guard, and the reference
@@ -617,9 +625,10 @@ block literal is one scope — while the VM walks **frames** via `captured_frame
 and an inlined block has a scope but no frame.
 
 The compiler therefore keeps a scope stack, one entry per code body's own scope
-and one per inlined block being lowered, and rewrites every local reference: the
-run-time hop count for `depth d` is the number of *frame* scopes among the
-innermost `d` entries. A hop count of zero is a plain register access, the same
+and one per inlined block being lowered, and rewrites every local reference:
+the run-time hop count is the number of *frame* scopes among the innermost `d`
+entries (`r[vm.compiler.hop-count-counts-frames]`). A hop count of zero is a
+plain register access, the same
 no-instruction case as `Binding::Local`; otherwise it is an outer-local
 instruction with the reduced depth.
 
@@ -633,9 +642,11 @@ an inlined block shares.
 
 ### `^` inside an inlined block
 
-Compiles to whatever a `^` at the top of the *enclosing* code would: `Return` in a
-method body, `NonLocalReturn` in a block body. In an instance initializer it
-compiles to `NonLocalReturn`, and nothing catches it — the same known gap as a
+Compiles to whatever a `^` at the top of the *enclosing* code would
+(`r[semantics.method.return]`, `r[semantics.block.non-local-return]`):
+`Return` in a method body, `NonLocalReturn` in a block body. In an instance
+initializer it compiles to `NonLocalReturn`, and nothing catches it — the
+same known gap as a
 `^` in a block that runs while its initializer is still running
 ([execution.md](execution.md), "Unwinding").
 
@@ -699,7 +710,8 @@ after:
 
 The instruction computes only when both operands are `SmallInteger`s and,
 for the four arithmetic operations, when the result is one; on either
-failure it branches to the fallback. It computes on the tagged words, with
+failure it branches to the fallback (`r[bytecode.instruction.integer-binary]`,
+`r[semantics.number.exact]`). It computes on the tagged words, with
 one test of both operands' tag and one overflow test, through the methods
 on `Value` the integer leaves share (`small_integer_sum` and its siblings,
 [object-model.md](object-model.md), "Values and objects"). The five
@@ -746,7 +758,7 @@ retiring tag 33 and taking the next free instruction tag (41 today, per
 `image/opcodes.rs`) for the changed instruction**, because the
 meaning of `target` changes and a stale artifact would otherwise decode into
 a different, perfectly valid program and run it silently
-(`CLAUDE.md`, "A wire tag is assigned once and never renumbered or reused").
+(`r[bytecode.wire.tag-assigned-once]`).
 `patch_target`, `finish`, `jump_target`, `check_shape` and `no_branch` need
 no change, because the field itself is unchanged.
 
@@ -779,7 +791,8 @@ an instruction that runs the leaf: `Instruction::SendMirror`.
 mirror row and the failure block for a send that is:
 
 - marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
-  records, on a plain explicit-receiver send whose receiver is the bare
+  records (`r[vm.mirror.binding-only-in-shipped-resolution]`), on a plain
+  explicit-receiver send whose receiver is the bare
   identifier `vmMirror` naming the module root's member, so only shipped
   core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a
   cascade to `vmMirror` is not marked, and compiles as ordinary sends);
@@ -842,7 +855,8 @@ holds. The
 instruction reads and writes only its own activation's registers, so
 `bytecode::outer_reach_of` answers 0 for it.
 
-**It has no wire tag**, and the encoder treats one as unreachable. It is
+**It has no wire tag** (`r[vm.mirror.no-wire-tag]`), and the encoder treats
+one as unreachable. It is
 emitted only for a `MirrorSend`, so only into shipped core-library source,
 and no image carries shipped code: an image names every shipped object, a
 builtin class among them, by its declaration, and the bootstrap of the
@@ -862,7 +876,8 @@ condition as `ifTrue:`'s, which is what the optimized lowering, never
 activating it, needs ("How the limit counts" below). Because the mark covers
 the whole send, it would exempt a literal block the leaf itself activates
 just as well; so `Kernel.ns` passes a literal block only as the final
-`ifFail:` argument, which the bootstrap enforces
+`ifFail:` argument (`r[vm.compiler.mirror-literal-block-last]`), which the
+bootstrap enforces
 (`interpreter::kernel`'s `check_mirror_send_arguments`).
 
 ## Safepoints and call-site identity
@@ -897,8 +912,9 @@ hands out numbers from one counter per family in emission order
 (`Lowerer::take_call_site`): a block's lowerer starts where its creator's
 counter stands, and the creator continues from where the block's ended, so a
 family's sends are numbered densely from 0, blocks included, and no two share
-a number. The counter is checked in every build: a family of more than
-`u32::MAX - 1` sends is a compiler-invariant panic, never a wrapped number,
+a number (`r[bytecode.call-site]`). The counter is checked in every build: a
+family of more than `u32::MAX - 1` sends is a compiler-invariant panic, never
+a wrapped number,
 since two sends sharing a number would share a cache entry.
 
 Each `CompiledCode` records its `family_size`, one past the highest number
@@ -907,8 +923,10 @@ among its own sends and its nested blocks' sizes, 0 when there is none
 contains it, so a block's size is its own subtree's, and the root's is the
 family's. A send's `CallSite` is stored in its `SendSite`, in the body's
 `send_sites` table, whichever of its eight-byte or wide forms the send
-took. Neither the number nor the size is on the wire: the decoder
-assigns every family's numbers itself, in this same emission order, once the
+took. Neither the number nor the size is on the wire
+(`r[bytecode.wire.call-sites]`, `r[vm.compiler.reach-derived-never-read]`):
+the decoder assigns every family's numbers itself, in this same emission
+order, once the
 whole code table is read, and derives the size from them with the same
 function, so a family is dense by construction rather than checked for it
 ([image-format.md](image-format.md), "Verification"). It numbers them in
@@ -918,9 +936,9 @@ call site and every block in emission order, whatever form each took -- a
 
 The number indexes the running heap's cache table from the activation's
 `feedback_base`; a send whose number is at or past its body's `family_size`
-runs uncached ([dispatch.md](dispatch.md), "Code families" and
-"`site_index`'s rule"). **`CallSite::UNCACHED`** (`u32::MAX`) is the number
-no family reaches, and the reference lowering emits it on every send, so
+runs uncached (`r[vm.dispatch.site-within-family]`;
+[dispatch.md](dispatch.md), "Code families" and "`site_index`'s rule"). **`CallSite::UNCACHED`** (`u32::MAX`) is the
+number no family reaches, and the reference lowering emits it on every send, so
 everything it compiles runs the full lookup on every send, records nothing,
 and is the uncached oracle the cached optimized lowering is checked against
 ("The reference lowering" below). Its `family_size` is 0. `ns-next-analyzer disasm`
@@ -933,10 +951,11 @@ register of the sender above the slots may hold what the callee left
 there: its header's words and its temporaries, and in a shipped method's
 scratch the VM mirror. `bytecode::leftovers` derives, from a body's code
 alone, which scratch registers -- those at and above `local_count` -- may
-hold a word the body did not write, at each instruction. It has three
-readers:
+hold a word the body did not write, at each instruction
+(`r[bytecode.register.leftovers]`). It has three readers:
 
-- the image decoder, which refuses a read of such a register (`check`,
+- the image decoder, which refuses a read of such a register
+  (`r[bytecode.verify.leftovers]`; `check`,
   which keeps nothing; `DecodeError::LeftoverRead`, and
   `VerificationPastTheBound` for a body past the bounds below;
   [image-format.md](image-format.md), "Verification");
@@ -967,9 +986,11 @@ readers:
   returned. **A read** of a tainted register is refused (`Read`).
 - **A join** is tainted where either path is.
 
-The register effects are `bytecode::registers_read`, `register_written`,
-`jump_target`, `falls_through` and `successors`. Each is exhaustive over
-`Instruction`; the reference lowering's checks and the decoder share them.
+The register effects (`r[bytecode.register-effects]`,
+`r[vm.compiler.register-effects-declared]`) are `bytecode::registers_read`,
+`register_written`, `jump_target`, `falls_through` and `successors`. Each is
+exhaustive over `Instruction`; the reference lowering's checks and the decoder
+share them.
 A load of `Literal::BodyTooLarge` does not fall through: it always raises,
 and an `Error` is not resumable. So the return after it, in the body a body
 past a limit compiles to, which reads a scratch register nothing wrote, is
@@ -1113,9 +1134,9 @@ Measured, the largest figures:
 
 ## Compilation cannot fail
 
-**Compiling an already-resolved module can never raise a `NewspeakError`.**
-Compilation is a total, deterministic lowering; a compiler-invariant violation is
-`panic!` or `debug_assert!`, not a program-level error.
+**Compiling an already-resolved module can never raise a `NewspeakError`**
+(`r[vm.compiler.total]`). A compiler-invariant violation is `panic!` or
+`debug_assert!`, not a program-level error.
 
 A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
@@ -1126,14 +1147,16 @@ which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
 
 `Literal::BodyTooLarge(limit)` is a body past one of the compiler's limits
-("Limits" below), `limit` naming which one: `BodyLimit::Registers`, the
-register ceiling; `Arguments`, more than 255 parameters, or a send or a
+("Limits" below; `r[bytecode.limit.too-large]`), `limit` naming which one:
+`BodyLimit::Registers`, the register ceiling; `Arguments`, more than 255
+parameters, or a send or a
 clause message of more than 255 arguments; `Instructions`, more than 2^20
 instructions. A register is numbered by a
 `u16`, so a body can use at most `u16::MAX` (65,535) of them: its
 parameters, the values a block is handed, its named temporaries, the vector
 register and the scratch registers its expressions need. Both lowerings count
-them with checked arithmetic in every build -- `named_locals_fit` before a
+them with checked arithmetic in every build
+(`r[vm.compiler.register-count-checked]`) -- `named_locals_fit` before a
 body is laid out (the capture analysis neither declares nor walks a body that
 fails it), `Layout::converted`'s checked sums, and `fresh` and
 `allocate_scratch` as it is lowered -- because a wrapped index would be
@@ -1166,7 +1189,8 @@ initializers, whose arity saturates too, are still handed every factory
 argument, since they raise before they read one
 (`CompiledCode::stands_for_too_many_arguments`, which `push_step` asks of
 a factory body). An image cannot carry a method, factory or block of more
-than 255 parameters. `image::snapshot`, and so `ns-next build`, refuses
+than 255 parameters (`r[bytecode.verify.body-fields]`,
+`r[image.write.refusals]`). `image::snapshot`, and so `ns-next build`, refuses
 the program at the body's arity with `image encoding cannot write a body
 arity of 256: it is past the limit of 255 arguments` (`encode::arity_field`,
 which also holds a closure's parameter count and a method's and factory's
@@ -1181,7 +1205,8 @@ refusals are errors, never aborts ([image-format.md](image-format.md), "The
 instruction encoding", "Verification").
 
 `Literal::Unbuilt` is a construct the language has and ns-next does not
-build yet. `Unbuilt::AsynchronousSend(selector)` stands for a `<-:`
+build yet (`r[semantics.gap.actors]`, `r[semantics.gap.pattern]`).
+`Unbuilt::AsynchronousSend(selector)` stands for a `<-:`
 message: both lowerings evaluate its receiver and its arguments as an
 ordinary send's -- the recognizers never inline one -- and then load it into
 the send's destination, where it raises ``asynchronous send of
@@ -1366,8 +1391,9 @@ against code nothing had checked.
    argument slot it is read for, rule 4), and every read of an outer local
    a `LoadOuterLocal`. There are no inlined scopes, so the hop
    count is the resolver's depth unchanged.
-4. Every send is a real send, receiver then arguments from left to right.
-   Nothing is inlined but the loop of rule 11. Every other send the optimized
+4. Every send is a real send, receiver then arguments from left to right
+   (`r[semantics.send.evaluation-order]`). Nothing is inlined but the loop of
+   rule 11. Every other send the optimized
    lowering inlines — exactly the sends `control_flow::recognize` accepts,
    and the mirror sends `recognize_mirror_send` accepts — is a
    `SendInlinable` of its own selector, and every other explicit-receiver
@@ -1506,7 +1532,8 @@ Nothing the reference lowering does differently may be observable. Two things
 were, and each is settled in the design of the aspect it belongs to rather than
 by exempting it from the comparison:
 
-- **The identity hash.** Were it drawn from its counter at allocation, the
+- **The identity hash** (`r[runtime.memory.identity-hash]`). Were it drawn
+  from its counter at allocation, the
   closure the reference lowering allocates for every `ifTrue:` the optimized one
   inlines would shift every later object's hash. Identity hashes are lazily
   assigned, as in Cog/Spur (`hashBitsOf:`, which calls `newHashBitsOf:` when the
@@ -1527,7 +1554,8 @@ whether it is inlined or activated; a
 method's `^` inside a block the optimized lowering inlines is a `Return` there
 and a `NonLocalReturn` here, whose unwind ends at the method's activation, with
 the same result, and
-`cannotReturn` and the initializer gap behave alike; and a real block nested
+`cannotReturn` (`r[semantics.block.cannot-return]`) and the initializer gap
+behave alike; and a real block nested
 inside such a block has one more frame in its chain here, which holds no
 variables, since the inlining gate admits none, and the same `home`. An
 artifact's bytes differ by construction, because its code table holds different
@@ -1666,10 +1694,10 @@ error text, under both lowerings.
 
 `SendInlinable`, wire tag 20, arrived with the trampoline, together with the
 counter that is its only consumer: without the counter it would mean exactly
-`SendPublic`, and nothing could test it. The limit is 100,000
-(`MAX_ACTIVATION_DEPTH`), its error text is `stack overflow: recursion too
-deep`, and control flow answers trampoline steps, so under neither
-lowering does a block it activates cost native stack
+`SendPublic`, and nothing could test it. The limit
+(`r[runtime.depth-limit]`, `r[semantics.depth-limit]`) is
+`MAX_ACTIVATION_DEPTH`, and control flow answers trampoline steps, so under
+neither lowering does a block it activates cost native stack
 ([execution.md](execution.md), "The trampoline").
 
 ### Status
@@ -1710,7 +1738,8 @@ ordinary, checked `InitializeSlot` for a slot, and a read of the local,
 statement of its own. The reference lowering emits the same shape in its own
 idiom, every read a fresh register.
 
-A simultaneous temporary is written twice whatever its declaration says, so
+A simultaneous temporary is written twice whatever its declaration says
+(`r[vm.compiler.simultaneous-temporary-writable]`), so
 it is never read-only: the capture analysis counts it mutable, and the
 clause's end is a second write after every future's block was created, so a
 sibling's block that reads it shares it through the indirection vector
@@ -1725,7 +1754,8 @@ register of its own, so its source needs no protective copy. The design is
 ## Readers of compiled code take the mixin
 
 Compiled code lives on a module's mixin tree, so what reads only the code
-takes mixins, never a class object. `image::encode_code_table`,
+takes mixins, never a class object (`r[vm.compiler.code-holds-no-handle]`).
+`image::encode_code_table`,
 `image::mixins::plan` and `image::mixins::encode` take the module roots'
 mixins and no `Heap`. `ns-next-analyzer disasm` takes the root declaration from
 `Interpreter::compile_module` for a source -- compiled with the chosen
