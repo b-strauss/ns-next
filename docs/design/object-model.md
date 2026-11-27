@@ -2956,11 +2956,11 @@ set itself: after each holder's words are rewritten,
 `IdentityForward::holder_done` says whether one of them names a young
 object now, and every such old holder is remembered
 ([memory.md](memory.md), "The write barrier"). Last, the inline caches are
-flushed, all of them (`InlineCaches::invalidate`, the verified pair of
-"What a slot access checks" above included); scoping the invalidation to
-the applications an install affects stays deferred
-([liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
-their dependency keys").
+flushed: all of them for the leaf (`InlineCaches::invalidate`, the verified
+pair of "What a slot access checks" above included), and for an install's
+own forward exactly the entries naming an application it re-applied, whose
+instances are all it forwards (`heap::Invalidation::Stale`,
+`InlineCaches::forget_stale`; [dispatch.md](dispatch.md), "Invalidation").
 
 It runs inside the leaf, in the middle of a step, not at the next
 safepoint: no instruction runs between the forward and the leaf's answer,

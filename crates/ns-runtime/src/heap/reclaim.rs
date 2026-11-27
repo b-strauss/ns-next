@@ -159,16 +159,27 @@ pub(crate) struct InsideCounts {
     pub(crate) superseded: Vec<Option<(MixinId, usize)>>,
 }
 
-/// What a reclamation freed, for the caches' scrub.
+/// The ids whose cache entries and optimized copies are stale, for the
+/// scoped scrub (`InlineCaches::forget_stale`): what a reclamation freed
+/// (`FreedIds`), or what an install re-applied -- the guards and indices
+/// of the applications it replaced -- with the versions of the
+/// declarations it replaced, which a nested-class accessor's entry names
+/// whatever application its guard names (`Mutator::commit_install`).
 #[derive(Default)]
-pub(crate) struct FreedIds {
+pub(crate) struct StaleIds {
     pub(crate) guards: HashSet<DispatchId, IdentityBuildHasher>,
     pub(crate) applications: HashSet<ApplicationIndex, IdentityBuildHasher>,
+    /// The replaced versions, held until the scrub has compared them; a
+    /// reclamation replaces none.
+    pub(crate) declarations: Vec<Rc<Mixin>>,
 }
 
-impl FreedIds {
+/// What a reclamation freed, for the caches' scrub.
+pub(crate) type FreedIds = StaleIds;
+
+impl StaleIds {
     pub(crate) fn is_empty(&self) -> bool {
-        self.guards.is_empty() && self.applications.is_empty()
+        self.guards.is_empty() && self.applications.is_empty() && self.declarations.is_empty()
     }
 }
 

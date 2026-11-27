@@ -277,7 +277,7 @@ fn forward_identity<'gc>(
         mutator,
         &old,
         &new,
-        crate::trace_events::VacateCause::BulkForward,
+        crate::heap::Invalidation::Everything(crate::trace_events::VacateCause::BulkForward),
     )
     .ok()?;
     // Any forwarded object may be what an optimized copy was verified for

@@ -87,10 +87,22 @@ fn split<'state, 'gc>(
     )
 }
 
+/// What a bulk forward vacates of the inline caches once it has
+/// forwarded (`forward_identity`).
+pub(crate) enum Invalidation<'a> {
+    /// Every entry, traced for the cause: a bulk forward of any objects
+    /// may forward the receivers of any entry.
+    Everything(crate::trace_events::VacateCause),
+    /// The entries naming these ids (`InlineCaches::forget_stale`): an
+    /// install forwards only instances of the classes it re-applied,
+    /// which are what every other entry it changes names too.
+    Stale(&'a super::reclaim::StaleIds),
+}
+
 /// Forwards every object of `old` to the object of `new` at the same index
 /// (`Heap::forward_identity`), then what the step state holds beside the
-/// heap (`StepRoots`), then vacates every inline cache, whose entries were
-/// decided for receivers that are now forwarders, traced for `cause`.
+/// heap (`StepRoots`), then vacates the inline cache entries `invalidation`
+/// names, decided for receivers that are now forwarders.
 /// Inside a step: nothing
 /// moves, so no handle a caller holds goes stale but one naming an object
 /// of `old`, and the VM mirror's leaf holds none. The optimized code the
@@ -101,14 +113,19 @@ pub(crate) fn forward_identity<'gc>(
     mutator: &mut Mutator<'gc>,
     old: &[ObjectReference<'gc>],
     new: &[ObjectReference<'gc>],
-    cause: crate::trace_events::VacateCause,
+    invalidation: Invalidation<'_>,
 ) -> Result<(), ForwardRefusal> {
     use crate::trace::Trace;
     let (heap, mut roots) = split(mutator);
     let mut forwarder = heap.forward_identity(old, new)?;
     roots.trace(&mut forwarder);
     mutator.rewrite_machine_classes();
-    crate::interpreter::inline_cache::vacate_every_cache(mutator, cause);
+    match invalidation {
+        Invalidation::Everything(cause) => {
+            crate::interpreter::inline_cache::vacate_every_cache(mutator, cause);
+        }
+        Invalidation::Stale(stale) => mutator.caches.forget_stale(stale),
+    }
     Ok(())
 }
 
@@ -614,7 +631,7 @@ mod tests {
                     mutator,
                     &[platform],
                     &[replacement],
-                    crate::trace_events::VacateCause::BulkForward,
+                    super::Invalidation::Everything(crate::trace_events::VacateCause::BulkForward),
                 )
                 .is_ok()
             );

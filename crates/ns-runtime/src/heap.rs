@@ -89,7 +89,7 @@ pub use value::{
     fits_small_integer,
 };
 use value::{at_rest, branded};
-pub(crate) use world::{World, forward_identity};
+pub(crate) use world::{Invalidation, World, forward_identity};
 
 /// The header an ordinary instance of an application is born with --
 /// its guard, `FixedPointers`, its word count -- computed once when the

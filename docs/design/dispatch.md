@@ -1046,8 +1046,9 @@ through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
 serialized"), so an id never comes from its bytes. The id is not a handle,
 so the tracer does not see it and a move carries it along. `become:` swaps
 no ids: it is an eager bulk forward, so once it ends no reference names a
-forwarder, every target keeps its own id, and every inline cache is flushed
-([object-model.md](object-model.md), "`become:` is an eager bulk
+forwarder, every target keeps its own id, and every inline cache entry it
+could make stale is vacated ("Invalidation" below;
+[object-model.md](object-model.md), "`become:` is an eager bulk
 forward"). In a debug build
 `Heap::dispatch_id` recomputes the id from the class on every read and
 asserts that the header agrees, so a missed restamp fails the first test
@@ -1570,15 +1571,33 @@ fills the same index again. A debug-build stress mode,
 (`interpreter/safepoint.rs`, ahead of the move stress mode's schedule, either
 mode keeping the safepoint request set), so that filling, transitions and
 invalidation run under the whole suite; `Interpreter::cache_invalidations`
-counts them. The bulk forward invalidates every cache this way after its
-walk ([object-model.md](object-model.md), "`become:` is an eager bulk
+counts them. The bulk forward's leaf invalidates every cache this way after
+its walk ([object-model.md](object-model.md), "`become:` is an eager bulk
 forward"), the private and super slot accessors' verified pair included
-("Slot accessors" above), so the atomic install, the first mutation,
-invalidates through it, and invalidates all the same when it forwarded
-nothing, since it changed class objects' applications under unchanged
-guards. Scoping an invalidation to the application a change affects — the
-dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
-"Caches and their dependency keys" — is deferred beyond that step.
+("Slot accessors" above), and so do a breakpoint's switch of a method's fast
+path and the stress mode.
+
+**An install vacates exactly what it makes stale**
+(`r[vm.dispatch.invalidation-after-change]`). Every lookup an install changes
+is one of an application it re-applies -- every class object whose chain
+holds a replaced declaration, a subclass in another module, a `<:` level and
+a metaclass among them -- so the commit (`Mutator::commit_install`) gathers
+the guards and the indices of the applications it replaces, and the versions
+of the declarations it replaces, before it replaces anything (`StaleIds`,
+`Mutator::stale_after`), and vacates exactly the entries naming one, by the
+collection's criterion below (`InlineCaches::forget_stale`): a site's or a
+polymorphic slot's guard, a `Lexical` rule's N, a global entry's guard, a
+slot target's level and the guard it recorded, the verified pair, and a
+nested-class accessor's target naming a replaced version -- the one entry
+whose guard, the enclosing object's application, the install leaves alone,
+and which would otherwise create the class of the old version; each with its
+cell. Its own bulk forward vacates the same and nothing more
+(`heap::Invalidation::Stale`), since it forwards only instances of the
+classes it re-applied, whose old guards no receiver carries once it ends.
+Every other entry stays warm, an unrelated class's sends hitting their
+entries and cells straight after the install. The dependency key is the one
+of [liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
+their dependency keys": the application, never the class object.
 
 **A collection scrubs selectively**
 (`r[vm.dispatch.freed-ids-scrubbed]`). A full collection that frees a guard id
@@ -1833,7 +1852,8 @@ drops the cache entries naming it, so the cache is weak
 bulk forward ([object-model.md](object-model.md), "`become:` is an eager
 bulk forward"), whose forwarders nothing names once it ends, rewritten out
 of every root and every object before any send runs again, after which
-every inline cache is flushed. So no send
+every inline cache entry a forwarded receiver could meet is vacated
+("Invalidation" below). So no send
 entry unforwards its receiver, and a super send or a private lexical send,
 which guards on the running method's or N's application rather than on the
 receiver's header, needs no check of the receiver for the forwarded format

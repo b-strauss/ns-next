@@ -1920,6 +1920,123 @@ ns_runtime::for_each_lowering! {
     }
 }
 
+/// `runEdited:` and `runUntouched:`, each summing `helper:` of an
+/// instance of its class over `0` to `count - 1`, `helper:` small enough
+/// to be inlined into each loop's copy, and `editEdited`, which gives
+/// `Edited`'s `helper:` another body. `runEdited: 100` answers 5050, and
+/// 5250 after the edit; `runUntouched: 100` answers 5150.
+const TWO_COPIES_INLINING_TWO_CLASSES: &str = indoc! {"
+    class Subject usingPlatform: platform = Object new (
+      |
+        ClassMirror = platform mirrors ClassMirror.
+      |
+    ) (
+      class Edited = Object new () (
+        public helper: value = (
+          ^value + 1.
+        )
+      )
+
+      class Untouched = Object new () (
+        public helper: value = (
+          ^value + 2.
+        )
+      )
+
+      public runEdited: count = (
+        |
+          receiver = Edited new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (receiver helper: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public runUntouched: count = (
+        |
+          receiver = Untouched new.
+          sum ::= 0.
+          index ::= 0.
+        |
+        [index < count] whileTrue: [
+          sum:: sum + (receiver helper: index).
+          index:: index + 1.
+        ].
+        ^sum.
+      )
+
+      public editEdited = (
+        | builder |
+        builder:: (ClassMirror reflecting: Edited) mixin declaration asBuilder.
+        builder instanceSide methods addFromSource: 'public helper: value = ( ^value + 3 )'.
+        builder install.
+        ^0.
+      )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// An install frees the copies depending on an application it
+    /// re-applies, found through the dependency index, and only those:
+    /// `runEdited:`'s copy inlined `Edited`'s `helper:` and is freed,
+    /// `runUntouched:`'s inlined `Untouched`'s alone and stays.
+    // spec: vm.machine.stale-copies-freed
+    fn an_install_frees_only_the_copies_depending_on_it(lowering) {
+        let (mut interpreter, class) =
+            load_customizing(TWO_COPIES_INLINING_TWO_CLASSES, lowering);
+        let subject = subject_using_platform(&mut interpreter, &class);
+        let pinned = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("runEdited:", 5050),
+            1,
+        );
+        let pinned_untouched = run_until_inlining(
+            &mut interpreter,
+            &class,
+            &subject,
+            lowering,
+            ("runUntouched:", 5150),
+            1,
+        );
+        assert_eq!(pinned, pinned_untouched);
+        let before = interpreter.jit_statistics();
+        assert_eq!(send_unary(&mut interpreter, &subject, "editEdited"), 0);
+        let edited = since(interpreter.jit_statistics(), before);
+        if pinned {
+            // `Edited`'s own `helper:` has its copy, keyed on `Edited`,
+            // freed with it.
+            assert!(edited.invalidated_copies >= 1, "{edited:?}");
+            assert_eq!(
+                interpreter.jit_customized_copies(
+                    &class,
+                    MethodSide::Instance,
+                    Symbol::intern("runEdited:")
+                ),
+                0,
+                "`runEdited:`'s copy is freed"
+            );
+            assert_eq!(
+                interpreter.jit_customized_copies(
+                    &class,
+                    MethodSide::Instance,
+                    Symbol::intern("runUntouched:")
+                ),
+                1,
+                "`runUntouched:`'s copy stays"
+            );
+        }
+        assert_eq!(send_integer(&mut interpreter, &subject, "runEdited:", 100), 5250);
+        assert_eq!(send_integer(&mut interpreter, &subject, "runUntouched:", 100), 5150);
+    }
+}
+
 ns_runtime::for_each_lowering! {
     /// A full collection keeps an inlining copy and the code ids of the
     /// bodies it inlined: no activation of `helper:` runs, every one of its

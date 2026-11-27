@@ -138,16 +138,17 @@ for this: an entry holds no handle, so invalidating all of them
 (`Interpreter::invalidate_caches`) is resetting the heap's cache table and
 emptying its global cache, with every code family's range kept for the
 activations still running; a debug-build stress mode, `NS_NEXT_STRESS_CACHES`,
-does exactly that at every safepoint. The bulk forward invalidates every
-cache the same way after its walk (`InlineCaches::invalidate`, from
-`heap::world::forward_identity`), so the atomic install ("A MirrorBuilder
-and an atomic install" below), which forwards, flushes them, and flushes
-them itself when it migrated nothing; nothing else mutates a method table
-at run time. Scoping an invalidation to the applications a change affects
-is deferred beyond road step 5b2a. A full collection that reclaims a guard
-id or an application index vacates exactly the entries that name it and
-leaves every other one warm (`r[vm.dispatch.freed-ids-scrubbed]`;
-`InlineCaches::forget_freed`; [dispatch.md](dispatch.md), "Invalidation"), so
+does exactly that at every safepoint. The bulk forward's leaf invalidates
+every cache the same way after its walk (`InlineCaches::invalidate`, from
+`heap::world::forward_identity`). The atomic install ("A MirrorBuilder and
+an atomic install" below) vacates exactly the entries naming an
+application it re-applies or a declaration it replaces, whether or not it
+forwarded, and keeps every other one warm (`InlineCaches::forget_stale`;
+[dispatch.md](dispatch.md), "Invalidation"); nothing else mutates a method
+table at run time. A full collection that reclaims a guard
+id or an application index vacates exactly the entries that name it by the
+same criterion (`r[vm.dispatch.freed-ids-scrubbed]`;
+`InlineCaches::forget_freed`), so
 an id minted again never meets an entry filled for the application it named
 before. The dispatch id a cache guards on is a copy in the object header
 (`r[vm.dispatch.header-guard-stamped]`; [dispatch.md](dispatch.md), "The
@@ -156,8 +157,8 @@ change must restamp it, as `Heap::class_set_application` already does when a
 class's application changes; otherwise a cache hit would run the old class's
 method on the object. The bulk forward meets the first by construction: it
 is eager, so nothing names a forwarder once it ends and every reference names
-the new object, which keeps its own id, and every inline cache is flushed
-after it
+the new object, which keeps its own id, and every inline cache entry it
+could make stale is vacated after it
 ([object-model.md](object-model.md), "`become:` is an eager bulk forward").
 The caches also rest on a guard naming one application whose chain does
 not change while they persist -- the private and super slot accessors'

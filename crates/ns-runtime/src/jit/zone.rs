@@ -393,6 +393,17 @@ impl JitState {
                 },
             ));
         }
+        // No invalidation may meet a freed copy in the dependency index,
+        // nor take one installed later under its body and key for it.
+        #[cfg(ns_jit)]
+        for guard in body.depended_on_guards() {
+            if let Some(handles) = self.dependents.get_mut(&guard) {
+                handles.retain(|handle| handle.installation != body.installation);
+                if handles.is_empty() {
+                    self.dependents.remove(&guard);
+                }
+            }
+        }
         // What a freed copy inlined is no one's any more: its scopes hold
         // the inlined bodies' code, which would keep every version an edit
         // replaced -- and its family's sites -- alive until a compaction

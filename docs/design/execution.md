@@ -12831,9 +12831,12 @@ in `JitStatistics::invalidated_copies`:
 
 - **An install** (`Mutator::commit_install`) frees every copy whose key names an
   application it rebuilt, as receiver or as entered application
-  (`invalidate_applications`), each compiled against a layout, a lookup
-  or an outer structure the install changed, with every pending request
-  for such a key. A body's uncustomized copy stays: it fixes no layout.
+  (`invalidate_applications`, through the dependency index,
+  `JitState::copies_depending_on`), each compiled against a layout, a
+  lookup or an outer structure the install changed, with every pending
+  request for such a key. A body's uncustomized copy stays unless an arm
+  or an inlined scope of it relied on one ("Inlining", "Dependencies"): it
+  fixes no layout.
 - **The bulk forward** (`forwardIdentityTo:`) frees every copy, the
   uncustomized ones too (`invalidate_all_optimized`): a forwarded object
   may be the receiver a copy was verified for or reached through any of
@@ -13574,14 +13577,22 @@ applications an arm or a customized read relied on, the inlined
 bodies' code ids and feedback bases -- an install, a reclaim or a
 slide changes ("Inlining", "Dependencies"): each runs after an exit or
 at a safepoint, so a frame below the top that stands for several
-activations is one already. What is not: each application's epoch,
-which a compile on its own thread checks for every application it
-relied on before it installs (stage 8), and a list per application of
-the code that depends on it, where the install today scans every
-copy's dependencies (`JitState::copies_depending`). Strongtalk marks by class
-(`code/zone.cpp:634-650`), HotSpot by its dependency kinds
-(`code/dependencies.hpp:105-170`; `oops/instanceKlass.cpp:1778-1799`), V8
-by its `DependentCode` groups (`objects/dependent-code.h:37-70`).
+activations is one already. The copies an application makes stale are found through a list per
+application of the copies that depend on it, by their recorded
+dependencies or their key (`JitState::dependents`, read by
+`JitState::copies_depending_on`), written at a copy's install and pruned
+at its free (`jit/zone.rs`, `mark_free`), so that an install and a
+reclaim walk no other copy; a debug build checks the lists against every
+installed copy at each install's invalidation (`verify_dependents`).
+Strongtalk marks by class (`code/zone.cpp:634-650`), HotSpot by its
+dependency kinds (`code/dependencies.hpp:105-170`;
+`oops/instanceKlass.cpp:1778-1799`), V8 by its `DependentCode` groups
+(`objects/dependent-code.h:37-70`); the lists are closest to the last
+two. The inlined bodies' code ids and feedback bases, which only a full
+collection changes, are still found by a scan of every copy
+(`JitState::copies_depending`). What is not built: each application's
+epoch, which a compile on its own thread checks for every application it
+relied on before it installs (stage 8).
 
 ### Verification
 

@@ -563,13 +563,12 @@ impl OsrRefusal {
     }
 }
 
-/// What vacated every inline cache at once.
+/// What vacated every inline cache at once. An install is none: it
+/// vacates only the entries naming what it re-applied
+/// (`InlineCaches::forget_stale`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VacateCause {
-    /// An install rebuilt applications under unchanged class objects.
-    Edit,
-    /// A bulk forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`),
-    /// an edit's migration of instances among them.
+    /// A bulk forward (`elementsOf:forwardIdentityToElementsOf:ifFail:`).
     BulkForward,
     /// A breakpoint switched a method's fast path, which every entry
     /// decided for the method reads.
@@ -589,7 +588,6 @@ impl VacateCause {
     /// The cause's name, as a line spells it: kebab case.
     pub fn name(self) -> &'static str {
         match self {
-            VacateCause::Edit => "edit",
             VacateCause::BulkForward => "bulk-forward",
             VacateCause::Breakpoint => "breakpoint",
             VacateCause::JitSwitched => "jit-switched",

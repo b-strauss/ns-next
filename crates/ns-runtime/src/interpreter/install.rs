@@ -10,6 +10,7 @@ use std::rc::Rc;
 use super::Mutator;
 use super::edit::{EditedTexts, InstallEntry};
 use crate::hash::IdentityMap;
+use crate::heap::reclaim::StaleIds;
 use crate::heap::{ClassReference, MixinId, ObjectReference};
 use crate::mixin::{DispatchId, Mixin, MixinApplication};
 use crate::types::Value;
@@ -78,6 +79,7 @@ impl<'gc> Mutator<'gc> {
                     .expect("internal: the walk collects class objects")
             })
             .collect();
+        let stale = self.stale_after(&prepared, &old_applications);
         self.replace_versions(&prepared);
         // Every module text an agent holds may be this edit's.
         self.breakpoints.raise_text_revision();
@@ -94,8 +96,9 @@ impl<'gc> Mutator<'gc> {
         self.heap.stamp_dispatch_ids(&migration.kept);
         if migration.old.is_empty() {
             // The applications changed under unchanged class objects, so
-            // every entry decided for the old ones is stale.
-            super::inline_cache::vacate_every_cache(self, crate::trace_events::VacateCause::Edit);
+            // every entry decided for the old ones is stale, and only
+            // those: no other lookup changed.
+            self.caches.forget_stale(&stale);
         } else {
             debug_assert!(
                 migration
@@ -109,7 +112,7 @@ impl<'gc> Mutator<'gc> {
                 self,
                 &migration.old,
                 &migration.new,
-                crate::trace_events::VacateCause::Edit,
+                crate::heap::Invalidation::Stale(&stale),
             )
             .is_err()
             {
@@ -121,11 +124,7 @@ impl<'gc> Mutator<'gc> {
         // was -- the migration forwards only instances of the classes it
         // rebuilt, so that it frees what the bulk forward's leaf frees
         // only for them.
-        let rebuilt: Vec<DispatchId> = old_applications
-            .iter()
-            .map(|application| application.dispatch_ids.instances)
-            .filter(|id| *id != DispatchId::NONE)
-            .collect();
+        let rebuilt: Vec<DispatchId> = stale.guards.iter().copied().collect();
         crate::jit::invalidate_applications(self, &rebuilt);
         // Every span counts in the module's text, which the edit changed.
         self.debug_metadata.clear();
@@ -177,6 +176,40 @@ impl<'gc> Mutator<'gc> {
     ) -> Result<EditedTexts, String> {
         let mut texts = self.install_entries(&[InstallEntry::Edit(id, edit.clone())])?;
         Ok(texts.remove(0))
+    }
+
+    /// What the commit of `prepared` makes stale, read before it replaces
+    /// anything: the guard and the index of every application it
+    /// re-applies, `old_applications`, and every declaration's version it
+    /// replaces. Whatever a lookup an install changes found was decided
+    /// for one of these, so that every other cache entry and optimized
+    /// copy stays warm (`docs/design/dispatch.md`, "Invalidation").
+    fn stale_after(
+        &self,
+        prepared: &PreparedInstall,
+        old_applications: &[Rc<MixinApplication>],
+    ) -> StaleIds {
+        let mut stale = StaleIds::default();
+        for application in old_applications {
+            let guard = application.dispatch_ids.instances;
+            if guard != DispatchId::NONE {
+                stale.guards.insert(guard);
+            }
+            stale.applications.insert(application.index());
+        }
+        stale.declarations = prepared
+            .replacements
+            .iter()
+            .map(|(id, _)| *id)
+            .chain(
+                prepared
+                    .synthesized
+                    .iter()
+                    .map(|(_, class_side, _)| *class_side),
+            )
+            .filter_map(|id| self.heap.mixin(id))
+            .collect();
+        stale
     }
 
     /// Each class object's position in `classes`, by its identity key.

@@ -453,8 +453,11 @@ changes nothing when it refuses; it then gives each replacement the old
 object's identity hash, turns each old object into a forwarder, rewrites
 every handle the heap and the run's roots hold in one walk, keeps the
 remembered set for every old holder that now names a young object and
-invalidates every cache, all inside one leaf with no safepoint and no
-instruction between; no live object moves.
+invalidates the caches -- every cache for the bulk forward's leaf, and
+for an install's own forward exactly the entries naming an application
+the install re-applies, whose instances are all it forwards -- all
+inside one leaf with no safepoint and no instruction between; no live
+object moves.
 
 Protects:
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
@@ -1809,13 +1812,18 @@ Protects: [`runtime.send`](runtime.md#r-runtime.send),
 
 r[vm.dispatch.invalidation-after-change]
 Whatever changes a class object's application or chain, a method table
-or a layout while guards stay unchanged -- the bulk forward, and so
-every install, even one that migrates nothing -- invalidates every
-cache, cell and verified slot-level pair before any code runs again;
-invalidation vacates every site and the global cache but keeps every
-family's range, since running activations keep their bases, and every
-cache carries the mixin application, never a class object or a method
-body, as its dependency key.
+or a layout invalidates, before any code runs again, every cache entry,
+cell and verified slot-level pair whose lookup it may change. An
+install, even one that migrates nothing, vacates exactly those naming
+an application it re-applies -- as an entry's guard, a lexical rule's
+enclosing application, a slot target's level or the guard it recorded,
+or the verified pair -- and the nested-class accessor entries naming a
+declaration version it replaces, and keeps every other entry; the bulk
+forward's leaf, a breakpoint's switch of a method's fast path and the
+cache stress mode vacate every site and the global cache. Invalidation
+keeps every family's range, since running activations keep their
+bases, and every cache carries the mixin application, never a class
+object or a method body, as its dependency key.
 
 Protects: [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
@@ -2333,7 +2341,9 @@ r[vm.machine.stale-copies-freed]
 Whatever changes something an optimized copy relied on frees it at once,
 its cells, dispatching rows and machine entry row written afresh to
 enter baseline code: an install frees every copy whose key or recorded
-dependencies name an application it rebuilt, the bulk forward every
+dependencies name an application it rebuilt, found through a list per
+application of the copies depending on it that holds every installed
+copy and no freed one, the bulk forward every
 copy, a full collection that reclaims an application id every key row
 and copy naming it, a slide of a feedback base every copy that inlined a
 body against it, and a breakpoint set or removed every copy naming the
@@ -3014,6 +3024,7 @@ rules whose breach it finds.
 | declaration code check | debug | Every lexical send asserts that its code's declaration-code mark agrees with the frame's captured chain. | `vm.dispatch.lexical-origin-from-code` |
 | read-only local assertions | debug | The lowering of an assignment asserts that its target is not one of the read-only locals, and the reference lowering's shape check holds the oracle's form. | `vm.compiler.value-register`, `vm.compiler.read-only-locals`, `vm.compiler.simultaneous-temporary-writable` |
 | code id cache check | debug | A hit of a body's code id cache asserts that it names the body's own row. | `vm.compiler.code-id-cache-current` |
+| dependency index check | debug | Every install's invalidation of optimized copies checks that the list per application of the copies depending on it holds exactly the installed copies, each under exactly the applications its key and its recorded dependencies name. | `vm.machine.stale-copies-freed` |
 | cell verification | debug | Every cell is compared with its entry, whole, after every compaction of the code zone and at every SCAVENGE scavenge. | `vm.dispatch.reserved-guards`, `vm.machine.cells-follow-entries`, `vm.machine.cell-addresses-fixed`, `vm.machine.compaction-remaps-every-holder` |
 | machine entry row check | debug | A machine entry row whose bit is set must be current when recorded, and every row is checked after a compaction. | `vm.machine.compaction-remaps-every-holder`, `vm.machine.machine-entry-rows` |
 | dispatching row check | debug | Every dispatching row is checked against the copies of its body after every compaction and slide. | `vm.machine.dispatching-rows` |
