@@ -307,8 +307,8 @@ debugging API at the safepoint". What it and the later stages build on:
   or a `SendMirror`'s) and goes on at the next index ([execution.md](execution.md),
   "Where `program_counter` is stored").
 - **The unwinder** carries any unwind to a `FrameReference` target, with
-  `ensure:` and `ifCurtailed:` blocks run on the way
-  ([execution.md](execution.md), "Unwinding"); its `Restarted` outcome, for
+  `ensure:` and `ifCurtailed:` blocks run on the way (`r[runtime.unwind]`;
+  [execution.md](execution.md), "Unwinding"); its `Restarted` outcome, for
   `retry`, sets a frame's `program_counter` back to 0 and leaves its
   registers as they are (`interpreter/unwind.rs:34-38`); it is written for
   an `on:do:` activation `retry` asks to run again, so restarting any frame
@@ -317,7 +317,8 @@ debugging API at the safepoint". What it and the later stages build on:
   `VmErrorSignalled`, `Reexecute` and `ReturnToSuspended` (`types.rs:422-467`):
   what a frame's return does besides delivering its value.
 - **The JIT** materializes every compiled frame of its stretch into the
-  interpreter's frames at an exit (`jit/materialize.rs`); a frame running
+  interpreter's frames at an exit (`r[vm.machine.observers-after-exit]`;
+  `jit/materialize.rs`); a frame running
   machine code is the interpreter's word for word at every interrupt
   point, with one exception: a poll's exit in optimized code is light. It
   writes the inlined scopes' headers but defers making the blocks the copy
@@ -361,7 +362,8 @@ debugging API at the safepoint". What it and the later stages build on:
   code addresses from one base (`BlockWord::MachineWords`) and a clone of
   which the debugger's remote holds on its own thread.
 - **Every declaration keeps its text**, the core library's source is in the
-  binary, and an image carries source unless built with `--strip-source`.
+  binary, and an image carries source unless built with `--strip-source`
+  (`r[image.write.source]`).
   An image does not record which lowering compiled its code
   ([compiler.md](compiler.md), "The reference lowering").
 - **The MirrorBuilder's install** replaces a program's class -- its header,
@@ -369,7 +371,8 @@ debugging API at the safepoint". What it and the later stages build on:
   shipped class, and cannot yet change a superclass or the nested classes
   ([liveness-and-reflection.md](liveness-and-reflection.md), "A
   MirrorBuilder and an atomic install").
-- **A signal searches its handler before anything unwinds** ("nothing is
+- **A signal searches its handler before anything unwinds**
+  (`r[runtime.handler-search]`; "nothing is
   unwound until it decides", `Kernel.ns`, `signal`), and an unhandled
   exception reaches `defaultAction`, which ends the run through the VM
   mirror's `terminate…` leaves; an attached debugger stops just before
@@ -431,7 +434,8 @@ The remote holds besides a clone of the heap's machine words
 (`Heap::machine_words_handle`), through which it arms the poll, and the
 interpreter's arming lock with the number of the attachment that handed it
 out ("The arming lock" below). Nothing that crosses to the agent's thread
-holds a `Value`, a `Root`, a handle or a `Symbol`, each meaningful only on
+holds a `Value`, a `Root`, a handle or a `Symbol`
+(`r[vm.handle.debugger-holds-no-bare-handle]`), each meaningful only on
 the VM's thread: a command and an event are text and numbers, and a value
 is named by a `ValueId` that the stop which handed it out resolves
 ("Values the IDE holds" below).
@@ -687,7 +691,7 @@ plain instruction a `Cell`'s was, so neither the interpreter's poll nor
 machine code's changed.
 
 The request word (`MachineWord::SafepointRequested`) is a set of bits
-(`heap.rs`):
+(`r[vm.machine.safepoint-request-bits]`; `heap.rs`):
 
 - `REAL_REQUEST` (bit 0) -- the VM's own request: a collection's, a
   scavenge's, a full code zone's (`Heap::request_safepoint`);
@@ -938,7 +942,8 @@ the copy eliminated, and would go back into the optimized code at the
 poll, restoring values from the code's constants rather than the frame
 ("What exists"). Made now, the deferred blocks exist and every frame of
 the stack is the interpreter's word for word before the agent reads it
-(`a_stop_at_an_optimized_poll_is_deoptimized`). Every other compiled frame
+(`r[vm.machine.observers-after-exit]`;
+`a_stop_at_an_optimized_poll_is_deoptimized`). Every other compiled frame
 of the stretch was materialized by the exit that left it for the
 safepoint, and frames of earlier stretches by the exits that left them.
 
@@ -947,8 +952,9 @@ breakpoint's with the ids standing at its slot, an exception
 breakpoint's ("Exceptions"), or a step's with the
 value of the last call, the first value of the stop's table ("Values the
 IDE holds") -- and blocks on the
-command channel (`recv`), on the VM's thread, between two stretches: no
-handle is live, and nothing pushes or pops until the program goes on. The
+command channel (`recv`), on the VM's thread, between two stretches
+(`r[vm.heap.stop-runs-no-code]`: no handle is live, and nothing pushes or
+pops until the program goes on). The
 stack is the activations on the activation stack and, below them, the
 senders a suspension left in their frame objects ("Reading the stack at a
 stop"). It serves `StackTrace`, `Variables`, `Children` ("Reading the
@@ -1183,13 +1189,12 @@ first scratch register. A scratch register is never shown (decision 13).
 A register of the frame's own the leftover analysis finds tainted before
 the frame's stored program counter (`CompiledCode::tainted_before`;
 `bytecode::leftovers`) is not read -- a named one is not available, a
-numbered one left out -- as the collector's pre-pass nils it
+numbered one left out (`r[vm.activation.debugger-reads-no-dead-register]`)
+-- as the collector's pre-pass nils it
 (`Heap::trace_stack`) and a suspension nils it in the frame object: such
 a word may be one a callee or a popped frame left, a stale handle, or a
-debug build's poison, whose read a debug build refuses; another frame's
-register is read only below its body's `local_count`, and while that frame
-runs only where the analysis at its own program counter calls it live.
-The analysis taints no register below `local_count` today, since a push
+debug build's poison, whose read a debug build refuses. The analysis taints
+no register below `local_count` today, since a push
 fills them all; the check keeps the reader to it should that change.
 
 Reading changes nothing: no compiled mark is cleared, and every frame goes
@@ -1229,7 +1234,8 @@ stop stands (`header_pattern`). Every span is in the module's current text (deci
   blocks, which the compilation hands back only inside their creators'
   `MakeClosure`s, are found by their code; the kernel's unwind-marker
   bodies, cloned once compiled, move their entry (`rekey`). Without a
-  collector each lowering emits exactly the code it emits with one. A
+  collector each lowering emits exactly the code it emits with one
+  (`r[vm.compiler.compiling-again-changes-nothing]`). A
   prologue entry's statement is its clause's span, a `<:` clause check's
   the clauses' spans merged, a superclass initialization no clause
   writes the declaration's name, and a slot's initializer its slot
@@ -1259,10 +1265,10 @@ stop stands (`header_pattern`). Every span is in the module's current text (deci
   declarations -- through `Mutator::mixin_level`, the function that builds
   a level when a module loads, given the collector and no nested
   declarations, so that the level compiles again exactly as it was
-  built. It registers nothing -- no mixin id, no code id -- and runs
-  nothing. A module without text, or a text that does not parse, does not
-  resolve or holds no such declaration, answers no metadata, never a
-  panic: an image's text is untrusted input.
+  built. It registers nothing and runs nothing
+  (`r[vm.compiler.compiling-again-changes-nothing]`); a text it cannot
+  use answers no metadata, never a panic: an image's text is untrusted
+  input.
 - **Pairing.** Each running body of the level -- the frame's side's, and
   for an instance side its class side's too, a declared one or the one
   synthesized for a declaration that declares none, which holds the
@@ -1278,7 +1284,8 @@ stop stands (`header_pattern`). Every span is in the module's current text (deci
   family whose root does not compile alike gets no tables at all, since a
   block's tables name its creators' registers, which only an equal root
   vouches for.
-- **What "equal" means.** `bytecode::compiles_alike`: equal kind, counts,
+- **What "equal" means** (`r[vm.compiler.debug-tables-describe-their-body]`).
+  `bytecode::compiles_alike`: equal kind, counts,
   `local_count`, `family_size`, `outer_reach`, own-slot addressing,
   `statement_program_counter` and instructions
   (`Instruction::is_identical_to`), a `MakeClosure`'s block compared by
@@ -1328,12 +1335,14 @@ stop stands (`header_pattern`). Every span is in the module's current text (deci
   install changes the module's text, which every span counts in, and may
   replace what the bodies pair with.
 - **Shipped bodies.** A shipped module's body -- its module's root
-  decides, since a class side synthesized for a shipped declaration is
-  not marked shipped -- is compiled again from the shipped resolution
+  decides (`r[vm.mirror.shipped-decided-by-root]`), since a class side
+  synthesized for a shipped declaration is not marked shipped -- is compiled
+  again from the shipped resolution
   the boot made, cached per thread (`interpreter::kernel::resolved_kernel`,
   `core_library::resolved_shipped_module`), and the text the binary
   embeds, so that its `SendMirror` sites are the same and the bodies can
-  be equal; there is no new caller of `resolver::resolve_kernel`, and a
+  be equal; there is no new
+  caller of `resolver::resolve_kernel`, and a
   program's text is resolved with `resolve`, so that no text compiled
   again records a mirror send. The first lock of the VM mirror permits a
   shipped module resolved with it (`CLAUDE.md`, "The VM mirror is a
@@ -1355,7 +1364,8 @@ index there offset by the table's first id. The table goes with its stop,
 releasing every `Root`, when the program goes on or ends. The ids
 continue across the stops of one attachment (`Debugger::next_value_id`,
 `StopValues::next_first`), so that an id of an earlier stop, whose table
-is gone, names nothing in a later one rather than another value, and is
+is gone, names nothing in a later one rather than another value
+(`r[vm.handle.debugger-holds-no-bare-handle]`), and is
 refused (`a_value_id_does_not_outlive_its_stop`); they wrap only after
 2^32 values handed out. A `ValueDescription` carries the id, the label
 `Heap::describe` gives -- never `{:?}` -- the name of the value's class
@@ -1378,8 +1388,7 @@ field and so no children, and the agent gives it no
 `variablesReference`, exactly as it gives one to every value with a
 child (`only_an_element_with_fields_expands`). Each child is described,
 and held, as every value is. The heap's accessors
-alone describe a value: no Newspeak code runs while the program is
-stopped.
+alone describe a value (`r[vm.heap.stop-runs-no-code]`).
 
 An instance's fields are named from the layout of its class's application
 (`values.rs`'s `field_labels`, over `MixinApplication::field_layout`, the
@@ -1438,7 +1447,7 @@ hidden slot before its accessor built the class, or while it builds it.
 A lazy slot whose initializer answered `nil` reads as not computed too,
 and rightly: §6.3.3's getter evaluates the initializer whenever the slot
 contains `nil`, so its next read computes it again.
-No stop computes one, since no Newspeak code runs at a stop; one that
+No stop computes one (`r[vm.heap.stop-runs-no-code]`); one that
 holds a value shows it (`a_lazy_slot_not_computed_yet_is_shown_so`:
 the platform's facets, of which only `transcript`, used, holds one). The
 agent shows such a field's value as `<not computed yet>`, without
@@ -2406,8 +2415,9 @@ machine code and every optimized copy that inlined it
 (`jit::free_for_patch`); the baseline lowers a patched index as an
 exit, so every other body keeps running in machine code.
 
-- `Breakpoint` has no wire tag: the image encoder and `cargo xtask
-  shipped-code` read the decoded view, which answers the original.
+- `Breakpoint` has no wire tag (`r[bytecode.compact.breakpoint]`): the
+  image encoder and `cargo xtask shipped-code` read the decoded view,
+  which answers the original.
 - Instruction indices do not move, so neither the statement table, nor the
   leftover analysis, nor any frame's `program_counter` is touched.
 
@@ -2778,7 +2788,8 @@ loop's safepoint, as a collection request does, and there calls the
 debugging API, which blocks on a channel and serves the agent's commands
 -- reading the stack and values, setting breakpoints, evaluating --
 answering on another; no handle is live there, and nothing pushes or pops
-while it waits. Evaluating pushes the expression's activation and returns
+while it waits (`r[vm.heap.stop-runs-no-code]`). Evaluating pushes the
+expression's activation and returns
 into the loop, its return carried back into the stop by a `Continuation`
 variant of its own (`Continuation::Evaluated`): the trampoline every send
 uses, never a re-entry of the loop from Rust
@@ -2861,7 +2872,8 @@ pattern). A factory a frame sends runs its first two instructions as
 part of the send, the instance allocated and the initializer pushed,
 with no safepoint between (`Mutator::enter_factory_body`), so the held
 request meets the initializer's push first: the debugger undoes that
-push -- the initializer has run nothing, and the factory's
+push (`r[vm.activation.rewound-push-ran-nothing]`) -- the initializer has
+run nothing, and the factory's
 `InitializeInstance` decides and pushes it again once the program goes
 on -- and stops in the factory, at its `InitializeInstance`, the run
 loop reading the frame on top again (`stepping::rewound_into_factory`,
@@ -3481,7 +3493,8 @@ feeds the leftover analysis, `jit::baseline::lower`, the optimizing tier's
 snapshot and build, the image encoder, `shipped-code`, `disasm` and the
 debugger's `compiles_alike`. So the
 original of a patched slot is kept on the body, beside `EncodedBody::slots`,
-and every reader but two sees the original without reaching the debugger:
+and every reader but two sees the original without reaching the debugger
+(`r[vm.compiler.slot-readers-see-original]`):
 the decoded view answers it (`EncodedBody::original`), and
 `send_destination` reads it. Only the run loop's fetch sees `Breakpoint`.
 `jit::baseline::compile` asks `CompiledCode::is_patched(index)` before
@@ -3532,7 +3545,10 @@ wants.
 **Built** (`mixin.rs`, `MixinMethod::switch_fast_path`;
 `debugger/breakpoints.rs`).
 
-A method with a `MethodFastPath` never runs its body (`mixin.rs`): a quick
+A method object is never changed in place
+(`r[vm.dispatch.method-never-changed-in-place]`), the one exception being
+the switch this section describes. A method with a `MethodFastPath` never
+runs its body (`mixin.rs`): a quick
 method (`^true`, `^false`, `^nil`, `^self`, `^` a parameter), a method
 that only sends `value` or `cull:` to a block parameter, a builtin class
 accessor, and a mirror forwarder whose leaf does not decline. Only the
@@ -3587,7 +3603,9 @@ counts, conditions and logpoints, an evaluation goes past every slot
 uncounted, and a restart and a forced return leave no token; what
 edit-and-continue does with the token is planned.
 
-A `Breakpoint` slot shares the run loop's out-of-line arm of the
+A slot a breakpoint patched runs its original once
+(`r[vm.compiler.patched-slot-runs-original-once]`). A `Breakpoint` slot
+shares the run loop's out-of-line arm of the
 simultaneous slot clauses (`vm::simultaneous_clause_instruction`): an arm
 of its own, one more target of the `match`'s jump table, grew `vm::run`
 past the `codegen` gate's budget, where the shared one costs nothing. That
@@ -3654,7 +3672,8 @@ hold what the `Cell` slots and the arm cost the hot path.
 A full collection reclaims code ids nothing names (`heap/tables.rs`,
 `heap/reclaim.rs`), so a breakpoint keyed by code id could restore its
 original into another body that later gets the id. The breakpoint table
-(`debugger::breakpoints::Breakpoints`, on the `Mutator`) holds the body
+(`debugger::breakpoints::Breakpoints`, on the `Mutator`;
+`r[vm.compiler.patch-kept-with-its-body]`) holds the body
 itself (`Rc<CompiledCode>`), keyed by its address and the index, with
 every breakpoint standing there; restoring the last of an index restores
 the slot. A full collection treats every patched body's code id as named
@@ -4059,7 +4078,8 @@ variable unwritten.
 Reading a compiled frame needs nothing; a frame whose variable is set, or
 that is restarted or forced to return, goes on in the interpreter -- a stop
 at an optimized poll having been deoptimized first ("The stop"): its
-compiled mark is cleared (`Heap::clear_compiled`, as the run loop does
+compiled mark is cleared (`r[vm.machine.written-frame-goes-on-interpreted]`;
+`Heap::clear_compiled`, as the run loop does
 where it gives a frame to the interpreter), as
 [liveness-and-reflection.md](liveness-and-reflection.md), "The unifying
 principle", requires. A frame an expression is evaluated in is one such:
@@ -4120,7 +4140,9 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   writes (`an_unavailable_variable_is_refused_for_reads_and_writes`).
 
 - **Where it lies.** The expression's activation is pushed above every
-  live frame's whole register window (`Mutator::push_step`, which lays
+  live frame's whole register window
+  (`r[vm.activation.evaluation-above-every-window]`;
+  `Mutator::push_step`, which lays
   every activation that does not take a send's own arguments above the
   top frame's window), whichever frame it evaluates in: IntelliJ
   evaluates in any selected frame, and a frame below the top has its
@@ -4129,7 +4151,8 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   in the stopped frame too.
 - **How it returns.** Its return does not go through `resume_caller`: the
   stopped frame's slot is not a send, and `send_destination` would reach
-  its `unreachable!`. `Continuation::Evaluated`, the base activation's,
+  its `unreachable!`. `Continuation::Evaluated`, the base activation's
+  (`r[vm.activation.evaluation-returns-to-its-stop]`),
   records the result (`evaluation::returned`), asks for a stop
   (`Heap::request_debugger_stop`, under the arming lock, as an exception
   breakpoint asks), and switches to the frame below at the program counter
@@ -4165,7 +4188,8 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   reaches the frame -- an `outer_reach` of 2 or more, one hop past the
   expression's own frame -- the frame is marked as `MakeClosure` marks a
   creator whose block has an `outer_reach` above 0
-  (`Heap::frame_retain_registers`, which marks a suspended frame's
+  (`r[vm.activation.evaluation-retains-reached-frames]`;
+  `Heap::frame_retain_registers`, which marks a suspended frame's
   record too), or it would drop its registers when it returns and the
   block would read `nil` at exit status 0
   (`a_block_an_evaluation_stored_reads_the_frame_after_it_returned`).
@@ -4212,7 +4236,8 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   (`newspeak/ActivationMirrors.ns:368`) cuts off the same for an
   `Error`. The `^` is refused by the expression's compiler, and the
   evaluation's base frame is an unwind barrier the unwinder stops at
-  (`interpreter/unwind.rs`, `at_evaluation_base`, reached only while the
+  (`r[vm.activation.evaluation-base-is-a-barrier]`; `interpreter/unwind.rs`,
+  `at_evaluation_base`, reached only while the
   debugger follows unwinds, which it does while an evaluation runs): a
   program block the expression calls whose `^` would return to a home
   below the evaluation -- `b value` for a `b` holding `[^1]` -- is
@@ -4222,7 +4247,8 @@ assignable"` or `"a ^ cannot leave an evaluation"`.
   past the base, to the run's floor. Machine code's cut already exits for
   a home below its stretch's entry frame (`jit/cut.rs`), so the
   interpreter's unwinder is the one place that changes.
-- **At the depth limit.** An evaluation has a depth reserve of its own
+- **At the depth limit** (`r[vm.activation.evaluation-depth-bounded]`).
+  An evaluation has a depth reserve of its own
   (decided with the user on 2026-11-16), since the stop that needs one
   most is an exception breakpoint on the stack overflow itself, where
   every watch, condition and renderer would otherwise fail. While it
@@ -4348,7 +4374,8 @@ written conditionally or in a loop enclosing the capture, goes into the
 indirection vector instead. Such a copy is read-only by
 construction ([execution.md](execution.md), "Closure conversion"). An
 assignment through evaluation -- in the home frame or in the block's --
-would write one copy and leave the others stale, and the reference
+would write one copy and leave the others stale
+(`r[vm.compiler.debugger-assignment-never-splits-copy]`), and the reference
 lowering, which does not copy, would behave differently. A copy exists
 only once its `MakeClosure` has run, though, and an assignment before
 it reaches every copy the body will make. So the variable table records,
@@ -4416,7 +4443,9 @@ capability"). An expression evaluated in a shipped module's frame -- a
 frame of `Kernel.ns` a step into reached -- would resolve `vmMirror` as
 the frame's slot and could hand the mirror to the program, as its result
 stored into a program object. So evaluation in a frame whose body belongs
-to a shipped module is refused, before the body's metadata is compiled
+to a shipped module is refused
+(`r[vm.mirror.debugger-acts-in-program-frames]`), before the body's metadata
+is compiled
 again (`debugger::evaluation::compile`, "the frame is the core
 library's"; `an_evaluation_in_a_shipped_frame_is_refused`); the IDE
 shows such a frame's variables,
@@ -4516,7 +4545,8 @@ literal or a comment is no identifier and stays text
 
 A value whose way into the IDE passed through shipped code cannot be
 marked, nor forced as a frame's return ("Restart frame and force
-return"): both are refused with "the value is withheld". Every value a
+return"; `r[vm.mirror.debugger-withholds-shipped-values]`): both are refused
+with "the value is withheld". Every value a
 stop hands out carries whether it is withheld (`ValueDescription::withheld`):
 it is when it was reached through a shipped activation -- a shipped
 frame's receiver and variables, and the value a call in a shipped frame
@@ -4684,7 +4714,8 @@ and records nothing; with one attached the caught row answers the handler
 all the same and records the catch beside it. A handler it cannot read --
 the activation not running, or no `on:do:` marker's -- makes it record
 nothing and decline, so that its failure block answers nil. So an
-exception behaves as it does without the debugger; and
+exception behaves as it does without the debugger
+(`r[vm.dispatch.exception-reports-change-nothing]`); and
 `Interpreter::resume_unhandled_exceptions`, the test hook that resumes an
 unhandled exception, is served first, so that an exception it resumes
 stops nothing; nor does an exception an `ensure:` block of the debugger's
@@ -4717,7 +4748,8 @@ exception's stop waits for the handler's first instruction leaves that
 stop waiting: once the program goes on, the exception's stop follows as a
 second one, so that neither is lost.
 
-A signal searches its handler before anything unwinds, so an uncaught
+A signal searches its handler before anything unwinds
+(`r[runtime.handler-search]`), so an uncaught
 exception stops with its whole stack, where the search, having found no
 handler, is about to send `defaultAction` (`invokeNextHandler`,
 `Kernel.ns`), before any subclass's override of it runs:
@@ -4832,12 +4864,15 @@ the safepoint undone, as for a termination. The run loop
 unwinder, which runs every `ensure:` and `ifCurtailed:` block above the
 frame, each raising it again as it was once it returns
 (`unwind::signal_of`), and arrives at the frame whatever it runs
-(`arrives_at_any_frame`, tested after `catches_return`, so that a
+(`r[vm.activation.debugger-unwinds-through-the-unwinder]`;
+`arrives_at_any_frame`, tested after `catches_return`, so that a
 program's `^` and `retry` arrive where they did): a block, an
 initializer, a factory, a superclass clause, the top level. The frame
 the loop goes on with runs interpreted -- the restarted frame, and a
 caller a forced return resumed, whose machine code it leaves as a caller
-resumed for a safepoint does (`Heap::clear_compiled`). A command that is
+resumed for a safepoint does
+(`r[vm.machine.written-frame-goes-on-interpreted]`; `Heap::clear_compiled`).
+A command that is
 refused leaves the program stopped where it was, nothing begun.
 
 - **The next stop.** A restart patches a one-shot for the frame, before
@@ -4916,7 +4951,8 @@ refused leaves the program stopped where it was, nothing begun.
   `:2467-2473`), which the unwinder here runs the blocks of; JDWP's
   `PopFrames` and `ForceEarlyReturn` accept a constructor's frame.
 - **Shipped frames.** Setting a variable, restarting and forcing a return
-  are refused in a shipped module's frame, as evaluation is: forcing
+  are refused in a shipped module's frame, as evaluation is
+  (`r[vm.mirror.debugger-acts-in-program-frames]`): forcing
   `signal` or an `ensure:` marker to return would break the kernel's own
   invariants. A frame whose body belongs to a shipped module is refused
   with "the frame is the core library's", decided from its declaration's
@@ -4927,7 +4963,8 @@ refused leaves the program stopped where it was, nothing begun.
 - **The value** is one the stop handed out -- an evaluation's answer, a
   variable's or a child's value -- named by its id (`ValueId`), and an
   id the stop did not hand out is refused with "no value of this stop
-  has that id". A withheld value ("Marking objects"), which the frame's
+  has that id". A withheld value ("Marking objects";
+  `r[vm.mirror.debugger-withholds-shipped-values]`), which the frame's
   sender would hand the program, is refused with "the value is withheld"
   (`a_withheld_value_is_not_forced_as_a_return`).
 
@@ -5089,7 +5126,9 @@ destination register as a `Root` on the stepping state and goes on. The
 return point's one-shot records too, so a step out, and a step over that
 leaves its frame, report the callee's answer. A destination the leftover
 analysis finds tainted before the one-shot's index -- reached by a jump
-that skipped the call -- is not read. No jump joins after a send with a
+that skipped the call -- is not read
+(`r[vm.activation.debugger-reads-no-dead-register]`). No jump joins after a
+send with a
 value another way wrote: an inlined conditional's ways each end in a
 `Move` to its value register, so their join follows that `Move`, and the
 only send a jump joins after is an arithmetic or comparison send's
@@ -5276,7 +5315,8 @@ is `newspeak.core.Kernel`, an id no program module may have (decision
 9). Whether a module is shipped -- a frame folded, its values withheld,
 an evaluation, a restart or a forced return refused in it, the shipped
 step filter -- is never read from its id: the VM decides it by the
-module's root (`Mixin::shipped`, `metadata::again::module_is_shipped`),
+module's root (`r[vm.mirror.shipped-decided-by-root]`; `Mixin::shipped`,
+`metadata::again::module_is_shipped`),
 since it is a capability, and tells the agent (`FrameDescription::shipped`,
 `InstanceCount::shipped`). The agent names
 a shipped module by its file's absolute path, never by a name or a marker
