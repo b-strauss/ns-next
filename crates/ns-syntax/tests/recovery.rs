@@ -619,6 +619,7 @@ fn a_slot_section_of_a_modifier_alone_keeps_its_close() {
 
 /// A declaration whose name is missing is left out, so the resolver never
 /// sees two empty names to call duplicates.
+// spec: vm.compiler.only-error-free-source
 #[test]
 fn a_missing_name_declares_nothing() {
     let source = indoc! {"

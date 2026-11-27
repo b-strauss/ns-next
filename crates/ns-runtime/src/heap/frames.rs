@@ -1116,6 +1116,7 @@ mod tests {
         assert_all_nil(&stack.words()[offset..]);
     }
 
+    // spec: vm.activation.refused-push-changes-nothing
     #[test]
     fn a_push_the_reservation_cannot_hold_is_refused_and_leaves_the_top() {
         let mut stack = FrameStack::new(64 << 10, MachineWords::new()).expect("reserve");

@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure"]
+rules = ["semantics.block.closure", "vm.compiler.value-register", "vm.compiler.hop-count-counts-frames"]
 stdout = '''
 3
 6

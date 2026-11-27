@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure"]
+rules = ["semantics.block.closure", "vm.compiler.capture-agrees-with-lowering"]
 stdout = '''
 7
 42

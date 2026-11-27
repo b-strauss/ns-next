@@ -11702,6 +11702,7 @@ mod tests {
         /// which frees every body no activation runs and exists only with
         /// debug assertions.
         #[cfg(debug_assertions)]
+        // spec: vm.handle.trace-holds-no-handle
         #[test]
         fn a_listing_survives_a_compaction_before_its_flush() {
             use crate::trace_events::{
@@ -12513,6 +12514,7 @@ mod cross_assembly_tests {
     /// core library and the goldens assembles to the same bytes with and
     /// without them, for every convention, lean and twin; and annotated,
     /// it names each call and jump out of it.
+    // spec: vm.machine.tracing-changes-nothing
     #[test]
     fn annotating_changes_no_byte() {
         use crate::trace_events::{Annotation, Position};

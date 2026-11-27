@@ -2120,6 +2120,9 @@ mod tests {
     /// each old object is still itself, no root names its replacement, and
     /// each `Point` and `Wide` still answers its own `sum`.
     // spec: runtime.forward-identity
+    // spec: vm.heap.bulk-forward-atomic
+    // spec: vm.dispatch.declining-leaf-changes-nothing
+    // spec: vm.mirror.forward-refuses-shipped
     #[test]
     fn a_refused_forward_changes_nothing() {
         let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);
@@ -2288,6 +2291,7 @@ mod tests {
         /// The initializer forwards its receiver to a `Wide` before it
         /// stores `a`: the store would write `Shifting`'s layout into a
         /// `Wide`, so it raises instead.
+        // spec: vm.dispatch.slot-guard-checked
         fn an_initializer_whose_receiver_was_forwarded_raises(lowering) {
             let (mut interpreter, fixture) = a_guard_fixture(lowering);
             let mirror = the_vm_mirror(&mut interpreter);
@@ -2403,6 +2407,7 @@ mod tests {
         /// another application's, but its chain still contains the level
         /// the initializer was entered at: the cold check passes, records
         /// the new guard, and the initializer completes on the replacement.
+        // spec: vm.dispatch.slot-guard-checked
         fn an_initializer_whose_receiver_was_forwarded_to_a_subclass_instance_proceeds(lowering) {
             let (mut interpreter, fixture) = a_guard_fixture(lowering);
             let narrower = send(&mut interpreter, &fixture, "narrower");
@@ -2537,6 +2542,7 @@ mod tests {
         /// loop's second round, of the `Wide` its receiver was forwarded
         /// to: under the optimized lowering a cache hit whose recorded
         /// guard no longer matches, which raises as the uncached read does.
+        // spec: vm.dispatch.slot-guard-checked
         fn a_private_slot_site_hit_after_its_receiver_was_forwarded_raises(lowering) {
             let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
             let keeper = send(&mut interpreter, &fixture, "keeper");
@@ -2601,6 +2607,7 @@ mod tests {
         /// decided from S's chain: after its receiver was forwarded to a
         /// `Wide`, it raises rather than store the message into the
         /// `Wide`.
+        // spec: vm.dispatch.slot-guard-checked
         fn a_super_slot_handler_after_its_receiver_was_forwarded_raises(lowering) {
             let (mut interpreter, fixture) = an_accessor_guard_fixture(lowering);
             let probe = send(&mut interpreter, &fixture, "probe");
@@ -2829,6 +2836,7 @@ mod tests {
         /// created after `Registering`'s level is initialized and before
         /// `Mix`'s is pushed: `Mix`'s initializer raises rather than
         /// writing `added` over the `Wide`'s `y`.
+        // spec: vm.dispatch.slot-guard-checked
         fn a_level_pushed_after_its_clause_forwarded_the_instance_raises(lowering) {
             let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
             let mirror = the_vm_mirror(&mut interpreter);
@@ -2874,6 +2882,7 @@ mod tests {
         /// `Inner`'s superclass clause forwards the enclosing `Host` to a
         /// `Wide`, which has no slot to cache `Inner` in: the creation
         /// raises rather than writing the class over the `Wide`'s `z`.
+        // spec: vm.dispatch.nested-cache-slot-relooked
         fn a_nested_class_whose_enclosing_object_was_forwarded_raises(lowering) {
             let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
             let wide = send(&mut interpreter, &fixture, "wide");
@@ -2905,6 +2914,7 @@ mod tests {
         /// Forwarded to an instance of a subclass, the enclosing object
         /// still has the declaring level's slots: the class is created,
         /// cached in the replacement's slot, and answered again from there.
+        // spec: vm.dispatch.nested-cache-slot-relooked
         fn a_nested_class_whose_enclosing_object_was_forwarded_to_a_subclass_instance_is_cached(lowering) {
             let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
             let child = send(&mut interpreter, &fixture, "hostChild");
@@ -2971,6 +2981,7 @@ mod tests {
         /// application: the class created for it declares itself in that
         /// level, and its `outer` walk reaches the replacement's module
         /// instance, not the forwarded object's.
+        // spec: vm.dispatch.nested-cache-slot-relooked
         fn a_nested_class_forwarded_to_another_module_instance_walks_its_chain(lowering) {
             let (mut interpreter, fixture) = a_pushed_guard_fixture(lowering);
             let module_class = interpreter.enter(|mutator| {
@@ -2990,6 +3001,7 @@ mod tests {
     /// An instance of a program's subclass of a shipped class is the
     /// program's: its class's own mixin is not shipped.
     // spec: runtime.forward-identity
+    // spec: vm.mirror.forward-refuses-shipped
     #[test]
     fn a_program_subclass_of_a_shipped_class_is_forwarded() {
         let (mut interpreter, fixture) = a_forward_fixture(crate::Lowering::Optimized);

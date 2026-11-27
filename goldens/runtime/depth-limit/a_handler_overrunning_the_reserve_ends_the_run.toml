@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "vm.activation.depth-reserve-held-by-frame"]
 status = 1
 stdout = '''
 start

@@ -5419,6 +5419,7 @@ mod tests {
     /// common path, by reference inside the fallback closure the guard's
     /// failure path builds out of the very same source
     /// (`docs/design/execution.md`, "Fallback blocks").
+    // spec: vm.compiler.fallback-closure-by-reference
     #[test]
     fn a_real_block_nested_in_an_inlined_block_is_converted_and_its_fallback_copy_is_not() {
         let code = compile_foo("x ifTrue: [ [ x ] value ] ifFalse: [nil]");

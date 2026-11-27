@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.slot.guard"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.slot.guard", "vm.dispatch.entered-level-successor"]
 stdout = '''
 #installed 2 #added
 '''

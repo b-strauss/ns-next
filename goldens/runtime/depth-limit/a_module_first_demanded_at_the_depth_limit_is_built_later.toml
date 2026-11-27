@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "vm.mirror.one-instance-per-shipped-module", "vm.mirror.root-instance-unreachable"]
 stdout = '''
 stack overflow: recursion too deep
 1

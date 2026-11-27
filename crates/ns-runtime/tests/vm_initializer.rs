@@ -184,6 +184,7 @@ fn a_return_inside_a_block_in_a_clause_argument_escapes_instantiate() {
     }
 }
 
+// spec: vm.activation.push-checks-arity
 #[test]
 fn a_factory_arity_mismatch_is_still_the_shared_error() {
     let (mut interpreter, class) = load(FACTORY_PARAMETER);
@@ -272,6 +273,7 @@ fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: Value<'gc>, index: usiz
     }
 }
 
+// spec: vm.compiler.mixin-relative-slot-index
 #[test]
 fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_ones_absolute_offset()
 {
@@ -379,6 +381,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
 /// Here `Base`'s slots must land at 0-1, `Middle`'s at 2-3 and `Leaf`'s at 4-5
 /// of the *same* instance: a level running with another level's base overwrites
 /// its superclass's slots instead of its own.
+// spec: vm.compiler.mixin-relative-slot-index
 #[test]
 fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
     let source = indoc! {"

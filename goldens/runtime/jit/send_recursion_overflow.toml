@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.depth-count-agrees"]
 stdout = '''
 stack overflow: recursion too deep
 99997

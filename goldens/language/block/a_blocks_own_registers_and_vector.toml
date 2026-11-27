@@ -1,4 +1,4 @@
-rules = ["semantics.block.closure", "bytecode.instruction.make-vector", "bytecode.instruction.load-vector", "bytecode.instruction.store-vector"]
+rules = ["semantics.block.closure", "bytecode.instruction.make-vector", "bytecode.instruction.load-vector", "bytecode.instruction.store-vector", "vm.compiler.capture-agrees-with-lowering"]
 stdout = '''
 18
 9

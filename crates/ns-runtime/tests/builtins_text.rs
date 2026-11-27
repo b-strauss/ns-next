@@ -507,6 +507,7 @@ fn an_invalid_sequence_is_named_by_its_index_in_the_byte_array() {
 /// them, giving their memory back (`docs/design/memory.md`, "Weak
 /// references"). Fewer in a debug build, whose interpreter is slower.
 #[cfg(debug_assertions)]
+// spec: vm.compiler.symbol-numbers-permanent
 #[test]
 fn a_million_program_made_symbols_leave_the_interner_as_it_was() {
     let count: i64 = if cfg!(debug_assertions) {

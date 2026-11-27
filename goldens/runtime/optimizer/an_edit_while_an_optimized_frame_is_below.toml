@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.unguarded-slot-reads-verified"]
 stdout = '''
 420000
 14000

@@ -249,6 +249,7 @@ mod tests {
         generate().unwrap_or_else(|refusal| panic!("{refusal}"))
     }
 
+    // spec: vm.compiler.embedded-code-current
     #[test]
     fn the_optimized_boot_decodes_the_embedded_code() {
         assert!(
@@ -265,6 +266,7 @@ mod tests {
         assert_eq!(path, ShippedCodePath::Embedded);
     }
 
+    // spec: vm.compiler.embedded-code-current
     #[test]
     fn the_reference_boot_compiles_from_source() {
         let mut interpreter = Interpreter::bootstrap_with(Lowering::Reference);
@@ -272,6 +274,7 @@ mod tests {
         assert_eq!(path, ShippedCodePath::Source);
     }
 
+    // spec: vm.compiler.reach-derived-never-read
     #[test]
     fn the_embedded_shipped_code_round_trips() {
         let bytes = embedded();
@@ -356,6 +359,7 @@ mod tests {
     /// flags, the toolchain. An embedded artifact the binary would decode
     /// must be, byte for byte, what generating it now writes, so that a
     /// change through one of those shows here rather than nowhere.
+    // spec: vm.compiler.embedded-code-current
     #[test]
     fn a_usable_embedded_artifact_is_what_generating_it_writes() {
         if primitive_method::disabled() {
@@ -379,6 +383,7 @@ mod tests {
         );
     }
 
+    // spec: vm.compiler.embedded-code-current
     #[test]
     fn the_two_fingerprints_differ() {
         // The code's covers the Rust sources too; equal, it would cover the
@@ -444,6 +449,8 @@ mod tests {
         assert_keeps_the_mirror_sends_and_fast_paths(&generated());
     }
 
+    // spec: vm.compiler.embedded-code-current
+    // spec: vm.mirror.shipped-source-only-fast-paths
     #[test]
     fn the_embedded_shipped_code_keeps_the_mirror_sends_and_fast_paths() {
         let bytes = embedded();

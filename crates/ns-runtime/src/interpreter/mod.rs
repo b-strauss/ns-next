@@ -4774,6 +4774,7 @@ mod tests {
         /// past the depth limit is: an `Error` an `on:do:` catches, with the
         /// same text, though the activation count is far below the limit.
         /// The handler runs on the reserve the refusal leaves.
+        // spec: vm.activation.stack-reservation-reserve
         fn a_recursion_the_reservation_cannot_hold_is_a_catchable_stack_overflow(lowering) {
             let module = ns_syntax::parse(DEEP).expect("parse");
             let resolved = crate::resolve(

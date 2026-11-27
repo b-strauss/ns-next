@@ -595,6 +595,8 @@ mod tests {
 
     /// What the step state holds beside the heap is forwarded with it: the
     /// `platform` singleton, here, as every `StepRoots` field is.
+    // spec: vm.heap.roots-complete
+    // spec: vm.heap.bulk-forward-atomic
     #[test]
     fn the_forward_rewrites_what_the_step_state_holds() {
         let mut interpreter = crate::Interpreter::bootstrap();

@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.activation.reexecuted-instruction-wrote-nothing"]
 stdout = '''
 2 1 42 5 5 0 'divergent evaluation: a future was forced while it was being computed'
 2 1 43 5 5 3 'divergent evaluation: a future was forced while it was being computed'

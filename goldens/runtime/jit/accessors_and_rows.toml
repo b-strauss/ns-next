@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.stub-does-what-act-does"]
 stdout = '''
 3000
 203000

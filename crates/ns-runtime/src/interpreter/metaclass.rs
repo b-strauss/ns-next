@@ -279,6 +279,7 @@ mod tests {
     /// Every class object has a metaclass whose `this_class` is it, and
     /// every builtin's metaclass has its class's lexical context -- the
     /// one the kernel phase gave the builtin after the metaclass was built.
+    // spec: vm.heap.class-word-is-metaclass
     #[test]
     fn every_builtin_has_a_metaclass_in_its_declaration_context() {
         let mut interpreter = Interpreter::bootstrap();

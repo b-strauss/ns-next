@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit", "bytecode.instruction.send-inlinable"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "bytecode.instruction.send-inlinable", "vm.activation.depth-exemption"]
 status = 1
 stdout = '''
 0

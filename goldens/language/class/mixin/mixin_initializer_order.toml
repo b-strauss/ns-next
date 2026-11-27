@@ -1,4 +1,4 @@
-rules = ["semantics.mixin.application", "semantics.mixin.clause-order", "bytecode.instruction.check-applied-clause", "bytecode.instruction.initialize-applied-level"]
+rules = ["semantics.mixin.application", "semantics.mixin.clause-order", "bytecode.instruction.check-applied-clause", "bytecode.instruction.initialize-applied-level", "vm.dispatch.lexical-origin-from-code"]
 stdout = '''
 ms evaluated with x
 Base's own superclass clause message

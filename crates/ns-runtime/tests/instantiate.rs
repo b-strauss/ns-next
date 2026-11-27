@@ -301,6 +301,7 @@ fn a_factory_parameter_is_visible_in_an_initializer_expression() {
 /// the arity check, `locals.rs`'s `read_local` would index straight past
 /// both and panic with "index out of bounds" instead of returning a clean
 /// `NewspeakError`.
+// spec: vm.activation.push-checks-arity
 #[test]
 fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
     let source = indoc! {"
@@ -1009,6 +1010,8 @@ fn a_factory_frame_is_counted_toward_the_depth_limit() {
 /// exactly two activations for its `new`, its factory's and its own
 /// initializer's. The slot initializer measures how deep `probe:` reaches
 /// from inside, which is two less than from the method that sends `new`.
+// spec: vm.activation.passed-levels-iterative
+// spec: vm.dispatch.level-facts-agree
 #[test]
 fn levels_without_code_are_passed_without_an_activation() {
     let source = formatdoc! {"
@@ -1270,6 +1273,7 @@ ns_runtime::for_each_lowering! {
     /// object that is no value -- and its level, which runs no code, is
     /// passed with a superclass clause that names no primary factory. The
     /// body allocates first, so the refusal is the error, not §6.1's.
+    // spec: vm.activation.factory-prefix-uninterruptible
     fn an_allocation_refused_is_raised_before_the_initializers_error(lowering) {
         let source = indoc! {"
             class Holder = Object new () (

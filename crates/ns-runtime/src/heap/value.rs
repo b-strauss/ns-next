@@ -765,6 +765,7 @@ mod tests {
     }
 
     #[cfg(not(debug_assertions))]
+    // spec: vm.heap.value-tags
     #[test]
     fn a_release_value_is_one_word() {
         assert_eq!(std::mem::size_of::<Value<'static>>(), 8);

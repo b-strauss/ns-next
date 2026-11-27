@@ -318,6 +318,7 @@ fn a_pause_from_another_thread_stops_a_running_loop() {
     assert_terminated(result);
 }
 
+// spec: vm.activation.debugger-unwinds-through-the-unwinder
 #[test]
 fn terminate_runs_the_pending_ensure_blocks() {
     let (mut interpreter, instance) = instance_of(ENSURING, Lowering::Optimized);
@@ -376,6 +377,7 @@ fn a_remote_dropped_while_stopped_lets_the_program_finish() {
 /// still requested can make it leave early; the program continued goes on
 /// allocating, through the collections, until a second pause stops it
 /// again.
+// spec: vm.machine.safepoint-request-bits
 #[test]
 fn a_pause_while_a_collection_is_requested_is_served() {
     let (mut interpreter, instance) = instance_of(ALLOCATING, Lowering::Optimized);
@@ -761,6 +763,7 @@ fn the_stack_names_the_stopped_methods() {
 /// senders are suspended: the trace reaches them, and a suspended frame's
 /// variables are read from its frame object.
 #[cfg(debug_assertions)]
+// spec: vm.handle.debugger-holds-no-bare-handle
 #[test]
 fn the_stack_reaches_suspended_senders() {
     let ((kinds, outer), _, _) = while_stopped_after(
@@ -1351,6 +1354,7 @@ fn named_fields_are_paged() {
 /// mixin's slots; its facets are lazy slots, of which only the one the
 /// program used holds a value, and the others are not computed yet --
 /// not `nil`, which none of them would answer.
+// spec: vm.heap.stop-runs-no-code
 #[test]
 fn a_lazy_slot_not_computed_yet_is_shown_so() {
     for lowering in [Lowering::Optimized, Lowering::Reference] {
@@ -1380,6 +1384,7 @@ fn a_lazy_slot_not_computed_yet_is_shown_so() {
     }
 }
 
+// spec: vm.handle.debugger-holds-no-bare-handle
 #[test]
 fn a_value_id_does_not_outlive_its_stop() {
     let answer = while_stopped(STACKED, |remote| {
@@ -1541,6 +1546,8 @@ const OPTIMIZED: &str = indoc! {"
 
 /// A stop at a poll of optimized code is deoptimized before the stack is
 /// read, and the program, continued, goes on and stops again.
+// spec: vm.machine.observers-after-exit
+// spec: vm.machine.written-frame-goes-on-interpreted
 #[test]
 fn a_stop_at_an_optimized_poll_is_deoptimized() {
     let ((), before, after) = while_stopped_after(
@@ -1992,6 +1999,7 @@ ns_runtime::for_each_lowering! {
     /// found all the same: its block's frame is named for the method that
     /// creates it, and has no metadata either, since the family's root
     /// does not compile alike.
+    // spec: vm.compiler.debug-tables-describe-their-body
     fn a_changed_superseded_body_shows_unnamed_registers(lowering) {
         let (frames, method, block) = spinning_subject(CHANGING, "Changing", lowering);
         let spinning = frame_named(&frames, "Changing/Subject>>spin:");
@@ -2223,6 +2231,7 @@ ns_runtime::for_each_lowering! {
     /// compiles again alike under the interpreter's lowering, and its
     /// tables hold their invariants (decision 14): the shipped modules
     /// are checked here once, not with every golden.
+    // spec: vm.compiler.debug-tables-describe-their-body
     fn every_shipped_body_compiles_again_alike(lowering) {
         let mut interpreter = Interpreter::bootstrap_with(lowering);
         match interpreter.check_debug_metadata(true) {
@@ -2581,6 +2590,7 @@ const BUMPING: &str = indoc! {"
 ns_runtime::for_each_lowering! {
     /// Removing the breakpoint the run stopped at gives the slot its
     /// original back, which the continued run executes once.
+    // spec: vm.compiler.patched-slot-runs-original-once
     fn removing_the_breakpoint_one_stands_at_runs_the_original_once(lowering) {
         let (mut interpreter, class) = interpreted(BUMPING, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -2890,6 +2900,7 @@ ns_runtime::for_each_lowering! {
     /// A full collection keeps a patched body's code id, though no
     /// running activation names it; the breakpoint removed after it gives
     /// the body its original back, which the next run executes.
+    // spec: vm.compiler.patch-kept-with-its-body
     fn a_patched_body_keeps_its_code_id_across_a_full_collection(lowering) {
         let (mut interpreter, class) = interpreted(BUMPING, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -3053,6 +3064,7 @@ ns_runtime::for_each_lowering! {
     /// and stops at every pass, and each pass sends `bump` once: the body
     /// compiled again exits at the patched statement, which the
     /// interpreter stops at and then executes.
+    // spec: vm.compiler.patched-slot-runs-original-once
     fn a_breakpoint_in_compiled_loop_stops_every_iteration_and_sends_once(lowering) {
         let (mut interpreter, instance, _) = compiled(COMPILED_LOOP, lowering);
         assert_eq!(send_answered(&mut interpreter, &instance, "warm"), 2000);
@@ -3441,6 +3453,7 @@ ns_runtime::for_each_lowering! {
     /// statement no pass runs -- calls the callee rather than inline it,
     /// and stops at every call once the breakpoint stands at one a pass
     /// runs.
+    // spec: vm.machine.stale-copies-freed
     fn a_breakpoint_in_an_inlined_callee_frees_the_copy(lowering) {
         let (mut interpreter, class) = load(INLINING, lowering);
         interpreter.set_jit_stress(true);
@@ -3654,6 +3667,7 @@ ns_runtime::for_each_lowering! {
     /// path is off while it stands, so that the send activates the
     /// method. Removed at the stop, it puts the fast path back, the run
     /// goes on to its unchanged outcome, and the next run does not stop.
+    // spec: vm.dispatch.method-never-changed-in-place
     fn a_breakpoint_in_a_quick_shipped_method_stops(lowering) {
         let (mut interpreter, class) = load(QUICK, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -4755,6 +4769,7 @@ ns_runtime::for_each_lowering! {
     /// on into the initializer the factory pushes again, which runs once:
     /// a breakpoint in it stops once, and the run answers as without the
     /// debugger.
+    // spec: vm.activation.rewound-push-ran-nothing
     fn a_continue_at_the_rewound_factory_stop_runs_the_initializer_once(lowering) {
         let sent = line_start(HEADERS, "pt:: Punkt x: 1 y: 2.");
         let slot = line_start(HEADERS, "public x ::= ax.");
@@ -4835,6 +4850,7 @@ ns_runtime::for_each_lowering! {
     /// statement is hit once, by the push the factory makes again: a
     /// breakpoint counting to its first hit stops, one counting to its
     /// second does not.
+    // spec: vm.activation.rewound-push-ran-nothing
     fn a_hit_count_at_the_initializer_s_first_statement_counts_the_rewind_once(lowering) {
         assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(1)), 1);
         assert_eq!(hits_after_the_rewind(lowering, HitCondition::Equal(2)), 0);
@@ -12363,6 +12379,7 @@ ns_runtime::for_each_lowering! {
     /// shipped `Kernel`'s breakpoints stop only in shipped code and the
     /// program's only in the program's, each frame's location names its own
     /// module, and each module's text is its own.
+    // spec: vm.mirror.shipped-decided-by-root
     fn a_program_root_named_kernel_is_another_module_than_the_shipped_kernel(lowering) {
         let shipped = ModuleName::named("newspeak.core.Kernel");
         let own = ModuleName::named("Kernel");
@@ -12691,6 +12708,7 @@ mod evaluation {
         /// An ordinary send of an expression to another object finds its
         /// public methods only: another object's private method is not
         /// understood, and that error is the evaluation's answer.
+        // spec: vm.mirror.debugger-acts-in-program-frames
         fn a_private_method_of_another_object_is_not_understood(lowering) {
             let (description, answer) = stopped_at(
                 EVALUATING,
@@ -12710,6 +12728,7 @@ mod evaluation {
     ns_runtime::for_each_lowering! {
         /// An error an expression raises is its answer, and the program
         /// goes on as it would have without it.
+        // spec: vm.activation.evaluation-base-is-a-barrier
         fn an_error_is_the_result_and_the_program_goes_on(lowering) {
             let ((description, label), answer) = stopped_at(
                 EVALUATING,
@@ -12822,6 +12841,7 @@ mod evaluation {
         /// A block the expression runs whose `^` would return to a home
         /// below the evaluation cannot return there: the evaluation answers
         /// `CannotReturn`, and the program's frames are as they were.
+        // spec: vm.activation.evaluation-base-is-a-barrier
         fn a_caret_to_a_home_below_is_cannot_return(lowering) {
             let ((before, description, after), answer) = stopped_at(
                 RETURNING,
@@ -12958,6 +12978,7 @@ mod evaluation {
         /// collection an evaluation's allocations make: the variables read
         /// alike after it, and a value handed out before it still answers
         /// its children.
+        // spec: vm.handle.debugger-holds-no-bare-handle
         fn a_collection_during_an_evaluation_keeps_the_stop_s_values(lowering) {
             let ((before, label, after, children), answer) = stopped_at(
                 COLLECTING,
@@ -13025,6 +13046,7 @@ mod evaluation {
     ns_runtime::for_each_lowering! {
         /// A block an expression stores away reads the stopped frame's
         /// variable after the frame returned: its last value, never nil.
+        // spec: vm.activation.evaluation-retains-reached-frames
         fn a_block_an_evaluation_stored_reads_the_frame_after_it_returned(lowering) {
             let (stored, answer) = stopped_at(
                 STORING,
@@ -13073,6 +13095,8 @@ mod evaluation {
         /// the home returned: its value, never nil. The stopped block made
         /// its home keep nothing, reaching no variable of it, so the
         /// evaluation keeps every frame its own block reaches.
+        // spec: vm.activation.evaluation-above-every-window
+        // spec: vm.activation.evaluation-retains-reached-frames
         fn a_block_an_evaluation_stored_reads_an_enclosing_frame_after_it_returned(lowering) {
             let (stored, answer) = stopped_at(
                 KEEPING,
@@ -13092,6 +13116,7 @@ mod evaluation {
     ns_runtime::for_each_lowering! {
         /// An expression in a frame of the core library is refused: it
         /// could reach the VM mirror.
+        // spec: vm.mirror.debugger-acts-in-program-frames
         fn an_evaluation_in_a_shipped_frame_is_refused(lowering) {
             let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
             let (reason, answer) = debugged_answering(
@@ -13177,6 +13202,8 @@ mod evaluation {
         /// An exception no handler within the expression takes runs its
         /// default action as it would in the program: one that answers a
         /// value lets `signal` answer it.
+        // spec: vm.activation.evaluation-base-is-a-barrier
+        // spec: vm.dispatch.exception-reports-change-nothing
         fn an_overridden_default_action_answers_as_in_the_program(lowering) {
             let (label, answer) = stopped_at(
                 DEFAULTING,
@@ -13421,6 +13448,7 @@ mod evaluation {
         /// it stopped at lets it past, and it runs to its end, stopping
         /// nowhere -- whether the endless expression assigns a slot in an
         /// `ensure:` or only reads one.
+        // spec: vm.activation.evaluation-returns-to-its-stop
         fn a_continue_after_an_aborted_evaluation_runs_to_the_end(lowering) {
             for expression in [ENDLESS, "[true] whileTrue: [holder + 1]"] {
                 let offset = line_start(ABORTING, "^value");
@@ -13530,6 +13558,7 @@ mod evaluation {
         /// counts no backward jump against the stopped body, which a
         /// compile at the first jump would otherwise compile and enter
         /// mid-body. The program runs on to its end, its answer right.
+        // spec: vm.activation.evaluation-returns-to-its-stop
         fn an_evaluation_aborted_at_a_loop_head_counts_no_jump_of_the_stopped_frame(lowering) {
             let offset = line_start(STOPPED_PAST_ENTRY, "^doubled");
             let (mut interpreter, instance, class) = compiled(STOPPED_PAST_ENTRY, lowering);
@@ -13690,6 +13719,7 @@ mod evaluation {
         /// stop kept for it would take the next run's every safepoint for
         /// its own. The next run of the same interpreter stops at its
         /// breakpoint and evaluates there as any run does.
+        // spec: vm.activation.evaluation-base-is-a-barrier
         fn a_stop_during_a_termination_refuses_evaluations_and_the_next_run_stops(lowering) {
             let cleaning = line_start(TERMINATING, "cleanups:: cleanups + 1");
             let again = line_start(TERMINATING, "^cleanups + 10");
@@ -13816,6 +13846,7 @@ mod evaluation {
         /// At an exception breakpoint's stop at the depth limit's own
         /// error, an evaluation in the frame below the machinery has room:
         /// the evaluation's reserve.
+        // spec: vm.activation.evaluation-depth-bounded
         fn an_evaluation_at_a_stack_overflow_has_room(lowering) {
             let (evaluated, result) = raised(
                 OVERFLOWING,
@@ -13910,6 +13941,7 @@ mod evaluation {
         /// An evaluation near the depth limit that overruns its own
         /// reserve answers the depth limit's error, and the program goes
         /// on to its end.
+        // spec: vm.activation.evaluation-depth-bounded
         fn an_evaluation_near_the_depth_limit_that_overruns_is_its_error(lowering) {
             let source = deep_source();
             let (description, answer) = stopped_at(&source, lowering, "Deep", "^depth", |remote| {
@@ -13927,6 +13959,7 @@ mod evaluation {
         /// A terminate while an evaluation near the depth limit runs past
         /// L runs the evaluation's `ensure:` block, which lies past L: the
         /// evaluation's raise of the limit stands until the run ended.
+        // spec: vm.activation.evaluation-depth-bounded
         fn a_terminate_of_an_evaluation_past_the_limit_runs_its_ensure_block(lowering) {
             let source = deep_source();
             let offset = line_start(&source, "^depth");
@@ -14120,6 +14153,7 @@ mod evaluation {
 
     /// The captured variable is refused after the block that copies it was
     /// made: the copy would keep the old value.
+    // spec: vm.compiler.debugger-assignment-never-splits-copy
     #[test]
     fn a_copied_variable_is_refused_after_its_capture() {
         let (reason, answer) = stopped_at(
@@ -14136,6 +14170,7 @@ mod evaluation {
     ns_runtime::for_each_lowering! {
         /// The captured variable is set before the block that copies it is
         /// made, and the block's copy holds the new value.
+        // spec: vm.compiler.debugger-assignment-never-splits-copy
         fn a_copied_variable_is_assigned_before_its_capture(lowering) {
             let (set, answer) = stopped_at(
                 CAPTURING,
@@ -14166,6 +14201,7 @@ mod evaluation {
 
     /// In a block's own frame a copied variable is the block's copy, which
     /// is never set.
+    // spec: vm.compiler.debugger-assignment-never-splits-copy
     #[test]
     fn a_copy_in_a_block_s_frame_is_refused() {
         let (reason, answer) = stopped_at(
@@ -14585,6 +14621,7 @@ mod evaluation {
     /// have nowhere to live, and a vector the debugger made would be
     /// replaced by the frame's own `MakeVector`. Only the optimized
     /// lowering keeps a variable in a vector.
+    // spec: vm.compiler.debugger-assignment-never-splits-copy
     #[test]
     fn a_vector_variable_before_its_vector_reads_nil_and_refuses_assignment() {
         let (shown, read, assigned, set) = before_the_vector(Lowering::Optimized);
@@ -14605,6 +14642,7 @@ mod evaluation {
         /// at a later stop in the block that outlived it. The reference
         /// lowering's block reads `limit` from the method's frame, which
         /// therefore keeps its registers and shows `unused` anyway.
+        // spec: vm.activation.evaluation-retains-reached-frames
         fn a_read_at_a_stop_leaves_the_frame_to_drop_its_registers(lowering) {
             let offset = line_start(RETURNED, "block:: [");
             let ((read, unused), result) = debugged(
@@ -14642,6 +14680,7 @@ mod evaluation {
     /// frame dropped as it returned, is refused for a read and for a
     /// `SetVariable` alike, never read as nil. Only the optimized
     /// lowering's frame drops it.
+    // spec: vm.compiler.debugger-assignment-never-splits-copy
     #[test]
     fn an_unavailable_variable_is_refused_for_reads_and_writes() {
         let (shown, read, written, set) =
@@ -15188,6 +15227,7 @@ mod conditions {
         /// which the unwind arrives at, is decided in that frame before it
         /// returns: it stops where its condition holds, at the second call
         /// only.
+        // spec: vm.activation.debugger-unwinds-through-the-unwinder
         fn a_condition_decides_an_exit_by_a_non_local_return(lowering) {
             let mut breakpoint = method_breakpoint("Leaving", &[], false, "find:");
             breakpoint.condition = Some("index = 2".to_owned());
@@ -17204,6 +17244,7 @@ mod marking {
         /// value: the platform module's private `vmMirror`, which its
         /// lazy slot's frame shows as a field of its receiver, among them.
         /// None of them can be marked.
+        // spec: vm.mirror.debugger-withholds-shipped-values
         fn the_platform_s_mirror_field_is_withheld(lowering) {
             let program = line_start(WITHHOLDING, "platform time.");
             let shipped = time_module_line();
@@ -17583,6 +17624,7 @@ mod marking {
     ns_runtime::for_each_lowering! {
         /// A withheld value cannot be the value a frame is forced to
         /// return.
+        // spec: vm.mirror.debugger-withholds-shipped-values
         fn a_withheld_value_is_not_forced_as_a_return(lowering) {
             let offset = line_start(KERNEL, "public ifTrue: trueBlock = (");
             let (mut interpreter, class) = interpreted(QUICK, lowering);

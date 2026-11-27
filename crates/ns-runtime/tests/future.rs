@@ -171,6 +171,7 @@ ns_runtime::for_each_lowering! {
 /// protected, so a member added to `Object` later without its override
 /// fails here rather than letting a future, or a program's own proxy, tell
 /// itself from its target.
+// spec: vm.dispatch.future-seen-through
 #[test]
 fn a_proxy_overrides_every_public_member_of_object_as_protected() {
     let mut interpreter = Interpreter::bootstrap();
@@ -394,6 +395,7 @@ ns_runtime::for_each_lowering! {
 ns_runtime::for_each_lowering! {
     /// A resolved future needs no instruction run again: the leaf sees its
     /// value in Rust, so even a host's send is answered.
+    // spec: vm.dispatch.future-seen-through
     fn a_host_passing_a_resolved_future_to_a_leaf_is_answered_by_its_value(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
@@ -514,6 +516,7 @@ ns_runtime::for_each_lowering! {
     /// itself afterwards -- and the future, reachable from nothing else, is
     /// collected. Debug builds only: `collect_now` is a test hook of theirs.
     #[cfg(debug_assertions)]
+    // spec: vm.heap.resolved-future-replaced-in-fields
     fn a_collection_replaces_a_resolved_future_in_an_array(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");
@@ -551,6 +554,7 @@ ns_runtime::for_each_lowering! {
     /// The same replacement in an instance's slot: `held` holds the value
     /// itself once a collection has run.
     #[cfg(debug_assertions)]
+    // spec: vm.heap.resolved-future-replaced-in-fields
     fn a_collection_replaces_a_resolved_future_in_an_instance_slot(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let future = a_future(&mut interpreter, &holder, "three");

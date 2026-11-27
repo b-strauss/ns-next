@@ -2286,6 +2286,7 @@ mod tests {
     /// outer-local depths, and one level less for each block it creates,
     /// since the frame a nested block reaches through is the one this body
     /// creates. Non-zero is what makes `MakeClosure` mark its activation.
+    // spec: vm.activation.outer-reach
     #[test]
     fn outer_reach_counts_a_nested_blocks_reach_one_level_less() {
         let make = |outer_reach, instructions| {

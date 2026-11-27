@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit", "runtime.depth-limit"]
+rules = ["semantics.depth-limit", "runtime.depth-limit", "vm.activation.refused-push-changes-nothing"]
 stdout = '''
 stack overflow: recursion too deep
 Error

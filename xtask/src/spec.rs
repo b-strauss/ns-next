@@ -391,19 +391,42 @@ fn golden_references(
     Ok(())
 }
 
+/// The macro that makes a test of its one function for each lowering, the
+/// `#[test]` attributes its expansion writes.
+const LOWERING_MACRO: &str = "for_each_lowering! {";
+
 /// The name of the test whose `#[test]` follows the run of `// spec:` lines
-/// at `index`, or `None` when no test follows it directly.
+/// at `index` -- or whose function follows it inside `for_each_lowering!`,
+/// which writes its `#[test]` -- or `None` when no test follows it directly.
 fn test_below(lines: &[&str], index: usize) -> Option<String> {
     let mut below = index;
     while lines.get(below)?.trim().starts_with(RUST_REFERENCE) {
         below += 1;
     }
-    if lines.get(below)?.trim() != "#[test]" {
+    let signature = if lines.get(below)?.trim() == "#[test]" {
+        lines.get(below + 1)?.trim()
+    } else if within_lowering_macro(lines, below) {
+        lines.get(below)?.trim()
+    } else {
         return None;
-    }
-    let signature = lines.get(below + 1)?.trim();
+    };
     let name = signature.strip_prefix("fn ")?.split('(').next()?;
     Some(name.to_string())
+}
+
+/// Whether the line at `index` stands directly inside a `for_each_lowering!`
+/// invocation: the first line above it indented less opens one.
+fn within_lowering_macro(lines: &[&str], index: usize) -> bool {
+    let indentation = |line: &str| line.len() - line.trim_start().len();
+    let Some(line) = lines.get(index) else {
+        return false;
+    };
+    let own = indentation(line);
+    lines[..index]
+        .iter()
+        .rev()
+        .find(|above| !above.trim().is_empty() && indentation(above) < own)
+        .is_some_and(|opening| opening.trim_end().ends_with(LOWERING_MACRO))
 }
 
 /// Every reference the tests below `root` make to a rule.
@@ -1151,6 +1174,27 @@ mod tests {
         scratch.write("crates/a/src/lib.rs", "// spec: lex.a\nfn helper() {}\n");
         let refusal = references_in(&scratch.0).expect_err("no test below");
         assert!(refusal.contains("lib.rs:1"), "{refusal}");
+    }
+
+    #[test]
+    fn a_spec_line_above_a_test_of_both_lowerings_names_it() {
+        let scratch = Scratch::new("lowering-references");
+        scratch.write(
+            "crates/a/tests/b.rs",
+            "ns_runtime::for_each_lowering! {\n    /// Doc.\n    #[cfg(debug_assertions)]\n    // spec: lex.a\n    fn both(lowering) {\n        let _ = lowering;\n    }\n}\n",
+        );
+        let references = references_in(&scratch.0).expect("readable");
+        let found: Vec<(&str, &str)> = references
+            .iter()
+            .map(|reference| (reference.identifier.as_str(), reference.name.as_str()))
+            .collect();
+        assert_eq!(found, [("lex.a", "both")]);
+        scratch.write(
+            "crates/a/tests/b.rs",
+            "other_macro! {\n    // spec: lex.a\n    fn both(lowering) {}\n}\n",
+        );
+        let refusal = references_in(&scratch.0).expect_err("no test below");
+        assert!(refusal.contains("b.rs:2"), "{refusal}");
     }
 
     #[test]

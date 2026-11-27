@@ -4040,6 +4040,7 @@ mod encoding_tests {
     /// so that a leaf call keeps it; and the two free survivors, `x22` and
     /// `x23` as `r13` and `rbp` under x64, are preserved too and play no
     /// role.
+    // spec: vm.machine.return-address-slot
     #[test]
     fn the_aapcs64_roles_alias_as_x64_s_do() {
         let mut x64 = played(Roles::of_abi(Abi::SystemV));
@@ -4713,6 +4714,7 @@ mod tests {
 
     /// A limit below the top refuses every bump, as `Reservation::bump`'s
     /// does.
+    // spec: vm.heap.bump-limit-within-committed
     #[test]
     fn a_limit_below_the_top_refuses_the_inline_bump() {
         let mut eden = FakeEden::new(16, 16);

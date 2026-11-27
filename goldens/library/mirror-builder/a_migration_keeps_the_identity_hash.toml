@@ -1,4 +1,4 @@
-rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.memory.identity-hash"]
+rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.memory.identity-hash", "vm.heap.bulk-forward-atomic", "vm.heap.identity-hash-moves-with-object"]
 stdout = '''
 nil
 true true true

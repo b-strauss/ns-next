@@ -1,4 +1,4 @@
-rules = ["semantics.builtin-names", "runtime.vm-mirror"]
+rules = ["semantics.builtin-names", "runtime.vm-mirror", "vm.mirror.class-unnameable"]
 status = 1
 stderr = '''
 Uncaught Newspeak error: an object does not understand #Top

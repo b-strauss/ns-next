@@ -1078,6 +1078,7 @@ fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
 /// compiler used, rather than, say, numbering block by block after the root.
 // spec: bytecode.call-site
 // spec: bytecode.wire.call-sites
+// spec: vm.dispatch.family-range-own
 #[test]
 fn a_decoded_family_is_numbered_as_the_compiler_numbered_it() {
     let source = indoc! {"
@@ -6145,6 +6146,7 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
 }
 
 // spec: image.verify.symbols
+// spec: vm.heap.symbol-canonical
 #[test]
 fn a_symbol_recorded_twice_is_refused() {
     // A canonical heap never encodes two records of one symbol, so a graph
@@ -7021,6 +7023,7 @@ fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     writer.into_bytes()
 }
 
+// spec: vm.compiler.copied-values-order
 #[test]
 fn a_closure_records_its_copied_values_and_a_wrong_count_is_refused() {
     // The record carries the values and the body declares how many
@@ -9947,6 +9950,7 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
 /// something a run produces: refused like any other register file that
 /// disagrees with its body.
 // spec: image.verify.frames
+// spec: vm.activation.frame-object-full-register-file
 #[test]
 fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
     let (mut fixture, table) = closure_world();
@@ -10130,6 +10134,7 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
 }
 
 // spec: image.load.symbols
+// spec: vm.heap.symbol-canonical
 #[test]
 fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
     // A loaded world's code literals reach `#foo` through `Mutator::new_symbol`
@@ -14314,6 +14319,7 @@ fn a_real_image_with_a_home_called_continuable_is_refused() {
 /// A decoded home belongs to an activation that has returned and is never
 /// married in the loading world, so a `^` into it must answer `cannotReturn`
 /// rather than a `Signal::Return` no activation on the stack will catch.
+// spec: vm.activation.closure-home-derived
 #[test]
 fn a_return_into_a_decoded_home_is_cannot_return() {
     let source = indoc! {"
@@ -15062,6 +15068,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
 /// frees the range as it frees a dead family's. `collect_now` is a debug
 /// build's.
 #[cfg(debug_assertions)]
+// spec: vm.dispatch.family-range-own
 #[test]
 fn a_decoded_closures_range_is_reclaimed() {
     let source = indoc! {"
@@ -18963,6 +18970,7 @@ fn instance_body(fields: u32) -> impl FnOnce(&mut encode::Writer) {
 /// slots, as every one is allocated: a customized copy reads them at
 /// fixed fields with no check, past the end of an object with fewer.
 // spec: image.verify.program-instances
+// spec: vm.heap.instance-has-application-layout
 #[test]
 fn a_record_of_a_program_class_carries_exactly_its_layout() {
     let mut fixture = GraphFixture::with_source(TWO_SLOTS);

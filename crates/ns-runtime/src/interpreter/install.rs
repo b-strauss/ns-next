@@ -836,6 +836,7 @@ mod tests {
     /// A replaced method's closure keeps the old block's answer after a
     /// load, while the method answers the new one.
     // spec: image.write.edited
+    // spec: vm.heap.id-reclaimed-only-when-unnamed
     #[test]
     fn a_closure_of_a_replaced_method_keeps_its_old_code_after_a_load() {
         let (mut interpreter, outer, _, inner, inner_id) = module_and_inner(OUTER);

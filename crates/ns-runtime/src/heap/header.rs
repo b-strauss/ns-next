@@ -344,6 +344,7 @@ mod tests {
         assert_eq!(forwarded.age(), 3);
     }
 
+    // spec: vm.heap.mark-bit-clear-outside-collection
     #[test]
     fn the_mark_bit_is_bit_thirty_three_and_disturbs_no_other_field() {
         let header = Header::new(DispatchId::NONE, Format::Closure, 0, 7).with_identity_hash(5);

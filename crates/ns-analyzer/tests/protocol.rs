@@ -1101,6 +1101,7 @@ fn expected_lines(statements: &[ns_runtime::BreakableStatement], text: &str) -> 
 /// shipped and the program-side answers are equal today, so this pins the
 /// behaviour, not which path answers; `debug_metadata` and the `ModuleSource`
 /// the shipped compile takes tell the paths apart.
+// spec: vm.mirror.shipped-text-by-exact-copy
 #[test]
 fn a_shipped_module_s_text_is_the_shipped_module() {
     let (client, server_thread) = initialized_server_within(STRESS_TIMEOUT);

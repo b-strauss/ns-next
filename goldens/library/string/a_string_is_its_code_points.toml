@@ -1,4 +1,4 @@
-rules = ["semantics.literal.string"]
+rules = ["semantics.literal.string", "vm.heap.string-canonical-width"]
 stdout = '''
 plain
 café

@@ -53,8 +53,9 @@ no test names yet.
 
 **Tests name their rules.** A golden names the rules it checks in its
 `.toml`, `rules = ["syntax.outer.alone"]`; a Rust test in a comment line
-`// spec: syntax.outer.alone` directly above its `#[test]`, one line per
-rule, which the book lists with the test's name. A reference to an
+`// spec: syntax.outer.alone` directly above its `#[test]` -- or, for a
+test `for_each_lowering!` makes under both lowerings, directly above its
+function -- one line per rule, which the book lists with the test's name. A reference to an
 identifier the book does not declare, or a `// spec:` line above no test,
 fails the suite, and so does a link to a chapter or a rule the book does
 not have.

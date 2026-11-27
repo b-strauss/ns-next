@@ -1074,6 +1074,9 @@ mod tests {
 
     /// Every table entry parses and resolves to something, panicking on the
     /// first that fails, independently of the boot that also resolves them.
+    // spec: vm.heap.ephemeron-key-first
+    // spec: vm.compiler.mirror-literal-block-last
+    // spec: vm.mirror.binding-only-in-shipped-resolution
     #[test]
     fn every_shipped_module_resolves() {
         for shipped in SHIPPED_MODULES {

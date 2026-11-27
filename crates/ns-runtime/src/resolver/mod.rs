@@ -1007,6 +1007,7 @@ mod tests {
         );
     }
 
+    // spec: vm.mirror.binding-only-in-shipped-resolution
     #[test]
     fn the_editor_entry_resolves_the_kernel_without_the_mirror_mark() {
         let source = include_str!("../../core-library/Kernel.ns");

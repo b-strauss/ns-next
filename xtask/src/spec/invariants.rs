@@ -180,6 +180,14 @@ pub fn check_detectors(
     let mut refusals = Vec::new();
     for detector in detectors {
         let location = format!("{VM_CHAPTER}:{}", detector.line);
+        // A row that names no rule finds no breach the book can list, so it
+        // says nothing about any rule's coverage.
+        if detector.rules.is_empty() {
+            refusals.push(format!(
+                "{location}: the detector {} names no rule",
+                detector.name
+            ));
+        }
         for identifier in &detector.rules {
             if !rules.iter().any(|rule| &rule.identifier == identifier) {
                 refusals.push(format!(
@@ -523,6 +531,16 @@ mod tests {
         let refusal = check_detectors(&[], &detectors, &[]).expect_err("no such mode");
         assert!(
             refusal.contains("vm-invariants.md:4: ZONES is no stress mode the stress gate runs"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn a_detector_naming_no_rule_is_refused() {
+        let detectors = table_of(&["| MOVES | stress | moves | |"]).expect("rows");
+        let refusal = check_detectors(&[], &detectors, &["MOVES"]).expect_err("an empty cell");
+        assert!(
+            refusal.contains("vm-invariants.md:4: the detector MOVES names no rule"),
             "{refusal}"
         );
     }

@@ -1055,6 +1055,8 @@ mod tests {
     /// was divorced on the pop and is married to nothing, so the unwind
     /// goes on to the floor. A release build has no generation to tell the
     /// two activations apart by, which is why the target is a frame.
+    // spec: vm.handle.activation-never-stored
+    // spec: vm.activation.unwind-target-is-frame
     #[test]
     fn a_target_survives_its_index_being_reused() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1186,6 +1188,7 @@ mod tests {
     /// are gone, another error whose `signal` lands at the very same offset
     /// -- which exempt block activations make possible far from the limit
     /// -- does not find the reserve held.
+    // spec: vm.activation.depth-reserve-held-by-frame
     #[test]
     fn a_later_signal_at_the_same_index_does_not_inherit_the_reserve() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1301,6 +1304,7 @@ mod tests {
     /// which wraps its `VmErrorSignalled`: the reserve is still held, the
     /// walk finds the `signal` above the suspended frame, and replacing the
     /// `signal`'s continuation keeps the return to the suspended sender.
+    // spec: vm.activation.depth-reserve-held-by-frame
     #[test]
     fn a_resumed_signal_over_a_suspended_reserve_still_holds_it() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1364,6 +1368,7 @@ mod tests {
         });
     }
 
+    // spec: vm.activation.unwind-target-is-frame
     #[test]
     fn an_activation_that_has_returned_is_refused_as_a_cannot_return() {
         // No golden reaches a restart whose activation has returned.

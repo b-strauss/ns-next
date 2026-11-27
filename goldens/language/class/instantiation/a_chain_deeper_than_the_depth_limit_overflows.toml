@@ -1,4 +1,4 @@
-rules = ["semantics.depth-limit"]
+rules = ["semantics.depth-limit", "vm.activation.every-push-checks-depth"]
 reaches_a_table_limit = "102,001 classes, each its own application, live at once: past the application rows' floor of 4,096"
 stdout = '''
 1000 levels initialized

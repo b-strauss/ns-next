@@ -515,6 +515,7 @@ fn the_innermost_of_a_shadowed_name_comes_first() {
     );
 }
 
+// spec: vm.compiler.compiling-again-changes-nothing
 #[test]
 fn compiling_without_a_collector_emits_the_same_code() {
     let source = indoc! {"
@@ -1746,6 +1747,7 @@ fn a_reference_lowered_image_body_pairs_with_the_reference_lowering() {
     });
 }
 
+// spec: vm.compiler.debug-tables-describe-their-body
 #[test]
 fn a_body_that_compiles_again_otherwise_fails_the_check() {
     let source = indoc! {"

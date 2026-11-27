@@ -1,4 +1,4 @@
-rules = ["semantics.literal.symbol"]
+rules = ["semantics.literal.symbol", "vm.heap.symbol-canonical"]
 stdout = '''
 true
 true

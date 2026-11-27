@@ -537,6 +537,7 @@ fn a_correctly_sent_method_reads_its_temporary_as_nil() {
     });
 }
 
+// spec: vm.activation.push-checks-arity
 #[test]
 fn a_wrong_arity_send_is_refused() {
     let (mut interpreter, class) = load(ARITY_PROBE);

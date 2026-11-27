@@ -1583,6 +1583,7 @@ mod tests {
     /// rule's N with them, at every group count from the one group of the
     /// contention gate to the most the mirror holds, the group machine
     /// code picks is the one the cache files the key in.
+    // spec: vm.machine.cells-follow-entries
     #[test]
     fn the_megamorphic_hash_is_the_global_caches() {
         let mut machine = Machine::new();

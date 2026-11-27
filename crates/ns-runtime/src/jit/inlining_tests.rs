@@ -460,6 +460,7 @@ fn sum_of_indices(addend: i64) -> i64 {
 /// stack holds, the scope among them: live, and against the depth limit
 /// exactly as the interpreter counts there, `run`, `outer:` and `middle:`
 /// above what counted before the run, whatever a stress mode suspended.
+// spec: vm.machine.optimized-frame-is-interpreters
 #[test]
 fn an_exit_inside_an_inlined_callee_leaves_two_interpreted_frames() {
     let Recording {
@@ -554,6 +555,7 @@ const NO_FRAME_NODE: &str = indoc! {"
 /// traps, and the exit leaves both scopes' activations with their
 /// receiver's class as their current class, as the interpreter's pushes
 /// would have it.
+// spec: vm.machine.inlined-scope-current-class
 #[test]
 fn the_exit_writes_the_current_class_of_a_scope_without_a_frame_node() {
     let module = ns_syntax::parse(NO_FRAME_NODE).expect("parse");
@@ -625,6 +627,7 @@ fn the_exit_writes_the_current_class_of_a_scope_without_a_frame_node() {
 /// resumed, once `middle:` returns, in `outer:`'s own baseline code right
 /// past that send, as any frame an exit left below the innermost. The
 /// answer is the interpreter's.
+// spec: vm.machine.exit-writes-every-scope
 #[test]
 fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
     let Recording {
@@ -680,6 +683,7 @@ fn each_scope_goes_on_in_its_own_baseline_code_after_an_exit() {
 /// header written as the walk writes it: the generic leaf loading
 /// `middle:`'s string literal reads `middle:`'s body at its own program
 /// counter, never `outer:`'s, and the answer is the interpreter's.
+// spec: vm.machine.inlined-callee-ends-sender-bindings
 #[test]
 fn a_leaf_called_from_an_inlined_scope_reads_that_scope() {
     let Recording {
@@ -714,6 +718,7 @@ fn a_leaf_called_from_an_inlined_scope_reads_that_scope() {
 /// the depth limit word, naming the refusal as its inlining's, which
 /// counts against no budget; one further from the word passes the
 /// prologue, and one at the word is refused at the bound, as any call.
+// spec: vm.machine.depth-count-agrees
 #[test]
 fn the_prologue_refuses_within_the_deepest_chain_of_the_limit() {
     use crate::heap::machine_words::MachineWord;
@@ -932,6 +937,7 @@ const ROOM_AT_A_PUSH: &str = indoc! {"
 /// would write `helper:`'s registers -- and every answer is the
 /// interpreter's. Without the seat the same sends run the copy, which
 /// grows nothing.
+// spec: vm.machine.back-into-optimized-code
 #[test]
 fn a_push_enters_no_copy_whose_inlined_scopes_pass_the_stack_s_end() {
     let module = ns_syntax::parse(ROOM_AT_A_PUSH).expect("parse");
@@ -1378,6 +1384,7 @@ const A_BLOCK_BELOW_AN_EXIT: &str = indoc! {"
 /// of it, which every register that holds it answers, its captured frame
 /// `step:with:`'s activation's frame object, married to it. The answer is
 /// the interpreter's.
+// spec: vm.machine.eliminated-block-made-once
 #[test]
 fn an_eliminated_block_is_one_object_after_an_exit() {
     let Recording {
@@ -1411,6 +1418,7 @@ fn an_eliminated_block_is_one_object_after_an_exit() {
 /// the inlined `check:at:with:` the trap left returns, in its body's twin,
 /// the copy that keeps a reified frame's words, never in its lean code.
 /// The answer is the interpreter's.
+// spec: vm.machine.reify-only-in-twin
 #[test]
 fn the_home_of_a_materialized_block_goes_on_in_its_twin() {
     let Recording {
@@ -1453,6 +1461,7 @@ fn the_home_of_a_materialized_block_goes_on_in_its_twin() {
 /// baseline code once `probe:` returns, finds its block made, one closure
 /// in its local and married to its frame. The answer is the
 /// interpreter's.
+// spec: vm.machine.eliminated-block-made-once
 #[test]
 fn a_block_in_a_frame_below_an_exit_is_made_there() {
     let Recording {
@@ -1617,6 +1626,7 @@ const A_BLOCK_HANDED_ON_ON_A_FAILURE_WAY: &str = indoc! {"
 /// next one at the site retires the copy, and the copy compiled after it
 /// sends `super do:`, the block created: no trap more, and every answer
 /// the interpreter's.
+// spec: vm.machine.eliminated-block-made-once
 #[test]
 fn a_failure_way_that_starts_running_traps_and_its_block_is_made() {
     use crate::jit::optimizing::plan::{BlockPlan, Limits, plan};
@@ -1960,6 +1970,7 @@ mod polls {
     /// stress mode the frame goes back in at every poll, so that a re-entry
     /// precedes every exit but the first; the block the copy eliminated is
     /// never made, and `run:` never goes on in its baseline code.
+    // spec: vm.machine.depth-count-agrees
     #[test]
     fn a_poll_re_entry_counts_the_depth_the_interpreter_counts() {
         let Polled {
@@ -2011,6 +2022,7 @@ mod polls {
     /// no reified word: the block the copy eliminated is made, in the frame
     /// that left, and every scope goes on in its baseline code, answering
     /// the interpreter's sum.
+    // spec: vm.machine.back-into-optimized-code
     #[test]
     fn a_reified_scope_s_poll_deoptimizes() {
         let Polled {
@@ -2047,6 +2059,7 @@ mod polls {
     /// once the copy is freed -- found by its body and key, never by an
     /// address -- and goes on in baseline code with the block the copy
     /// eliminated made, answering the interpreter's sum.
+    // spec: vm.machine.back-into-optimized-code
     #[test]
     fn a_freed_copy_s_poll_deoptimizes() {
         let Polled {
@@ -2111,6 +2124,7 @@ mod polls {
     /// frame went back in than when it left, every turn finds `current`
     /// the object `holder` holds -- `nil` restored, `holder at:` would trap
     /// and fail -- and the sum is the interpreter's.
+    // spec: vm.machine.registers-held-between-frame-nodes
     #[test]
     fn a_moved_object_held_across_a_poll_is_the_same_after_re_entry() {
         let Polled {
@@ -2173,6 +2187,7 @@ mod polls {
     /// it -- a clean binding of a register the leftover analysis taints at
     /// the loop's head -- and the frame that goes back in there after the
     /// scavenge stress mode's scavenges answers the interpreter's count.
+    // spec: vm.machine.back-into-optimized-code
     #[test]
     fn a_poll_s_entry_writes_back_what_the_collector_nilled() {
         let Polled {
@@ -2269,6 +2284,7 @@ mod polls {
     /// is found by its install, and the frame goes on in baseline code
     /// with the block its copy eliminated made, answering the
     /// interpreter's sum.
+    // spec: vm.machine.entered-only-at-entries
     #[test]
     fn a_copy_installed_again_in_its_place_is_not_entered() {
         let Polled {
@@ -2300,6 +2316,7 @@ mod polls {
     /// on in baseline code, the exit is counted as one at a poll without
     /// an entry -- neither a re-entry nor a deoptimization of one -- and
     /// the sum is the interpreter's.
+    // spec: vm.machine.back-into-optimized-code
     #[test]
     fn a_poll_without_an_entry_keeps_the_full_exit() {
         let Polled {

@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.feedback-decides-layout"]
 stdout = '''
 20100000
 20200000.0

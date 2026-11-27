@@ -1,4 +1,4 @@
-rules = ["semantics.object", "runtime.memory.identity-hash"]
+rules = ["semantics.object", "runtime.memory.identity-hash", "vm.heap.identity-hash-moves-with-object"]
 stdout = '''
 1
 2

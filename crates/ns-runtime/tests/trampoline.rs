@@ -61,6 +61,8 @@ const DEPTH: &str = indoc! {"
 /// test thread would hold if every send recursed on it, and nothing but frames
 /// on the activation stack since none does. Under the optimized lowering no
 /// native re-enters Newspeak here, since every control-flow send is inlined.
+// spec: vm.heap.no-native-frame-below-safepoint
+// spec: vm.activation.offset-fixed
 #[test]
 fn a_deep_method_recursion_runs_on_the_activation_stack() {
     let (mut interpreter, class) = load(DEPTH, Lowering::Optimized);
@@ -92,6 +94,7 @@ fn a_deep_method_recursion_runs_on_the_activation_stack() {
 ns_runtime::for_each_lowering! {
     /// A `^` out of a method several activations up, through a block, lands on the
     /// method it names and leaves nothing behind it on the stack.
+    // spec: vm.activation.run-balanced
     fn a_non_local_return_unwinds_to_its_home_on_the_activation_stack(lowering) {
         let source = indoc! {"
             class R = Object new (
@@ -127,6 +130,7 @@ ns_runtime::for_each_lowering! {
     /// so the unwind pops everything down to the floor of the host's run and
     /// leaves it with the signal. Closing the gap changes what this expects;
     /// nothing else should.
+    // spec: vm.activation.run-balanced
     fn a_return_into_a_running_initializer_escapes_the_run(lowering) {
         let source = indoc! {"
             class E = Object new (
@@ -207,6 +211,7 @@ const THROUGH_NATIVES: &str = indoc! {"
 "};
 
 ns_runtime::for_each_lowering! {
+    // spec: vm.heap.no-native-frame-below-safepoint
     fn a_deep_recursion_through_native_block_activations_runs_on_the_activation_stack(lowering) {
         let (mut interpreter, class) = load(THROUGH_NATIVES, lowering);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
@@ -251,6 +256,8 @@ ns_runtime::for_each_lowering! {
     /// many. `logic:` and `loop:` recurse from inside an `or:` block and a
     /// `whileTrue:` body, which the optimized lowering inlines and the reference
     /// lowering activates -- exempt, so the boundary is the same.
+    // spec: vm.activation.every-push-checks-depth
+    // spec: vm.activation.depth-exemption
     fn the_depth_limit_is_exact_and_counts_alike_under_both_lowerings(lowering) {
         assert_eq!(ns_runtime::interpreter::MAX_ACTIVATION_DEPTH, 100_000);
         let (mut interpreter, class) = load(DEPTH, lowering);
@@ -305,6 +312,7 @@ ns_runtime::for_each_lowering! {
     /// method, the three kernel methods and their three blocks -- and the
     /// deepest recursion that fits is the same under both: 7 x 14,285 + 1 is
     /// 99,996 activations, 7 x 14,286 + 1 is past the limit.
+    // spec: vm.activation.depth-exemption
     fn the_marked_block_methods_count_alike_under_both_lowerings(lowering) {
         let source = indoc! {"
             class Marked = Object new (
@@ -388,6 +396,7 @@ fn code_table_of(bytes: &[u8]) -> Vec<Rc<ns_runtime::bytecode::CompiledCode>> {
 /// which reifies its activation. The second is what keeps the condition from
 /// being weakened to "the sender has a frame": its sender has one, just not
 /// the frame the block captured.
+// spec: vm.activation.depth-exemption
 #[test]
 fn a_crafted_send_inlinable_cannot_recurse_uncounted() {
     for (block, sender_reified) in [
@@ -492,6 +501,7 @@ ns_runtime::for_each_lowering! {
     /// `WhileCondition` and `WhileBody` -- runs with no caller in that run, and a loop's next block
     /// replaces the popped one right at the floor. Each must answer the native's
     /// value and leave both depths where they were.
+    // spec: vm.heap.no-native-frame-below-safepoint
     fn a_control_flow_native_sent_from_rust_continues_at_the_floor_of_its_run(lowering) {
         let source = indoc! {"
             class Floor = Object new (
@@ -710,6 +720,7 @@ ns_runtime::for_each_lowering! {
     /// the clause on its way to that method (`interpreter::unwind`), and
     /// the creation the clause had begun ends with it: the next access evaluates
     /// the clause again rather than reporting the class as depending on itself.
+    // spec: vm.activation.abandoned-continuation-undone
     fn a_return_through_a_superclass_clause_abandons_its_creation(lowering) {
         let source = indoc! {"
             class Outer = Object new (

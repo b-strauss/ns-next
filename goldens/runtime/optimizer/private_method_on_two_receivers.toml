@@ -1,4 +1,4 @@
-rules = ["runtime.send"]
+rules = ["runtime.send", "vm.machine.copy-per-receiver-and-level"]
 stdout = '''
 10300000
 10500000

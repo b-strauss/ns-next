@@ -99,6 +99,8 @@ fn method(selector: &str) -> CachedTarget {
 
 /// Two `Inner` instances from two `Outer` instances share one monomorphic
 /// entry: the cache guards on the application, not on the class object.
+// spec: vm.dispatch.guard-names-dependency
+// spec: vm.dispatch.application-cache-key
 #[test]
 fn nested_class_instances_of_two_enclosing_objects_share_one_entry() {
     let source = indoc! {"
@@ -145,6 +147,7 @@ fn nested_class(name: &str, field: Option<u32>, private: bool) -> CachedTarget {
 /// receiver's hidden slot -- after `Holder`'s two slots, `Object` having
 /// none, so 2 -- and the second send, a hit, answers the class the first
 /// created.
+// spec: vm.dispatch.hidden-slot-by-declaration
 #[test]
 fn a_nested_class_hit_reads_the_cached_field() {
     let source = indoc! {"
@@ -188,6 +191,7 @@ fn a_nested_class_hit_reads_the_cached_field() {
 /// uses it only for a receiver of exactly that application: a subclass's
 /// instance takes the lookup. Each enclosing object still answers a class
 /// of its own, the same on every send.
+// spec: vm.dispatch.guard-names-dependency
 #[test]
 fn a_private_nested_class_hit_reads_the_field_only_for_the_guard_s_application() {
     let source = indoc! {"
@@ -244,6 +248,7 @@ fn a_private_nested_class_hit_reads_the_field_only_for_the_guard_s_application()
 /// send. A body-less declaration's own `super Inner` starts at its class
 /// object's superclass, `Base`, as every `super` starts at its current
 /// class's, and finds `Base`'s.
+// spec: vm.dispatch.guard-names-dependency
 #[test]
 fn a_super_nested_class_hit_reads_the_field_in_s_layout() {
     let source = indoc! {"
@@ -408,6 +413,7 @@ const TWO_APPLICATIONS: &str = indoc! {"
 /// One slot accessor under two applications of one mixin with different
 /// inherited slots: two entries, each with its own absolute field -- `held`
 /// after one inherited slot, and after three.
+// spec: vm.dispatch.guard-names-dependency
 #[test]
 fn a_slot_accessor_under_two_applications_has_two_fields() {
     let (mut interpreter, class) = load(TWO_APPLICATIONS);
@@ -432,6 +438,7 @@ fn a_slot_accessor_under_two_applications_has_two_fields() {
 /// `super` in a mixin applied under two superclasses: the key is the running
 /// method's application, so the one `super describe` site holds one entry per
 /// application of `Cell`, each naming its own superclass's method.
+// spec: vm.dispatch.guard-names-dependency
 #[test]
 fn a_super_send_in_a_mixin_applied_twice() {
     let (mut interpreter, class) = load(TWO_APPLICATIONS);
@@ -456,6 +463,7 @@ fn a_super_send_in_a_mixin_applied_twice() {
 /// A private lexical site whose `o` changes object and class stays
 /// monomorphic: its guard is N's application, which does not change, and
 /// §5.9 runs N's private method on every `o`.
+// spec: vm.dispatch.privacy-decided-once-per-site
 #[test]
 fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
     let source = indoc! {"
@@ -501,6 +509,7 @@ fn a_private_lexical_site_with_a_changing_receiver_stays_monomorphic() {
 
 /// Class objects and instances at one site: a factory, a class-side method
 /// and an instance method, three entries.
+// spec: vm.dispatch.key-covers-every-dependency
 #[test]
 fn class_objects_and_instances_share_a_site() {
     let source = indoc! {"
@@ -538,6 +547,7 @@ fn class_objects_and_instances_share_a_site() {
 
 /// `doesNotUnderstand:` with a user handler and with a slot setter named
 /// `doesNotUnderstand` (§6.3.2) at one site: two entries.
+// spec: vm.dispatch.cache-records-lookup
 #[test]
 fn does_not_understand_handlers_are_entries_like_any_other() {
     let source = indoc! {"
@@ -575,6 +585,7 @@ fn does_not_understand_handlers_are_entries_like_any_other() {
 /// two different methods sending `value` to the same receiver kind -- fills
 /// straight from the global cache the first send left behind, and leaves the
 /// same state a direct resolve would: `Monomorphic`.
+// spec: vm.dispatch.cache-records-lookup
 #[test]
 fn a_second_site_fills_from_the_global_cache() {
     let source = indoc! {"
@@ -613,6 +624,7 @@ fn a_second_site_fills_from_the_global_cache() {
 /// apart; `a_vacant_lexical_site_does_not_borrow_a_different_ns_entry` below
 /// is what actually depends on N being part of the `Lexical` rule's payload,
 /// since it goes red the moment that payload is dropped from the comparison.
+// spec: vm.dispatch.privacy-decided-once-per-site
 #[test]
 fn a_vacant_lexical_site_uses_the_global_cache() {
     let source = indoc! {"
@@ -660,6 +672,8 @@ fn a_vacant_lexical_site_uses_the_global_cache() {
 /// == 22, right == 21`) while the rest of the workspace suite, including
 /// `a_vacant_lexical_site_uses_the_global_cache` above, stays green; then
 /// restored the real implementation and confirmed this test passes again.
+// spec: vm.dispatch.key-covers-every-dependency
+// spec: vm.dispatch.privacy-decided-once-per-site
 #[test]
 fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
     let source = indoc! {"
@@ -709,6 +723,8 @@ fn a_vacant_lexical_site_does_not_borrow_a_different_ns_entry() {
 /// global cache, and keeps every family's range, since running activations
 /// keep their bases; the next run fills the sites again and answers the same
 /// (`docs/design/dispatch.md`, "Invalidation").
+// spec: vm.dispatch.caches-hold-no-handle
+// spec: vm.dispatch.invalidation-after-change
 #[test]
 fn an_invalidation_vacates_every_site_and_keeps_the_ranges() {
     let (mut interpreter, class) = load(FIVE_KINDS);
@@ -756,6 +772,7 @@ fn an_invalidation_vacates_every_site_and_keeps_the_ranges() {
 /// A global cache of one or two groups, where every insert contends for the
 /// same two-slot group, answers what a full one answers: the megamorphic
 /// `value` site resolves through it on every send.
+// spec: vm.dispatch.cache-records-lookup
 #[test]
 fn a_tiny_global_cache_answers_like_a_full_one() {
     for entries in [2, 4] {
@@ -808,6 +825,7 @@ fn only_the_families_that_ran_take_room_in_the_cache_table() {
 /// `Loud`'s `false` rather than the `true` two equal states would give. Both
 /// receivers share one application, so the site stays monomorphic on the one
 /// method entry.
+// spec: vm.dispatch.key-covers-every-dependency
 #[test]
 fn a_failing_primitive_keeps_its_entry() {
     let source = indoc! {"
@@ -911,6 +929,7 @@ ns_runtime::for_each_lowering! {
     /// cannot answer for `Beta`, whose factory is `with:`. §3.2's flat metaclass
     /// is what makes the entry safe without a re-check: `new` is not a member of
     /// `Beta`'s metaclass, and no class side is inherited for it to come from.
+    // spec: vm.dispatch.key-covers-every-dependency
     fn a_cached_factory_does_not_answer_a_class_with_another_factory_selector(lowering) {
         let (mut interpreter, class) = load_with(TWO_FACTORIES, lowering);
         let instance = instantiate(&mut interpreter, &class);
@@ -970,6 +989,8 @@ fn a_fresh_bootstrap_leaves_twenty_seven_sites_and_twenty_two_global_entries() {
 /// entries naming freed ids and drops the families nothing runs.
 /// `collect_now` is a debug build's.
 #[cfg(debug_assertions)]
+// spec: vm.dispatch.reserved-guards
+// spec: vm.machine.cells-follow-entries
 #[test]
 fn every_cell_agrees_with_its_entry() {
     let private_lexical = indoc! {"
@@ -1015,6 +1036,7 @@ fn every_cell_agrees_with_its_entry() {
 /// entry, so that a compiled caller holding the cell of the edited method
 /// reaches the new one: the `answer` site's cell reads vacant after the
 /// install, and the next send fills it again with the new method's answer.
+// spec: vm.dispatch.invalidation-after-change
 #[test]
 fn an_install_vacates_every_cell() {
     let source = indoc! {"
@@ -1258,6 +1280,7 @@ fn a_churn_of_families_keeps_the_site_table_bounded() {
 /// the full collection ends every replaced version's family as it does in
 /// baseline code and the interpreter.
 #[cfg(debug_assertions)]
+// spec: vm.machine.cell-addresses-fixed
 #[test]
 fn a_churn_of_families_in_optimized_code_keeps_the_site_table_bounded() {
     let (mut once, _, _) = churned_optimizing(1, true);
@@ -1281,6 +1304,7 @@ fn a_churn_of_families_in_optimized_code_keeps_the_site_table_bounded() {
 /// (`heap::limits::Shrink`); `keeper` still hits its moved entries, and
 /// every cell agrees with its entry.
 #[cfg(debug_assertions)]
+// spec: vm.machine.cell-addresses-fixed
 #[test]
 fn the_cells_shrink_after_a_slide() {
     let (mut interpreter, _, churn) = churned(2_000);
@@ -1323,6 +1347,7 @@ ns_runtime::for_each_lowering! {
     /// send runs uncached and no family takes a range, so only the answers
     /// are pinned there. `collect_now` is a debug build's.
     #[cfg(debug_assertions)]
+    // spec: vm.dispatch.slide-rewrites-every-base
     fn a_closure_made_before_a_slide_hits_at_its_moved_range(lowering) {
         let (mut interpreter, class, subject) = sliding_subject(lowering);
         interpreter.set_stress_caches(false);
@@ -1408,6 +1433,7 @@ fn filled_after_the_slide(interpreter: &mut Interpreter, class: &Root, method: &
 /// stale one would fill a site of another range, and the moved one would
 /// stay vacant.
 #[cfg(debug_assertions)]
+// spec: vm.dispatch.slide-rewrites-every-base
 #[test]
 fn a_running_frame_hits_at_its_moved_range_after_a_slide() {
     let (mut interpreter, class, answer, slid, _) = carried(false);
@@ -1434,6 +1460,7 @@ fn a_running_frame_hits_at_its_moved_range_after_a_slide() {
 /// across the slide the release allows. The resumed frame derives its base
 /// again, and its send of `yourself` fills the site its family now names.
 #[cfg(debug_assertions)]
+// spec: vm.dispatch.slide-rewrites-every-base
 #[test]
 fn a_suspended_frame_resumes_at_its_moved_range() {
     let (mut interpreter, class, answer, slid, suspensions) = carried(true);
