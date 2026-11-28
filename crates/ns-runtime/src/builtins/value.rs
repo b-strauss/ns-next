@@ -156,9 +156,7 @@ pub(crate) fn execute<'gc>(
         // so the leaf and the method refuse alike by construction, and
         // neither ever reads a state not built yet.
         ValuePrimitive::SlotCount => {
-            if let Some(refusal) =
-                refusal_of_unbuilt(mutator, receiver, arguments.first(&mutator.heap))
-            {
+            if let Some(refusal) = refusal_of_unbuilt(mutator, receiver, arguments, 0) {
                 return Some(Err(refusal));
             }
             let count = with_declared_slots(mutator, receiver, <[usize]>::len)?;
@@ -169,9 +167,7 @@ pub(crate) fn execute<'gc>(
             HashNode::Unfold(_)
         )))),
         ValuePrimitive::SlotAt => {
-            if let Some(refusal) =
-                refusal_of_unbuilt(mutator, receiver, arguments.try_get(&mutator.heap, 1))
-            {
+            if let Some(refusal) = refusal_of_unbuilt(mutator, receiver, arguments, 1) {
                 return Some(Err(refusal));
             }
             // Its errors name the reader by the slot it reads, as
@@ -241,14 +237,23 @@ pub(crate) fn execute<'gc>(
 }
 
 /// The refusal a slot reader answers for `subject` under construction:
-/// the one the equality leaf gives where `asking` is `#=`, the hash leaf's
-/// for any other, each under that selector; `None` for a complete subject.
+/// the one the equality leaf gives where the question, argument
+/// `position`, is `#=`, the hash leaf's for any other, each under that
+/// selector and naming as its receiver the argument after it -- the
+/// receiver of the `=` or `hash` whose answer is refused, the method's
+/// `self`, as the leaf names the receiver that reached it. `None` for a
+/// complete subject.
 fn refusal_of_unbuilt<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
-    asking: Option<Value<'gc>>,
+    arguments: Arguments<'_, 'gc>,
+    position: usize,
 ) -> Option<NewspeakError<'gc>> {
     let object = under_construction(mutator, subject)?;
+    let asking = arguments.try_get(&mutator.heap, position);
+    let receiver = arguments
+        .try_get(&mutator.heap, position + 1)
+        .unwrap_or(subject);
     let selector = asking
         .and_then(Value::as_object)
         .and_then(|symbol| mutator.heap().symbol_value(symbol))
@@ -259,7 +264,7 @@ fn refusal_of_unbuilt<'gc>(
         ValueQuestion::Hash
     };
     Some(under_construction_error(
-        mutator, question, selector, subject, object,
+        mutator, question, selector, receiver, object,
     ))
 }
 
@@ -270,7 +275,7 @@ fn refusal_of_unbuilt<'gc>(
 /// **The one place this question is answered**, for the same reason
 /// `state_is_a_value` is one function: the equality walk, the hash walk and
 /// the two leaves the Newspeak fallback reads a slot through
-/// (`valueSlotCount:asking:ifFail:`, `value:slotAt:asking:ifFail:`) must agree on which
+/// (`valueSlotCount:asking:of:ifFail:`, `value:slotAt:asking:of:ifFail:`) must agree on which
 /// slots exist and on their order. If they did not, the fallback would
 /// compare different slots than the leaf does, and `=` would answer one
 /// thing when the leaf decided and another when it declined.
@@ -1076,26 +1081,26 @@ mod tests {
         interpreter.send(&mirror, Symbol::intern(selector), &sent)
     }
 
-    /// `valueSlotCount:asking:ifFail:` run on `subject`, asking `#hash`.
+    /// `valueSlotCount:asking:of:ifFail:` run on `subject`, asking `#hash`.
     fn slot_count(interpreter: &mut Interpreter, subject: &Root) -> HostResult {
         let asking = asking_hash(interpreter);
         leaf(
             interpreter,
-            "valueSlotCount:asking:ifFail:",
+            "valueSlotCount:asking:of:ifFail:",
             subject,
-            &[asking],
+            &[asking, subject.clone()],
         )
     }
 
-    /// `value:slotAt:asking:ifFail:` run on `subject` at `index`, asking
+    /// `value:slotAt:asking:of:ifFail:` run on `subject` at `index`, asking
     /// `#hash`.
     fn slot_at(interpreter: &mut Interpreter, subject: &Root, index: Root) -> HostResult {
         let asking = asking_hash(interpreter);
         leaf(
             interpreter,
-            "value:slotAt:asking:ifFail:",
+            "value:slotAt:asking:of:ifFail:",
             subject,
-            &[index, asking],
+            &[index, asking, subject.clone()],
         )
     }
 
@@ -2787,6 +2792,76 @@ mod tests {
             );
             assert!(answered_flag(&mut interpreter, &sent, what), "{what}");
         }
+    }
+
+    /// A refusal names, on either path, the receiver of the `=` or `hash`
+    /// whose answer it refuses: the leaf the receiver that reached it,
+    /// `valueEquals:` and `valueHashOfSlots` their `self`, which they hand
+    /// their slot readers -- so a host sees the same object whichever path
+    /// refused.
+    // spec: semantics.value.under-construction
+    #[test]
+    fn both_paths_name_the_receiver_whose_answer_they_refuse() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let point = send(
+            &mut interpreter,
+            &fixture,
+            "pointX:y:",
+            &[one.clone(), two.clone()],
+        );
+        let marked = send(&mut interpreter, &fixture, "pointX:y:", &[one, two]);
+        interpreter.enter(|mutator| {
+            let object = mutator.fetch(&marked).as_object().expect("a Point");
+            mutator.heap.mark_under_construction(object);
+        });
+        let boxed = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&marked),
+        );
+        let refused_receiver = |result: HostResult, what: &str| {
+            let Err(HostSignal::Error(error)) = result else {
+                panic!("{what} did not refuse");
+            };
+            assert!(error.message.contains("still under construction"), "{what}");
+            error.receiver
+        };
+        let leaf_equality = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &point,
+            std::slice::from_ref(&marked),
+        );
+        let method_equality = interpreter.send_lexically(
+            &point,
+            crate::types::BuiltinClass::Value,
+            Symbol::intern("valueEquals:"),
+            std::slice::from_ref(&marked),
+        );
+        let leaf_hash = leaf(&mut interpreter, "valueHash:ifFail:", &boxed, &[]);
+        let method_hash = interpreter.send_lexically(
+            &boxed,
+            crate::types::BuiltinClass::Value,
+            Symbol::intern("valueHashOfSlots"),
+            &[],
+        );
+        let named = [
+            (leaf_equality, "the equality leaf", &point),
+            (method_equality, "valueEquals:", &point),
+            (leaf_hash, "the hash leaf", &boxed),
+            (method_hash, "valueHashOfSlots", &boxed),
+        ]
+        .map(|(result, what, expected)| (refused_receiver(result, what), what, expected));
+        interpreter.enter(|mutator| {
+            for (receiver, what, expected) in &named {
+                let receiver = mutator.fetch(receiver).as_object().expect("an object");
+                let expected = mutator.fetch(expected).as_object().expect("an object");
+                assert!(receiver.same(expected), "{what} names the receiver");
+            }
+        });
     }
 
     /// A value's hash is defined by the first nodes of its breadth-first

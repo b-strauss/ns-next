@@ -2359,7 +2359,9 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// Both refuse a `subject` under construction, as the leaf `=` or
     /// `hash` stands in for refuses it, so that the Newspeak side never
-    /// reads a state not built yet and refuses where the leaf does.
+    /// reads a state not built yet and refuses where the leaf does; the
+    /// refusal names the receiver, the one whose `=` or `hash` is refused,
+    /// as the leaf's does.
     ///
     /// @param subject the receiver, the object it is compared with, or a
     /// node of its unfolding.
@@ -2372,7 +2374,7 @@ class Kernel vmMirror: mirror = Value (
     /// its factory has returned', or 'cannot hash …' for `#hash`, naming
     /// the class, while `subject` is under construction.
     private valueSlotCountOf: subject asking: question = (
-      ^vmMirror valueSlotCount: subject asking: question ifFail: [^0].
+      ^vmMirror valueSlotCount: subject asking: question of: self ifFail: [^0].
     )
 
     /// Reads `subject`'s declared slot at `index`, through the same leaf
@@ -2392,7 +2394,7 @@ class Kernel vmMirror: mirror = Value (
     /// Integer index, got …', for one that is no Integer.
     /// @see `valueSlotCountOf:asking:`.
     private valueSlotOf: subject at: index asking: question = (
-      ^vmMirror value: subject slotAt: index asking: question ifFail: [^nil].
+      ^vmMirror value: subject slotAt: index asking: question of: self ifFail: [^nil].
     )
   )
 

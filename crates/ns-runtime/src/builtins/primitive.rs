@@ -1218,13 +1218,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Value(ValuePrimitive::Hash),
     )),
     mirror(
-        "valueSlotCount:asking:ifFail:",
-        "slotCountAsking:",
+        "valueSlotCount:asking:of:ifFail:",
+        "slotCountAsking:of:",
         Primitive::Value(ValuePrimitive::SlotCount),
     ),
     mirror(
-        "value:slotAt:asking:ifFail:",
-        "slotAt:asking:",
+        "value:slotAt:asking:of:ifFail:",
+        "slotAt:asking:of:",
         Primitive::Value(ValuePrimitive::SlotAt),
     ),
     mirror(

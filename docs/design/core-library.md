@@ -457,10 +457,15 @@ and `String new` answers the empty string, of the byte format
 `AllocateInstance` runs and which reads the class object's builtin field on
 every instantiation, beside `Array`'s and the VM mirror's class.
 
-Four further rows serve `Value` itself rather than one builtin:
-`value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
-`valueSlotCount:ifFail:` (`slotCount`) and `value:slotAt:ifFail:`
-(`slotAt:`). The first two are the equality and hash `builtins/value.rs`
+Five further rows serve `Value` itself rather than one builtin:
+`value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`), the
+two readers `valueSlotCount:asking:of:ifFail:` (`slotCountAsking:of:`)
+and `value:slotAt:asking:of:ifFail:` (`slotAt:asking:of:`), which refuse
+a subject under construction in the words of the question they are
+asked, naming the receiver whose answer is refused, and
+`valueHashUnfolds:ifFail:` (`hashUnfolds`), which tells
+`valueHashOfSlots` the nodes the hash leaf unfolds. The first two are
+the equality and hash `builtins/value.rs`
 derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
@@ -537,7 +542,7 @@ status 0. Which indices are state is decided once, when the application is
 built: `MixinApplication::declared_slots`, computed in `apply_mixin` beside
 `nested_slot` and `inherits_value` because nothing about an application
 changes afterwards. Everything that asks borrows that one list through one
-wrapper — both Rust walks, and the `slotCount` and `slotAt:` leaves the
+wrapper — both Rust walks, and the two reader leaves the
 Newspeak fallback reads a slot through. That is what keeps the leaf and the
 fallback comparing the same slots in the same order — if they disagreed, `=`
 would answer one thing when the leaf decided and another when it declined —
@@ -4214,7 +4219,7 @@ slots for the same reason. No prior art defines a value's equality over
 one: canonical Newspeak derives no equality for values, and SOMns, which
 does, has no lazy slots. `mixin::declared_slots_of` leaves a lazy slot
 out of `MixinApplication::declared_slots`, which both equality walks and
-the fallback's `slotCount`/`slotAt:` leaves read. A lazy slot of a value
+the fallback's two reader leaves read. A lazy slot of a value
 is still one of its slots for §3.1.1's deep immutability: its getter's
 `InitializeSlot` refuses a non-value exactly as an initializer's does,
 naming the slot, under the getter's selector.
