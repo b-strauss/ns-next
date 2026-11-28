@@ -1854,14 +1854,22 @@ argument is a heap object of another class, so it costs one read of a
 header word. The walk is inlined into `builtins::execute`, the one
 function every leaf enters, and the tests it gained for a value under
 construction made Richards 3% slower in each of three layouts, its
-machine code, inlining and exits unchanged; answered before the walk,
-the pair made Richards about 22% faster than before those tests (8.9 ms
-against 11.3 to 11.6 ms). How the argument is tested matters at this
+machine code, inlining and exits unchanged. Answered before the walk,
+the pair makes Richards 19.2% faster than on the tree without the mark:
+9.159 ms against 11.340 ms, the three builds of each side 9.108 to 9.206
+ms against 11.267 to 11.452, by the protocol of
+[execution.md](execution.md), "What removing the re-entries moved" --
+three pinned builds a side in the layouts a, b and c, three rounds in
+one sitting, every process held to the performance cores (measured on
+2026-11-28, `950582c9` against `65aee7be`). Over the sixteen Are We
+Fast Yet programs and the seven micro sources the geometric mean moves
+-0.94%, each of the branch's builds below each of `master`'s, and no
+row is separated slower. How the argument is tested matters at this
 rate: its class word, read through `Heap::object_class`, cost Richards
 3% (9.2 against 8.9 ms); its header word read as the dispatch id,
 without the block's bounds (`Heap::object_dispatch_id`), costs nothing
-measurable. These figures come from one pinned build per layout, not
-from the pooled protocol of [execution.md](execution.md).
+measurable. The 3% figures come from one pinned build per layout, not
+from the pooled protocol.
 ## `ByteArray`, `StringBuilder` and the views
 
 The kernel completion's fifth sub-project ("The kernel completed

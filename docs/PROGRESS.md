@@ -9087,12 +9087,16 @@ and `vm.heap.under-construction-only-on-value-instances` state it.
 
 The walk of a value's derived equality, which gained the tests for an
 instance under construction, measured Richards 3% slower in each of
-three layouts, by its 366,000 `nil == anObject` a run; `Value>>=`'s
-leaf now answers a pair whose receiver is `nil`, `true` or `false` by
-identity before the walk, and Richards runs about 22% faster than
-before the branch, both figures from one pinned build per layout
-([core-library.md](design/core-library.md), "`nil`, `true` and `false`
-are answered by identity").
+three layouts, by its 366,000 `nil == anObject` a run, from one pinned
+build per layout; `Value>>=`'s leaf now answers a pair whose receiver
+is `nil`, `true` or `false` by identity before the walk, and Richards
+runs 19.2% faster than on `master` (9.159 against 11.340 ms, three
+pinned builds a side, every build of the branch below every build of
+`master`) ([core-library.md](design/core-library.md), "`nil`, `true`
+and `false` are answered by identity"). Over the sixteen Are We Fast
+Yet programs and the seven micro sources the branch runs 0.94% faster
+than `master` by the geometric mean, Richards and `bench_megamorphic`
+(-2.9%) separated faster and no program separated slower.
 
 A value's hash is defined over the first 4096 nodes of its breadth-first
 unfolding, the sum masked to its low 60 bits after every node, and
