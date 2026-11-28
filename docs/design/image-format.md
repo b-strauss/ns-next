@@ -454,7 +454,7 @@ class object, a level that is not there, an arity -- each instruction
 checks when it runs and raises an ordinary error for, never a panic
 (`interpreter/instantiate.rs`;
 `an_instantiation_instruction_a_crafted_image_runs_raises_an_error`, each
-of the five but `CompleteInstance` in its narrow and its wide form, through
+of the other five in its narrow and its wide form, through
 a real `image::load`). `CompleteInstance` raises nothing: on an object that
 carries no mark -- a negative `LargeInteger`, whose sign shares the mark's
 header bit, among them -- it changes nothing, so a crafted body can at most

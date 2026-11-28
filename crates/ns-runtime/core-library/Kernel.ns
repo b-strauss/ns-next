@@ -6688,10 +6688,13 @@ class Kernel vmMirror: mirror = Value (
 
     /// Makes `newKey` the key. A refused key leaves the key as it was.
     ///
-    /// The value leaf never declines: it answers a Boolean for any
-    /// object but an instance of a value class still under construction,
-    /// which it refuses, since that instance becomes a value once its
-    /// factory returns. The refusal of a value is signalled here rather
+    /// The value leaf answers a Boolean for any object but two: it
+    /// declines for a future it would answer false to, so that the send
+    /// asks again of the value the future stands for before the failure
+    /// block runs, and it
+    /// refuses an instance of a value class still under construction,
+    /// since that instance becomes a value once its factory returns. The
+    /// refusal of a value is signalled here rather
     /// than by the leaf that stores the key, since its text ends in the
     /// key's printString, which only Newspeak computes.
     ///

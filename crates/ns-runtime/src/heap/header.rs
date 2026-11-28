@@ -302,14 +302,21 @@ impl Header {
 
 impl std::fmt::Debug for Header {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("Header")
+        let mut debug = formatter.debug_struct("Header");
+        debug
             .field("guard", &self.guard())
             .field("format", &self.format())
             .field("unused", &self.unused())
             .field("age", &self.age())
-            .field("remembered", &self.remembered())
-            .field("negative", &self.negative())
+            .field("remembered", &self.remembered());
+        // Bit 32 means the sign of a `LargeInteger` and the mark of an
+        // instance under construction, so it is named by the format that
+        // gives it its meaning.
+        match self.format() {
+            Format::FixedPointers => debug.field("under_construction", &self.under_construction()),
+            _ => debug.field("negative", &self.negative()),
+        };
+        debug
             .field("marked", &self.marked())
             .field("identity_hash", &self.identity_hash())
             .field("word_count", &self.word_count())
