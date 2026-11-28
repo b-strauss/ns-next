@@ -511,6 +511,11 @@ pub struct Mutator<'gc> {
     /// move or a collection can invalidate, so it needs no root and nothing
     /// traces it.
     pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
+    /// The method `Value` declares as `hash`, recorded beside
+    /// `value_equality_method` and for the same reason: the hash walk
+    /// unfolds a node only where its `hash` is this one, and sends any
+    /// other node its own `hash` -- declines, in the leaf.
+    pub(crate) value_hash_method: Option<Rc<crate::mixin::MixinMethod>>,
     /// `Value`'s own mixin, recorded by the bootstrap's kernel phase just
     /// before `Value`'s class object is filled: what `apply_mixin` compares
     /// a mixin against to answer §3.1.1's "its class inherits from class

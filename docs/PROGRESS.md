@@ -9094,6 +9094,15 @@ before the branch, both figures from one pinned build per layout
 ([core-library.md](design/core-library.md), "`nil`, `true` and `false`
 are answered by identity").
 
+A value's hash is defined over the first 4096 nodes of its breadth-first
+unfolding, the sum masked to its low 60 bits after every node, and
+`Value>>valueHashOfSlots` follows the same definition with a queue, so
+the leaf and the method answer alike, a value whose state reaches
+itself hashes, and equal rings of one and of two values hash alike
+(decided with the user on 2026-11-28, option B). The slot readers
+`valueEquals:` and `valueHashOfSlots` go through refuse a subject under
+construction themselves.
+
 - `62ec3fef` -- the plan.
 - `cc798968` -- the mark and `CompleteInstance`.
 - `148cf455` -- the value questions refused.

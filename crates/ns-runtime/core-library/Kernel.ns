@@ -2166,11 +2166,12 @@ class Kernel vmMirror: mirror = Value (
     /// construction, and an instance of a value class is a value only once
     /// its factory has returned', naming the class, while the receiver is
     /// under construction, or `other` is and its class could be equal to
-    /// the receiver's, as any class can where the receiver's class side
-    /// declares `==` -- an `other` of a class that cannot is unequal
-    /// whatever its state, and answered `false` -- and likewise for each
-    /// pair of slots the comparison reaches before it finds an unequal
-    /// one, the receiver's slot in the receiver's part, but for a pair
+    /// the receiver's -- or, where the receiver's class side declares
+    /// `==`, that `==` finds them equal; an `other` of a class that cannot
+    /// is unequal whatever its state, and answered `false` -- and
+    /// likewise for each pair of slots the comparison reaches before it
+    /// finds an unequal one, the receiver's slot in the receiver's part,
+    /// but for a pair
     /// whose receiver's slot is of a class that declares its own `=`:
     /// that `=` compares the pair, and decides for itself.
     /// @see `valueEquals:` and `Object>>=`.
@@ -2220,26 +2221,28 @@ class Kernel vmMirror: mirror = Value (
     /// makes equal hash alike whatever their slots' classes: a number slot
     /// hashes by its exact value, so `3` and `3.0` count alike. The class
     /// does not enter it, so instances of two classes with equal slots may
-    /// hash alike, which the contract allows. The answer is the slot count
-    /// plus each slot's own `hash`, whichever way it is computed: the leaf
-    /// hashes every slot it can by the rule of the slot's own class, and
-    /// where a slot's class declares an `=` of its own it declines, as
-    /// `=`'s leaf does on the same values, and the slots are sent `hash`
-    /// -- so a value whose slot's class declares `=` relies on that class's
-    /// `hash` agreeing with it. Only a value reaching more than 4096
-    /// objects is hashed by the ones it reaches first, so that a value
-    /// whose state reaches itself hashes too. A value never changes, and
-    /// neither does its hash.
+    /// hash alike, which the contract allows.
     ///
-    /// @answers an Integer: the slot count plus the `hash` of every slot,
-    /// alike for every two values `=` makes equal.
+    /// It is defined over the first 4096 nodes of the receiver's
+    /// unfolding, visited breadth-first: the receiver first, then each
+    /// node's slots in declaration order. A node whose `=` and `hash` are
+    /// both `Value`'s is unfolded, adding its slot count; any other adds
+    /// its own `hash` -- so a value whose slot's class declares `=` or
+    /// `hash` relies on that class's `hash` agreeing with its `=`. The sum
+    /// is masked to its low 60 bits at every step. The leaf and
+    /// `valueHashOfSlots` follow the same definition, so two equal values
+    /// hash alike -- a ring of one value and an equal ring of two among
+    /// them -- and a value whose state reaches itself hashes too. A value
+    /// never changes, and neither does its hash.
+    ///
+    /// @answers a SmallInteger from 0 to 2^60 - 1, alike for every two
+    /// values `=` makes equal.
     /// @signals Error 'cannot hash an instance of …: it is still under
     /// construction, and an instance of a value class is a value only once
     /// its factory has returned', naming the class, while the receiver or a
-    /// value its slots reach is under construction: a hash of the slots
-    /// built so far would change once the rest were. A slot of a class
-    /// that declares its own `=` is hashed by its own `hash`, which decides
-    /// for itself.
+    /// node it unfolds is under construction: a hash of the slots built so
+    /// far would change once the rest were. A node whose `hash` is its own
+    /// is hashed by that method, which decides for itself.
     /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots].
@@ -2280,30 +2283,66 @@ class Kernel vmMirror: mirror = Value (
         count
       |
       (self class == (vmMirror objectClass: other ifFail: [^false])) ifFalse: [^false].
-      count:: self valueSlotCountOf: self.
-      (count = (self valueSlotCountOf: other)) ifFalse: [^false].
+      count:: self valueSlotCountOf: self asking: #=.
+      (count = (self valueSlotCountOf: other asking: #=)) ifFalse: [^false].
       [index <= count] whileTrue: [
-        ((self valueSlotOf: self at: index) = (self valueSlotOf: other at: index)) ifFalse: [
-          ^false.
-        ].
+        ((self valueSlotOf: self at: index asking: #=)
+            = (self valueSlotOf: other at: index asking: #=)) ifFalse: [^false].
         index:: index + 1.
       ].
       ^true.
     )
 
-    /// The hash `hash` leaves to Newspeak, sending `hash` to every slot,
-    /// so that it agrees with `valueEquals:`.
+    /// The hash `hash` leaves to Newspeak, the leaf's own definition:
+    /// the first 4096 nodes of the receiver's unfolding, visited
+    /// breadth-first -- the receiver first, then each node's slots in
+    /// declaration order -- each node's hash added to the sum and the sum
+    /// kept below 2^60 by masking it at every step. A node the leaf
+    /// unfolds (`valueHashUnfolds:ifFail:`) adds its slot count and puts
+    /// its slots on the queue; any other adds its own `hash`.
     ///
-    /// @answers the slot count plus the `hash` of every slot.
+    /// A queue, not a recursion, so a value whose state reaches itself is
+    /// hashed by the first 4096 nodes of its unfolding, and two equal
+    /// values -- a ring of one and an equal ring of two -- by the same
+    /// sequence of nodes, the masked sum the same whichever path takes it.
+    ///
+    /// @answers a SmallInteger from 0 to 2^60 - 1, what the leaf answers
+    /// wherever it does.
+    /// @signals Error what `valueSlotCountOf:asking:` signals for the
+    /// receiver or a node it unfolds, while that is under construction.
     private valueHashOfSlots = (
       |
-        count = self valueSlotCountOf: self.
-        result ::= count.
-        index ::= 1.
+        mask = 1152921504606846975.
+        queue ::= Array new: 8.
+        head ::= 1.
+        tail ::= 1.
+        visited ::= 1.
+        result ::= 0.
+        node ::= self.
+        unfolds ::= true.
+        count
+        index
       |
-      [index <= count] whileTrue: [
-        result:: result + (self valueSlotOf: self at: index) hash.
-        index:: index + 1.
+      [
+        unfolds ifTrue: [
+          count:: self valueSlotCountOf: node asking: #hash.
+          result:: (result + count) bitAnd: mask.
+          index:: 1.
+          [index <= count and: [visited + (tail - head) < 4096]] whileTrue: [
+            tail > queue size ifTrue: [queue:: queue copyWithSize: queue size * 2].
+            queue at: tail put: (self valueSlotOf: node at: index asking: #hash).
+            tail:: tail + 1.
+            index:: index + 1.
+          ].
+        ] ifFalse: [
+          result:: (result + node hash) bitAnd: mask.
+        ].
+        head < tail.
+      ] whileTrue: [
+        node:: queue at: head.
+        head:: head + 1.
+        visited:: visited + 1.
+        unfolds:: vmMirror valueHashUnfolds: node ifFail: [false].
       ].
       ^result.
     )
@@ -2318,28 +2357,42 @@ class Kernel vmMirror: mirror = Value (
     /// costs each of them the primitive-method fast path, which only
     /// the declining path pays.
     ///
-    /// @param subject the receiver or the object it is compared with.
+    /// Both refuse a `subject` under construction, as the leaf `=` or
+    /// `hash` stands in for refuses it, so that the Newspeak side never
+    /// reads a state not built yet and refuses where the leaf does.
+    ///
+    /// @param subject the receiver, the object it is compared with, or a
+    /// node of its unfolding.
+    /// @param question `#=` for a comparison, `#hash` for a hash: the
+    /// question a refusal names, under that selector.
     /// @answers the number of slots `subject`'s classes declare, 0 for a
     /// `subject` whose state is no slots.
-    private valueSlotCountOf: subject = (
-      ^vmMirror valueSlotCount: subject ifFail: [^0].
+    /// @signals Error 'cannot compare an instance of …: it is still under
+    /// construction, and an instance of a value class is a value only once
+    /// its factory has returned', or 'cannot hash …' for `#hash`, naming
+    /// the class, while `subject` is under construction.
+    private valueSlotCountOf: subject asking: question = (
+      ^vmMirror valueSlotCount: subject asking: question ifFail: [^0].
     )
 
     /// Reads `subject`'s declared slot at `index`, through the same leaf
     /// for either side.
     ///
-    /// @param subject as `valueSlotCountOf:`'s.
+    /// @param subject as `valueSlotCountOf:asking:`'s.
     /// @param index an Integer from 1 to that slot count.
+    /// @param question as `valueSlotCountOf:asking:`'s.
     /// @answers `subject`'s declared slot at `index`, counted from 1 in
     /// declaration order; nil for a `subject` whose state is no slots.
+    /// @signals Error what `valueSlotCountOf:asking:` signals, while
+    /// `subject` is under construction.
     /// @signals ArgumentError carrying `index`, 'index … out of range:
     /// valid indices are 1..size (size …)', for an Integer outside that
     /// range.
     /// @signals ArgumentError carrying `index`, 'slotAt: requires an
     /// Integer index, got …', for one that is no Integer.
-    /// @see `valueSlotCountOf:`.
-    private valueSlotOf: subject at: index = (
-      ^vmMirror value: subject slotAt: index ifFail: [^nil].
+    /// @see `valueSlotCountOf:asking:`.
+    private valueSlotOf: subject at: index asking: question = (
+      ^vmMirror value: subject slotAt: index asking: question ifFail: [^nil].
     )
   )
 

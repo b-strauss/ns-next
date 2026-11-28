@@ -81,7 +81,10 @@ impl Primitive {
             ) => false,
             Primitive::Value(ValuePrimitive::SameAs) => true,
             Primitive::Value(
-                ValuePrimitive::Hash | ValuePrimitive::SlotCount | ValuePrimitive::SlotAt,
+                ValuePrimitive::Hash
+                | ValuePrimitive::SlotCount
+                | ValuePrimitive::SlotAt
+                | ValuePrimitive::HashUnfolds,
             ) => false,
             Primitive::Behavior(
                 // Declines, rather than answering `false`, for an argument
@@ -371,6 +374,10 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
+    /// Whether the hash walk unfolds a node, which `Value>>valueHashOfSlots`
+    /// asks of each node its queue reaches, so that it unfolds exactly the
+    /// nodes the leaf does.
+    HashUnfolds,
 }
 
 /// §3.2's `Class` and `Metaclass` forward to these; nothing else about a
@@ -1211,14 +1218,19 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Value(ValuePrimitive::Hash),
     )),
     mirror(
-        "valueSlotCount:ifFail:",
-        "slotCount",
+        "valueSlotCount:asking:ifFail:",
+        "slotCountAsking:",
         Primitive::Value(ValuePrimitive::SlotCount),
     ),
     mirror(
-        "value:slotAt:ifFail:",
-        "slotAt:",
+        "value:slotAt:asking:ifFail:",
+        "slotAt:asking:",
         Primitive::Value(ValuePrimitive::SlotAt),
+    ),
+    mirror(
+        "valueHashUnfolds:ifFail:",
+        "hashUnfolds",
+        Primitive::Value(ValuePrimitive::HashUnfolds),
     ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing

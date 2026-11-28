@@ -241,33 +241,42 @@ r[runtime.value.equality]
    else is compared.
 3. Otherwise, where the receiver's side is a value whose class side
    declares `==` of its own, that `==` compares the two classes, as
-   `valueEquals:` sends it: signal step 2's text if the argument's side
-   is under construction, and compare the slots by sending, as step 1
-   does. Otherwise the classes are compared by `Behavior>>==`: if they
-   cannot be equal, the pair is unequal, whatever the state of its
-   argument's side.
+   `valueEquals:` sends it, and the slots are compared by sending, as
+   step 1 does; `valueEquals:` reads each side's slots through readers
+   that signal step 2's text for one under construction. Otherwise the
+   classes are compared by `Behavior>>==`: if they cannot be equal, the
+   pair is unequal, whatever the state of its argument's side.
 4. Otherwise, if its argument's side is under construction, signal step
    2's text naming that object's class.
 5. An immediate and another instance of its class -- `nil` and
    `UndefinedObject new` -- are equal, neither having any slot.
 6. The walk ends at the first pair that signals or is unequal, in its
-   order, answering `false` for an unequal one -- so a slot's own `=`
-   sent before it has run -- and `true` when none is.
+   order, answering `false` for an unequal one, and `true` when none is.
 
 r[runtime.value.hash]
-`Value`'s `hash`, sent to *value*: its slot count plus the `hash` of
-every slot, as `valueHashOfSlots` sums them, each slot's `hash` the one
-its own class answers, a number's its tower hash; the sum exact, a
-`LargeInteger` where it leaves the `SmallInteger` range. A slot whose
-`=` is not one step 1 of `runtime.value.equality` compares itself -- a
-class that declares its own `=` -- is hashed by its own `hash`, under
-construction or not. If *value*, or an object its slots reach that is
-not such a slot, is under construction, signal `cannot hash an instance
-of C: it is still under construction, and an instance of a value class
-is a value only once its factory has returned`, naming that object's
-class, instead of answering. Past 4096 objects the sum is cut, at the
-same object for two equal values, so that a value whose state reaches
-itself still hashes.
+`Value`'s `hash`, sent to *value*, is defined over the first 4096 nodes
+of *value*'s unfolding, visited breadth-first: *value* first, then the
+nodes on a queue in the order they were put on it.
+
+1. *value* is unfolded: it adds its slot count, 0 for a state that is no
+   slots, and puts its slots on the queue in declaration order.
+2. Any other node is unfolded the same way where both its `=` and its
+   `hash` are `Value`'s; otherwise it adds what its own `hash` answers --
+   `nil`'s 0, a Boolean's, a number's, a String's, a Symbol's, a class
+   object's, or the method a class declares -- and puts nothing on the
+   queue.
+3. The sum starts at 0 and, after each addition, is masked to its low 60
+   bits (`bitAnd: 2^60 - 1`), so it is a `SmallInteger` from 0 to
+   2^60 - 1 whatever the nodes add.
+4. Once 4096 nodes have been visited, the sum so far is the hash, so that
+   a value whose state reaches itself has one; two equal values unfold to
+   the same sequence of nodes however their states share structure -- a
+   ring of one value and an equal ring of two -- and hash alike.
+5. If *value*, or a node step 2 unfolds, is under construction, signal
+   `cannot hash an instance of C: it is still under construction, and an
+   instance of a value class is a value only once its factory has
+   returned`, naming that object's class, instead of answering. A node
+   whose `hash` is its own answers as that method does.
 r[runtime.value.is-value]
 Whether *object* is a value object, as an `Ephemeron`'s `key:` and a
 `WeakMap`'s `at:put:` ask of a key before refusing a value: an object

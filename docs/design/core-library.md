@@ -497,14 +497,33 @@ brings its own `=`, declined before the walk's tower or class test could
 answer for it by shape (`builtins/value.rs`, `receiver_equality`), a
 shape it does not handle, its node budget — the
 failure block runs `valueEquals:` or `valueHashOfSlots`, which walk the
-slots from Newspeak and send `=` or `hash` to each. Those two read a slot
-through `valueSlotCountOf:` and `valueSlotOf:at:`, which name their subject
-rather than forwarding `self`: a private member is reachable only through a
-lexical send (§5.9), so the *other* side's state cannot be read by sending
-it a private selector, and both sides have to go through the same leaf.
+slots from Newspeak, sending `=` to each slot or `hash` to each node the
+hash does not unfold. Those two read a slot through
+`valueSlotCountOf:asking:` and `valueSlotOf:at:asking:`, which name their
+subject rather than forwarding `self`: a private member is reachable
+only through a lexical send (§5.9), so the *other* side's state cannot
+be read by sending it a private selector, and both sides have to go
+through the same leaf.
 Naming the subject is also what costs those two the primitive-method fast
 path, which only the declining path pays.
 
+**A value's hash is breadth-first and bounded.** `Value>>hash` is
+defined over the first 4096 nodes of the receiver's breadth-first
+unfolding, the sum masked to its low 60 bits after every node
+([object-model.md](object-model.md), "A value's hash is defined over a
+breadth-first prefix of its unfolding"; `r[runtime.value.hash]`), and
+`valueHashOfSlots` follows that definition with a queue of its own, so
+the leaf and the method answer the same number wherever the leaf
+answers at all, a value whose state reaches itself hashes, and a ring of
+one value hashes as an equal ring of two. The user decided this on
+2026-11-28 (option B), over keeping a truncated sum as the leaf's
+exception and over detecting cycles: Bracha's VMs have no structural
+value hash to follow, and OCaml's `Hashtbl.hash` walks a value
+breadth-first within a bound the same way. The readers the method goes
+through, `valueSlotCountOf:asking:` and `valueSlotOf:at:asking:`, refuse
+a subject under construction in the words of the question they are
+asked, so `valueEquals:` and `valueHashOfSlots` refuse where the leaves
+do by construction.
 **A value's state is the slots its classes *declare*, and nothing else.**
 An instance's field vector holds more than that: each level lays its own
 slots down at its `own_slot_base` and then one hidden cache slot per nested

@@ -1087,8 +1087,11 @@ the instance will have):
   class side declares `==` of its own, which a flag of its metaclass's
   application says without a lookup (`LevelFacts::declares_identity`,
   `Heap::class_side_declares_identity`); there the walk declines and
-  that `==` decides -- refusing a marked argument first, since
-  `valueEquals:` would go on to read its slots
+  that `==` decides; `valueEquals:` reads every slot through readers
+  that refuse a subject under construction (`valueSlotCountOf:asking:`,
+  `valueSlotOf:at:asking:`, in the words of the question they are
+  asked), so a marked argument is refused there wherever that `==` lets
+  the comparison go on to the slots
   (`goldens/library/value/a_class_side_identity_decides_whether_two_values_classes_are_equal.ns`).
   It examines the slots in declaration order, each unfolded before the
   next, and a class pair's enclosing objects and superclasses in
@@ -1101,21 +1104,35 @@ the instance will have):
   makes for an instance is the one the walk made for it anyway, handed
   on to `compare_node`. The walk answers whichever it
   meets first, a refusal, an unequal pair or such a decline, in its
-  order. The hash leaf refuses its receiver and every marked object its
-  walk hashes itself, since hashing reads state; it declines on the
-  same slots the equality walk declines on, before answering any by its
-  shape, and `valueHashOfSlots` sends such a slot its own `hash`. What
-  it answers is what that method sums -- the slot count and each slot's
-  own hash, a number's its tower hash -- exactly, declining a sum past
-  the `SmallInteger` range, which that method answers as a
-  `LargeInteger`; only past its node budget does it answer the sum so
-  far, cut at the same node for two equal values, where that method would
-  not end on a value whose state reaches itself
-  (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`).
+  order. The hash leaf refuses its receiver and every marked node it
+  unfolds, since hashing reads state, and declines at the first node
+  whose `hash` is its own, which `valueHashOfSlots` sends that `hash`
+  (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`;
+  the definition below).
   A refusal is an error, never a decline: a decline would run
   `valueEquals:` or `valueHashOfSlots`, which would compare or hash
   exactly the partial state the refusal withholds
   (`goldens/library/value/a_value_under_construction_compares_unequal_to_another_class.ns`).
+- **A value's hash is defined over a breadth-first prefix of its
+  unfolding** (`r[runtime.value.hash]`): the first 4096 nodes, visited
+  from a queue -- the value first, then each node's slots in declaration
+  order -- a node whose `=` and `hash` are both `Value`'s unfolded and
+  adding its slot count, any other adding its own `hash`, and the sum
+  masked to its low 60 bits after every addition. The leaf
+  (`builtins/value.rs`, `derived_hash`) and `Value>>valueHashOfSlots`
+  follow it alike, the method asking the leaf which nodes it unfolds
+  (`valueHashUnfolds:ifFail:`), so the leaf declines only at a node
+  whose `hash` it cannot send and the two never answer apart
+  (`equal_values_hash_alike_by_their_breadth_first_unfolding`, and the
+  differential test over every shape). Two equal values unfold to the
+  same sequence of nodes however their states share structure -- a ring
+  of one value and an equal ring of two -- so they hash alike, and a
+  value whose state reaches itself hashes by a finite prefix rather
+  than not at all. Decided with the user on 2026-11-28 (option B), over
+  keeping a cut sum as the leaf's exception and over detecting cycles:
+  Bracha's VMs have no structural value hash to follow, and OCaml's
+  `Hashtbl.hash` walks a value breadth-first within a bound in the same
+  way.
 - Every refusal names the marked object's class and the question, through
   one builder, `instantiate::under_construction_error`, in the "cannot
   <action> …: <reason>" form of the other value errors -- `cannot compare

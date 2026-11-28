@@ -22,13 +22,14 @@
 //! Its hash is its name's (`hash_node`, which says why).
 //!
 //! Neither walk recurses. An image is untrusted input and the graph a
-//! decoded value reaches is the image's to choose, so both walks run an
-//! explicit work stack; the equality walk remembers the pairs it has
-//! already assumed equal -- instances and class objects alike -- so a
-//! cycle, through slots or through classes, terminates in `true` rather than
-//! running forever, and both stop once `NODE_BUDGET` nodes have gone *onto*
-//! that stack, so neither runs for as long as the input likes and neither
-//! stack grows past the budget.
+//! decoded value reaches is the image's to choose, so the equality walk
+//! runs an explicit work stack and remembers the pairs it has already
+//! assumed equal -- instances and class objects alike -- so a cycle,
+//! through slots or through classes, terminates in `true` rather than
+//! running forever; the hash walk runs a queue, the hash being defined
+//! over the first `NODE_BUDGET` nodes of a value's breadth-first unfolding
+//! (`derived_hash`). Neither runs for as long as the input likes, and
+//! neither's work list grows past the budget.
 //!
 //! What a leaf cannot decide it declines, and the `ifFail:` block of
 //! `Value`'s method answers instead. It never asks the receiver: a native
@@ -48,14 +49,14 @@
 //! the slots' own `=` and `hash`. Wherever a walk answers or refuses
 //! without sending, it answers what that method would, or refuses where
 //! the method would read a state not built yet; where it cannot know, it
-//! declines and the method answers. The one exception is the node budget,
-//! past which the hash walk answers its sum so far, consistently for two
-//! equal values, where the method would not terminate on a cycle.
+//! declines and the method answers. The hash's node budget is no
+//! exception: `valueHashOfSlots` visits the same first nodes with a queue
+//! of its own.
 //! `the_leaves_answer_as_the_methods_they_stand_for_over_every_shape`
 //! holds the walks to the methods over every shape, pair by pair.
 
 use crate::interpreter::Arguments;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 
 use crate::builtins::collections::{self, IntegerArgument};
@@ -70,8 +71,8 @@ use crate::interpreter::instantiate::{
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
-/// How many nodes either walk puts on its work stack before it stops
-/// unfolding -- the root included.
+/// How many nodes the equality walk puts on its work stack before it stops
+/// unfolding, and the hash walk visits -- the root included.
 ///
 /// It is charged when a node is **pushed**, not when one is taken, which is
 /// what bounds the work vector itself by this number rather than by what
@@ -82,11 +83,10 @@ use crate::{Mutator, Symbol};
 /// allocation, which is how a decoded value could turn a bounded walk into
 /// an allocation abort.
 ///
-/// It is also what keeps a truncated hash *consistent*: two equal values
-/// unfold to the same nodes in the same order and have the same slot
-/// counts at each of them, so both are charged alike and both stop at the
-/// same node. Every node contributes at most a `SmallInteger`, so a sum of
-/// this many stays far inside an `i128`.
+/// For the hash it is part of the definition (`r[runtime.value.hash]`),
+/// which `Value>>valueHashOfSlots` writes out as `4096`: two equal values
+/// unfold breadth-first to the same sequence of nodes, so both stop at the
+/// same node.
 const NODE_BUDGET: usize = 4096;
 
 /// `nil`'s hash: 0, what `valueHashOfSlots` answers for it -- its slot
@@ -150,11 +150,33 @@ pub(crate) fn execute<'gc>(
                 object,
             ))),
         },
+        // The readers of `valueEquals:` and `valueHashOfSlots` refuse a
+        // subject under construction, as the leaves those methods stand in
+        // for refuse it, in the words of the question their caller names:
+        // so the leaf and the method refuse alike by construction, and
+        // neither ever reads a state not built yet.
         ValuePrimitive::SlotCount => {
+            if let Some(refusal) =
+                refusal_of_unbuilt(mutator, receiver, arguments.first(&mutator.heap))
+            {
+                return Some(Err(refusal));
+            }
             let count = with_declared_slots(mutator, receiver, <[usize]>::len)?;
             Some(Ok(Value::small_integer(count as i64)))
         }
+        ValuePrimitive::HashUnfolds => Some(Ok(Value::boolean(matches!(
+            hash_node(mutator, receiver),
+            HashNode::Unfold(_)
+        )))),
         ValuePrimitive::SlotAt => {
+            if let Some(refusal) =
+                refusal_of_unbuilt(mutator, receiver, arguments.try_get(&mutator.heap, 1))
+            {
+                return Some(Err(refusal));
+            }
+            // Its errors name the reader by the slot it reads, as
+            // `IndexedCollection>>at:`'s do, not by the question it is asked.
+            let selector = Symbol::intern("slotAt:");
             let object = receiver.as_object()?;
             // Resolved to a field index inside the borrow, never by
             // copying the list out: the declared slots and the fields
@@ -218,6 +240,29 @@ pub(crate) fn execute<'gc>(
     }
 }
 
+/// The refusal a slot reader answers for `subject` under construction:
+/// the one the equality leaf gives where `asking` is `#=`, the hash leaf's
+/// for any other, each under that selector; `None` for a complete subject.
+fn refusal_of_unbuilt<'gc>(
+    mutator: &Mutator<'gc>,
+    subject: Value<'gc>,
+    asking: Option<Value<'gc>>,
+) -> Option<NewspeakError<'gc>> {
+    let object = under_construction(mutator, subject)?;
+    let selector = asking
+        .and_then(Value::as_object)
+        .and_then(|symbol| mutator.heap().symbol_value(symbol))
+        .unwrap_or_else(|| Symbol::intern("hash"));
+    let question = if selector == Symbol::EQUALS {
+        ValueQuestion::Compare
+    } else {
+        ValueQuestion::Hash
+    };
+    Some(under_construction_error(
+        mutator, question, selector, subject, object,
+    ))
+}
+
 /// Runs `read` over the field indices of the slots `receiver`'s classes
 /// **declare**, when it is an ordinary instance -- the only shape whose
 /// state is slots at all. `None` for anything else, which is the decline.
@@ -225,7 +270,7 @@ pub(crate) fn execute<'gc>(
 /// **The one place this question is answered**, for the same reason
 /// `state_is_a_value` is one function: the equality walk, the hash walk and
 /// the two leaves the Newspeak fallback reads a slot through
-/// (`valueSlotCount:ifFail:`, `value:slotAt:ifFail:`) must agree on which
+/// (`valueSlotCount:asking:ifFail:`, `value:slotAt:asking:ifFail:`) must agree on which
 /// slots exist and on their order. If they did not, the fallback would
 /// compare different slots than the leaf does, and `=` would answer one
 /// thing when the leaf decided and another when it declined.
@@ -267,12 +312,15 @@ enum Pair<'gc> {
     Classes(ClassReference<'gc>, ClassReference<'gc>),
 }
 
-/// What a walk found at one node while hashing, the same two ways.
-enum Node<'gc> {
+/// What the hash walk does with one node: adds a hash it computes itself,
+/// unfolds an instance whose state is its slots, or -- for a node whose
+/// `hash` is its own -- leaves it to that `hash`, which the leaf cannot
+/// send, so the leaf declines.
+enum HashNode<'gc> {
     Leaf(i64),
-    State(ObjectReference<'gc>),
+    Unfold(ObjectReference<'gc>),
+    Own,
 }
-
 /// Whether `object` is an ordinary instance whose `=` resolves to the very
 /// method `Value` declares, which the bootstrap recorded
 /// (`Mutator::value_equality_method`). A class that overrides `=` decides
@@ -294,12 +342,12 @@ enum Node<'gc> {
 /// `false`, so `Value new = Value new` was `true` and a value's slot
 /// refused to hold one.
 ///
-/// **The one predicate both walks ask**, and deliberately one function: if
-/// the equality walk and the hash walk ever decided "this is a value I can
-/// unfold" differently, two instances `=` answered `true` for could take
-/// the declining path on one side of `hash` only and hash apart -- the one
-/// thing §3.1.1 does not allow. `the_equality_and_the_hash_decline_on_the_same_shapes`
-/// pins that they agree, shape by shape.
+/// **Both walks ask it**: the equality walk unfolds an instance only where
+/// it holds, and the hash walk only where it holds and the instance's
+/// `hash` is `Value`'s too (`hash_node`). The hash needs no more than that
+/// to agree with `=`: it is defined by the breadth-first unfolding, which
+/// the leaf and `valueHashOfSlots` follow alike, so two equal values hash
+/// alike whichever path computes either.
 fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> bool {
     let Some(recorded) = mutator.value_equality_method.as_ref() else {
         return false;
@@ -470,61 +518,86 @@ fn compare_node<'gc>(
     }
 }
 
-/// One node of the hash walk: `None` declines the whole hash. `receiver`
-/// is what `receiver_equality` already found for `value`, if the walk
-/// asked, as for `compare_node`.
-fn hash_node<'gc>(
-    mutator: &Mutator<'gc>,
-    value: Value<'gc>,
-    receiver: Option<ReceiverEquality>,
-) -> Option<Node<'gc>> {
-    // Every number's slot hash is the one its own `hash` answers -- the
-    // tower's, which `Integer>>hash`, `LargeInteger>>hash`, `Float>>hash`
-    // and `Number>>hash` answer too -- so that the walk sums what
-    // `valueHashOfSlots` sums; `3` and `3.0` hash alike, as `compare_node`
-    // makes them equal.
-    let number = || tower::value_hash(mutator.heap(), value).map(Node::Leaf);
+/// What the hash walk does with `value` below the root, by the method its
+/// `hash` resolves to (`r[runtime.value.hash]`): a hash it computes as
+/// that method does -- `nil`'s, a Boolean's, a number's of exactly the
+/// kernel's class, a String's or a Symbol's, a value class object's whose
+/// `hash` is `Behavior`'s -- an unfolding where both its `hash` and its
+/// `=` are `Value`'s, and anything else left to its own `hash`.
+/// `Value>>valueHashOfSlots` asks the same question of every node through
+/// `valueHashUnfolds:ifFail:`, so the two unfold exactly the same nodes.
+fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> HashNode<'gc> {
+    let heap = mutator.heap();
+    let leaf = |hash: Option<i64>| hash.map_or(HashNode::Own, HashNode::Leaf);
     match value.kind() {
-        ValueKind::Nil => Some(Node::Leaf(NIL_HASH)),
-        // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
-        // boolean itself does.
-        ValueKind::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
-        ValueKind::SmallInteger(_) | ValueKind::SmallFloat(_) => number(),
+        // `Value>>hash` of `nil`: no slots.
+        ValueKind::Nil => HashNode::Leaf(NIL_HASH),
+        // `True>>hash` and `False>>hash`.
+        ValueKind::Boolean(flag) => HashNode::Leaf(i64::from(flag)),
+        // `Integer>>hash` and `Float>>hash`, the tower's.
+        ValueKind::SmallInteger(_) | ValueKind::SmallFloat(_) => {
+            leaf(tower::value_hash(heap, value))
+        }
         ValueKind::Object(object) => {
-            if let Some(leaf) = number() {
-                return Some(leaf);
+            if heap.is_class(object) {
+                // `Behavior>>hash`: a value class object hashes as its
+                // name -- two equal ones share an application, hence a
+                // mixin, hence a name; the name, not a dispatch id, because
+                // a name survives a copy and an image round trip -- and any
+                // other its identity hash, which a leaf does not draw.
+                let behaviors = |class_hash: &Rc<crate::mixin::MixinMethod>| {
+                    matches!(
+                        dispatch::lookup_public(
+                            heap,
+                            mutator.builtin_class(BuiltinClass::Class),
+                            Symbol::intern("hash"),
+                        ),
+                        Lookup::Method(method, _) if Rc::ptr_eq(&method, class_hash)
+                    )
+                };
+                return match dispatch::lookup_public(
+                    heap,
+                    heap.object_class(object),
+                    Symbol::intern("hash"),
+                ) {
+                    Lookup::Method(found, _)
+                        if behaviors(&found) && class_object_is_a_value(mutator, object) =>
+                    {
+                        HashNode::Leaf(text::string_hash(&heap.class_display_name(object)))
+                    }
+                    _ => HashNode::Own,
+                };
             }
-            // A value class object hashes as its name: two equal ones share
-            // an application, hence a mixin, hence a name, so this is a
-            // valid hash, and unlike one that folded in the enclosing
-            // object's it never unfolds a builtin class's enclosing
-            // `Kernel`, whose `vmMirror` slot the walk declines. The name,
-            // not a dispatch id, because a name survives a copy and an
-            // image round trip. A class object that is no value declines,
-            // and `Behavior>>hash` answers its identity hash -- as its `=`
-            // is identity.
-            if mutator.heap().is_class(object) {
-                return class_object_is_a_value(mutator, object).then(|| {
-                    Node::Leaf(text::string_hash(
-                        &mutator.heap().class_display_name(object),
-                    ))
-                });
+            let class = heap.object_class(object);
+            let kernel = |kind| class.same(mutator.builtin_class(kind));
+            // Exactly the kernel's classes, whose own `hash` is the rule
+            // named here; a program's subclass is asked like any class.
+            if kernel(BuiltinClass::Float)
+                || kernel(BuiltinClass::LargeInteger)
+                || kernel(BuiltinClass::Fraction)
+            {
+                return leaf(tower::value_hash(heap, value));
             }
-            if let Some(hash) = text::symbol_hash(mutator.heap(), object) {
-                return Some(Node::Leaf(hash));
+            if kernel(BuiltinClass::Symbol) {
+                return leaf(text::symbol_hash(heap, object));
             }
-            if let Some(hash) = mutator.heap().string_hash(object) {
-                return Some(Node::Leaf(hash));
+            if kernel(BuiltinClass::String) {
+                return leaf(heap.string_hash(object));
             }
-            let derived = receiver.map_or_else(
-                || state_is_a_value(mutator, object),
-                |receiver| receiver == ReceiverEquality::Derived,
-            );
-            derived.then_some(Node::State(object))
+            let values_hash = mutator.value_hash_method.as_ref().is_some_and(|recorded| {
+                matches!(
+                    dispatch::lookup_public(heap, class, Symbol::intern("hash")),
+                    Lookup::Method(found, _) if Rc::ptr_eq(&found, recorded)
+                )
+            });
+            if values_hash && state_is_a_value(mutator, object) {
+                HashNode::Unfold(object)
+            } else {
+                HashNode::Own
+            }
         }
     }
 }
-
 /// Whether `receiver` equals `other`, when `receiver` is `nil`, `true` or
 /// `false`, exactly as `derived_equality` answers it; `None` for every
 /// other receiver, and for an argument the walk has to see.
@@ -681,18 +754,15 @@ fn derived_equality<'gc>(
         // declines -- asked of a pair `valueEquals:` would compare, the
         // root's (but a class object's, whose `=` is `Behavior`'s) and a
         // derived one's, from a flag of the metaclass's application. An
-        // argument under construction is refused all the same: whatever
-        // that `==` answers, `valueEquals:` would go on to the argument's
-        // slots, which it does not have yet.
+        // argument under construction needs no test here: `valueEquals:`
+        // refuses it itself, through its slot readers, wherever that `==`
+        // lets it go on to the slots.
         if receiver.is_none_or(|receiver| receiver == ReceiverEquality::Derived)
             && mutator.heap().class_side_declares_identity(first_class)
             && first
                 .as_object()
                 .is_none_or(|object| !mutator.heap().is_class(object))
         {
-            if let Some(object) = under_construction(mutator, second) {
-                return Err(object);
-            }
             return Ok(None);
         }
         let classes = if first_class.same(second_class) {
@@ -890,79 +960,82 @@ fn class_state_pairs<'gc>(
     ])
 }
 
-/// The hash `value`'s state gives it; `None` is the decline, and `Err`
-/// the instance under construction the walk reached, the root or a node
-/// it hashes itself, not one it leaves to its own `hash`. Every node reached
-/// contributes its own hash, and every instance its slot count, as the sum
-/// the answer is.
+/// The mask the hash's running sum is kept within, in the leaf and in
+/// `Value>>valueHashOfSlots` alike: every node's hash is added and the sum
+/// masked at once, so it stays a non-negative `SmallInteger` whatever the
+/// nodes add, and the masked sum is the same in both however they reach it.
+const HASH_MASK: i128 = (1 << 60) - 1;
+
+/// The hash `value`'s state gives it (`r[runtime.value.hash]`): over the
+/// first `NODE_BUDGET` nodes of its unfolding, visited breadth-first --
+/// the root first, then each node's slots in declaration order -- each
+/// node's hash added and the sum masked by `HASH_MASK`, an unfolded node
+/// adding its slot count. `None` is the decline, at the first node whose
+/// `hash` is its own (`hash_node`), and `Err` the instance under
+/// construction the walk reached first: the root, or a node it unfolds.
+///
+/// Breadth-first and bounded, decided with the user on 2026-11-28: two
+/// equal values unfold to the same sequence of nodes however their states
+/// share structure -- a ring of one value and an equal ring of two -- so
+/// they hash alike, and a value whose state reaches itself is hashed by a
+/// finite prefix of its unfolding rather than not at all. The method does
+/// the same with a queue, so neither recurses.
 fn derived_hash<'gc>(
     mutator: &Mutator<'gc>,
     value: Value<'gc>,
 ) -> Result<Option<i64>, ObjectReference<'gc>> {
-    let mut work = vec![value];
-    // Exact, as `valueHashOfSlots`'s sum is in Newspeak: every node adds
-    // at most a `SmallInteger`, and at most `NODE_BUDGET` of them are
-    // added, which an `i128` holds.
     let mut total: i128 = 0;
-    // The root is on the stack already.
-    let mut charged = 1usize;
-    let mut examining_root = true;
-    while let Some(current) = work.pop() {
-        // Only the first node taken is the root.
-        let at_root = std::mem::take(&mut examining_root);
-        // Below the root, a node is a slot `valueHashOfSlots` hashes by
-        // sending it `hash`, so the walk hashes it only where the equality
-        // walk would compare it itself -- before any answer by its shape --
-        // and declines on exactly the nodes that walk declines on: a slot
-        // whose class brings its own `=` is hashed by its own `hash`, which
-        // has to agree with that `=`, not with this walk.
-        let receiver = (!at_root).then(|| receiver_equality(mutator, current));
-        if receiver == Some(ReceiverEquality::Own) {
-            return Ok(None);
+    let mut add = |hash: i128| total = (total + hash) & HASH_MASK;
+    // The root has reached `Value>>hash`, so it is unfolded whatever its
+    // classes declare -- but a class object's, whose `Behavior>>hash` asks
+    // this leaf of it, is hashed as a node.
+    let root_slots = if value
+        .as_object()
+        .is_some_and(|object| mutator.heap().is_class(object))
+    {
+        match hash_node(mutator, value) {
+            HashNode::Leaf(hash) => return Ok(Some(hash)),
+            _ => return Ok(None),
         }
-        // A hash taken from the slots an instance under construction has
-        // so far would change once the rest were initialized, and a hash
-        // cut off there would be no hash of the value it becomes -- so the
-        // root, which has reached `Value>>hash`, and every node this walk
-        // hashes itself refuse.
-        if let Some(object) = under_construction(mutator, current) {
+    } else {
+        if let Some(object) = under_construction(mutator, value) {
             return Err(object);
         }
-        let Some(node) = hash_node(mutator, current, receiver) else {
-            return Ok(None);
-        };
-        match node {
-            Node::Leaf(hash) => total += i128::from(hash),
-            Node::State(object) => {
+        value
+            .as_object()
+            .map_or_else(Vec::new, |object| slots_of(mutator, object))
+    };
+    add(root_slots.len() as i128);
+    // The nodes still to visit, the root counted already; never more than
+    // the budget will visit.
+    let mut visited = 1usize;
+    let mut queue: VecDeque<Value<'gc>> = VecDeque::new();
+    let enqueue = |queue: &mut VecDeque<Value<'gc>>, visited: usize, slots: Vec<Value<'gc>>| {
+        let room = NODE_BUDGET.saturating_sub(visited + queue.len());
+        queue.extend(slots.into_iter().take(room));
+    };
+    enqueue(&mut queue, visited, root_slots);
+    while let Some(current) = queue.pop_front() {
+        visited += 1;
+        match hash_node(mutator, current) {
+            HashNode::Leaf(hash) => add(i128::from(hash)),
+            HashNode::Own => return Ok(None),
+            HashNode::Unfold(object) => {
+                if mutator.heap().object_under_construction(object) {
+                    return Err(object);
+                }
                 let slots = slots_of(mutator, object);
-                total += slots.len() as i128;
-                // Unlike the comparison, a truncated hash is still a valid
-                // hash: two equal values unfold in the same order with the
-                // same slot counts, so both are cut at the same node and
-                // both answer the same number. Cut before the slots are
-                // pushed, which is what bounds the stack by the budget.
-                if slots.len() > NODE_BUDGET - charged {
-                    break;
-                }
-                charged += slots.len();
-                // Pushed back to front, so the stack unfolds the slots in
-                // declaration order: the sum does not care, but the node
-                // budget cuts two equal values at the same slot only if
-                // both are walked the same way.
-                for slot in slots.into_iter().rev() {
-                    work.push(slot);
-                }
+                add(slots.len() as i128);
+                enqueue(&mut queue, visited, slots);
             }
         }
     }
-    // A sum past the `SmallInteger` range is a `LargeInteger` in
-    // `valueHashOfSlots`; this leaf answers only a `SmallInteger`, so it
-    // declines and that method answers it.
-    Ok(i64::try_from(total)
-        .ok()
-        .filter(|total| (crate::SMALL_INTEGER_MIN..=crate::SMALL_INTEGER_MAX).contains(total)))
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the mask keeps the sum below 2^60"
+    )]
+    Ok(Some(total as i64))
 }
-
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
@@ -1001,6 +1074,37 @@ mod tests {
         sent.extend(arguments.iter().cloned());
         sent.push(interpreter.stash(Value::small_integer(DECLINED)));
         interpreter.send(&mirror, Symbol::intern(selector), &sent)
+    }
+
+    /// `valueSlotCount:asking:ifFail:` run on `subject`, asking `#hash`.
+    fn slot_count(interpreter: &mut Interpreter, subject: &Root) -> HostResult {
+        let asking = asking_hash(interpreter);
+        leaf(
+            interpreter,
+            "valueSlotCount:asking:ifFail:",
+            subject,
+            &[asking],
+        )
+    }
+
+    /// `value:slotAt:asking:ifFail:` run on `subject` at `index`, asking
+    /// `#hash`.
+    fn slot_at(interpreter: &mut Interpreter, subject: &Root, index: Root) -> HostResult {
+        let asking = asking_hash(interpreter);
+        leaf(
+            interpreter,
+            "value:slotAt:asking:ifFail:",
+            subject,
+            &[index, asking],
+        )
+    }
+
+    /// The question `#hash`, as the slot readers are asked it.
+    fn asking_hash(interpreter: &mut Interpreter) -> Root {
+        interpreter.enter(|mutator| {
+            let symbol = mutator.program_symbol("hash");
+            mutator.stash(symbol)
+        })
     }
 
     /// The integer a leaf answered, or `DECLINED`.
@@ -1145,6 +1249,14 @@ mod tests {
                 panic!("Marker declares =");
             };
             mutator.value_equality_method = Some(method.clone());
+            // And the `hash` a Marker answers by, as `Value`'s: the hash
+            // walk unfolds a node only where both are.
+            let crate::dispatch::Lookup::Method(hash, _) =
+                crate::dispatch::lookup_public(mutator.heap(), class, Symbol::intern("hash"))
+            else {
+                panic!("a Marker answers hash");
+            };
+            mutator.value_hash_method = Some(hash);
         });
     }
 
@@ -1233,6 +1345,43 @@ mod tests {
                     public hash = ( ^n hash )
                 )
                 public numeral: number = ( ^Numeral n: number )
+                class Hashy = Value new () (
+                    public hash = ( ^5 )
+                )
+                public hashy = ( ^Hashy new )
+                class HashSide = Value new () () : (
+                    public hash = ( ^9 )
+                )
+                public hashSide = ( ^HashSide new )
+                class EqualsSide = Value new () () : (
+                    public = other = ( ^true )
+                )
+                public equalsSide = ( ^EqualsSide new )
+                class Ring after: anchor pairs: count = Value new (
+                    | public n = 1. public next = count = 1
+                        ifTrue: [anchor isNil ifTrue: [self] ifFalse: [anchor]]
+                        ifFalse: [
+                            Ring
+                                after: (anchor isNil ifTrue: [self] ifFalse: [anchor])
+                                pairs: count - 1]. |
+                ) ()
+                public ringOf: count = ( ^Ring after: nil pairs: count )
+                class BigRing = Value new (
+                    | public n = 1000000000000000000. public next = self. |
+                ) ()
+                public bigRing = ( ^BigRing new )
+                class Link n: number next: previous = Value new (
+                    | public n = number. public next = previous. |
+                ) ()
+                public chainOf: count = (
+                    | index result |
+                    result:: nil.
+                    index:: 1.
+                    [index <= count] whileTrue: [
+                        result:: Link n: index next: result.
+                        index:: index + 1].
+                    ^result
+                )
                 public half = ( ^1 / 2 )
                 public symbol = ( ^#abc )
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
@@ -2178,101 +2327,6 @@ mod tests {
         assert_eq!(first_hash, second_hash, "two equal loops hash alike");
     }
 
-    /// The two derivations decline on exactly the same shapes. They ask one
-    /// predicate about an instance -- `state_is_a_value`, which is one
-    /// function for this reason -- and each shape's own rule decides the
-    /// rest. If the two ever diverged, a pair `=` answers `true` for could
-    /// reach `Value`'s Newspeak walk on one side of `hash` only, and two
-    /// equal values would hash apart: exactly the contract
-    /// `goldens/library/value/value_hashes_follow_value_equality.ns` asserts, and
-    /// one a change to either walk alone could break silently.
-    #[test]
-    fn the_equality_and_the_hash_decline_on_the_same_shapes() {
-        let (mut interpreter, fixture) = a_fixture();
-        record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::small_integer(1));
-        let two = interpreter.stash(Value::small_integer(2));
-        let a_class = interpreter.enter(|mutator| {
-            let class = mutator.builtin_class(crate::BuiltinClass::String);
-            mutator.stash(Value::object(class))
-        });
-        let subjects: Vec<(&str, Root)> = vec![
-            (
-                "an instance whose = is the recorded one",
-                send(&mut interpreter, &fixture, "pair:and:", &[one.clone(), two]),
-            ),
-            (
-                "an instance with no slots",
-                send(&mut interpreter, &fixture, "marker", &[]),
-            ),
-            (
-                "an instance that overrides =",
-                send(&mut interpreter, &fixture, "overriding", &[]),
-            ),
-            (
-                "an instance that reaches itself",
-                send(&mut interpreter, &fixture, "cyclic", &[]),
-            ),
-            ("a String", a_string(&mut interpreter, "abc")),
-            ("an Array", an_array(&mut interpreter)),
-            ("an instance whose slot holds an Array", {
-                let array = an_array(&mut interpreter);
-                send(
-                    &mut interpreter,
-                    &fixture,
-                    "pair:and:",
-                    &[one.clone(), array],
-                )
-            }),
-            // A builtin class: enclosed by the `Kernel`, which is a value,
-            // so a value class object, which both leaves decide. A class
-            // object that is no value is the one shape where they part --
-            // the equality answers identity and the hash declines to the
-            // identity hash -- which
-            // `a_class_object_that_is_no_value_compares_by_identity` pins.
-            ("a value class object", a_class),
-            ("an Integer", one),
-            ("nil", interpreter.stash(Value::nil())),
-            ("a Boolean", interpreter.stash(Value::boolean(true))),
-            (
-                "a Float",
-                interpreter.enter(|mutator| {
-                    let float = mutator.new_float(1.5);
-                    mutator.stash(float)
-                }),
-            ),
-        ];
-        let mut declined = 0;
-        let mut answered = 0;
-        for (what, subject) in subjects {
-            let compared = leaf(
-                &mut interpreter,
-                "value:sameAs:ifFail:",
-                &subject,
-                std::slice::from_ref(&subject),
-            );
-            let equality_declined = answered_boolean(&mut interpreter, compared, what).is_none();
-            let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &subject, &[]);
-            let hash_declined = answered_integer(&mut interpreter, hashed, what) == DECLINED;
-            assert_eq!(
-                equality_declined, hash_declined,
-                "{what}: the equality leaf and the hash leaf must decline together"
-            );
-            if equality_declined {
-                declined += 1;
-            } else {
-                answered += 1;
-            }
-        }
-        // Without this the test would pass just as well if every shape
-        // declined, or none did -- agreement is only worth pinning over a
-        // list that reaches both answers.
-        assert!(
-            declined >= 3 && answered >= 6,
-            "the list must exercise both outcomes: {declined} declined, {answered} answered"
-        );
-    }
-
     /// A nested class declaration is not a value's state. §6 gives every
     /// instance "a distinct nested class for each nested class
     /// declaration", cached in a hidden slot of the enclosing instance, so
@@ -2330,7 +2384,7 @@ mod tests {
             );
             // The count the Newspeak fallback would iterate: the two
             // declared slots, never the hidden third.
-            let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &first, &[]);
+            let count = slot_count(&mut interpreter, &first);
             assert_eq!(
                 answered_integer(&mut interpreter, count, "the declared slot count"),
                 2,
@@ -2368,7 +2422,7 @@ mod tests {
             "the lazy slot is filled on the first instance"
         );
         for (subject, what) in [(&first, "filled"), (&second, "empty")] {
-            let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", subject, &[]);
+            let count = slot_count(&mut interpreter, subject);
             assert_eq!(
                 answered_integer(&mut interpreter, count, "the declared slot count"),
                 1,
@@ -2411,7 +2465,7 @@ mod tests {
             &[one, two, three],
         );
         send(&mut interpreter, &deeper, "touch", &[]);
-        let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &deeper, &[]);
+        let count = slot_count(&mut interpreter, &deeper);
         assert_eq!(
             answered_integer(&mut interpreter, count, "Deeper's declared slot count"),
             3,
@@ -2419,12 +2473,7 @@ mod tests {
         );
         for (index, expected) in [(1, 1), (2, 2), (3, 3)] {
             let position = interpreter.stash(Value::small_integer(index));
-            let slot = leaf(
-                &mut interpreter,
-                "value:slotAt:ifFail:",
-                &deeper,
-                &[position],
-            );
+            let slot = slot_at(&mut interpreter, &deeper, position);
             assert_eq!(
                 answered_integer(&mut interpreter, slot, "a declared slot"),
                 expected,
@@ -2439,11 +2488,11 @@ mod tests {
         let one = interpreter.stash(Value::small_integer(1));
         let two = interpreter.stash(Value::small_integer(2));
         let pair = send(&mut interpreter, &fixture, "pair:and:", &[one, two]);
-        let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &pair, &[]);
+        let count = slot_count(&mut interpreter, &pair);
         assert_eq!(answered_integer(&mut interpreter, count, "slotCount"), 2);
         for (index, expected) in [(1, 1), (2, 2)] {
             let argument = interpreter.stash(Value::small_integer(index));
-            let slot = leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]);
+            let slot = slot_at(&mut interpreter, &pair, argument);
             assert_eq!(
                 answered_integer(&mut interpreter, slot, "slotAt:"),
                 expected
@@ -2452,7 +2501,7 @@ mod tests {
         // 2 ** 32 + 1 wraps to 1 on a 32-bit target unless it is refused.
         for index in [0, 3, (1 << 32) + 1] {
             let argument = interpreter.stash(Value::small_integer(index));
-            match leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]) {
+            match slot_at(&mut interpreter, &pair, argument) {
                 Err(HostSignal::Error(error)) => {
                     assert_eq!(error.selector, Symbol::intern("slotAt:"));
                     assert!(error.message.contains("out of range"), "{}", error.message);
@@ -2468,7 +2517,7 @@ mod tests {
                 let value = mutator.new_integer(integer);
                 mutator.stash(value)
             });
-            match leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]) {
+            match slot_at(&mut interpreter, &pair, argument) {
                 Err(HostSignal::Error(error)) => {
                     let sign = if negative { "-" } else { "" };
                     assert_eq!(
@@ -2482,7 +2531,7 @@ mod tests {
             }
         }
         let text = a_string(&mut interpreter, "abc");
-        let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &text, &[]);
+        let count = slot_count(&mut interpreter, &text);
         assert_eq!(
             answered_integer(&mut interpreter, count, "a String's slotCount"),
             DECLINED,
@@ -2737,6 +2786,84 @@ mod tests {
                 std::slice::from_ref(argument),
             );
             assert!(answered_flag(&mut interpreter, &sent, what), "{what}");
+        }
+    }
+
+    /// A value's hash is defined by the first nodes of its breadth-first
+    /// unfolding, so values equal by any path hash alike: a ring of one
+    /// value and an equal ring of two, a cycle whose slots are
+    /// LargeIntegers -- whose sum leaves the SmallInteger range and is
+    /// masked into it -- a `true` slot against a `True new` one, whose own
+    /// `hash` the walk sends, and a `Hashy`, `hash` its own and `=`
+    /// `Value`'s, beside a `Numeral` equal to `3`. Each is hashed by the
+    /// leaf where it answers and by `valueHashOfSlots`, the two the same.
+    // spec: runtime.value.hash
+    #[test]
+    fn equal_values_hash_alike_by_their_breadth_first_unfolding() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let three = interpreter.stash(Value::small_integer(3));
+        let truth = interpreter.stash(Value::boolean(true));
+        let true_new = send(&mut interpreter, &fixture, "truth", &[]);
+        let hashy = send(&mut interpreter, &fixture, "hashy", &[]);
+        let numeral = send(
+            &mut interpreter,
+            &fixture,
+            "numeral:",
+            std::slice::from_ref(&three),
+        );
+        let pairs = [
+            (
+                "a ring of one and a ring of two",
+                send(&mut interpreter, &fixture, "ringOf:", &[one]),
+                send(&mut interpreter, &fixture, "ringOf:", &[two]),
+            ),
+            (
+                "a big ring and another",
+                send(&mut interpreter, &fixture, "bigRing", &[]),
+                send(&mut interpreter, &fixture, "bigRing", &[]),
+            ),
+            (
+                "a box of true and a box of True new",
+                send(&mut interpreter, &fixture, "boxed:", &[truth]),
+                send(&mut interpreter, &fixture, "boxed:", &[true_new]),
+            ),
+            (
+                "a hashy beside a numeral 3 and beside 3",
+                send(
+                    &mut interpreter,
+                    &fixture,
+                    "pointX:y:",
+                    &[hashy.clone(), numeral],
+                ),
+                send(&mut interpreter, &fixture, "pointX:y:", &[hashy, three]),
+            ),
+        ];
+        for (what, first, second) in &pairs {
+            let equal = send(&mut interpreter, first, "=", std::slice::from_ref(second));
+            assert!(
+                answered_flag(&mut interpreter, &equal, what),
+                "{what}: equal"
+            );
+            let hashes = [first, second].map(|subject| {
+                let hashed = send(&mut interpreter, subject, "hash", &[]);
+                answered_number(&mut interpreter, &hashed, what)
+            });
+            assert_eq!(hashes[0], hashes[1], "{what}: hash alike");
+            for subject in [first, second] {
+                let method = interpreter.send_lexically(
+                    subject,
+                    crate::types::BuiltinClass::Value,
+                    Symbol::intern("valueHashOfSlots"),
+                    &[],
+                );
+                let method = answered_number(&mut interpreter, &expect_ok(method, what), what);
+                assert_eq!(
+                    method, hashes[0],
+                    "{what}: valueHashOfSlots answers the same"
+                );
+            }
         }
     }
 
@@ -3092,6 +3219,19 @@ mod tests {
                 "numeral:",
                 vec![interpreter.stash(Value::small_integer(3))],
             ),
+            ("a True new", "truth", vec![]),
+            ("a False new", "falsity", vec![]),
+            ("a hashy", "hashy", vec![]),
+            ("a hash side", "hashSide", vec![]),
+            ("an equals side", "equalsSide", vec![]),
+            ("a ring of one", "ringOf:", vec![one.clone()]),
+            ("a ring of two", "ringOf:", vec![two.clone()]),
+            ("a big ring", "bigRing", vec![]),
+            (
+                "a chain of 2100",
+                "chainOf:",
+                vec![interpreter.stash(Value::small_integer(2100))],
+            ),
         ];
         let mut instances = Vec::new();
         for (name, selector, arguments) in built {
@@ -3112,6 +3252,15 @@ mod tests {
         shapes.push(("the Point class".to_string(), point_class, false));
         let loose_class = class_of(interpreter, &instances[11].1);
         shapes.push(("the Loose class".to_string(), loose_class, false));
+        // Class sides with only their own `hash`, and with only their own
+        // `=`.
+        for (name, instance) in ["a hash side", "an equals side"]
+            .map(|name| (name, instances.iter().find(|(found, _)| found == name)))
+        {
+            let (_, instance) = instance.expect("the instance is built above");
+            let class = class_of(interpreter, instance);
+            shapes.push((format!("the class of {name}"), class, false));
+        }
         // Under construction: a second instance of each class with slots
         // or its own `=`, marked through the heap as its factory leaves it.
         for (name, selector, arguments) in [
@@ -3317,8 +3466,13 @@ mod tests {
         // Two values `=` finds equal hash alike, whichever path answered --
         // but where a class's own `=` and `hash` decide, which keep that
         // contract only as far as the program keeps it: `Agreeable`'s `=`
-        // answers `true` for anything, its `hash` 7.
-        let own_equality = |name: &str| name.contains("tag") || name.contains("agreeable");
+        // answers `true` for anything, its `hash` 7, and so does the
+        // class side of `EqualsSide`, its `hash` its name's.
+        let own_equality = |name: &str| {
+            name.contains("tag")
+                || name.contains("agreeable")
+                || name.contains("the class of an equals side")
+        };
         for (receiver_name, receiver, receiver_marked) in &shapes {
             for (argument_name, argument, argument_marked) in &shapes {
                 if *receiver_marked
