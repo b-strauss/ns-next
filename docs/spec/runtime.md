@@ -216,7 +216,7 @@ signals `x no longer has the slots of C, which the running code was
 compiled for`; one whose replacement still has them -- an instance of a
 subclass -- reads and writes them in the replacement.
 
-### ValueEquality(left, right), ValueHash(value) and IsValue(object)
+### ValueEquality(left, right), ClassEquality(left, right), ValueHash(value) and IsValue(object)
 
 r[runtime.value.equality]
 `Value`'s `=`, sent to *left* with *right*
@@ -247,9 +247,10 @@ r[runtime.value.equality]
    the two classes, as `valueEquals:` sends it, and the slots are
    compared by sending, as step 1 does; `valueEquals:` reads each side's
    slots through readers that signal step 2's text for one under
-   construction. Otherwise the classes are compared by `Behavior>>==`:
-   if they cannot be equal, the pair is unequal, whatever the state of
-   its argument's side.
+   construction. Otherwise the classes are compared by `Behavior>>==`
+   ([ClassEquality](#r-runtime.value.class-equality)): if they cannot be
+   equal, the pair is unequal, whatever the state of its argument's
+   side.
 4. Otherwise, if its argument's side is under construction, signal step
    2's text naming that object's class.
 5. An immediate and another instance of its class -- `nil` and
@@ -258,6 +259,41 @@ r[runtime.value.equality]
    own `=` compares them.
 6. The walk ends at the first pair that signals or is unequal, in its
    order, answering `false` for an unequal one, and `true` when none is.
+
+r[runtime.value.class-equality]
+`Behavior`'s and `Metaclass`'s `=` and `==`, sent to a class object
+*left* with *right*, and the comparison of two classes in
+[ValueEquality](#r-runtime.value.equality); `==` answers what `=` does.
+A class side that declares `=` or `==` of its own answers that message
+for its class objects itself, and the walk leaves a pair to that `=`
+where the receiver's side is a class object whose class side declares
+it.
+
+1. If *right* is *left*, they are equal.
+2. A class object is a value exactly when its enclosing object is a
+   value object or `nil` -- for the class object of a declaration
+   without a body, both its declaration's enclosing object and the one
+   its level reaches -- and a metaclass is one when its class is. Two
+   distinct class objects are unequal unless both are values, apply one
+   mixin application and, where either is the class object of a
+   declaration without a body, are both of that same declaration; a
+   class object that is no value is equal only to itself.
+3. Two metaclasses are equal exactly when the classes they are the
+   metaclasses of are equal, compared by this operation.
+4. Any other two class objects are equal exactly when three pairs are,
+   compared in this order: their declarations' enclosing objects (`nil`
+   for every class object but a body-less declaration's), the enclosing
+   objects their levels reach, and their superclasses. Each pair is
+   compared as [ValueEquality](#r-runtime.value.equality) compares a
+   pair below its root: two class objects by this operation, a pair
+   whose receiver's side has an `=` the walk does not compute by sending
+   it `=`, and an instance under construction refused as there. A pair
+   of class objects already met is assumed equal, so a class reached
+   again through its own enclosing value ends in `true` rather than
+   unfolding forever.
+5. The comparison ends at the first pair that signals or is unequal, in
+   its order, answering `false` for an unequal one, and `true` when none
+   is.
 
 r[runtime.value.hash]
 `Value`'s `hash`, sent to *value*, is defined over the first 4096 nodes

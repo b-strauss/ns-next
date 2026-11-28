@@ -1814,9 +1814,12 @@ orderings and `=` through `tower::ordering_double`, for a `SmallInteger`
 within 2^53 only (`exact_double`), where IEEE 754's comparison is the
 exact one. Both are inlined generic functions, not closures over a
 function pointer. `tower::operand` is inlined too, so a value that is no
-object -- `nil`, a Boolean -- is refused without a call, and a value's
-derived equality reads the second side of a pair only when the first is a
-number. Every other case goes to the tower;
+object -- `nil`, a Boolean -- is refused without a call, and the walk of
+a value's derived equality (`builtins/value.rs`, `derived_equality`)
+reads a pair's second side as a number only when the first is one;
+`compare_node`, which decides every pair the walk does not decide before
+it, reads both sides with `tower::operand` again. Every other case goes
+to the tower;
 `the_float_fast_path_agrees_with_the_tower` holds the fast path to it over
 every pair of its samples. The first build of the tower lacked these and
 was measurably slower: Richards by 7.5%, since a value's equality then
