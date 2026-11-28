@@ -9063,10 +9063,15 @@ allocation nor machine code's tests anything new -- and the factory's
 new instruction `CompleteInstance`, after the initializer has returned,
 clears it. A construction cut short by an unwind or an unhandled signal
 never reaches it, so an instance it handed out stays under construction
-while its class inherits from `Value`. While marked, `=`, `hash`, `==`,
-`identityHash` and `objectIsValue:` signal an `Error` naming its class,
-so an `Ephemeron`'s `key:` and a `WeakMap`'s `at:put:` refuse it without
-a check of their own; storing it and using it as an enclosing object stay
+while its class inherits from `Value`. While marked, it answers no
+question whose answer depends on its state: `=`, `hash`, `==`,
+`identityHash` and `objectIsValue:` sent to it signal an `Error` naming
+the question and its class -- `cannot compare an instance of Point: it is
+still under construction, …` -- so an `Ephemeron`'s `key:` and a
+`WeakMap`'s `at:put:` refuse it without a check of their own; a question
+whose answer is fixed whatever its state is answered, so `nil = aPoint`
+and `3 = aPoint` answer `false`, while a `Point` compared with it
+signals (both decided with the user on 2026-11-28); storing it and using it as an enclosing object stay
 allowed, so a value module builds its nested values and two values can
 reach each other. An image carries the mark as object-body tag 17,
 `instance-under-construction`, refused for a class that does not inherit
@@ -9083,6 +9088,11 @@ and `vm.heap.under-construction-only-on-value-instances` state it.
 - `25693167` -- the mark in an image.
 - `91b85ced` -- the mark through an install's migration.
 - `93d200db` -- the reviews' findings.
+- `80729e35`, `1126091f` -- this entry and the open work; the
+  collection test in a debug build only.
+- `c4896f47` -- the questions a value under construction answers, the
+  refusal's wording and the final review's findings; this entry's list
+  follows it.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
 the debugger, batch B, the first part of the debugger's stage 6.
