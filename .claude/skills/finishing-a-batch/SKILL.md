@@ -88,7 +88,12 @@ Create a todo for each item.
      and the image format's tables, the VM invariants' detectors and
      `Undetected:` lines, and the appendix of differences from Bracha's
      Newspeak; `cargo xtask spec` passing checks only identifiers, pointers
-     and links, never whether a rule is true.
+     and links, never whether a rule is true;
+   - the design documents, the book and the code agree with one another,
+     each statement of one matching what the other two say about the same
+     thing. Where two disagree, establish which is right before changing
+     either: a rule is never rewritten to the code because the code does
+     it, nor the code to a document that was never decided.
 6. **Stale statements.** Anything the batch made untrue is deleted or rewritten
    as current fact — never kept and labelled historical.
 7. **Scratch space.** Before deleting anything under `.temp/`, write deferred
