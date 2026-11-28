@@ -475,7 +475,8 @@ fn under_construction<'gc>(
 /// and `Err` the instance under construction the walk reached on a pair's
 /// receiver side, or on its argument side where the classes left the pair
 /// open, before it met an unequal pair: the walk answers whichever of the
-/// two it meets first.
+/// two it meets first. Below the root, only a pair the walk decides itself
+/// refuses; one it leaves to its receiver's own `=` declines instead.
 ///
 /// A pair already on `assumed` is taken to be equal: that is what makes a
 /// cyclic value answer `true` instead of unfolding forever, and it is
@@ -512,21 +513,32 @@ fn derived_equality<'gc>(
     // random keys, a thread-local access and a 16-byte copy on every `=`,
     // which a pair its first step decides never needs.
     let mut root = Some((left, right));
+    let mut examining_root = true;
     let mut work = Vec::new();
     let mut assumed: Option<HashSet<(usize, usize)>> = None;
     // The root pair is charged like a pushed one.
     let mut charged = 1usize;
     while let Some((first, second)) = root.take().or_else(|| work.pop()) {
+        // Only the first pair taken is the root.
+        let at_root = std::mem::take(&mut examining_root);
         // An instance whose factory has not returned has no state yet
-        // (§3.1.1, "have been initialized"), and answers no question whose
-        // answer depends on it -- decided by the user on 2026-11-28. On the
-        // receiver's side of a pair, the side `=` is sent to, it answers
-        // nothing at all, before anything else is compared: the pair is
-        // what `valueEquals:` sends `=` for when this walk declines, and
-        // that send refuses its receiver, so the walk does as the send
-        // would and the two never answer apart. The argument's side is
-        // tested below, once the classes have had their say.
-        if let Some(object) = under_construction(mutator, first) {
+        // (§3.1.1, "have been initialized"), and `Value`'s `=` answers no
+        // question whose answer depends on it -- decided by the user on
+        // 2026-11-28. On the receiver's side of a pair, the side `=` is
+        // sent to, it answers nothing at all, before anything else is
+        // compared -- wherever that `=` is `Value`'s. The root's receiver
+        // has reached `Value>>=`. Any other pair is one `valueEquals:`
+        // sends `=` for when this walk declines, and that send refuses its
+        // receiver only where the receiver's class keeps `Value`'s `=`: a
+        // class with its own `=` decides the pair itself, which this walk
+        // leaves to it by declining (`compare_node`), and so a receiver of
+        // such a class is no reason to refuse -- the pair goes on to the
+        // class test and the decline as it would complete, and the walk
+        // and the send never answer apart. The argument's side is tested
+        // below, once the classes have had their say.
+        if let Some(object) = under_construction(mutator, first)
+            && (at_root || compare_node(mutator, first, second).is_some())
+        {
             return Err(object);
         }
         // The classes first, for every shape: §3.1.1's equality is equality
@@ -579,11 +591,17 @@ fn derived_equality<'gc>(
         // `false` above without reading it -- `nil = aPoint`, `3 = aPoint`.
         // Past that the comparison would read its slots, which it does not
         // have yet. A number is never under construction, so the tower's
-        // pairs need no test.
-        if let Some(object) = under_construction(mutator, second) {
+        // pairs need no test. Below the root, a pair this walk declines is
+        // decided by its receiver's own `=`, which `valueEquals:` sends and
+        // which may answer without the argument's state, so the argument is
+        // refused only where the walk decides the pair itself.
+        let pair = compare_node(mutator, first, second);
+        if let Some(object) = under_construction(mutator, second)
+            && (at_root || pair.is_some())
+        {
             return Err(object);
         }
-        let Some(pair) = compare_node(mutator, first, second) else {
+        let Some(pair) = pair else {
             return Ok(None);
         };
         match pair {
@@ -739,7 +757,8 @@ fn class_state_pairs<'gc>(
 }
 
 /// The hash `value`'s state gives it; `None` is the decline, and `Err`
-/// the instance under construction the walk reached. Every node reached
+/// the instance under construction the walk reached, the root or a node
+/// it hashes itself, not one it leaves to its own `hash`. Every node reached
 /// contributes its own hash, and every instance its slot count, as the sum
 /// the answer is.
 fn derived_hash<'gc>(
@@ -750,15 +769,25 @@ fn derived_hash<'gc>(
     let mut total: i64 = 0;
     // The root is on the stack already.
     let mut charged = 1usize;
+    let mut examining_root = true;
     while let Some(current) = work.pop() {
-        // The root first: a hash taken from the slots an instance under
-        // construction has so far would change once the rest were
-        // initialized, and a hash cut off there would be no hash of the
-        // value it becomes.
-        if let Some(object) = under_construction(mutator, current) {
+        // Only the first node taken is the root.
+        let at_root = std::mem::take(&mut examining_root);
+        // A hash taken from the slots an instance under construction has
+        // so far would change once the rest were initialized, and a hash
+        // cut off there would be no hash of the value it becomes -- so the
+        // root, which has reached `Value>>hash`, and every node this walk
+        // hashes itself refuse. A slot the walk declines is hashed by its
+        // own `hash`, which `valueHashOfSlots` sends and which may answer
+        // without the state: refusing it here would answer apart from that
+        // send.
+        let node = hash_node(mutator, current);
+        if let Some(object) = under_construction(mutator, current)
+            && (at_root || node.is_some())
+        {
             return Err(object);
         }
-        let Some(node) = hash_node(mutator, current) else {
+        let Some(node) = node else {
             return Ok(None);
         };
         match node {
@@ -2466,6 +2495,104 @@ mod tests {
         let (selector, message) = refusal(&mut interpreter, compared, "boxed escaped = boxed nil");
         assert_eq!(selector, Symbol::EQUALS);
         assert_eq!(message, ESCAPING_NOT_COMPARED);
+    }
+
+    /// A slot under construction whose class declares its own `=` is
+    /// compared by that `=`, as `valueEquals:` sends it, on either side of
+    /// the pair: the leaf declines rather than refuse, and `=` answers
+    /// what the `Tag`'s own `=` answers. The `Tag` is marked through the
+    /// heap, the state a factory leaves it in until it returns.
+    // spec: semantics.value.under-construction
+    // spec: runtime.value.equality
+    #[test]
+    fn a_slot_under_construction_with_its_own_equality_is_compared_by_it() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let marked_tag = send(&mut interpreter, &fixture, "tag", &[]);
+        let tag = send(&mut interpreter, &fixture, "tag", &[]);
+        interpreter.enter(|mutator| {
+            let object = mutator.fetch(&marked_tag).as_object().expect("a Tag");
+            mutator.heap.mark_under_construction(object);
+        });
+        let holding_marked = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&marked_tag),
+        );
+        let holding_tag = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&tag),
+        );
+        for (receiver, argument, what) in [
+            (
+                &holding_marked,
+                &holding_tag,
+                "boxed marked tag = boxed tag",
+            ),
+            (
+                &holding_tag,
+                &holding_marked,
+                "boxed tag = boxed marked tag",
+            ),
+            (
+                &holding_marked,
+                &holding_marked,
+                "boxed marked tag = itself",
+            ),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                receiver,
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                None,
+                "{what}: the leaf declines"
+            );
+            let sent = send(
+                &mut interpreter,
+                receiver,
+                "=",
+                std::slice::from_ref(argument),
+            );
+            assert!(answered_flag(&mut interpreter, &sent, what), "{what}");
+        }
+    }
+
+    /// A slot under construction whose class declares its own `hash` is
+    /// hashed by that `hash`, as `valueHashOfSlots` sends it: the leaf
+    /// declines rather than refuse, and `hash` answers the slot count plus
+    /// the `Tag`'s own 7, as for a complete `Tag`.
+    // spec: semantics.value.under-construction
+    // spec: runtime.value.hash
+    #[test]
+    fn a_slot_under_construction_with_its_own_hash_is_hashed_by_it() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let marked_tag = send(&mut interpreter, &fixture, "tag", &[]);
+        interpreter.enter(|mutator| {
+            let object = mutator.fetch(&marked_tag).as_object().expect("a Tag");
+            mutator.heap.mark_under_construction(object);
+        });
+        let holding_marked = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&marked_tag),
+        );
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &holding_marked, &[]);
+        assert_eq!(
+            answered_integer(&mut interpreter, hashed, "boxed marked tag hash"),
+            DECLINED
+        );
+        let sent = send(&mut interpreter, &holding_marked, "hash", &[]);
+        assert_eq!(
+            answered_number(&mut interpreter, &sent, "boxed marked tag hash"),
+            1 + 7
+        );
     }
 
     /// `nil`, `true` and `false` are answered by identity before the walk,

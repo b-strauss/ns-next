@@ -9079,7 +9079,7 @@ its nested values and two values can reach each other. An image
 carries the mark as object-body tag 17,
 `instance-under-construction`, refused for a class that does not inherit
 `Value`; the install's migration keeps it and clears it where the class
-is re-parented off `Value`. Fourteen goldens under `goldens/library/value/`
+is re-parented off `Value`. Fifteen goldens under `goldens/library/value/`
 pin it, and the book's rules `semantics.value.under-construction`,
 `runtime.value.equality`, `runtime.value.hash`, `runtime.value.is-value`,
 `bytecode.instruction.complete-instance`, `image.verify.under-construction`

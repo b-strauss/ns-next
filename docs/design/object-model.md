@@ -1069,13 +1069,23 @@ the instance will have):
   comparison would go on to its slots. Every pair the walk reaches among
   the slots is held to the same rule, its receiver's side as the receiver:
   that side is the slot `valueEquals:` sends `=` to when the leaf
-  declines, and that send refuses a marked receiver, so the leaf and the
-  fallback never answer one comparison apart. The walk answers whichever
-  it meets first, a refusal or an unequal pair, in its order. The hash
-  leaf refuses its receiver and every marked object its walk reaches, since
-  hashing reads state. A refusal is an error, never a decline: a decline
-  would run `valueEquals:` or `valueHashOfSlots`, which would compare or
-  hash exactly the partial state the refusal withholds
+  declines, and that send refuses a marked receiver whose `=` is
+  `Value`'s, so the leaf and the fallback never answer one comparison
+  apart. A slot pair whose receiver's side is of a class with its own
+  `=` is that `=`'s to decide, which is why the walk declines it
+  (`compare_node`); a mark on either side of such a pair is therefore no
+  reason to refuse, and the walk tests the marks of a pair below the
+  root only once it knows it decides the pair itself -- otherwise it
+  declines, and the fallback's send decides, refusing or not as that
+  `=` does. The walk answers whichever it meets first, a refusal, an
+  unequal pair or such a decline, in its order. The hash leaf refuses
+  its receiver and every marked object its walk hashes itself, since
+  hashing reads state; a slot of a class with its own `=` the walk
+  declines, and `valueHashOfSlots` sends that slot its own `hash`
+  (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`).
+  A refusal is an error, never a decline: a decline would run
+  `valueEquals:` or `valueHashOfSlots`, which would compare or hash
+  exactly the partial state the refusal withholds
   (`goldens/library/value/a_value_under_construction_compares_unequal_to_another_class.ns`).
 - Every refusal names the marked object's class and the question, through
   one builder, `instantiate::under_construction_error`, in the "cannot

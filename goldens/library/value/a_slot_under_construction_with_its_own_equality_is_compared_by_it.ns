@@ -1,0 +1,60 @@
+/// newspeak-spec.pdf 3.1.1: a value class may declare an `=` and a `hash`
+/// of its own, and a value compares and hashes each slot with the slot's
+/// own `=` and `hash`. A slot holding an instance under construction of
+/// such a class is compared and hashed by that class's methods, which
+/// decide for themselves: `Tagged`'s answer without its state, so the two
+/// `Box`es that hold it while its initializer runs are equal, and hash as
+/// one slot plus 7. A `Point`, whose `=` is `Value`'s, refuses in the same
+/// place.
+///
+/// Each answer is kept in a slot -- a String is a value -- so the
+/// instances complete.
+class ASlotUnderConstructionWithItsOwnEqualityIsComparedByIt = Object <: Value () (
+  public class Box on: aContents = Value new (
+    |
+      public contents = aContents.
+    |
+  ) ()
+
+  public class Tagged = Value new (
+    |
+      public compared = ((Box on: self) = (Box on: self)) printString.
+      public hashed = (Box on: self) hash printString.
+    |
+  ) (
+    public = other = (
+      ^other isTagged.
+    )
+
+    public hash = (
+      ^7.
+    )
+
+    public isTagged = (
+      ^true.
+    )
+  )
+
+  public class Point x: anX = Value new (
+    |
+      public x = anX.
+      public compared = [((Box on: self) = (Box on: self)) printString] on: Error do: [:error |
+        error messageText.
+      ].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      tagged = Tagged new.
+      point = Point x: 1.
+    |
+    platform transcript
+        show: tagged compared;
+        newLine;
+        show: tagged hashed;
+        newLine;
+        show: point compared;
+        newLine.
+  )
+)

@@ -85,7 +85,10 @@ a question whose answer is fixed whatever its state is answered:
    signals when they can.
 3. Among a value's slots, the comparison holds each pair it reaches to
    the same rule, the receiver's slot as the receiver and the argument's
-   as the argument, and `hash` signals at every one it reaches.
+   as the argument, and `hash` signals at every one it reaches -- so a
+   pair whose receiver's slot is of a class that declares its own `=` is
+   decided by that `=`, and a slot of such a class is hashed by its own
+   `hash`, each signalling only where it does.
 
 Each signal is an `Error` naming its class and the question, under the
 selector the question is asked by -- `=` or `hash` as sent, `=` for `==`

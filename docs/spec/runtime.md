@@ -227,7 +227,11 @@ r[runtime.value.equality]
    its own `=`, compare the slots instead in declaration order, each pair
    by sending `=` to the receiver's slot, which runs this operation again
    for a pair that is `Value`'s.
-2. At each pair, if its receiver's side is under construction
+2. At the root pair, and at each other pair whose receiver's side is of
+   a class that keeps `Value`'s `=` -- a pair this operation compares
+   itself, not one step 1 leaves to a slot's own `=`, which decides it,
+   under construction or not -- if its receiver's side is under
+   construction
    ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)),
    signal `cannot compare an instance of C: it is still under
    construction, and an instance of a value class is a value only once
@@ -235,19 +239,21 @@ r[runtime.value.equality]
    else is compared.
 3. Otherwise, if the pair's classes cannot be equal, the pair is unequal,
    whatever the state of its argument's side.
-4. Otherwise, if its argument's side is under construction, signal step
-   2's text naming that object's class.
+4. Otherwise, if its argument's side is under construction and the pair
+   is one step 2 holds to the rule, signal step 2's text naming that
+   object's class.
 5. The walk ends at the first pair that signals or is unequal, in its
    order, answering `false` for an unequal one -- so a slot's own `=`
    sent before it has run -- and `true` when none is.
 
 r[runtime.value.hash]
 `Value`'s `hash`, sent to *value*: an Integer computed from the objects
-its slots reach, alike for every two values `=` makes equal. If *value*,
-or an object its slots reach, is under construction, signal `cannot hash
-an instance of C: it is still under construction, and an instance of a
-value class is a value only once its factory has returned`, naming that
-object's class, instead of answering.
+its slots reach, alike for every two values `=` makes equal; a slot whose
+class declares its own `=` is hashed by its own `hash`. If *value*, or
+an object its slots reach that is not such a slot, is under
+construction, signal `cannot hash an instance of C: it is still under
+construction, and an instance of a value class is a value only once its
+factory has returned`, naming that object's class, instead of answering.
 
 r[runtime.value.is-value]
 Whether *object* is a value object, as an `Ephemeron`'s `key:` and a

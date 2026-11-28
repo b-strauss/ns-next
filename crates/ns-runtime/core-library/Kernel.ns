@@ -2165,7 +2165,9 @@ class Kernel vmMirror: mirror = Value (
     /// the receiver's -- an `other` of a class that cannot is unequal
     /// whatever its state, and answered `false` -- and likewise for each
     /// pair of slots the comparison reaches before it finds an unequal
-    /// one, the receiver's slot in the receiver's part.
+    /// one, the receiver's slot in the receiver's part, but for a pair
+    /// whose receiver's slot is of a class that declares its own `=`:
+    /// that `=` compares the pair, and decides for itself.
     /// @see `valueEquals:` and `Object>>=`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other].
@@ -2198,7 +2200,8 @@ class Kernel vmMirror: mirror = Value (
     /// compared with, an `other` of a class that cannot being unequal and
     /// answered `false`. An instance whose factory has not returned has no
     /// identity yet. A value class that declares an `=` of its own decides
-    /// for itself, and its `==` signals only where that `=` does.
+    /// for itself, and its `==` signals only where that `=` does; so does
+    /// a pair of slots whose receiver's slot is of such a class.
     /// @see `=` and `Object>>==`.
     public == other = (
       ^self = other.
@@ -2226,7 +2229,9 @@ class Kernel vmMirror: mirror = Value (
     /// construction, and an instance of a value class is a value only once
     /// its factory has returned', naming the class, while the receiver or a
     /// value its slots reach is under construction: a hash of the slots
-    /// built so far would change once the rest were.
+    /// built so far would change once the rest were. A slot of a class
+    /// that declares its own `=` is hashed by its own `hash`, which decides
+    /// for itself.
     /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots].
