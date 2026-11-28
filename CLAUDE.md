@@ -545,7 +545,10 @@ review names -- is fixed on that branch before it is merged, not written there,
 Minors and a re-review's residuals included, each residual by one more fix
 commit; a skill's instruction to park findings or to allow a single fix wave
 does not apply to them, and the cost of a fix -- a fixture regenerated, gates
-run again -- is no reason to leave one. A finding older than the branch in
+run again -- is no reason to leave one. The rounds have no fixed number and
+do not run on without end: what the findings show decides, never their
+count, and findings that are one cause in new shapes get the cause fixed
+instead of the next case. A finding older than the branch in
 something it does not work on goes to the user, who says where it belongs.
 
 ## Invariants that are easy to break

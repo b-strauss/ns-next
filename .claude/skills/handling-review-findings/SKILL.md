@@ -32,8 +32,8 @@ there. A known gap of the branch's own work never goes there.
 - The superpowers instructions to **"park with rulings"**, to allow
   **"no second fix wave"** and to stop at a fix-loop **cap** do not apply to
   in-topic findings. A residual after the re-review gets one more fix
-  commit, and that commit gets its own scoped re-review. Repeat until none
-  is left.
+  commit, and that commit gets its own scoped re-review, until none is
+  left; "When the rounds end" below says what each further round fixes.
 - **Cost is never a reason.** A fixture to regenerate, a gate to re-run, a
   long stress run, a user waiting for the pull request: none of these moves
   a finding out of "fixed now". Do not offer the user the choice of not
@@ -45,6 +45,22 @@ there. A known gap of the branch's own work never goes there.
 - Bundle the in-topic fixes of one review into one commit where they fit.
   That is how the rounds stay few, not by leaving findings.
 
+## When the rounds end
+
+There is no fixed number of rounds, and the rounds do not run on without
+end either. Before each further round, look at what the last re-reviews
+found and decide by the problem, never by the count:
+
+| What the re-reviews show | What the next step is |
+|---|---|
+| **Converging**: fewer findings each round, unrelated slips (a name, a line, a stale sentence) | One more fix commit, re-reviewed |
+| **A chain**: a finding is the same defect a round before fixed in another shape (one more case where two implementations answer apart, one more path past a check) | Stop fixing cases. Name the one cause and fix the cause: the invariant tested over every shape at once, an audit of every place it must hold, or a structure that removes the duplication. If fixing the cause is a design decision -- it changes semantics or reaches past the branch's plan -- lay out the options to the user and let them decide |
+| **Drifting**: each round's findings lie farther from the branch's topic | Sort them again by the table above; what is older and off topic goes to the user |
+
+"Each round found a real defect, so another round is justified" holds only
+while the defects are unrelated. Two rounds in a row on the same cause mean
+the next fix must be the cause's.
+
 ## Red flags — stop and fix instead
 
 - "It's only a Minor / a name / a comment"
@@ -54,6 +70,8 @@ there. A known gap of the branch's own work never goes there.
 - "Merge today matters more"
 - "Pre-existing, so I'll just put it in OPEN-WORK"
 - "The suggestion is speculative, drop it"
+- "The loop ends when a re-review is clean", said of the third finding with one cause
+- "Three rounds is enough" (or "too many") -- the count decides nothing
 
 ## Common mistakes
 
@@ -64,3 +82,5 @@ there. A known gap of the branch's own work never goes there.
 | A future-topic suggestion dropped | One neutral OPEN-WORK line under its topic |
 | End-of-batch gates skipped after a "comment-only" runtime change | Run them; the table decides, not the guess |
 | Offering "push now, or fix first?" for an in-topic finding | Fix first; ask only about the push |
+| Patching the next case of a defect a round already fixed in another shape | Name the cause, fix it once for every shape |
+| Stopping because of the number of rounds | Decide by what the findings show |
