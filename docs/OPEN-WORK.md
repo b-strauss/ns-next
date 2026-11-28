@@ -15,7 +15,17 @@ when they were written.
 
 ## Next
 
-**Hot swap in the debugger, the second of hot swap's three batches**
+**An install refuses to leave instances passing as values without being
+values** (decided with the user on 2026-11-28), on a branch of its own,
+before batch B: a mutable slot added to a value class that has
+instances is refused, and a class with instances re-parented onto
+`Value` has each instance checked, one whose slots all hold values
+becoming a value and any other refusing the install, atomically, its
+text naming the class and the reason ("Defects that change a correct
+program's output", "An install leaves existing instances passing as
+values without being values", below).
+
+Then **hot swap in the debugger, the second of hot swap's three batches**
 (batch B, split with the user on 2026-11-22;
 [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
 complete install"; [debugger.md](design/debugger.md), "Hot swap and
@@ -3270,20 +3280,28 @@ constructs not built yet, each a rule whose identifier holds the segment
   golden of an exception passed with no outer handler, its expected
   output established from ANSI's definition, would pin it.
   [core-library.md](design/core-library.md).
-- **An install that re-parents a plain class onto `Value` leaves its
-  existing instances passing as values** (noted 2026-11-28, with the
-  under-construction mark; older than it). Those instances were built by
-  an ordinary factory, never held to §3.1.1's conditions -- their slots may
-  be mutable -- and carry no under-construction mark, so after the install
-  `objectIsValue:` answers `true` for them and `Value`'s `=` and `hash`
-  compare and hash them by their state, at exit status 0.
+- **An install leaves existing instances passing as values without being
+  values** (noted 2026-11-28, with the under-construction mark; older
+  than it), by two routes, both observed: a mutable slot added to a value
+  class that has instances, and a plain class that has instances
+  re-parented onto `Value`. Either way the instances were never held to
+  §3.1.1's conditions after the install -- a slot of theirs is mutable --
+  yet `objectIsValue:` answers `true` for them and `Value`'s `=` and
+  `hash` compare and hash them by their state, so such an instance
+  mutates and its hash changes, at exit status 0.
   `redecide_value_class` (`interpreter/install/superclasses.rs`) decides
-  the class's verdict again for later instantiations only. Options, to be
-  decided with the user: refuse such an install while the class has
-  instances; check §3.1.1's conditions on each instance the install keeps
-  or migrates, refusing the install when one fails; or give such
-  instances a "never a value" state, refused by every value question as
-  an instance under construction is.
+  the class's verdict again for later instantiations only. Decided with
+  the user on 2026-11-28: the install checks the existing instances and
+  refuses, atomically, when one would pass as a value without being one.
+  A mutable slot added to a value class that has instances is refused.
+  When a class with instances is re-parented onto `Value`, each instance
+  is checked, and one whose slots all hold values becomes a value, as
+  value status is a structural classification in Bracha's formal
+  semantics (`prior-art/newspeak/formal-semantics/newspeak-semantics.tex`,
+  about lines 2385-2391, and its commit check,
+  `prior-art/newspeak/formal-semantics/reflection-semantics.tex`, about
+  lines 1446-1458); otherwise the install is refused, its text naming the
+  class and the reason. The cost is the install's alone.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
   complete install"; [object-model.md](design/object-model.md), "A value
   object's four conditions".

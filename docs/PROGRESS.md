@@ -9094,5 +9094,7 @@ and `vm.heap.under-construction-only-on-value-instances` state it.
   refusal's wording and the final review's findings; this entry's list
   follows it.
 
-What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
-the debugger, batch B, the first part of the debugger's stage 6.
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": an install that
+refuses to leave instances passing as values without being values, then
+hot swap in the debugger, batch B, the first part of the debugger's
+stage 6.
