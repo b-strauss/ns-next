@@ -175,8 +175,9 @@ The primary factory of *class*
    clause that a host built past the resolver -- signal it, as
    `cannot instantiate C: ` and its reason; nothing is made.
 3. Let *o* be a new object of *class*, every slot of it and of its
-   superclasses `nil`. If *class* inherits from `Value`, *o* is marked
-   under construction.
+   superclasses `nil`. If *class* inherits from `Value` and *o* is an
+   ordinary instance -- every such class's but `String`'s, whose `new`
+   answers an empty string -- *o* is marked under construction.
 4. Run *class*'s initializer on *o* with *arguments*, which runs, in
    this order, the superclass clause's message, the superclass's
    initializer on *o*, each `<:` clause's message and its level's
@@ -227,29 +228,34 @@ r[runtime.value.equality]
    them in -- a pair already met assumed equal. Where a pair below the
    root has a receiver's side whose `=` is not one this operation
    computes itself -- `Value`'s; a number's, a String's or a Symbol's,
-   of the kernel's own class; a class object's `Behavior>>=` -- as a
-   class that declares its own `=` has, compare the slots instead in
-   declaration order, each pair by sending `=` to the receiver's slot,
-   which decides it, under construction or not, and runs this operation
-   again for a pair that is `Value`'s. The steps below hold every other
-   pair.
+   of the kernel's own class; a class object's `Behavior>>=` or
+   `Metaclass>>=` -- as a class that declares its own `=` has, compare
+   the slots instead in declaration order, each pair by sending `=` to
+   the receiver's slot, which decides it, under construction or not, and
+   runs this operation again for a pair that is `Value`'s. The steps
+   below hold every other pair.
 2. If the pair's receiver's side is under construction
    ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)),
    signal `cannot compare an instance of C: it is still under
    construction, and an instance of a value class is a value only once
    its factory has returned`, naming that object's class, before anything
    else is compared.
-3. Otherwise, where the receiver's side is a value whose class side
-   declares `==` of its own, that `==` compares the two classes, as
-   `valueEquals:` sends it, and the slots are compared by sending, as
-   step 1 does; `valueEquals:` reads each side's slots through readers
-   that signal step 2's text for one under construction. Otherwise the
-   classes are compared by `Behavior>>==`: if they cannot be equal, the
-   pair is unequal, whatever the state of its argument's side.
+3. Otherwise, if both sides are numbers, the pair is equal exactly when
+   they are equal by value, across their classes -- `3` and `3.0` -- as
+   a number's `=` answers. Otherwise, where the receiver's side is a
+   value whose class side declares `==` of its own, that `==` compares
+   the two classes, as `valueEquals:` sends it, and the slots are
+   compared by sending, as step 1 does; `valueEquals:` reads each side's
+   slots through readers that signal step 2's text for one under
+   construction. Otherwise the classes are compared by `Behavior>>==`:
+   if they cannot be equal, the pair is unequal, whatever the state of
+   its argument's side.
 4. Otherwise, if its argument's side is under construction, signal step
    2's text naming that object's class.
 5. An immediate and another instance of its class -- `nil` and
-   `UndefinedObject new` -- are equal, neither having any slot.
+   `UndefinedObject new` -- are equal, neither having any slot. Two
+   Strings, or two Symbols, are compared by their characters, as their
+   own `=` compares them.
 6. The walk ends at the first pair that signals or is unequal, in its
    order, answering `false` for an unequal one, and `true` when none is.
 

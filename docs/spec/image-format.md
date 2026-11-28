@@ -329,9 +329,10 @@ hash, a `u32`, 0 for an object that was never asked for one; the body a
 tag of the space `object-body` and its fields.
 
 r[image.graph.record]
-Each body tag is followed by the fields its row gives: an instance's,
-array's, weak array's and ephemeron's values, counted; a string's text; a
-symbol's symbol; a closure's body, the record of the frame it captured
+Each body tag is followed by the fields its row gives: an instance's --
+one under construction under a tag of its own -- an array's, weak
+array's and ephemeron's values, counted; a string's text; a symbol's
+symbol; a closure's body, the record of the frame it captured
 and its copied values; a class's record, the mixin it applies -- a row
 of the mixin table or a shipped name -- then its superclass, enclosing
 object, declaring class and, for a level a `<:` clause added, the

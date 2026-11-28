@@ -480,7 +480,7 @@ key, refuses one through the same builder
 ([object-model.md](object-model.md), "A value object's four conditions",
 `r[semantics.value.under-construction]`).
 
-The last two are the first *reflective* leaves the mirror carries: given an
+The two readers are the first *reflective* leaves the mirror carries: given an
 object, how many slots its class's application declares, and what the slot
 at an index holds. They exist because the Newspeak fallback has to read
 state from a receiver it cannot send a private selector to, but they are
@@ -500,7 +500,8 @@ results as `Value`'s equality method", and a send of `=` makes that true by
 construction for every subclass. Where a leaf declines — a slot whose class
 brings its own `=`, declined before the walk's tower or class test could
 answer for it by shape (`builtins/value.rs`, `receiver_equality`), a
-shape it does not handle, its node budget — the
+shape it does not handle, the equality walk's node budget (the hash's
+is part of its definition, below, and no decline) — the
 failure block runs `valueEquals:` or `valueHashOfSlots`, which walk the
 slots from Newspeak, sending `=` to each slot or `hash` to each node the
 hash does not unfold. Those two read a slot through

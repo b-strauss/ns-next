@@ -741,7 +741,9 @@ two values means comparing their slots, and a slot's class may bring its own
 Newspeak must not stay a Rust native"). So the leaf decides only the shapes
 it can decide without sending — the immediates, the text payloads, and slots
 whose classes it knows answer the derived `=` — and declines everything
-else, including a graph wider or deeper than its node budget, which is an
+else, including a pair of graphs the equality walk cannot finish within
+its node budget -- the hash's budget is part of the hash's definition
+(`r[runtime.value.hash]`) and declines nothing -- which is an
 ordinary primitive failure taking the ordinary path above:
 `Value`'s `ifFail:` block runs `valueEquals:` or `valueHashOfSlots`, which
 walk the slots from Newspeak and send `=` or `hash` to each. The cost of the

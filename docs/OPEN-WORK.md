@@ -3047,7 +3047,12 @@ constructs not built yet, each a rule whose identifier holds the segment
   by Fermat's theorem, some 120 multiplications in `u128`, where it used
   to hash the bits (an integer and an integral double skip the inverse); a
   value's derived hash (`builtins/value.rs`, `hash_node`) asks the tower
-  of every object it hashes whether it is a number; and an integer's leaf
+  for every number it hashes and looks `hash`, and to unfold a node `=`,
+  up in the class of every other object below the root; a value with a
+  node whose class brings its own `hash` (or `=`) within its first 4,096
+  nodes is hashed wholly by the Newspeak queue walk in
+  `Value>>valueHashOfSlots`, which sends that node its `hash` and asks
+  the leaf of every node whether it unfolds; and an integer's leaf
   with a `Float` argument (`3 * 2.5`, `3 < 2.5`) goes through the tower's
   classification, where `Float`'s own leaf takes a `SmallInteger` on its
   fast path, where machine code does not run the mixed row itself
@@ -4205,13 +4210,15 @@ Small, deliberately left, none affecting an outcome.
   cost falls only on a fallback closure's run, as "Fallback blocks" in
   [execution.md](design/execution.md) intends: the common path pays nothing.
 - `builtins/value.rs`: the hash of a value class object, from its mixin's
-  name alone, collides for same-named nested classes under different
-  enclosing values. A collision breaks no contract, and folding in the
-  enclosing value is not plainly safe: the hash walk would unfold it, and
-  any node there that declines (an `Array` slot, `Kernel`'s `vmMirror`)
-  declines the whole hash, which `Behavior>>hash` then answers by identity,
-  so two equal class objects would hash apart. Distinguishing them needs a
-  walk that tolerates a decline below a class object -- a design decision.
+  name alone (`Behavior>>hash`), collides for same-named nested classes
+  under different enclosing values. A collision breaks no contract, and
+  folding in the enclosing value is not plainly safe: the leaf would
+  unfold it and decline at any node there whose `hash` is its own -- a
+  slot of a value class that declares `hash` -- and `Behavior>>hash`'s
+  fallback answers the identity hash, so two equal class objects would
+  hash apart. Distinguishing them needs that fallback to walk the
+  unfolding as `Value>>valueHashOfSlots` does, sending each such node
+  its own `hash` -- a design decision.
 - Every `<:` level gets a metaclass (`Mutator::new_applied_level` calls
   `attach_metaclass`) that no program sends to, part of the eager cost of
   building levels. Removing it is a design point, not a clean-up: the
