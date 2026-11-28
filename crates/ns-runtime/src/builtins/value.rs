@@ -1881,6 +1881,7 @@ mod tests {
     /// Two `Inner`s of two equal `Outer`s are two class objects, and one
     /// value: §3.1.1 makes the two `Outer`s the same value and §6.1 has the
     /// same receiver answer the same class. `==` answers what `=` does.
+    // spec: runtime.value.class-equality
     #[test]
     fn two_value_class_objects_of_one_declaration_compare_equal() {
         let (mut interpreter, fixture) = a_value_fixture();
@@ -1920,6 +1921,7 @@ mod tests {
 
     /// The same declaration under two unequal `Outer`s: the class objects'
     /// enclosing objects differ, so they do.
+    // spec: runtime.value.class-equality
     #[test]
     fn class_objects_of_one_declaration_under_unequal_values_compare_unequal() {
         let (mut interpreter, fixture) = a_value_fixture();
@@ -1942,6 +1944,7 @@ mod tests {
     /// An instance's class is compared as a pair, not by identity, so two
     /// instances of two equal class objects are one value -- and two of two
     /// unequal ones are not, although both are stateless.
+    // spec: runtime.value.class-equality
     #[test]
     fn instances_of_equal_class_objects_compare_equal() {
         let (mut interpreter, fixture) = a_value_fixture();
@@ -2080,6 +2083,7 @@ mod tests {
     /// it. The two agree with what the leaf decides where it can: two
     /// `Inner`s of two equal `Tag`s are equal, and hash alike, while an
     /// `Inner` and an `Outer`'s `Inner` share no application.
+    // spec: runtime.value.class-equality
     #[test]
     fn a_class_object_under_a_value_with_its_own_equality_is_compared_in_newspeak() {
         let (mut interpreter, fixture) = a_value_fixture();
@@ -3419,6 +3423,7 @@ mod tests {
     // spec: runtime.value.equality
     // spec: runtime.value.hash
     // spec: semantics.value.under-construction
+    // spec: runtime.value.class-equality
     #[test]
     fn the_leaves_answer_as_the_methods_they_stand_for_over_every_shape() {
         let (mut interpreter, fixture) = a_value_fixture();

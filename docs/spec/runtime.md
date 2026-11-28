@@ -242,7 +242,9 @@ r[runtime.value.equality]
    else is compared.
 3. Otherwise, if both sides are numbers, the pair is equal exactly when
    they are equal by value, across their classes -- `3` and `3.0` -- as
-   a number's `=` answers. Otherwise, where the receiver's side is a
+   a number's `=` answers; a number and an object of a number's class
+   that holds none -- `1/2` and `Fraction new`, in either order -- are
+   unequal. Otherwise, where the receiver's side is a
    value whose class side declares `==` of its own, that `==` compares
    the two classes, as `valueEquals:` sends it, and the slots are
    compared by sending, as step 1 does; `valueEquals:` reads each side's
@@ -271,7 +273,8 @@ it.
 
 1. If *right* is *left*, they are equal.
 2. A class object is a value exactly when its enclosing object is a
-   value object or `nil` -- for the class object of a declaration
+   an instance of a class that inherits from `Value`, under
+   construction or not, or `nil` -- for the class object of a declaration
    without a body, both its declaration's enclosing object and the one
    its level reaches -- and a metaclass is one when its class is. Two
    distinct class objects are unequal unless both are values, apply one

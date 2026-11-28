@@ -3047,8 +3047,8 @@ constructs not built yet, each a rule whose identifier holds the segment
   by Fermat's theorem, some 120 multiplications in `u128`, where it used
   to hash the bits (an integer and an integral double skip the inverse); a
   value's derived hash (`builtins/value.rs`, `hash_node`) asks the tower
-  for every number it hashes and looks `hash`, and to unfold a node `=`,
-  up in the class of every other object below the root; a value with a
+  for every number it hashes and looks up `hash` -- and, to unfold a
+  node, `=` -- in the class of every other object below the root; a value with a
   node whose class brings its own `hash` (or `=`) within its first 4,096
   nodes is hashed wholly by the Newspeak queue walk in
   `Value>>valueHashOfSlots`, which sends that node its `hash` and asks
