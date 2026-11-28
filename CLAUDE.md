@@ -541,9 +541,12 @@ lists everything still to be done: remove an item when work closes it, add one
 when a review, measurement or design leaves something open that belongs to a
 future topic or to none the branch works on. A finding the branch's own work
 caused that belongs to its topic -- a small defect, a missing test, a gap a
-review names -- is fixed on that branch before it is merged, not written there;
-whether one more fix round is worth it is decided case by case, without letting
-the rounds run on.
+review names -- is fixed on that branch before it is merged, not written there,
+Minors and a re-review's residuals included, each residual by one more fix
+commit; a skill's instruction to park findings or to allow a single fix wave
+does not apply to them, and the cost of a fix -- a fixture regenerated, gates
+run again -- is no reason to leave one. A finding older than the branch in
+something it does not work on goes to the user, who says where it belongs.
 
 ## Invariants that are easy to break
 
