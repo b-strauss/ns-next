@@ -1,0 +1,94 @@
+/// `nestedClasses removeMirrorNamed:` removes a nested class, which lives
+/// on obsolete: its enclosing class and a sibling no longer understand its
+/// name, while its class object, an instance made before the install, a
+/// subclass's class object made before it and the class nested in it keep
+/// running its last version, an implicit send inside it still reaching
+/// its enclosing instance; and the enclosing declaration's source no
+/// longer holds it.
+class ARemovedClassRunsOnObsolete = Object new () (
+  class Holder = Object new () (
+    public class Inner = Object new () (
+      public answer = (
+        ^42.
+      )
+
+      public reach = (
+        ^greeting.
+      )
+
+      public class Deep = Object new () (
+        public deep = (
+          ^7.
+        )
+      )
+    )
+
+    /// Names the removed class through an implicit send of its name.
+    public class Sibling = Object new () (
+      public made = (
+        ^Inner new answer.
+      )
+    )
+
+    /// Inherits from the removed class: its class object, made before the
+    /// install, keeps that superclass.
+    public class Sub = Inner () (
+      public answer = (
+        ^super answer + 1.
+      )
+    )
+
+    public greeting = (
+      ^'hello'.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      innerClass = holder Inner.
+      old = innerClass new.
+      deep = old Deep new.
+      sub = holder Sub new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    builder instanceSide nestedClasses removeMirrorNamed: #Inner.
+    builder install.
+    transcript
+        show: (outcome: [holder Inner]);
+        show: ' ';
+        show: (outcome: [holder Sibling new made]);
+        newLine.
+    transcript
+        print: old answer;
+        show: ' ';
+        print: innerClass new answer;
+        show: ' ';
+        print: sub answer;
+        show: ' ';
+        print: holder Sub new answer;
+        show: ' ';
+        print: deep deep;
+        show: ' ';
+        print: old Deep new deep;
+        show: ' ';
+        print: old reach;
+        newLine.
+    transcript
+        print: innerClass name;
+        show: ' ';
+        show: (ClassMirror reflecting: innerClass) name;
+        newLine.
+    transcript
+        print: (builder source indexOf: 'class Inner') = 0;
+        show: ' ';
+        print: (builder source indexOf: 'class Sibling') > 0;
+        newLine.
+  )
+)

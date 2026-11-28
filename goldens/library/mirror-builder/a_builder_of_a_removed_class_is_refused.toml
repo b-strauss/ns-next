@@ -1,0 +1,10 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+the builder of Inner edits a class the builder of Holder removes
+the builder of Deep edits a class the builder of Holder removes
+the builder of Inner edits a class the builder of Holder replaces
+true
+Inner was removed by an install, and an obsolete class is not edited
+Deep was removed by an install, and an obsolete class is not edited
+an object does not understand #Inner
+'''

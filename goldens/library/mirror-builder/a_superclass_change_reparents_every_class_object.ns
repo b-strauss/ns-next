@@ -1,0 +1,61 @@
+/// A header that changes a nested class's superclass re-parents every
+/// class object of the class over what its new clause answers in its own
+/// enclosing instance: two instances of the enclosing class each have
+/// their own class object `Inner`, and after the install each inherits
+/// from its own enclosing instance's `Other`, keeps its identity and is
+/// understood by an instance made before the install.
+class ASuperclassChangeReparentsEveryClassObject = Object new () (
+  class Holder = Object new () (
+    public class Base = Object new () (
+      public kind = (
+        ^#base.
+      )
+    )
+
+    public class Other = Object new () (
+      public kind = (
+        ^#other.
+      )
+    )
+
+    public class Inner = Base new () ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      first = Holder new.
+      second = Holder new.
+      firstInner = first Inner.
+      secondInner = second Inner.
+      old = firstInner new.
+      builder = (ClassMirror reflecting: firstInner) mixin declaration asBuilder.
+    |
+    transcript
+        print: old kind;
+        newLine.
+    builder header source: 'public class Inner = Other new ()'.
+    builder install.
+    transcript
+        print: first Inner == firstInner;
+        show: ' ';
+        print: second Inner == secondInner;
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: firstInner) superclass reflectee == first Other;
+        show: ' ';
+        print: (ClassMirror reflecting: secondInner) superclass reflectee == second Other;
+        show: ' ';
+        print: (ClassMirror reflecting: secondInner) superclass reflectee == first Other;
+        newLine.
+    transcript
+        print: old kind;
+        show: ' ';
+        print: secondInner new kind;
+        newLine.
+    transcript
+        show: builder header source;
+        newLine.
+  )
+)

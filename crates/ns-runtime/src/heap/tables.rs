@@ -131,6 +131,14 @@ pub(crate) struct MixinRow {
     /// tree (`Mixin::take_declared_nested`), so a mixin holds no other
     /// mixin's `Rc` once a heap names it.
     pub(crate) nested: Vec<MixinId>,
+    /// Whether an install removed the declaration from its enclosing one
+    /// (`Heap::make_obsolete`): its row stays, its `enclosing` kept for
+    /// its names, but no `nested` list holds it any more, and it roots a
+    /// tree of its own that a full collection frees on its own. Only the
+    /// removed declaration's row carries it; every row declared in it is
+    /// obsolete through it (`Heap::is_obsolete`), a class side registered
+    /// after the removal among them.
+    pub(crate) obsolete: bool,
 }
 
 /// The tables. The address maps are keyed by `Rc::as_ptr`, which is sound

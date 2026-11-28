@@ -1,0 +1,55 @@
+/// A builder of a nested class that another builder of the same install
+/// removes or replaces is refused, naming both, and nothing changes; once
+/// an install removed the class, a builder made of it before is refused,
+/// and so is one of a class nested in it.
+class ABuilderOfARemovedClassIsRefused = Object new () (
+  class Holder = Object new () (
+    public class Inner = Object new () (
+      public class Deep = Object new () ()
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirrors = platform mirrors.
+      ClassMirror = mirrors ClassMirror.
+      holder = Holder new.
+      innerClass = holder Inner.
+      remover = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+      replacer = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+      inner = (ClassMirror reflecting: innerClass) mixin declaration asBuilder.
+      deep = (ClassMirror reflecting: innerClass new Deep) mixin declaration asBuilder.
+    |
+    remover instanceSide nestedClasses removeMirrorNamed: #Inner.
+    replacer instanceSide nestedClasses addFromSource: 'public class Inner = Object new () ()'.
+    inner instanceSide methods addFromSource: 'public added = ( ^1 )'.
+    deep instanceSide methods addFromSource: 'public added = ( ^2 )'.
+    transcript
+        show: (outcome: [mirrors installAtomically: {inner. remover}]);
+        newLine.
+    transcript
+        show: (outcome: [mirrors installAtomically: {remover. deep}]);
+        newLine.
+    transcript
+        show: (outcome: [mirrors installAtomically: {replacer. inner}]);
+        newLine.
+    transcript
+        print: holder Inner == innerClass;
+        newLine.
+    remover install.
+    transcript
+        show: (outcome: [inner install]);
+        newLine.
+    transcript
+        show: (outcome: [deep install]);
+        newLine.
+    transcript
+        show: (outcome: [holder Inner]);
+        newLine.
+  )
+)

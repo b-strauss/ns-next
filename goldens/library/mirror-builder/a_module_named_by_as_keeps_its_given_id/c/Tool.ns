@@ -1,0 +1,3 @@
+/// A module of the id the renamed one would take.
+(* :module: legacy.Tool@3.0.0 *)
+class Tool = Object new () ()

@@ -1,0 +1,44 @@
+/// An atomic install one of whose builders fails changes nothing, the
+/// other builders' classes included. The builder of `Second` stages a
+/// method `x` its check accepts; a header with a slot `x` installed
+/// meanwhile makes it collide, so `installAtomically:` of the builders of
+/// `First` and `Second` signals the resolver's diagnostic, and `First`'s
+/// staged method does not answer, while its builder still holds it.
+class AFailedAtomicInstallChangesNothing = Object new () (
+  class First = Object new () ()
+
+  class Second = Object new () ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirrors = platform mirrors.
+      ClassMirror = mirrors ClassMirror.
+      first = First new.
+      firstBuilder = (ClassMirror reflecting: First) mixin declaration asBuilder.
+      secondBuilder = (ClassMirror reflecting: Second) mixin declaration asBuilder.
+      header = (ClassMirror reflecting: Second) mixin declaration asBuilder.
+      staged
+    |
+    firstBuilder instanceSide methods addFromSource: 'public answer = (^42)'.
+    secondBuilder instanceSide methods addFromSource: 'public x = (^#method)'.
+    header header source: 'class Second = Object new (| public x = 2. |)'.
+    header install.
+    staged:: firstBuilder source.
+    transcript
+        show: (outcome: [mirrors installAtomically: {firstBuilder. secondBuilder}]);
+        newLine.
+    transcript
+        show: (outcome: [first answer]);
+        show: ' ';
+        show: (outcome: [Second new x]);
+        newLine.
+    transcript
+        print: firstBuilder source = staged;
+        newLine.
+  )
+)

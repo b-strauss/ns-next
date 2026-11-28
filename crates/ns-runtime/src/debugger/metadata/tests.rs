@@ -1624,8 +1624,9 @@ fn an_install_moves_the_spans_of_an_unedited_body() {
                 "public longer = ( ^3 + 4 )".to_string(),
             )],
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = mutator.install_edit(first_id, &edit) {
+        if let Err(diagnostic) = mutator.install_one(first_id, &edit) {
             panic!("the install was refused: {diagnostic}");
         }
         let root_id = mutator
@@ -1842,8 +1843,9 @@ fn a_synthesized_body_is_placed_where_its_version_declared_it() {
                 "public longer = ( ^3 + 4 )".to_string(),
             )],
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = mutator.install_edit(first_id, &lengthening) {
+        if let Err(diagnostic) = mutator.install_one(first_id, &lengthening) {
             panic!("the install was refused: {diagnostic}");
         }
         mutator.debug_metadata.clear();
@@ -1874,8 +1876,9 @@ fn a_synthesized_body_is_placed_where_its_version_declared_it() {
             ),
             instance_side: Vec::new(),
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = mutator.install_edit(point_id, &renaming) {
+        if let Err(diagnostic) = mutator.install_one(point_id, &renaming) {
             panic!("the install was refused: {diagnostic}");
         }
         mutator.debug_metadata.clear();

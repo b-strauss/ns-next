@@ -74,6 +74,11 @@ fn check_every_level(mutator: &mut Mutator<'_>, shipped: bool) -> Result<usize, 
         if mixin.is_class_side() {
             continue;
         }
+        // An obsolete declaration's text is in no module's text any more,
+        // so there is none to compile it again from.
+        if mutator.heap.is_obsolete(id) {
+            continue;
+        }
         let (module_root, _) = mutator.path_from_module_root(id);
         let Some(root) = mutator.heap.mixin(module_root) else {
             return Err(format!("{}'s module has no root", mixin.name));

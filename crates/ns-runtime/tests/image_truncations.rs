@@ -116,7 +116,7 @@ fn packaged() -> Vec<u8> {
     let (mut interpreter, class) = load(&SOURCE.replace("class X", "class Manifest"));
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let identity = ModuleIdentity {
-        path: "core:Manifest.ns".to_string(),
+        path: Some("core:Manifest.ns".to_string()),
         id: ModuleId::parse("newspeak.core.Manifest", "Manifest")
             .unwrap_or_else(|error| panic!("{error}")),
         version: None,
@@ -272,7 +272,7 @@ fn reified_mixin() -> Vec<u8> {
 /// but the application's.
 fn identity(path: &str, id: &str, version: Option<&str>) -> ModuleIdentity {
     ModuleIdentity {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         id: ModuleId::parse(id, "X").unwrap_or_else(|error| panic!("{error}")),
         version: version.map(|text| Version::parse(text).unwrap_or_else(|error| panic!("{error}"))),
     }

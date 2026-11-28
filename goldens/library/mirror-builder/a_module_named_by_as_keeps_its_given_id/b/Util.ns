@@ -1,0 +1,3 @@
+/// A module of the id the project gives the other one.
+(* :module: legacy.Util@2.0.0 *)
+class Util = Object new () ()

@@ -14,8 +14,9 @@
 /// which records nothing -- and keeps it in a private lazy slot,
 /// and each platform's `mirrors` getter sends it `build`, its one
 /// public member. What a program gets is the `Mirrors` facet `build`
-/// answers, which hands out two of this module's private classes,
-/// `ObjectMirror` and `ClassMirror`, by class accessors, each exactly
+/// answers, which hands out three of this module's private classes,
+/// `ObjectMirror`, `ClassMirror` and `ClassDeclarationBuilder`, by class
+/// accessors, each exactly
 /// `^outer MirrorsFactory <Name>` -- a lexical
 /// send, which lets an image name the class by its declaration
 /// (`docs/design/image-format.md`, "Shipped names"). Its nested classes
@@ -83,9 +84,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   |
 ) (
   /// `platform mirrors`: the namespace of the two classes a program
-  /// makes mirrors with, `ObjectMirror` and `ClassMirror`, one accessor
-  /// each; nothing else. Its own class is not among them, so a program makes no
-  /// second namespace.
+  /// makes mirrors with, `ObjectMirror` and `ClassMirror`, and of the
+  /// class it declares a module from source with,
+  /// `ClassDeclarationBuilder`, one accessor each, and the install of
+  /// several builders as one, `installAtomically:`; nothing else. Its own
+  /// class is not among them, so a program makes no second namespace.
   private class Mirrors = Value () (
     /// Hands out the class a program makes object mirrors with: it
     /// instantiates it with `reflecting:` any object.
@@ -102,6 +105,79 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     public ClassMirror = (
       ^outer MirrorsFactory ClassMirror.
     )
+
+    /// Hands out the class a program declares a module from source with:
+    /// its `fromSource:` answers a builder whose `install` declares the
+    /// module. A builder over an existing declaration is reached through
+    /// a declaration mirror's `asBuilder` instead.
+    ///
+    /// @answers this module's class `ClassDeclarationBuilder`.
+    /// @see `ClassDeclarationBuilder class>>fromSource:`.
+    public ClassDeclarationBuilder = (
+      ^outer MirrorsFactory ClassDeclarationBuilder.
+    )
+
+    /// Installs the staged edits of every ClassDeclarationBuilder of
+    /// `aCollection` as one change: each builder's edits are spliced into
+    /// its module's current text in the order the builders are given, the
+    /// builders of one module composing on one text, and the install
+    /// either makes every edit visible at once, as each builder's
+    /// `install` would make its own, or changes nothing. Afterwards each
+    /// builder stands for its installed declaration, with nothing staged.
+    ///
+    /// The collection is copied first, so a change to it while the
+    /// install runs reaches nothing.
+    ///
+    /// @param aCollection a collection of this module's
+    /// ClassDeclarationBuilders, read with `size` and `do:`.
+    /// @answers nil.
+    /// @signals ArgumentError carrying the element, 'installAtomically:
+    /// requires ClassDeclarationBuilders', for an element that is none,
+    /// before any builder is read.
+    /// @signals Error with the VM's diagnostic, changing nothing, for the
+    /// first edit the install refuses: 'two builders edit <class name>'
+    /// for two builders of one declaration, 'the builder of <class name>
+    /// edits a class the builder of <other class name> removes' (or
+    /// 'replaces') for a builder of a class another builder removes or
+    /// replaces, or of one nested in it, and every diagnostic a builder's
+    /// own `install` signals.
+    /// @see `ClassDeclarationBuilder>>install`.
+    public installAtomically: aCollection = (
+      |
+        builders = Array withAll: aCollection.
+      |
+      builders do: [:each |
+        (outer MirrorsFactory isClassDeclarationBuilder: each) ifFalse: [
+          ^(ArgumentError value: each) signal: 'installAtomically: requires ClassDeclarationBuilders'.
+        ].
+      ].
+      (outer MirrorsFactory Installer builders: builders) install.
+      ^nil.
+    )
+  )
+
+  /// Decides, sending it nothing, whether `anObject` is an instance of
+  /// this module's ClassDeclarationBuilder, so that an install hands its
+  /// Installer to no other object.
+  ///
+  /// @param anObject any object.
+  /// @answers whether `anObject` is a ClassDeclarationBuilder, a Boolean.
+  private isClassDeclarationBuilder: anObject = (
+    ^vmMirror reflectionObject: (vmMirror objectClass: anObject ifFail: [nil])
+        identicalTo: ClassDeclarationBuilder
+        ifFail: [false].
+  )
+
+  /// Decides, sending it nothing, whether `anObject` is an instance of
+  /// this module's Installer, the one object a ClassDeclarationBuilder
+  /// hands its reified mixin to.
+  ///
+  /// @param anObject any object.
+  /// @answers whether `anObject` is an Installer, a Boolean.
+  private isInstaller: anObject = (
+    ^vmMirror reflectionObject: (vmMirror objectClass: anObject ifFail: [nil])
+        identicalTo: Installer
+        ifFail: [false].
   )
 
   /// A mirror on one object: its class, as a class mirror, and the values
@@ -217,10 +293,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// object wherever it occurs, and so is a Float of the same bits, so
     /// two mirrors on `3` are equal. A reflectee that is a future is
     /// compared as the future, never forced; a future passed as `other` is
-    /// forced by the first message sent to it. Among mirrors it keeps `Object>>=`'s contract, and
-    /// `hash` agrees; it asks `other` whether it is an object mirror and
-    /// for its reflectee, so an object of a program's that claims to be one
-    /// may answer so, and the symmetry with it is that object's own.
+    /// forced by the first message sent to it. Among mirrors it keeps
+    /// `Object>>=`'s contract, and `hash` agrees; it asks `other` whether
+    /// it is an object mirror and for its reflectee, so an object of a
+    /// program's that claims to be one may answer so, and the symmetry with
+    /// it is that object's own.
     ///
     /// @param other any object; sent `isKindOfObjectMirror`, and
     /// `reflectee` when it answers true.
@@ -1334,13 +1411,25 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// the instances whose slots changed, or changes nothing. Until then
   /// nothing a program observes changes.
   ///
+  /// A builder `fromSource:` stands for a module's declaration no module
+  /// holds yet: its `install` declares the module, and from then on the
+  /// builder stands for the installed declaration as any other does.
+  /// Before that it stages nothing.
+  ///
   /// Every edit is checked as it is staged: the VM splices it, with every
   /// edit staged before it, into the module's current text, then parses
   /// and resolves the module, and an edit it refuses -- a syntax error, a
-  /// member that collides with another, a header that renames the class
-  /// or changes its access or its superclass -- signals an Error with the diagnostic and
-  /// leaves the builder as it was, so a later `install` installs only the
-  /// edits that were accepted.
+  /// member that collides with another, a header that changes the
+  /// superclass, a new name the enclosing class already declares, or a
+  /// module's id and version the world's other modules would share --
+  /// signals an Error with the diagnostic and leaves the builder as it
+  /// was, so a later `install` installs only the edits that were accepted.
+  ///
+  /// A new name or a new access keeps the class's identity: its class
+  /// objects, its instances and the classes nested in it stay, its
+  /// enclosing class's accessor answers it under the new name and access,
+  /// and the old name is not understood. A module's root renamed, or its
+  /// `:module:` changed, is the same module under a new id or version.
   ///
   /// The staged state is Strings and Symbols, never a compiled member, so
   /// nothing exists outside the object space before `install`. Each check
@@ -1352,20 +1441,31 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// @factory makes a builder over the declaration whose instance side is
   /// `aReifiedMixin`, with nothing staged, and checks that empty edit at
   /// once, which reads the declaration's text, as `source` answers it,
-  /// and its header, as `header source` answers it.
+  /// and its header, as `header source` answers it; or, for a nil
+  /// `aReifiedMixin`, a builder over the module `aString` declares, which
+  /// it checks at once as its `install` would.
   /// @param aReifiedMixin the reified mixin of the declaration's instance
-  /// side.
+  /// side, or nil for a module declared from source.
+  /// @param aString the module's text when `aReifiedMixin` is nil, as
+  /// `fromSource:` takes it; read only then.
   /// @signals Error with the VM's diagnostic when the declaration may not
-  /// be edited at all (`ClassDeclarationMirror>>asBuilder` lists them).
-  /// @see `ClassDeclarationMirror>>asBuilder`.
-  private class ClassDeclarationBuilder reflecting: aReifiedMixin = Object (
+  /// be edited at all (`ClassDeclarationMirror>>asBuilder` lists them), or
+  /// when the module may not be declared (`fromSource:` lists them).
+  /// @see `ClassDeclarationMirror>>asBuilder` and `fromSource:`.
+  private class ClassDeclarationBuilder reflecting: aReifiedMixin source: aString = Object (
     |
-      /// The reified mixin of the declaration's instance side; never
-      /// handed out.
-      private subject = aReifiedMixin.
+      /// The reified mixin of the declaration's instance side, nil for a
+      /// module declared from source until its install; never handed out.
+      private subject ::= aReifiedMixin.
+      /// The text of the module the builder declares from source, a
+      /// String, until its install; nil otherwise.
+      private moduleText ::= nil.
       /// The staged header's text, a String, or nil to keep the
       /// declaration's.
       private headerText ::= nil.
+      /// The staged new name of the class, a Symbol, or nil to keep the
+      /// one the header names.
+      private newName ::= nil.
       /// The staged operations on the instance side, in the order they
       /// were staged: an Array of two-element Arrays, an operation's
       /// Symbol and its text or name, as the VM reads an edit.
@@ -1386,39 +1486,71 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
         stagedHeader.
       ] staging: [:text |
         self stageHeader: text.
+      ] naming: [:name |
+        self stageName: name.
       ].
-      /// The declaration's instance side, a MixinBuilder whose methods and
-      /// lazy slots stage through the receiver.
-      public instanceSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
-          removing: #removeMethod
-          staging: [:operation | self stage: operation onClassSide: false])
-          lazySlots: (MutableMemberGroup adding: #addLazySlot
-              removing: #removeLazySlot
-              staging: [:operation | self stage: operation onClassSide: false])
-          mixin: (MixinMirror reflecting: aReifiedMixin).
-      /// The declaration's class side, a MixinBuilder whose methods stage
-      /// through the receiver; it has no lazy slots.
-      public classSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
-          removing: #removeMethod
-          staging: [:operation | self stage: operation onClassSide: true])
-          lazySlots: nil
-          mixin: (MixinMirror reflecting: (vmMirror reflectionMixinClassSide: aReifiedMixin
-              ifFail: [nil])).
     |
-    self check: {nil. {}. {}}.
+    nil == aReifiedMixin ifTrue: [
+      self checkSource: aString.
+    ] ifFalse: [
+      self check: {nil. {}. {}. nil}.
+    ].
   ) (
+    /// The declaration's instance side, a MixinBuilder whose methods, lazy
+    /// slots and nested classes stage through the receiver.
+    ///
+    /// Lazy, so that a builder from source makes it over the declaration
+    /// its install made: before that, reading it signals and leaves it
+    /// unmade (`installedSubject`).
+    lazy public instanceSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
+        removing: #removeMethod
+        staging: [:operation | self stage: operation onClassSide: false])
+        lazySlots: (MutableMemberGroup adding: #addLazySlot
+            removing: #removeLazySlot
+            staging: [:operation | self stage: operation onClassSide: false])
+        nestedClasses: (MutableMemberGroup adding: #addClass
+            removing: #removeClass
+            staging: [:operation | self stage: operation onClassSide: false])
+        mixin: (MixinMirror reflecting: self installedSubject).
+
+    /// The declaration's class side, a MixinBuilder whose methods stage
+    /// through the receiver; it has no lazy slots and no nested classes.
+    ///
+    /// Lazy, as `instanceSide` is.
+    lazy public classSide = MixinBuilder methods: (MutableMemberGroup adding: #addMethod
+        removing: #removeMethod
+        staging: [:operation | self stage: operation onClassSide: true])
+        lazySlots: nil
+        nestedClasses: nil
+        mixin: (MixinMirror reflecting: (vmMirror reflectionMixinClassSide: self installedSubject
+            ifFail: [nil])).
+
     /// Shows the declaration as the staged edits make it: its text, from
     /// its access modifier, or `class` when it has none, to its closing
     /// parenthesis, with every edit staged since the builder was made or
     /// last installed spliced in, as the last check answered it. With
     /// nothing staged it is the text the declaration mirror's `source`
-    /// answers. A staged header starts it; a staged method or lazy slot
-    /// that replaces a member stands where the member stood, and one that
-    /// adds a member stands last on its side.
+    /// answers. A staged header starts it; a staged method, lazy slot or
+    /// nested class that replaces a member stands where the member stood,
+    /// and one that adds a member stands last on its side. A builder from
+    /// source answers the module's text as `fromSource:` was given it until
+    /// its install.
     ///
     /// @answers the staged declaration's text, a String.
     public source = (
       ^stagedSource.
+    )
+
+    /// Reflects the declaration the builder stands for, as its last
+    /// install or its creation left it: the class declaration mirror
+    /// `asBuilder` was sent to, or, for a builder from source, the module's
+    /// declaration its install made.
+    ///
+    /// @answers a new class declaration mirror on the declaration; nil for
+    /// a builder from source before its install.
+    public declaration = (
+      nil == subject ifTrue: [^nil].
+      ^ClassDeclarationMirror reflecting: subject.
     )
 
     /// Installs every staged edit at once: every class that applies the
@@ -1427,7 +1559,22 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// its identity, by one of the new layout whose slots of an old name
     /// keep their values and whose new slots are nil, their initializers
     /// not run. A method or a closure already running finishes with the
-    /// code it was running.
+    /// code it was running. A nested class removed lives on obsolete, its
+    /// name no longer understood by the declaration, and one replaced
+    /// keeps its class objects and its instances. A staged superclass
+    /// clause runs for every class object the program reaches before
+    /// anything is installed, and one that signals propagates what it
+    /// signals, installing nothing.
+    ///
+    /// An install of the receiver alone, as `Mirrors>>installAtomically:`
+    /// installs several builders.
+    ///
+    /// A builder from source declares its module: the module joins the
+    /// world under the id and version its `:module:` declares, or its
+    /// class's name without one, its text the module's current text, and
+    /// the builder stands for its declaration from then on, which
+    /// `declaration` reflects. The manifest a running program holds does
+    /// not answer it.
     ///
     /// @answers the receiver, which then stands for the installed
     /// declaration, with nothing staged.
@@ -1435,29 +1582,82 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// the class, nor its instances, nor what the receiver stages -- when
     /// the staged edits no longer apply to the module's current text, as
     /// when another builder's install gave the class a slot of the name of
-    /// a staged method; and 'cannot migrate an instance of <class name>,
-    /// which is not an ordinary object' when an instance whose layout would
-    /// change cannot be copied into the new one.
+    /// a staged method; '<class name> was removed by an install, and an
+    /// obsolete class is not edited' once an install removed the
+    /// declaration, or one it is nested in; 'cannot migrate an instance of
+    /// <class name>, which is not an ordinary object' when an instance
+    /// whose layout would change cannot be copied into the new one; and,
+    /// for a staged superclass clause or `<:` clauses, 'the superclass
+    /// clause of <class name> answered <what it answered>, which is no
+    /// class', 'the superclass clause of <class name> answers a class that
+    /// inherits from <class name>', 'an install ran between the preparation
+    /// and the commit of <class name>'s install; nothing was installed'
+    /// when a clause installed, and 'a class object of <class name> was
+    /// made while its superclass clauses were evaluated; nothing was
+    /// installed' when a clause brought a class object of the class into
+    /// being that the program still reaches at the commit.
+    /// @signals Error with the loader's message, for a builder from source
+    /// whose module's id and version another module of the world has
+    /// declared since `fromSource:` -- 'two modules are `<id>@<version>`:
+    /// <path> and a module declared from source' -- or its id where either
+    /// has no version, a module without a path named 'a module declared
+    /// from source'.
+    /// @see `Mirrors>>installAtomically:` and `fromSource:`.
     public install = (
-      |
-        answer = vmMirror reflectionMixin: subject installEdit: self edit ifFail: [
-          ^self refuseEdit.
-        ].
-      |
-      (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
+      (Installer builders: {self}) install.
+    )
+
+    /// Hands an install the receiver's entry: the reified mixin of its
+    /// declaration and its staged edit, as the VM reads them, or for a
+    /// builder from source before its install nil and the module's text.
+    /// The reified mixin is never handed out, so the entry goes to this
+    /// module's Installer alone.
+    ///
+    /// @param anInstaller the Installer installing the receiver's edit;
+    /// sent nothing.
+    /// @answers a new two-element Array, the reified mixin and the staged
+    /// edit as `edit` answers it, or nil and the module's text, when
+    /// `anInstaller` is an Installer; nil for any other object.
+    public entryFor: anInstaller = (
+      (isInstaller: anInstaller) ifFalse: [^nil].
+      nil == subject ifTrue: [^{nil. moduleText}].
+      ^{subject. self edit}.
+    )
+
+    /// Makes `texts` what the receiver stands for once the install of the
+    /// Installer `anInstaller` committed the receiver's edit: the installed
+    /// declaration, with nothing staged. A builder from source stands for
+    /// the module's declaration from then on.
+    ///
+    /// @param texts an Array as the commit answered it: the installed
+    /// declaration's text and its header's, each a String, preceded, for a
+    /// module declared from source, by the reified mixin of its
+    /// declaration's instance side.
+    /// @param anInstaller the Installer that installed the edit; sent
+    /// nothing. For any other object nothing changes.
+    /// @answers the receiver.
+    public installed: texts by: anInstaller = (
+      (isInstaller: anInstaller) ifFalse: [^self].
+      texts size = 3 ifTrue: [
+        subject:: texts at: 1.
+        moduleText:: nil.
+        ^self installed: {texts at: 2. texts at: 3} by: anInstaller.
+      ].
       headerText:: nil.
+      newName:: nil.
       instanceOperations:: {}.
       classOperations:: {}.
-      stagedSource:: answer at: 2.
-      stagedHeader:: answer at: 3.
+      stagedSource:: texts at: 1.
+      stagedHeader:: texts at: 2.
     )
 
     /// Assembles the staged edit in the form the VM reads.
     ///
     /// @answers a new Array of the header's text or nil, the instance
-    /// side's operations and the class side's.
+    /// side's operations, the class side's and the new name, nil to keep
+    /// the class's.
     private edit = (
-      ^{headerText. instanceOperations. classOperations}.
+      ^{headerText. instanceOperations. classOperations. newName}.
     )
 
     /// Stages `operation` on one side, after every operation staged
@@ -1472,14 +1672,15 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @see `check:`.
     private stage: operation onClassSide: classSide = (
       classSide ifTrue: [
-        self check: {headerText. instanceOperations. classOperations , {operation}}.
+        self check: {headerText. instanceOperations. classOperations , {operation}. newName}.
       ] ifFalse: [
-        self check: {headerText. instanceOperations , {operation}. classOperations}.
+        self check: {headerText. instanceOperations , {operation}. classOperations. newName}.
       ].
     )
 
     /// Stages `text` as the declaration's header, in place of any header
-    /// staged before, when the check accepts the result.
+    /// staged before, when the check accepts the result. The header names
+    /// the class itself, so a name staged before is dropped.
     ///
     /// @param text a String, the header as `ClassHeaderBuilder>>source:`
     /// takes it.
@@ -1487,7 +1688,19 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @signals Error the one `check:` signals, staging nothing.
     /// @see `check:`.
     private stageHeader: text = (
-      self check: {text. instanceOperations. classOperations}.
+      self check: {text. instanceOperations. classOperations. nil}.
+    )
+
+    /// Stages `name` as the class's new name, in place of any name staged
+    /// before, when the check accepts the result.
+    ///
+    /// @param name a Symbol, the name as `ClassHeaderBuilder>>name:` takes
+    /// it.
+    /// @answers the receiver.
+    /// @signals Error the one `check:` signals, staging nothing.
+    /// @see `check:`.
+    private stageName: name = (
+      self check: {headerText. instanceOperations. classOperations. name}.
     )
 
     /// Checks `newState` against the module's current text and, when the
@@ -1496,19 +1709,24 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// header's `source`. Nothing else changes either way.
     ///
     /// @param newState an Array of the header's text or nil, the instance
-    /// side's operations and the class side's, as `edit` answers them.
+    /// side's operations, the class side's and the new name or nil, as
+    /// `edit` answers them.
     /// @answers the receiver, once the VM accepted `newState`.
     /// @signals Error with the VM's diagnostic, leaving the staged state as
-    /// it was, when the check refuses the edit; and the one `refuseEdit`
-    /// signals when the VM cannot read it.
+    /// it was, when the check refuses the edit; the one `refuseEdit`
+    /// signals when the VM cannot read it; and the one `installedSubject`
+    /// signals for a builder from source before its install.
     private check: newState = (
       |
-        answer = vmMirror reflectionMixin: subject checkEdit: newState ifFail: [^self refuseEdit].
+        answer = vmMirror reflectionMixin: self installedSubject checkEdit: newState ifFail: [
+          ^self refuseEdit.
+        ].
       |
       (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
       headerText:: newState at: 1.
       instanceOperations:: newState at: 2.
       classOperations:: newState at: 3.
+      newName:: newState at: 4.
       stagedSource:: answer at: 2.
       stagedHeader:: answer at: 3.
     )
@@ -1523,25 +1741,264 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     private refuseEdit = (
       ^Error signal: 'a MirrorBuilder takes a member or a header as a String and a name as a Symbol'.
     )
+
+    /// Checks `text` as the module a builder from source declares, as its
+    /// `install` would check it, and makes it the receiver's module text
+    /// and `source`. The preparation the check makes is the one an install
+    /// of the receiver alone takes while nothing else is installed
+    /// meanwhile, so it compiles nothing again.
+    ///
+    /// @param text the module's text, after `asString` a String.
+    /// @answers the receiver, once the VM accepted the text.
+    /// @signals Error with the VM's diagnostic, as `fromSource:` lists
+    /// them, when it refuses the text; and the one `refuseEdit` signals
+    /// when the VM cannot read it.
+    private checkSource: text = (
+      |
+        moduleSource = text asString.
+        answer = vmMirror reflectionPrepareInstall: {{nil. moduleSource}} ifFail: [
+          ^self refuseEdit.
+        ].
+      |
+      (answer at: 1) ifFalse: [^Error signal: (answer at: 2)].
+      moduleText:: moduleSource.
+      stagedSource:: moduleSource.
+    )
+
+    /// The reified mixin the receiver stands for, which a builder from
+    /// source has only once it is installed: until then nothing can be
+    /// staged on it, since its declaration is in no module's text yet.
+    ///
+    /// @answers the reified mixin of the declaration's instance side.
+    /// @signals Error 'a ClassDeclarationBuilder from source stages nothing
+    /// before its install' for a builder from source not installed yet.
+    private installedSubject = (
+      nil == subject ifTrue: [
+        ^Error signal: 'a ClassDeclarationBuilder from source stages nothing before its install'.
+      ].
+      ^subject.
+    )
+  ) : (
+    /// Opens a builder over the declaration whose instance side is
+    /// `aReifiedMixin`, with nothing staged, as the factory does.
+    ///
+    /// @param aReifiedMixin the reified mixin of the declaration's instance
+    /// side.
+    /// @answers a new ClassDeclarationBuilder over the declaration.
+    /// @signals Error with the VM's diagnostic when the declaration may not
+    /// be edited at all (`ClassDeclarationMirror>>asBuilder` lists them).
+    /// @see `ClassDeclarationMirror>>asBuilder`.
+    public reflecting: aReifiedMixin = (
+      ^self reflecting: aReifiedMixin source: nil.
+    )
+
+    /// Opens a builder over the module `aString` declares, which no module
+    /// holds yet: one class declaration, the metadata and comments above
+    /// it included, its `:module:` naming the module's id and version as a
+    /// project's module's does -- without one the module is its class's
+    /// name, without a version. The text is checked at once, as the
+    /// builder's `install` checks it, and nothing changes until that
+    /// `install`, which declares the module; the builder stages nothing
+    /// before it, and stands for the module's declaration after it.
+    ///
+    /// @param aString the module's text, after `asString` a String.
+    /// @answers a new ClassDeclarationBuilder over the module.
+    /// @signals Error with the VM's diagnostic, declaring nothing: 'fromSource:
+    /// takes one class declaration' for a text of none -- an empty one, a
+    /// comment alone -- or of more, or of a
+    /// member after the class; 'the module's source does not parse:
+    /// <message> (line <n>)' and 'the module's source does not resolve:
+    /// <message> (line <n>)'; and the loader's own messages for a
+    /// `:module:` it refuses -- an id not ending in the class's name, a
+    /// malformed version, an id in the namespace `newspeak.` -- and for an
+    /// id and version another module of the world has, or an id another
+    /// has where either has no version, a module without a path named 'a
+    /// module declared from source': 'two modules are `<id>@<version>`:
+    /// <path> and a module declared from source'.
+    /// @signals Error 'a MirrorBuilder takes a member or a header as a
+    /// String and a name as a Symbol' when `aString asString` is no String.
+    /// @see `install` and `declaration`.
+    public fromSource: aString = (
+      ^self reflecting: nil source: aString.
+    )
+  )
+
+  /// The install of several ClassDeclarationBuilders' staged edits as one
+  /// change, which `ClassDeclarationBuilder>>install` makes of one builder
+  /// and `Mirrors>>installAtomically:` of several. The VM prepares every
+  /// builder's edit -- spliced into its module's current text in the
+  /// builders' order, the builders of one module composing on one text --
+  /// then evaluates each superclass clause the preparation names, as
+  /// program code against the unchanged world, then commits everything
+  /// at once without running any code, or changes nothing. A commit
+  /// after anything else was installed, a clause's own install among
+  /// them, is refused.
+  ///
+  /// It holds the builders and hands them nothing but itself, which no
+  /// other object receives, so a builder hands its reified mixin to an
+  /// Installer alone, and the texts the commit answered, with the reified
+  /// mixin of the module a builder from source declared, which therefore
+  /// goes to this module's ClassDeclarationBuilder alone.
+  ///
+  /// @factory makes the install of `anArray`'s builders, kept in their
+  /// order.
+  /// @param anArray an Array of this module's ClassDeclarationBuilders.
+  private class Installer builders: anArray = Object (
+    |
+      /// The builders whose staged edits install as one, in the order
+      /// their edits are spliced.
+      private builders = anArray.
+    |
+  ) (
+    /// Installs every builder's staged edits as one change, and then
+    /// hands each builder the texts of its installed declaration, so that
+    /// it stands for that declaration with nothing staged. A class whose
+    /// superclass clause or `<:` clauses the edits change, or which gains
+    /// or loses a body of its own, has the new clauses evaluated for each
+    /// of its class objects the program reaches, in the order they were
+    /// made and in the enclosing object its declaration was evaluated in,
+    /// as program code before anything is installed; the commit then
+    /// re-parents each class object over what its clauses answered,
+    /// keeping its identity, and migrates its instances by slot name,
+    /// running no initializer. A clause that signals propagates what it
+    /// signals, and nothing is installed. An install of no builders
+    /// installs nothing. A builder from source declares its module, and
+    /// is handed the module's declaration besides its texts.
+    ///
+    /// @answers the receiver.
+    /// @signals ArgumentError carrying the builder, 'an install requires
+    /// ClassDeclarationBuilders', before any builder is read, for a builder
+    /// that is no instance of this module's ClassDeclarationBuilder itself.
+    /// @signals Error with the VM's diagnostic, changing nothing --
+    /// neither a class, nor its instances, nor what a builder stages --
+    /// when the install refuses an edit: 'two builders edit <class name>'
+    /// for two builders of one declaration, 'the builder of <class name>
+    /// edits a class the builder of <other class name> removes' (or
+    /// 'replaces') for a builder of a nested class, or of one nested in
+    /// it, that another builder removes or replaces, 'an install ran
+    /// between the preparation and the commit of <class name>'s install;
+    /// nothing was installed' when something was installed after the
+    /// preparation -- by a superclass clause among others --, 'a class
+    /// object of <class name> was made while its superclass clauses were
+    /// evaluated; nothing was installed' when a clause brought a class
+    /// object of a changed class into being that the program still reaches
+    /// at the commit, 'the superclass clause of
+    /// <class name> answered <what it answered>, which is no class', 'the
+    /// superclass clause of <class name> answers a class that inherits
+    /// from <class name>', and every diagnostic
+    /// `ClassDeclarationBuilder>>install` lists; and the one
+    /// `refuseEntries` signals when the VM cannot read an entry.
+    public install = (
+      |
+        entries
+        prepared
+        epoch
+        superclasses
+        committed
+      |
+      /// Nothing to prepare or commit, so that an empty install moves no
+      /// epoch and fails no install whose clause it runs in.
+      builders isEmpty ifTrue: [^self].
+      /// The commit hands a builder from source its reified mixin, which
+      /// only this module's own ClassDeclarationBuilder may receive: an
+      /// instance of a subclass a program declares could keep it.
+      builders do: [:each |
+        (isClassDeclarationBuilder: each) ifFalse: [
+          ^(ArgumentError value: each) signal: 'an install requires ClassDeclarationBuilders'.
+        ].
+      ].
+      entries:: builders collect: [:builder | builder entryFor: self].
+      /// The clauses run for the class objects the program reaches, never
+      /// for one the space still holds though nothing reaches it, so dead
+      /// ones are collected first.
+      (self changesClauses: entries) ifTrue: [self collectGarbage].
+      prepared:: vmMirror reflectionPrepareInstall: entries ifFail: [^self refuseEntries].
+      (prepared at: 1) ifFalse: [^Error signal: (prepared at: 2)].
+      epoch:: prepared at: 2.
+      /// Each class object with its clauses' answer, which the commit
+      /// pairs by the class object. A clause the VM declines -- the epoch
+      /// moved -- answers nil, and the commit refuses the moved epoch.
+      superclasses:: (prepared at: 3) collect: [:clause |
+        {
+          clause at: 1.
+          vmMirror reflectionInstall: entries evaluateClause: (clause at: 1) epoch: epoch ifFail: [
+            nil.
+          ].
+        }.
+      ].
+      /// A class object a clause made and dropped is no class object the
+      /// commit refuses: only one the program still reaches is.
+      superclasses isEmpty ifFalse: [self collectGarbage].
+      committed:: vmMirror reflectionInstall: entries
+          commitEpoch: epoch
+          superclasses: superclasses
+          ifFail: [^self refuseEntries].
+      (committed at: 1) ifFalse: [^Error signal: (committed at: 2)].
+      (committed at: 2) keysAndValuesDo: [:index :texts |
+        (builders at: index) installed: texts by: self.
+      ].
+    )
+
+    /// Whether the install of `entries` evaluates any superclass clause:
+    /// a preparation whose answer is dropped when this returns, so that
+    /// the class objects it names keep nothing alive.
+    ///
+    /// @param entries the install's entries, an Array as `install` builds
+    /// it.
+    /// @answers true when the preparation names a class object whose
+    /// clauses change, false otherwise, a refused preparation included.
+    private changesClauses: entries = (
+      |
+        prepared = vmMirror reflectionPrepareInstall: entries ifFail: [^false].
+      |
+      (prepared at: 1) ifFalse: [^false].
+      ^(prepared at: 3) isEmpty not.
+    )
+
+    /// Asks for a full collection, which the return from this method, a
+    /// safepoint, serves before the sender goes on: what nothing reaches
+    /// is gone by then.
+    ///
+    /// @answers the receiver.
+    private collectGarbage = (
+      vmMirror garbageCollect: self ifFail: [self].
+    )
+
+    /// Refuses an install the VM cannot read: an edit whose text, after
+    /// `asString`, is no String, or whose name, after `asSymbol`, is no
+    /// Symbol. It never returns: an Error is not resumable.
+    ///
+    /// @answers nothing; it never returns.
+    /// @signals Error 'a MirrorBuilder takes a member or a header as a
+    /// String and a name as a Symbol'.
+    private refuseEntries = (
+      ^Error signal: 'a MirrorBuilder takes a member or a header as a String and a name as a Symbol'.
+    )
   )
 
   /// The header of a declaration a ClassDeclarationBuilder edits: its text
   /// -- the class's access modifier, name, factory, superclass clause,
-  /// slots and initializer -- as the builder's last check or install
-  /// answered it, and replaced through the builder.
+  /// slots and initializer, and for a module's root the metadata above the
+  /// class from the first, its `:module:` among them -- as the builder's
+  /// last check or install answered it, and replaced or renamed through
+  /// the builder.
   ///
   /// The header's extent is the parse's, which the VM answers with every
   /// check: reading it here would take a second reading of the syntax,
   /// which would have to follow every rule of the lexer to agree with it.
   ///
-  /// @factory makes the header over the builder's two blocks, keeping them
-  /// as given; a ClassDeclarationBuilder's `header` slot sends it.
+  /// @factory makes the header over the builder's three blocks, keeping
+  /// them as given; a ClassDeclarationBuilder's `header` slot sends it.
   /// @param aReadBlock a block of no arguments that answers the builder's
   /// staged header, a String.
   /// @param aStageBlock a one-argument block that stages a header's text,
   /// a String, through the builder, signalling what the builder's check
   /// signals.
-  private class ClassHeaderBuilder reading: aReadBlock staging: aStageBlock = Object (
+  /// @param aNameBlock a one-argument block that stages the class's new
+  /// name, a Symbol, through the builder, signalling what the builder's
+  /// check signals.
+  private class ClassHeaderBuilder reading: aReadBlock staging: aStageBlock naming: aNameBlock
+      = Object (
     |
       /// The block that answers the builder's staged header.
       /// Evaluated afresh by every `source`, so it reads what the
@@ -1551,12 +2008,17 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// Evaluated by `source:` with the header's text, a String; it
       /// signals what the builder's check signals.
       private staging = aStageBlock.
+      /// The block that stages a new name through the builder.
+      /// Evaluated by `name:` with the name, a Symbol; it signals what
+      /// the builder's check signals.
+      private naming = aNameBlock.
     |
   ) (
     /// Reads the staged header's text: the staged declaration's text from
-    /// its start up to, not including, the parenthesis that opens its
-    /// members -- the text `source:` was last given, as it was given, or
-    /// the declaration's own header when none is staged; all of the
+    /// its start -- for a module's root its first metadata comment -- up
+    /// to, not including, the parenthesis that opens its members, every
+    /// staged edit in it, the name `name:` staged included; the
+    /// declaration's own header when nothing is staged; all of the
     /// declaration's text for one with no members of its own.
     ///
     /// @answers the staged header's text, a String.
@@ -1564,38 +2026,71 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^reading value.
     )
 
-    /// Stages `aString` as the declaration's header. The header replaces
-    /// the declaration's text from its start up to its members'
-    /// parenthesis, so it starts exactly where the declaration does --
-    /// with its access modifier, or `class` when it has none, with no
-    /// whitespace or comment before it -- and holds the class's name,
-    /// factory, superclass clause, slots and initializer:
-    /// `public class Foo = Bar (| x |)`.
+    /// Stages `aString` as the declaration's header, in place of any
+    /// name `name:` staged, since the header names the class itself. The
+    /// header replaces the declaration's text from its start up to its
+    /// members' parenthesis, so it starts exactly where the declaration
+    /// does -- with its access modifier, or `class` when it has none, with
+    /// no whitespace or comment before it, and for a module's root with
+    /// the root's first metadata comment, or the class when it has none --
+    /// and holds the class's name, factory, superclass clause, slots and
+    /// initializer: `public class Foo = Bar (| x |)`. A header that names
+    /// the class otherwise renames it, one of another access changes the
+    /// access of its accessor, one of another superclass clause or other
+    /// `<:` clauses gives every class object of the class the superclass
+    /// its new clauses answer, evaluated when the builder installs, and a
+    /// root's whose `:module:` declares another id or version gives the
+    /// module that identity, keeping its path. A root's header given
+    /// without the `(* :module: … *)` it had removes it: the module
+    /// becomes undeclared, its id the class's name and its version
+    /// dropped. A module the project names with `as` keeps that id, its
+    /// last part the class's name, and takes the version its text
+    /// declares.
     ///
     /// @param aString the header's text, a String or a Symbol, sent
     /// `asString`.
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a
-    /// header that does not parse or does not end where the members begin,
-    /// one that renames the class ('the header renames <name> to <new
-    /// name>; an edit keeps a class's name'), one that changes its access
-    /// ('the header changes the access of <name>; an edit keeps it'; no
-    /// modifier and `protected` are one access), one that changes its
-    /// superclass clause or its `<:` clauses ('the header changes the
-    /// superclass of <name>; an edit keeps it'), and one whose slots
-    /// collide with a member staged or declared. The superclass and `<:`
-    /// clauses are compared as text, so a header that changes only the
-    /// whitespace or comments inside them is refused as well.
+    /// header that does not parse or does not end where the members begin;
+    /// one whose slots collide with a member staged or declared; one that
+    /// renames the class to a name its enclosing class already declares
+    /// ('<enclosing name> already has a member named <new name>'); and a
+    /// root's whose `:module:` the loader would refuse -- an id that does
+    /// not end in the class's name, a malformed version, an id under
+    /// `newspeak.`, or an id and version another module of the world has
+    /// ('two modules are `<id>@<version>`: <path> and <path>'), each with
+    /// the loader's message.
     public source: aString = (
       staging value: aString asString.
+    )
+
+    /// Stages `aSymbol` as the class's new name: the header's name
+    /// becomes it, and for a module's root whose `:module:` declares an
+    /// id, the id's last part too, so that the id still ends in the
+    /// class's name. The class keeps its identity -- its class objects,
+    /// its instances and the classes nested in it -- its enclosing class's
+    /// accessor answers it under the new name from the install on, and the
+    /// old name is no longer understood there.
+    ///
+    /// @param aSymbol the new name, a Symbol or a String, sent `asSymbol`;
+    /// an identifier.
+    /// @answers the receiver.
+    /// @signals Error with the VM's diagnostic, staging nothing, for a name
+    /// that is no identifier ('<name> cannot be renamed to <new name>,
+    /// which is no identifier'), one the enclosing class already declares
+    /// ('<enclosing name> already has a member named <new name>'), and for
+    /// a module's root an id the loader would refuse, as `source:` lists.
+    /// @see `source:`.
+    public name: aSymbol = (
+      naming value: aSymbol asSymbol.
     )
   )
 
   /// One side of a declaration a ClassDeclarationBuilder edits, the
   /// instance side or the class side: its methods and, on the instance
-  /// side, its lazy slots, each a MutableMemberGroup that stages through
-  /// the builder; and the live side's slots, which an edit changes only
-  /// through the header.
+  /// side, its lazy slots and its nested classes, each a
+  /// MutableMemberGroup that stages through the builder; and the live
+  /// side's slots, which an edit changes only through the header.
   ///
   /// @factory makes one side of a builder's declaration over the groups
   /// and the mirror it is given, keeping them as given; a
@@ -1604,8 +2099,14 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// @param aMethodGroup the MutableMemberGroup of the side's methods.
   /// @param aLazySlotGroup the MutableMemberGroup of the side's lazy
   /// slots, or nil for a class side, which declares none.
+  /// @param aNestedClassGroup the MutableMemberGroup of the side's nested
+  /// classes, or nil for a class side, which declares none.
   /// @param aMixinMirror a mixin mirror on the side's live mixin.
-  private class MixinBuilder methods: aMethodGroup lazySlots: aLazySlotGroup mixin: aMixinMirror
+  private class MixinBuilder
+      methods: aMethodGroup
+      lazySlots: aLazySlotGroup
+      nestedClasses: aNestedClassGroup
+      mixin: aMixinMirror
       = Object (
     |
       /// The group of the side's methods.
@@ -1616,6 +2117,10 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       /// `lazySlots` answers it itself, and refuses the class side for
       /// its nil.
       private lazySlotGroup = aLazySlotGroup.
+      /// The group of the side's nested classes, nil for a class side.
+      /// `nestedClasses` answers it itself, and refuses the class side
+      /// for its nil.
+      private nestedClassGroup = aNestedClassGroup.
       /// A mixin mirror on the side's live mixin.
       /// Asked afresh by every `slots`, so what it lists is the live
       /// mixin's, never a staged header's.
@@ -1644,6 +2149,25 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
       ^lazySlotGroup.
     )
 
+    /// Hands out the instance side's nested classes, which stage the
+    /// addition, replacement and removal of a nested class through the
+    /// builder. A class added under a name the side already declares
+    /// replaces that class, which keeps its class objects and its
+    /// instances, migrated to the new declaration; a class removed lives
+    /// on obsolete -- its enclosing class no longer understands its name,
+    /// and its class objects, its instances and its subclasses keep
+    /// running its last version until nothing reaches them.
+    ///
+    /// @answers the instance side's MutableMemberGroup of nested classes.
+    /// @signals Error 'nestedClasses: a class side declares no nested
+    /// classes', on the class side.
+    public nestedClasses = (
+      nil == nestedClassGroup ifTrue: [
+        ^Error signal: 'nestedClasses: a class side declares no nested classes'.
+      ].
+      ^nestedClassGroup.
+    )
+
     /// Lists the live side's own eager slots, in declaration order, as
     /// `MixinMirror>>slots` answers them: what the last install made,
     /// never a staged header's.
@@ -1657,18 +2181,18 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   )
 
   /// One group of a side's members a ClassDeclarationBuilder edits -- a
-  /// side's methods, or the instance side's lazy slots: it stages, through
-  /// the builder, the addition or replacement of a member from its text
-  /// and the removal of one by its name. It answers no mirrors; the
-  /// builder's `source` answers what is staged.
+  /// side's methods, or the instance side's lazy slots or nested classes:
+  /// it stages, through the builder, the addition or replacement of a
+  /// member from its text and the removal of one by its name. It answers no
+  /// mirrors; the builder's `source` answers what is staged.
   ///
   /// @factory makes a group that stages its additions as `anAddSymbol`
   /// and its removals as `aRemoveSymbol` through `aBlock`, keeping the
   /// three as given.
   /// @param anAddSymbol the Symbol of the operation that adds or replaces
-  /// a member, `#addMethod` or `#addLazySlot`.
+  /// a member, `#addMethod`, `#addLazySlot` or `#addClass`.
   /// @param aRemoveSymbol the Symbol of the operation that removes one,
-  /// `#removeMethod` or `#removeLazySlot`.
+  /// `#removeMethod`, `#removeLazySlot` or `#removeClass`.
   /// @param aBlock a one-argument block that stages an operation, an Array
   /// of the operation's Symbol and its text or name, through the builder,
   /// signalling what the builder's check signals.
@@ -1695,13 +2219,16 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// @param aString one member's text, a String or a Symbol, sent
     /// `asString`: one method declaration, `public foo: x = (^x)`, for a
     /// group of methods, one lazy slot declaration,
-    /// `lazy public cache = 1.`, for a group of lazy slots.
+    /// `lazy public cache = 1.`, for a group of lazy slots, one class
+    /// declaration, `public class Point = (| x |) ()`, for a group of
+    /// nested classes.
     /// @answers the receiver.
     /// @signals Error with the VM's diagnostic, staging nothing, for a text
     /// that does not parse ('<name>'s edited source does not parse: …
     /// (line <n>)'), one that declares no single member of the group's
     /// kind ('addFromSource: of <name>'s methods takes one method
-    /// declaration', '… lazy slots takes one lazy slot declaration'), and a
+    /// declaration', '… lazy slots takes one lazy slot declaration', '…
+    /// nested classes takes one class declaration'), and a
     /// member that collides with a slot, a nested class, the factory or a
     /// member of another kind ('<name>'s edited source does not resolve: …
     /// (line <n>)').

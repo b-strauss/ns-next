@@ -66,7 +66,7 @@ lists. The specification states the rules once,
 normatively; the design documents keep the reasoning and the mechanism and
 point at the rules (decided with the user on 2026-11-23, before the
 complete install, [liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install", goes on).
+"The complete install", went on).
 
 ## The decisions
 
@@ -165,8 +165,13 @@ end-of-batch gates:
    pointing at the rules by identifier.
 
 The complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: the complete install") is the next batch, and changes the
-specification as it changes the runtime.
+"The complete install"), built after the fifth part, changed the
+specification as it changed the runtime: its rules are
+`r[runtime.install]`, `r[runtime.install.superclass]`,
+`r[runtime.install.epoch]`, `r[runtime.install.module]`,
+`r[image.load.obsolete]`, `r[image.load.class-stamps]` and
+`r[vm.heap.obsolete-mixin-out-of-tree]`, and the gap of several builders
+is gone.
 
 ## The fifth batch's decisions
 
@@ -276,7 +281,7 @@ Decided with the user on 2026-11-26:
    object of the graph when the sized objects would take more than eight
    words a byte of the input left, and what a rejected load allocates is
    bounded by a constant multiple of the image's length plus a constant.
-   The factors -- 10.7x of the graph bytes and the rest -- stay in
+   The factors -- 8x of the graph bytes and the rest -- stay in
    [memory.md](memory.md), "The amplification bound of a rejected
    load", as the implementation's derivation. The alternatives weighed:
    the factors as the rule, which depend on the build and which no test
@@ -449,8 +454,8 @@ belongs to. The decisions, taken on 2026-11-23 and 2026-11-24:
    `ClassDeclarationBuilder`'s edits installed atomically -- is written
    as it is; what it lacks is a gap naming the work that closes it: the
    complete install ([liveness-and-reflection.md](liveness-and-reflection.md),
-   "Planned: the complete install") for several builders, superclasses,
-   nested classes and classes declared from source, the debugger's stage
+   "The complete install") for several builders, superclasses,
+   nested classes and classes declared from source, built since, the debugger's stage
    6 for `ActivationMirror`, and a topic of its own in
    `docs/OPEN-WORK.md` for changing an individual object's class, which no
    plan covers yet.

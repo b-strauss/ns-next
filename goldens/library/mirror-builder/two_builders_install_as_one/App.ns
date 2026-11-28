@@ -1,0 +1,55 @@
+/// Two builders of two modules' classes, given to `installAtomically:`,
+/// install as one change: neither staged method answers before the
+/// install, both answer after it, on instances made before, and each
+/// builder then stands for its installed declaration.
+class App packageUsing: manifest = Object new (
+  |
+    private Other = manifest at: 'Other'.
+  |
+) (
+  class Local = Object new () (
+    public kept = (
+      ^#kept.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  show: local and: other on: transcript = (
+    transcript
+        show: (outcome: [local answer]);
+        show: ' ';
+        show: (outcome: [other answer]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirrors = platform mirrors.
+      ClassMirror = mirrors ClassMirror.
+      local = Local new.
+      other = Other new.
+      localBuilder = (ClassMirror reflecting: Local) mixin declaration asBuilder.
+      otherBuilder = (ClassMirror reflecting: Other) mixin declaration asBuilder.
+    |
+    localBuilder instanceSide methods addFromSource: 'public answer = (^#local)'.
+    otherBuilder instanceSide methods addFromSource: 'public answer = (^#other)'.
+    show: local and: other on: transcript.
+    transcript
+        print: (mirrors installAtomically: {localBuilder. otherBuilder});
+        newLine.
+    show: local and: other on: transcript.
+    transcript
+        show: (outcome: [local kept]);
+        newLine.
+    transcript
+        show: localBuilder source;
+        newLine.
+    transcript
+        show: otherBuilder source;
+        newLine.
+  )
+)

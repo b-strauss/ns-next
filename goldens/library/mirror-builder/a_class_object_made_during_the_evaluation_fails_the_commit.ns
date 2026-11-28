@@ -1,0 +1,50 @@
+/// A superclass clause that brings a new class object of the class it is
+/// the clause of into being -- by sending its accessor to a new enclosing
+/// instance -- fails the commit, since that class object's clause was
+/// never evaluated, and nothing is installed.
+class AClassObjectMadeDuringTheEvaluationFailsTheCommit = Object new (
+  |
+    /// The enclosing instance the clause makes, kept so that its class
+    /// object lives until the commit.
+    public spare ::= nil.
+  |
+) (
+  class Holder = Object new () (
+    public class Base = Object new () ()
+
+    public class Other = Object new () ()
+
+    public class Inner = Base new () ()
+
+    public makeAnother = (
+      spare:: Holder new.
+      spare Inner.
+      ^Other.
+    )
+  )
+
+  outcome: action = (
+    ^[
+      action value.
+      'installed'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      builder = (ClassMirror reflecting: holder Inner) mixin declaration asBuilder.
+    |
+    builder header source: 'public class Inner = makeAnother new ()'.
+    transcript
+        show: (outcome: [builder install]);
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: holder Inner) superclass reflectee == holder Base;
+        show: ' ';
+        print: (ClassMirror reflecting: spare Inner) superclass reflectee == spare Base;
+        newLine.
+  )
+)

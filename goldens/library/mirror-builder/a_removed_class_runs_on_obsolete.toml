@@ -1,0 +1,7 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install", "vm.heap.obsolete-mixin-out-of-tree"]
+stdout = '''
+an object does not understand #Inner an object does not understand #Inner
+42 42 43 43 7 7 'hello'
+'Inner' Inner
+true true
+'''

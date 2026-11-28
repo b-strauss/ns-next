@@ -7,8 +7,8 @@ mod scope;
 pub(crate) mod sends;
 
 pub use classes::RootShape;
-pub(crate) use classes::own_member_names;
 pub use classes::root_class_is_value;
+pub(crate) use classes::{declared_members, own_member_names};
 pub(crate) use classes::{root_clause_defect, root_shape};
 
 use std::collections::{HashMap, HashSet};

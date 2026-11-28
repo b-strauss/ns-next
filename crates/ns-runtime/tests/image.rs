@@ -31,6 +31,14 @@ use ns_runtime::{
 use ns_syntax::Span;
 use ns_syntax::ast::AccessModifier;
 
+/// A creation stamp no other class record of the test's images carries:
+/// the decoder holds every class record's stamp unique.
+fn next_stamp() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 // spec: image.header
 #[test]
 fn header_round_trips() {
@@ -506,11 +514,12 @@ fn write_mixin_row_with_method_shapes(
     writer.write_boolean(false); // no superclass clause body
 }
 
-/// A hand-crafted mixin table of exactly one leaf row.
+/// A hand-crafted mixin table of exactly one leaf row, and no obsolete tree.
 fn one_row_mixin_table(name_id: u32, methods: &[(u32, u32)]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
     write_mixin_row(&mut writer, name_id, methods, &[]);
+    writer.write_u32(0); // no obsolete tree
     writer.into_bytes()
 }
 
@@ -527,6 +536,7 @@ fn mixin_chain(depth: u32) -> Vec<u8> {
         let nested: &[u32] = if level + 1 < depth { &child } else { &[] };
         write_mixin_row(&mut writer, 0, &[], nested);
     }
+    writer.write_u32(0); // no obsolete tree
     writer.into_bytes()
 }
 
@@ -858,7 +868,8 @@ fn round_trip_code_table<'gc>(
     let ids = encode::encode_code_table(&mut writer, &rows, &[], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(&mut mixin_writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
+    mixins::encode(&mut mixin_writer, &rows, 0, &mut symbols, &ids, None)
+        .expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
@@ -3330,6 +3341,7 @@ fn mixin_ids_for<'gc>(
     mixins::encode(
         &mut scratch,
         &rows_of(mutator.heap(), class),
+        0,
         symbols,
         ids,
         None,
@@ -6520,6 +6532,7 @@ fn class_record(
     writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(mixin_id);
     references(writer);
@@ -6532,6 +6545,7 @@ fn metaclass_record(writer: &mut encode::Writer, class_id: u32) {
     writer.write_shipped(METACLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS); // object body: Metaclass
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(CLASS_RECORD); // its class: an object-table record
     writer.write_u32(class_id);
 }
@@ -6545,6 +6559,81 @@ fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer))
     metaclass_record(&mut writer, 0);
     writer.write_u32(0); // no roots
     writer.into_bytes()
+}
+
+/// `stamps.len()` class records, each followed by its metaclass record,
+/// the class records taking `stamps[2 * i]` and the metaclass records
+/// `stamps[2 * i + 1]`; one graph's records and no roots.
+fn class_pairs_with_stamps(stamps: &[u64]) -> Vec<u8> {
+    let pairs = u32::try_from(stamps.len() / 2).expect("a few pairs");
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2 * pairs);
+    for (pair, stamp) in stamps.chunks(2).enumerate() {
+        let class = u32::try_from(2 * pair).expect("a few pairs");
+        writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
+        writer.write_u32(class + 1);
+        writer.write_u32(7); // identity hash
+        writer.write_u8(OBJECT_CLASS);
+        writer.write_u64(stamp[0]);
+        writer.write_u8(MIXIN_ROW);
+        writer.write_u32(0);
+        no_class_references(&mut writer);
+        writer.write_boolean(false); // not an applied level
+        writer.write_shipped(METACLASS_NAME);
+        writer.write_u32(8); // identity hash
+        writer.write_u8(OBJECT_METACLASS);
+        writer.write_u64(stamp[1]);
+        writer.write_u8(CLASS_RECORD); // its class: an object-table record
+        writer.write_u32(class);
+    }
+    writer.write_u32(0); // no roots
+    writer.into_bytes()
+}
+
+/// A class record's creation stamp orders it among the image's class
+/// objects: two of one stamp, and one at or past 2^59, which would leave
+/// the loading world too few stamps to draw above it, are refused; one
+/// just below the limit decodes.
+// spec: image.verify.hashes
+#[test]
+fn class_records_of_one_creation_stamp_or_a_wide_one_are_refused() {
+    const LIMIT: u64 = 1 << 59;
+    assert_eq!(
+        GraphFixture::new().decode_error(&class_pairs_with_stamps(&[5, 5])),
+        decode::DecodeError::DuplicateClassStamp(5)
+    );
+    for wide in [LIMIT, u64::MAX] {
+        assert_eq!(
+            GraphFixture::new().decode_error(&class_pairs_with_stamps(&[wide, 6])),
+            decode::DecodeError::ClassStampTooWide(wide)
+        );
+    }
+    GraphFixture::new().decoded(
+        &class_pairs_with_stamps(&[LIMIT - 1, 6]),
+        "a stamp just below the limit",
+        |_, graph| assert_eq!(graph.max_class_stamp, LIMIT - 1),
+    );
+}
+
+/// Many records whose stamps a hash keyed by the stamp would put in one
+/// probe chain -- every one a multiple of 2^40 -- decode, and one more
+/// repeating the first is refused: the stamps are checked unique by
+/// sorting them, not by a hash of keys the input chose.
+// spec: image.verify.hashes
+#[test]
+fn many_crafted_class_stamps_are_checked_unique() {
+    let stamps: Vec<u64> = (1..=4000_u64).map(|index| index << 40).collect();
+    GraphFixture::new().decoded(
+        &class_pairs_with_stamps(&stamps),
+        "two thousand class pairs of distinct stamps",
+        |_, graph| assert_eq!(graph.max_class_stamp, 4000 << 40),
+    );
+    let mut repeated = stamps.clone();
+    repeated[3999] = stamps[0];
+    assert_eq!(
+        GraphFixture::new().decode_error(&class_pairs_with_stamps(&repeated)),
+        decode::DecodeError::DuplicateClassStamp(1 << 40)
+    );
 }
 
 /// `superclass`, `enclosing` and `declaring_class` all absent.
@@ -7811,7 +7900,7 @@ const MANIFEST_MODULE: &str = indoc! {"
 /// `class_name` as the decoder parses them.
 fn identity(path: &str, id: &str, class_name: &str, version: Option<&str>) -> ModuleIdentity {
     ModuleIdentity {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         id: ModuleId::parse(id, class_name).unwrap_or_else(|error| panic!("{error}")),
         version: version.map(|text| Version::parse(text).unwrap_or_else(|error| panic!("{error}"))),
     }
@@ -8068,7 +8157,8 @@ fn the_encoder_refuses_source_for_some_modules_only() {
 }
 
 /// One module record as `image::modules` writes it, its parts given
-/// verbatim, so that a test can write one the encoder never would.
+/// verbatim, so that a test can write one the encoder never would; a
+/// record of the origin `ORIGIN_NONE` is written without its path.
 #[derive(Clone, Copy)]
 struct Record<'a> {
     origin: u8,
@@ -8091,7 +8181,9 @@ fn with_module_records(bytes: &[u8], records: &[Record<'_>]) -> Vec<u8> {
     writer.write_u32(u32::try_from(records.len()).expect("a count"));
     for (index, record) in records.iter().enumerate() {
         writer.write_u8(record.origin);
-        writer.write_str(record.path);
+        if record.origin != ORIGIN_NONE {
+            writer.write_str(record.path);
+        }
         writer.write_str(record.id);
         match record.version {
             Some(version) => {
@@ -8158,7 +8250,10 @@ fn a_module_record_is_held_to_the_project_rules() {
     );
     let loaded = image::load(&valid).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(loaded.modules[1].identity.display_name(), "Util@1.0.1");
-    assert_eq!(loaded.modules[2].identity.path, "core:Manifest.ns");
+    assert_eq!(
+        loaded.modules[2].identity.path.as_deref(),
+        Some("core:Manifest.ns")
+    );
 
     let refused = [
         (
@@ -8392,6 +8487,78 @@ fn a_module_record_is_held_to_the_project_rules() {
     );
 }
 
+/// A module a program declared from source has no path: the encoder
+/// writes its record with the origin `none` and nothing after it, and the
+/// loader reads it back without one, its id and version kept; a record
+/// of that origin is held to the rules of a program's module, so that one
+/// in the namespace `newspeak.` is refused.
+// spec: image.modules
+// spec: image.verify.module-identity
+#[test]
+fn a_module_from_source_loads_without_a_path() {
+    let (mut interpreter, class) = load(UTIL_ONE);
+    let identity = ModuleIdentity {
+        path: None,
+        ..identity("Util.ns", "com.acme.Util", "Util", Some("1.0.0"))
+    };
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                identity: &identity,
+                with_source: true,
+            }];
+            image::snapshot(mutator, &modules, &[])
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(bytes[module_section_start(&bytes) + 4], ORIGIN_NONE);
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(*loaded.modules[0].identity, identity);
+    assert_eq!(
+        loaded.modules[0].declaration.module_identity.as_deref(),
+        Some(&identity)
+    );
+    assert_eq!(loaded.modules[0].source.as_deref(), Some(UTIL_ONE));
+
+    let bytes = util_image(&util_identities(), false);
+    let pathless = |id: &'static str| Record {
+        origin: ORIGIN_NONE,
+        path: "",
+        id,
+        version: Some("1.0.0"),
+    };
+    let crafted = with_module_records(
+        &bytes,
+        &[
+            pathless("com.acme.Util"),
+            project("b/Util.ns", "Util", Some("2.0.0")),
+            MANIFEST_RECORD,
+        ],
+    );
+    let loaded = image::load(&crafted).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.modules[0].identity.path, None);
+    assert_eq!(
+        loaded.modules[0].identity.display_name(),
+        "com.acme.Util@1.0.0"
+    );
+    let reserved = with_module_records(
+        &bytes,
+        &[
+            pathless("newspeak.Util"),
+            project("b/Util.ns", "Util", Some("2.0.0")),
+            MANIFEST_RECORD,
+        ],
+    );
+    assert_eq!(
+        load_error(&reserved),
+        module_error(
+            0,
+            "`newspeak.Util` lies in the namespace `newspeak.`, which belongs to the modules \
+             ns-next ships"
+        )
+    );
+}
+
 /// A module record's tags are read before anything else of it: the retired
 /// origins -- the building machine's file and an embedded source -- an
 /// origin past the last, and a version tag past the last are each an
@@ -8400,7 +8567,7 @@ fn a_module_record_is_held_to_the_project_rules() {
 #[test]
 fn a_module_record_s_unknown_tags_are_refused() {
     let bytes = util_image(&util_identities(), false);
-    for origin in RETIRED_ORIGIN_TAGS.into_iter().chain([ORIGIN_CORE + 1]) {
+    for origin in RETIRED_ORIGIN_TAGS.into_iter().chain([ORIGIN_NONE + 1]) {
         let crafted = with_module_records(
             &bytes,
             &[
@@ -12011,8 +12178,9 @@ fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
 /// Reads past a module record's identity: its origin and path, its id, and
 /// its version.
 fn skip_module_identity(reader: &mut decode::Reader) {
-    reader.read_u8().expect("the origin tag");
-    reader.read_str().expect("the path");
+    if reader.read_u8().expect("the origin tag") != ORIGIN_NONE {
+        reader.read_str().expect("the path");
+    }
     reader.read_str().expect("the id");
     if reader.read_u8().expect("the version tag") == MODULE_VERSIONED {
         reader.read_str().expect("the version");
@@ -12086,7 +12254,9 @@ fn a_root_record_over_kernel_array_breaks_the_root_rule() {
     };
     let row = mixin_table_of(&bytes).module_rows[0];
     let superclass = |index: u32| {
-        let mut record = vec![OBJECT_CLASS, MIXIN_ROW];
+        // From the mixin reference on: the creation stamp between it and
+        // the body tag is the encoder's.
+        let mut record = vec![MIXIN_ROW];
         record.extend(row.to_le_bytes());
         record.push(1);
         record.push(CLASS_SHIPPED);
@@ -12182,6 +12352,73 @@ fn a_module_count_that_disagrees_with_the_trees_is_refused() {
         }
         .to_string()
     );
+}
+
+/// The mixin table's count of obsolete trees, the `u32` after its rows,
+/// is held to the trees the rows form before anything reads it: a count
+/// past them is refused, whatever its size, and a count within them takes
+/// its trees from the modules, which the module section's count then
+/// refuses. Nothing panics.
+// spec: image.verify.mixin-tree
+// spec: image.untrusted
+#[test]
+fn an_obsolete_count_beyond_the_trees_is_refused() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    let bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let count_at = module_section_start(&bytes) - 4;
+    assert_eq!(
+        bytes[count_at..count_at + 4],
+        0u32.to_le_bytes(),
+        "the image holds no obsolete tree"
+    );
+    for obsolete in [3, 4, u32::MAX] {
+        let mut crafted = bytes.clone();
+        crafted[count_at..count_at + 4].copy_from_slice(&obsolete.to_le_bytes());
+        assert_eq!(
+            load_error(&crafted),
+            decode::DecodeError::ObsoleteTreeCountMismatch { obsolete, trees: 2 }.to_string()
+        );
+    }
+    assert_eq!(
+        decode::DecodeError::ObsoleteTreeCountMismatch {
+            obsolete: 3,
+            trees: 2
+        }
+        .to_string(),
+        "the image's mixin table counts 3 obsolete tree(s) but holds 2 tree(s)"
+    );
+    let mut crafted = bytes.clone();
+    crafted[count_at..count_at + 4].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::ModuleCountMismatch {
+            declared: 2,
+            trees: 1
+        }
+        .to_string()
+    );
+    // A count within the trees takes the last ones.
+    let mut writer = encode::Writer::new();
+    writer.write_u32(2);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    writer.write_u32(1);
+    let table = writer.into_bytes();
+    let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
+        .expect("a module tree and an obsolete one decode");
+    assert_eq!(decoded.module_rows, vec![0]);
+    assert_eq!(decoded.obsolete_rows, vec![1]);
+    // The count cut short, alone after the rows.
+    let mut writer = encode::Writer::new();
+    writer.write_u32(1);
+    write_mixin_row(&mut writer, 0, &[], &[]);
+    let mut table = writer.into_bytes();
+    table.extend_from_slice(&[0, 0]);
+    let Err(error) = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
+    else {
+        panic!("a table whose count is cut short must be refused");
+    };
+    assert_eq!(error, decode::DecodeError::UnexpectedEndOfFile);
 }
 
 // spec: image.verify.counts
@@ -12880,6 +13117,7 @@ fn decode_one_row_with_method_shapes(
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
     write_mixin_row_with_method_shapes(&mut writer, 0, slots, methods, &[]);
+    writer.write_u32(0); // no obsolete tree
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     let codes = [Rc::new(every_instruction_once())];
@@ -13149,6 +13387,7 @@ fn a_class_side_method_named_like_the_factory_is_refused() {
             }],
             &[],
         );
+        writer.write_u32(0); // no obsolete tree
         let bytes = writer.into_bytes();
         let mut reader = decode::Reader::new(&bytes);
         let codes = [Rc::new(every_instruction_once())];
@@ -13488,6 +13727,7 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     writer.write_u32(2);
     write_mixin_row(&mut writer, 0, &[], &[]);
     write_mixin_row(&mut writer, 0, &[], &[]); // reached by no row
+    writer.write_u32(0); // no obsolete tree
     let table = writer.into_bytes();
     let decoded = mixins::decode(&mut decode::Reader::new(&table), &table_with(&["X"]), &[])
         .expect("a forest of two trees decodes");
@@ -13507,7 +13747,7 @@ fn a_mixin_row_nothing_reaches_is_a_second_tree_the_image_does_not_declare() {
     );
     assert_eq!(
         error,
-        "the image declares 1 module(s) but its mixin table holds 2 tree(s)"
+        "the image declares 1 module(s) but its mixin table holds 2 module tree(s)"
     );
 }
 
@@ -13553,7 +13793,8 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         let ids = encode::encode_code_table(&mut code, &rows, &[], &mut symbols)
             .expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, &rows, &mut symbols, &ids, None).expect("encode mixin table");
+        mixins::encode(&mut writer, &rows, 0, &mut symbols, &ids, None)
+            .expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
         let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)
@@ -16313,6 +16554,7 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     writer.write_shipped(CLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS);
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(CLASS_RECORD);
     writer.write_u32(0);
     writer.write_u32(0); // no roots
@@ -16750,6 +16992,7 @@ fn applied_level_record_naming(
     writer.write_u32(metaclass_id);
     writer.write_u32(7); // identity hash
     writer.write_u8(OBJECT_CLASS); // object body: Class
+    writer.write_u64(next_stamp()); // creation stamp
     writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
     writer.write_u32(mixin_row);
     match superclass {
@@ -16976,6 +17219,7 @@ fn body_less_class_section(
         writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(body);
+        writer.write_u64(next_stamp()); // creation stamp
         writer.write_u8(MIXIN_ROW); // mixin reference: a mixin-table row
         writer.write_u32(marker);
         writer.write_boolean(false); // no superclass
@@ -17245,6 +17489,7 @@ fn an_unknown_mixin_reference_tag_is_a_decode_error_not_a_panic() {
             writer.write_shipped(OBJECT_NAME);
             writer.write_u32(7); // identity hash
             writer.write_u8(OBJECT_CLASS); // object body: Class
+            writer.write_u64(next_stamp()); // creation stamp
             writer.write_u8(tag);
             writer.write_u32(0);
             no_class_references(writer);
@@ -17270,6 +17515,7 @@ fn shipped_mixin_record(name: u32, (row, index): (u32, u32)) -> Vec<u8> {
         writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(OBJECT_CLASS); // object body: Class
+        writer.write_u64(next_stamp()); // creation stamp
         writer.write_u8(MIXIN_SHIPPED); // mixin reference: a shipped class's
         writer.write_u32(name);
         writer.write_boolean(false); // no superclass

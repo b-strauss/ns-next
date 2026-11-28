@@ -159,16 +159,27 @@ pub(crate) struct InsideCounts {
     pub(crate) superseded: Vec<Option<(MixinId, usize)>>,
 }
 
-/// What a reclamation freed, for the caches' scrub.
+/// The ids whose cache entries and optimized copies are stale, for the
+/// scoped scrub (`InlineCaches::forget_stale`): what a reclamation freed
+/// (`FreedIds`), or what an install re-applied -- the guards and indices
+/// of the applications it replaced -- with the versions of the
+/// declarations it replaced, which a nested-class accessor's entry names
+/// whatever application its guard names (`Mutator::commit_install`).
 #[derive(Default)]
-pub(crate) struct FreedIds {
+pub(crate) struct StaleIds {
     pub(crate) guards: HashSet<DispatchId, IdentityBuildHasher>,
     pub(crate) applications: HashSet<ApplicationIndex, IdentityBuildHasher>,
+    /// The replaced versions, held until the scrub has compared them; a
+    /// reclamation replaces none.
+    pub(crate) declarations: Vec<Rc<Mixin>>,
 }
 
-impl FreedIds {
+/// What a reclamation freed, for the caches' scrub.
+pub(crate) type FreedIds = StaleIds;
+
+impl StaleIds {
     pub(crate) fn is_empty(&self) -> bool {
-        self.guards.is_empty() && self.applications.is_empty()
+        self.guards.is_empty() && self.applications.is_empty() && self.declarations.is_empty()
     }
 }
 
@@ -348,12 +359,15 @@ impl Heap<'_> {
         named
     }
 
-    /// Every registered module's tree of mixin ids, each its root first: a
-    /// row belongs to the tree of the root its chain of enclosing mixins
-    /// ends at, so a tree holds the root's nested declarations at every
-    /// depth, the class sides registered under any of them, and a nested
-    /// declaration an install removed, whose row still names the mixin it
-    /// was declared in. Every row is in exactly one tree.
+    /// Every registered module's tree of mixin ids, and every obsolete
+    /// declaration's, each its root first: a row belongs to the tree of
+    /// the first row on its chain of enclosing mixins that is a module's
+    /// root or a declaration an install removed (`Heap::make_obsolete`),
+    /// so a module's tree holds the root's nested declarations at every
+    /// depth and the class sides registered under any of them, and an
+    /// obsolete declaration's the same of its own, which a full collection
+    /// frees on its own, whether or not its former module lives. Every row
+    /// is in exactly one tree.
     pub(crate) fn module_trees(&self) -> Vec<Vec<MixinId>> {
         let rows = self.tables.mixins.len();
         // Per row, the index of its tree in `trees`; walked, not recursed,
@@ -372,6 +386,10 @@ impl Heap<'_> {
                     break tree;
                 }
                 path.push(current);
+                if self.is_tree_root(current) {
+                    trees.push(Vec::new());
+                    break trees.len() - 1;
+                }
                 match self.enclosing_mixin_id(current) {
                     Some(enclosing) if self.mixin_row(enclosing).is_some() => {
                         debug_assert!(path.len() <= rows, "internal: a cycle of enclosing mixins");
@@ -397,15 +415,20 @@ impl Heap<'_> {
             }
         }
         for tree in &mut trees {
-            // The root first: the only row of its tree with no enclosing.
-            if let Some(root) = tree
-                .iter()
-                .position(|id| self.enclosing_mixin_id(*id).is_none())
-            {
+            // The root first: the only row of its tree with no enclosing,
+            // or the obsolete declaration it is.
+            if let Some(root) = tree.iter().position(|id| self.is_tree_root(*id)) {
                 tree[..=root].rotate_right(1);
             }
         }
         trees
+    }
+
+    /// Whether the row of `id` roots a tree of `module_trees`: a module's
+    /// root, which no mixin encloses, or an obsolete declaration.
+    fn is_tree_root(&self, id: MixinId) -> bool {
+        self.mixin_row(id)
+            .is_some_and(|row| row.enclosing.is_none() || row.obsolete)
     }
 
     /// Every version's holders inside the tables (`InsideCounts`), each
@@ -560,6 +583,19 @@ impl Heap<'_> {
             self.tables.mixin_ids.remove(&mixin_key(&entry.current));
             self.tables.free_mixins.free(number);
             dropped.push(entry.current);
+        }
+        // An obsolete tree may outlive the module it was removed from: its
+        // root forgets the freed row, whose id may be minted again.
+        for entry in self.tables.mixins.iter_mut().flatten() {
+            if let Some(enclosing) = entry.enclosing
+                && freed.contains(mixin_row_number(enclosing))
+            {
+                debug_assert!(
+                    entry.obsolete,
+                    "internal: only an obsolete tree outlives the tree it was declared in"
+                );
+                entry.enclosing = None;
+            }
         }
         self.tables.mixins_changed();
         let Tables {

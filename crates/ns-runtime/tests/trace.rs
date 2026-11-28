@@ -950,6 +950,62 @@ fn an_edit_is_traced_invalidating_the_copy() {
     );
 }
 
+/// An install vacates only the entries naming what it re-applied, and is
+/// traced doing so as one `vacated cause=edit` event about no body, its
+/// migration's forward included: `Counter`'s header edit adds a slot, so
+/// the install forwards the counter `run` holds.
+// spec: vm.dispatch.invalidation-after-change
+#[test]
+fn an_install_is_traced_vacating_the_caches_once() {
+    let source = indoc! {"
+        class Test usingPlatform: platform = Object new (
+          |
+            ClassMirror = platform mirrors ClassMirror.
+          |
+        ) (
+          class Counter = Object new () (
+            public step: value = (
+              ^value + 1.
+            )
+          )
+
+          public run = (
+            | counter = Counter new. |
+            counter step: 1.
+            self edit.
+            ^counter step: 1.
+          )
+
+          edit = (
+            | builder |
+            builder:: (ClassMirror reflecting: Counter) mixin declaration asBuilder.
+            builder header source: 'class Counter = Object new (| public added ::= 5. |)'.
+            builder install.
+          )
+        )
+    "};
+    let events = traced_made_by(
+        source,
+        Factory::UsingPlatform,
+        &[TraceCategory::Caches],
+        TraceFilter::everything(),
+        |_| {},
+        |_| false,
+    );
+    let vacated: Vec<&TraceEvent> = events
+        .iter()
+        .filter(|event| {
+            event.kind
+                == TraceEventKind::CachesVacated {
+                    cause: VacateCause::Edit,
+                }
+        })
+        .collect();
+    assert_eq!(vacated.len(), 1, "{events:?}");
+    assert!(vacated[0].body.is_none());
+    assert_eq!(vacated[0].category, TraceCategory::Caches);
+}
+
 /// The program of `tests/jit.rs`'s
 /// `a_zone_with_room_for_a_few_bodies_leaves_the_output_right`: more
 /// bodies than a zone with room for a few holds, each compiled at its

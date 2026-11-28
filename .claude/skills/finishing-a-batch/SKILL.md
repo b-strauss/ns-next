@@ -22,7 +22,7 @@ Create a todo for each item.
 2. **Run the gates** the table names: for a batch that changed the runtime
    `cargo xtask gates end-of-batch` (`images`, `caches`, `benchmarks`,
    `release-checks`, `codegen` and `stress`; the Docker groups `linux` and
-   `aarch64` only on demand, as `CLAUDE.md`'s table says), and
+   `aarch64` only when the user asks, as `CLAUDE.md`'s table says), and
    `plugin-verification` beside it for one that changed the plugin. The stress modes act only in debug builds: MOVES
    moves every object at the run loop's safepoints, CACHES vacates every inline
    cache at every safepoint, COLLECT collects at every safepoint, SCAVENGE
@@ -49,13 +49,15 @@ Create a todo for each item.
    breakpoint that never stops, each gone past through the run loop's arm,
    and STEP stops the run at the safepoints its schedule picks and takes a
    burst of steps into, over and out from there, the shipped filter on and
-   off, reading the stack at every stop;
+   off, reading the stack at every stop, and INSTALL checks, after every
+   install's commit, every cache entry against a fresh lookup for its key
+   and every cell against its entry;
    beside them the suite runs once with
    `NS_NEXT_NO_JIT=1`, the interpreter alone, each suite without the tests
    `xtask/unreached-tests.txt` lists as reaching no switch (WIDE keeps
    those that compile), and `linux` and `aarch64` run only the tests that
    reach platform-dependent code or the runtime (`docs/design/README.md`,
-   "The tests a gate leaves out"). `stress` runs the sixteen suites at once,
+   "The tests a gate leaves out"). `stress` runs the seventeen suites at once,
    because each ends in a long tail of a few depth-limit tests that leaves most
    cores idle and the tails overlap (measured 2026-10-01 for the first three:
    277 s, MOVES the longest, against 703 s, the sum of the three per-mode times,

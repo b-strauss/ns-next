@@ -15,17 +15,21 @@ when they were written.
 
 ## Next
 
-**The complete install, the first of hot swap's three batches** (decisions
-taken with the user on 2026-11-22 but for one, the change of a module's
-identity; the branch `feature/complete-install` is parked with batch A's
-decisions; [liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: the complete install"): the install that changes everything --
-a superclass, a class added or removed, a method added, changed or
-removed, the factory and the initializer -- atomically through the
-MirrorBuilder. It is the next batch; the specification of the current
-state it waited for is built ([specification.md](design/specification.md),
-"The order of building it"), and it changes the book as it changes the
-runtime.
+**Hot swap in the debugger, the second of hot swap's three batches**
+(batch B, split with the user on 2026-11-22;
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+complete install"; [debugger.md](design/debugger.md), "Hot swap and
+edit-and-continue", "Exceptions"): a saved module's text installed into
+the running program over DAP, the plugin and the MCP server through the
+complete install, which batch A built (2026-11-27); breakpoints set again
+on the new bodies; frames running old code marked; "Create Method" for an
+uncaught `MessageNotUnderstood` and the forced `nil` from
+`Object>>doesNotUnderstand:` when it is declined. A hot swap from text
+cannot tell a rename from a removal and an addition, so it takes a rename
+from its client, and a breakpoint naming a module's old id or version is
+its to set again (decisions 4 and 9 there). It needs its questions
+decided and a plan of its own; batch C, developing a whole application
+in the debugger from an empty world, follows it.
 
 **The debugger's stage 6: hot swap, then edit-and-continue of running
 activations, and `ActivationMirror` for programs** (decided with the
@@ -46,10 +50,9 @@ uncaught `MessageNotUnderstood` and the forced `nil` from
 `Object>>doesNotUnderstand:` when it is declined ("Exceptions"). Over
 DAP, requests of ns-next's own, and in the plugin a hot-swap action.
 Hot swap is split into three batches, the complete install, hot swap in
-the debugger and developing in an empty world, and the first one's
-decisions are taken but for one, the change of a module's identity
-([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: the complete install"); the first of the three is the complete install, the item above.
+the debugger and developing in an empty world; the first is built
+(2026-11-27; [liveness-and-reflection.md](design/liveness-and-reflection.md),
+"The complete install"), and the second is the item above.
 Stages 1 to 5 are built (2026-11-11 to 2026-11-17; "The debugging API
 at the safepoint", "Launching, the start and the end", "The MCP
 server", "The JetBrains plugin"): stage 5 evaluates expressions, sets
@@ -453,12 +456,18 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   collection; the table of reified mixins and the application cache are
   weak; a mixin's nested declarations are named by id; and a nested
   class's cache slot holds a serial per creation, so a forward can no
-  longer lose a cyclic-definition diagnosis. Deferred beyond them: a
-  class declared from source with no predecessor, a shape-changing
-  `setClass:`, a superclass change, edits of nested classes,
-  `installAtomically:` over several builders, editing kernel methods,
-  `ActivationMirror` and edit-and-continue, scoped invalidation
-  ("Planned: images, liveness and reflection" below).
+  longer lose a cyclic-definition diagnosis. **The complete install --
+  built** (2026-11-27,
+  [its plan](superpowers/plans/2026-11-27-1554-complete-install.md)):
+  several builders installed as one through three VM-mirror rows, a
+  superclass change evaluated for every class object the program reaches
+  in creation order, nested classes added, replaced and removed -- a
+  removed one living on obsolete and carried by an image --, renames,
+  access changes and a module's identity changed in place, modules
+  declared from source, and the invalidation scoped to what an install
+  re-applies. Not built: a shape-changing `setClass:`, editing kernel
+  methods, `ActivationMirror` and edit-and-continue ("Planned: images,
+  liveness and reflection" below).
   [liveness-and-reflection.md](design/liveness-and-reflection.md),
   "A MirrorBuilder and an atomic install", "Edited programs in images",
   "What the id has to carry"; [object-model.md](design/object-model.md),
@@ -2265,24 +2274,35 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
       not assert their precondition -- that a frame was suspended, that
       a token waited when the mode stopped -- so a change that stopped
       producing it would leave them passing vacuously.
-- **Reflection beyond road step 5b2a**: a class declared from source with
-  no predecessor (`ClassDeclarationBuilder fromSource:`, loading a module
-  at run time), a superclass change, adding,
-  replacing and removing nested classes, and `installAtomically:` over
-  several builders. Once an install can remove a nested declaration, the
-  removed declaration's row stays in its module's tree, which a full
-  collection frees only whole (`Heap::module_trees`), so it lives until
-  the whole module dies; whether to free such a row on its own then is
-  that step's to decide ([object-model.md](design/object-model.md), "An
-  application has two ids").
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
-  MirrorBuilder and an atomic install".
-- **A syntax error found while applying an earlier staged operation**
-  (2026-10-19) reports a line of the intermediate text the operations
-  before it made, not of the module's current text nor of the operation
-  the program gave (`interpreter/edit.rs`, `prepare_edit`). Whether the
-  diagnostic should name the operation, or a line of the text it was
-  given, is undesigned.
+- **A module declared from source is no module of the tools, and no
+  Newspeak code makes its class object** (2026-11-27). An install of
+  `ClassDeclarationBuilder fromSource:` registers the module in the heap,
+  but the lists the tools name modules by -- `ns-cli`'s `known_modules`
+  (`program.rs`), the trace filter's `KnownModule::resolve` and the DAP
+  agent's sources -- are built before the run and never learn it, so a
+  breakpoint, a trace filter or a frame's source cannot name it by its id;
+  and the builder answers its declaration mirror, from which no program
+  can make the module's class object, since the manifest a running
+  application holds does not answer it either. Both are batch C's,
+  developing an application in an empty world.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+  complete install", decision 7.
+- **A debugger evaluation at the install's collection safepoint**
+  (2026-11-27). The Installer has a full collection served at a safepoint
+  so that only class objects the program reaches are evaluated; a
+  debugger stopped there could evaluate an expression that makes and
+  drops a class object of the changed declaration, which the preparation
+  after it would then evaluate. No test pins it.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+  complete install", "The three rows".
+- **A syntax error found while splicing an install's edits**
+  (2026-10-19) reports a line of the module's composed text: its current
+  text with the install's edits of that module spliced in, in the
+  builders' order, up to the one refused, which no builder's `source`
+  shows -- not a line of the module's current text nor of the operation
+  the program gave (`interpreter/edit.rs`, `prepare_edit`,
+  `prepare_module`). Whether the diagnostic should name the operation,
+  or a line of the text it was given, is undesigned.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   MirrorBuilder and an atomic install".
 - **The activation and thread mirrors** (2026-10-18): road step 5a reads
@@ -2360,13 +2380,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   is undecided, and no test pins the window.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "A
   mirror forces no future".
-- **Scoped invalidation.** Every invalidation flushes every inline cache:
-  the bulk forward's (`InlineCaches::invalidate`), the cache stress mode's
-  and the tests' (`Interpreter::invalidate_caches`), and the atomic install
-  flushes them through the forward, or itself when it forwarded nothing.
-  Scoping an invalidation to the applications an edit affects is deferred.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Caches
-  and their dependency keys".
 - **A `SourceOrigin` for code entered in the debugger.** `SourceOrigin` has
   `File(PathBuf)` and `Embedded(String)` (`types.rs`); code entered live
   wants a variant of its own. [object-model.md](design/object-model.md),
@@ -4262,17 +4275,16 @@ Small, deliberately left, none affecting an outcome.
   [core-library.md](design/core-library.md), "`class` and the class
   accessors are protected".
 
-- **The amplification bound of a rejected load is counted with two-byte
-  class tags.** `decode_value`'s doc comment (`image/decode.rs`), the
-  table in [memory.md](design/memory.md), "The amplification bound of a
-  rejected load", and `CLAUDE.md`'s image invariant take a class tag at
-  two bytes, the builtin class tag's size, where every live tag is five
-  (`CLASS_RECORD`, `CLASS_SHIPPED`); only the byte-array record is counted
-  at five. The figures are safe upper bounds, not tight ones: the
-  smallest metaclass record is 15 bytes, not 9, and the release peak
-  about 8x, not 10.7x. Redoing the derivation and the three statements
-  together, in one commit that runs the gates, would make them tight.
-  Noted 2026-10-13.
+- **The amplification bound of a rejected load counts records with
+  two-byte class tags.** `decode_value`'s doc comment (`image/decode.rs`)
+  and the table in [memory.md](design/memory.md), "The amplification bound
+  of a rejected load", take a class tag at two bytes, the builtin class
+  tag's size, where every live tag is five (`CLASS_RECORD`,
+  `CLASS_SHIPPED`); only the byte-array record is counted at five. The
+  record figures are safe upper bounds, not tight ones: the smallest
+  metaclass record is 23 bytes, not 17. The peak, 8x in a release build,
+  is a value's word's either way. Redoing the record figures in both
+  places together would make them tight. Noted 2026-10-13.
 
 - `goldens/language/class/class-side/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
   comment citing §6.3.

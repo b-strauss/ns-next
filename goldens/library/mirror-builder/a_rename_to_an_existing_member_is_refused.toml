@@ -1,0 +1,10 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+ARenameToAnExistingMemberIsRefused already has a member named Sibling
+ARenameToAnExistingMemberIsRefused already has a member named probe
+ARenameToAnExistingMemberIsRefused already has a member named slot
+ARenameToAnExistingMemberIsRefused already has a member named Sibling
+Subject cannot be renamed to not a name, which is no identifier
+true
+Subject
+'''

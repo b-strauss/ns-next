@@ -1,0 +1,47 @@
+/// A module declared from source and an edit of an existing class install
+/// as one through `installAtomically:`: both take effect, and each
+/// builder then stands for its declaration. When the module is refused --
+/// another module took its identity after its builder's check -- the
+/// edit given with it is not installed either. The module that took the
+/// identity is held to the end, as a module lives while its reified
+/// mixin does: a collection would free it otherwise, and its identity
+/// with it.
+class AModuleAndAnEditInstallAsOne = Object new () (
+  class Holder = Object new () ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirrors = platform mirrors.
+      Builder = mirrors ClassDeclarationBuilder.
+      holder = Holder new.
+      editor = (mirrors ClassMirror reflecting: Holder) mixin declaration asBuilder.
+      fresh = Builder fromSource: '(* :module: com.acme.Fresh@1.0.0 *) class Fresh = Object new () ()'.
+      late = Builder fromSource: '(* :module: com.acme.Late@1.0.0 *) class Late = Object new () ()'.
+      taken = Builder fromSource: '(* :module: com.acme.Late@1.0.0 *) class Late = Object new () ()'.
+    |
+    editor instanceSide methods addFromSource: 'public answer = ( ^42 )'.
+    mirrors installAtomically: {fresh. editor}.
+    transcript
+        show: fresh declaration name;
+        show: ' ';
+        print: holder answer;
+        newLine.
+    editor instanceSide methods addFromSource: 'public answer = ( ^43 )'.
+    taken install.
+    transcript
+        show: (outcome: [mirrors installAtomically: {late. editor}]);
+        newLine.
+    transcript
+        print: holder answer;
+        show: ' ';
+        print: late declaration;
+        show: ' ';
+        show: taken declaration name;
+        newLine.
+  )
+)

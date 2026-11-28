@@ -1,0 +1,65 @@
+/// A new superclass clause runs once for every class object of its class
+/// the program reaches, and for no other: the class object of an
+/// enclosing instance the program dropped is not evaluated, however long
+/// the space still holds it, and after the install the clause has run
+/// once in each of the two enclosing instances that live.
+class AClauseRunsOnlyForTheClassObjectsAProgramReaches = Object new (
+  |
+    /// How many times the new clause ran, in any enclosing instance.
+    public evaluations ::= 0.
+  |
+) (
+  class Holder = Object new (
+    |
+      /// How many times the new clause ran in this enclosing instance.
+      public evaluated ::= 0.
+    |
+  ) (
+    public class Base = Object new () ()
+
+    public class Other = Object new () ()
+
+    public class Inner = Base new () ()
+
+    public counting = (
+      evaluated:: evaluated + 1.
+      evaluations:: evaluations + 1.
+      ^Other.
+    )
+  )
+
+  /// Makes a class object of `Inner` in an enclosing instance nothing
+  /// keeps.
+  dropOne = (
+    Holder new Inner.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      first = Holder new.
+      second = Holder new.
+      builder
+    |
+    dropOne.
+    first Inner.
+    dropOne.
+    second Inner.
+    builder:: (ClassMirror reflecting: first Inner) mixin declaration asBuilder.
+    builder header source: 'public class Inner = counting new ()'.
+    builder install.
+    transcript
+        print: evaluations;
+        show: ' ';
+        print: first evaluated;
+        show: ' ';
+        print: second evaluated;
+        newLine.
+    transcript
+        print: (ClassMirror reflecting: first Inner) superclass reflectee == first Other;
+        show: ' ';
+        print: (ClassMirror reflecting: second Inner) superclass reflectee == second Other;
+        newLine.
+  )
+)

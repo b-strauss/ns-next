@@ -1561,6 +1561,43 @@ impl InstalledBody {
     fn size(&self) -> u32 {
         self.end - self.start
     }
+
+    /// The instances guards of the applications an optimized copy depends
+    /// on, each once: its recorded dependencies' and its key's two, under
+    /// which the dependency index lists it (`JitState::dependents`);
+    /// nothing for baseline code, which relies on no application.
+    #[cfg(ns_jit)]
+    fn depended_on_guards(&self) -> Vec<DispatchId> {
+        let key_guards = self
+            .key
+            .into_iter()
+            .flat_map(|key| [key.receiver, key.entered]);
+        let mut guards: Vec<DispatchId> = Vec::new();
+        for guard in self
+            .dependencies
+            .applications
+            .iter()
+            .copied()
+            .chain(key_guards)
+        {
+            if guard != DispatchId::NONE && !guards.contains(&guard) {
+                guards.push(guard);
+            }
+        }
+        guards
+    }
+}
+
+/// An installed copy of optimized code as the dependency index lists it
+/// (`JitState::dependents`): its body and key, which an invalidation
+/// frees it by, and which of the state's installs it was, which tells it
+/// from a copy installed for the same body and key after it was freed.
+#[cfg(ns_jit)]
+#[derive(Clone)]
+struct CopyHandle {
+    code: Weak<CompiledCode>,
+    key: Option<CustomizationKey>,
+    installation: u64,
 }
 
 /// The JIT's state in one interpreter, held by its `Mutator` beside the
@@ -1802,6 +1839,16 @@ pub(crate) struct JitState {
     /// it lies.
     #[cfg(ns_jit)]
     customized: Vec<Weak<CompiledCode>>,
+    /// Every installed copy of optimized code under the instances guard
+    /// of each application it depends on -- its recorded dependencies'
+    /// (`CopyDependencies::applications`) and its key's two -- so that an
+    /// install and a reclaim find the copies an application makes stale
+    /// without walking every body (`copies_depending_on`). A list holds
+    /// only installed copies: written at a copy's install
+    /// (`install_optimized`), pruned at its free (`mark_free`), and no
+    /// list is left empty.
+    #[cfg(ns_jit)]
+    dependents: IdentityMap<DispatchId, Vec<CopyHandle>>,
     /// The state of the sequence that draws the next safepoint's
     /// countdown from `DEOPTIMIZATION_ROTATION` (`DEOPTIMIZATION_SEED`).
     deoptimization_draw: u64,
@@ -2104,6 +2151,8 @@ impl JitState {
             stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
+            #[cfg(ns_jit)]
+            dependents: IdentityMap::default(),
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
@@ -2250,6 +2299,8 @@ impl JitState {
             ));
         }
         self.bodies.clear();
+        #[cfg(ns_jit)]
+        self.dependents.clear();
         // Every row's entry lies in the old zone.
         #[cfg(ns_jit)]
         if let Some(table) = self.optimized_copies.as_mut() {
@@ -3201,6 +3252,8 @@ impl JitState {
             stress_back_offs: IdentityMap::default(),
             #[cfg(ns_jit)]
             customized: Vec::new(),
+            #[cfg(ns_jit)]
+            dependents: IdentityMap::default(),
             deoptimization_draw: DEOPTIMIZATION_SEED,
             deoptimization_countdown: 0,
             machine_words: crate::heap::machine_words::MachineWords::new(),
@@ -7039,6 +7092,7 @@ fn install_optimized(
     })?;
     state.bodies[index as usize].push_entry = push_entry;
     state.bodies[index as usize].key = key;
+    state.list_dependents(index);
     Ok((index, captured))
 }
 
@@ -9068,11 +9122,14 @@ fn carry_armings(
 
 /// Frees every customized copy whose key names one of `rebuilt` -- the
 /// instances ids of the applications an install replaced
-/// (`Mutator::install_edit`) -- as its receiver's or its entered
+/// (`Mutator::commit_install`) -- as its receiver's or its entered
 /// application: each was compiled against a layout, a lookup or an outer
 /// structure the install changed -- and every copy, of any key, whose
 /// dependencies name one (`CopyDependencies::applications`), since an arm
-/// or an inlined scope of it relied on the same. Every other copy stays, and so does
+/// or an inlined scope of it relied on the same -- each found through the
+/// dependency index (`JitState::copies_depending_on`), as HotSpot finds a
+/// class's dependent methods and V8 a map's dependent code, never by a
+/// walk of every body. Every other copy stays, and so does
 /// each key's row, whose ids no receiver carries any more once the
 /// install restamped or forwarded every instance; a full collection
 /// drops the rows once it reclaims the ids (`forget_freed_copies`).
@@ -9093,25 +9150,13 @@ pub(crate) fn invalidate_applications(mutator: &mut Mutator<'_>, rebuilt: &[Disp
     // A request still pending would compile a copy for the old layout.
     let dropped = drop_stale_requests(mutator, &stale, InvalidationCause::Edit);
     let mut entries = Vec::new();
-    for code in mutator.jit.customized_codes() {
-        invalidate_copies_of(
-            mutator,
-            &code,
-            &stale,
-            false,
-            InvalidationCause::Edit,
-            &mut entries,
-        );
-    }
-    // A copy of any key, the uncustomized one too, whose arm or inlined
-    // scope relied on a rebuilt application: what its lookup found, its
-    // layout or its outer structure may have changed.
-    let dependent = mutator.jit.copies_depending(|dependencies| {
-        dependencies
-            .applications
-            .iter()
-            .any(|guard| rebuilt.contains(guard))
-    });
+    #[cfg(debug_assertions)]
+    mutator.jit.verify_dependents();
+    // A copy keyed on a rebuilt application, and a copy of any key, the
+    // uncustomized one too, whose arm or inlined scope relied on one:
+    // what its lookup found, its layout or its outer structure may have
+    // changed.
+    let dependent = mutator.jit.copies_depending_on(&rebuilt);
     invalidate_dependent_copies(mutator, dependent, InvalidationCause::Edit, &mut entries);
     rearm_after_dropped_requests(mutator, dropped, None);
     refresh_cells_entering(mutator, entries);
@@ -9265,8 +9310,85 @@ impl JitState {
             .sum()
     }
 
+    /// Lists the optimized copy installed at `index` under every
+    /// application it depends on (`InstalledBody::depended_on_guards`).
+    #[cfg(ns_jit)]
+    fn list_dependents(&mut self, index: u32) {
+        let body = &self.bodies[index as usize];
+        let handle = CopyHandle {
+            code: body.code.clone(),
+            key: body.key,
+            installation: body.installation,
+        };
+        for guard in body.depended_on_guards() {
+            self.dependents
+                .entry(guard)
+                .or_default()
+                .push(handle.clone());
+        }
+    }
+
+    /// The body and key of every installed optimized copy that depends on
+    /// an application of `guards` -- by its recorded dependencies or its
+    /// key -- each once, in the order they were installed, read from the
+    /// dependency index (`dependents`).
+    #[cfg(ns_jit)]
+    pub(crate) fn copies_depending_on(
+        &self,
+        guards: &std::collections::HashSet<DispatchId, crate::hash::IdentityBuildHasher>,
+    ) -> Vec<(Rc<CompiledCode>, Option<CustomizationKey>)> {
+        let mut handles: Vec<&CopyHandle> = guards
+            .iter()
+            .filter_map(|guard| self.dependents.get(guard))
+            .flatten()
+            .collect();
+        handles.sort_unstable_by_key(|handle| handle.installation);
+        handles.dedup_by_key(|handle| handle.installation);
+        handles
+            .into_iter()
+            .filter_map(|handle| Some((handle.code.upgrade()?, handle.key)))
+            .collect()
+    }
+
+    /// A debug build's check that the dependency index lists exactly the
+    /// installed optimized copies, each under exactly the applications it
+    /// depends on: a copy missing from a list would survive the change
+    /// of an application it relied on, and a freed one left in a list
+    /// would be freed again under another copy's install.
+    #[cfg(all(ns_jit, debug_assertions))]
+    fn verify_dependents(&self) {
+        let mut expected: IdentityMap<DispatchId, Vec<u64>> = IdentityMap::default();
+        for body in &self.bodies {
+            if body.free || body.tier != Tier::Optimized {
+                continue;
+            }
+            for guard in body.depended_on_guards() {
+                expected.entry(guard).or_default().push(body.installation);
+            }
+        }
+        assert_eq!(
+            expected.len(),
+            self.dependents.len(),
+            "internal: the dependency index lists other applications than the copies depend on"
+        );
+        for (guard, installations) in &mut expected {
+            let mut listed: Vec<u64> =
+                self.dependents.get(guard).map_or_else(Vec::new, |handles| {
+                    handles.iter().map(|handle| handle.installation).collect()
+                });
+            listed.sort_unstable();
+            installations.sort_unstable();
+            assert_eq!(
+                *installations, listed,
+                "internal: the dependency index lists other copies than depend on an application"
+            );
+        }
+    }
+
     /// The body and key of every installed optimized copy whose
-    /// dependencies `depends` answers true for.
+    /// dependencies `depends` answers true for: the scan for what the
+    /// dependency index does not list, the inlined code ids and the
+    /// feedback bases.
     #[cfg(ns_jit)]
     fn copies_depending(
         &self,
@@ -9358,12 +9480,7 @@ pub(crate) fn forget_freed_copies(
     // A type-case's arm tests a guard the collection mints again for
     // another application, which would run the inlined callee of the dead
     // one: its copy goes too, its key's row staying.
-    let dependent = mutator.jit.copies_depending(|dependencies| {
-        dependencies
-            .applications
-            .iter()
-            .any(|guard| freed.guards.contains(guard))
-    });
+    let dependent = mutator.jit.copies_depending_on(&freed.guards);
     let armed = invalidate_dependent_copies(
         mutator,
         dependent,
@@ -11379,6 +11496,91 @@ mod tests {
                 assert!(rows(mutator).is_empty(), "vacant once the body is freed");
                 #[cfg(debug_assertions)]
                 mutator.jit.verify_dispatching_rows();
+            });
+        }
+
+        /// The dependency index names a copy under its key's applications
+        /// while it is installed, and forgets it once it is freed: no
+        /// handle of a freed copy is left in any list, so that no
+        /// invalidation meets one, and no list outlives its last copy.
+        // spec: vm.machine.stale-copies-freed
+        #[test]
+        fn the_dependency_index_forgets_a_freed_copy() {
+            let source = ONE_METHOD_ON_TWO_APPLICATIONS;
+            let module = ns_syntax::parse(source).expect("parse");
+            let resolved = crate::resolve(
+                module,
+                Rc::from(source),
+                crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+            )
+            .expect("resolve");
+            let mut interpreter = Interpreter::bootstrap_with(crate::Lowering::Optimized);
+            // A body the breakpoint or the step stress mode patched is
+            // neither optimized nor inlined.
+            #[cfg(debug_assertions)]
+            {
+                interpreter.set_stress_breakpoints(false);
+                interpreter.set_stress_step(false);
+            }
+            interpreter.set_jit_enabled(true);
+            interpreter.set_jit_stress(true);
+            interpreter.set_optimize_stress(true);
+            let class = interpreter.load_module(&resolved);
+            let Ok(subject) = interpreter.instantiate(&class, &[]) else {
+                panic!("instantiate: an error");
+            };
+            sent(&mut interpreter, &subject, "runA");
+            let base_class = sent(&mut interpreter, &subject, "aClass");
+            if a_stress_mode_frees_copies() {
+                return;
+            }
+            interpreter.enter(|mutator| {
+                let base_object = mutator.fetch(&base_class).as_object().expect("a class");
+                let guard = mutator.heap.class_dispatch_ids(base_object).instances;
+                let application = mutator
+                    .heap
+                    .class_application(base_object)
+                    .expect("applied");
+                let code = Rc::clone(
+                    &application
+                        .mixin
+                        .compiled_method(crate::Symbol::intern("total"))
+                        .expect("total")
+                        .code,
+                );
+                let key = crate::jit::CustomizationKey {
+                    receiver: guard,
+                    entered: guard,
+                };
+                assert!(mutator.jit.copy_of(&code, key).is_some(), "A's copy");
+                let guards: std::collections::HashSet<_, crate::hash::IdentityBuildHasher> =
+                    std::iter::once(guard).collect();
+                let named = mutator.jit.copies_depending_on(&guards);
+                assert!(
+                    named
+                        .iter()
+                        .any(|(named, named_key)| Rc::ptr_eq(named, &code)
+                            && *named_key == Some(key)),
+                    "the index names the copy under its key's application"
+                );
+                crate::jit::invalidate_all_optimized(
+                    mutator,
+                    crate::trace_events::InvalidationCause::Stress,
+                );
+                assert!(mutator.jit.copy_of(&code, key).is_none(), "freed");
+                assert!(mutator.jit.copies_depending_on(&guards).is_empty());
+                assert!(
+                    mutator
+                        .jit
+                        .dependents
+                        .values()
+                        .all(|handles| !handles.is_empty()),
+                    "no list outlives its last copy"
+                );
+                assert!(
+                    !mutator.jit.dependents.contains_key(&guard),
+                    "the freed copy's list is gone"
+                );
             });
         }
 

@@ -315,6 +315,9 @@ impl<'gc> Mutator<'gc> {
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let mixin = self.compile_root_mixin(resolved);
         let class = self.root_class_of_mixin(&mixin);
+        // An install prepared before this module joined the heap was
+        // prepared against a world without it.
+        self.install_epoch += 1;
         // A text an agent holds for no module of this name, or for an
         // earlier one, is not this module's.
         self.note_module_built();

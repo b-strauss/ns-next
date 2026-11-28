@@ -1,0 +1,42 @@
+/// `installAtomically:` takes ClassDeclarationBuilders alone: an element
+/// of any other kind -- an object that answers the builders' messages
+/// among them -- is refused with an ArgumentError carrying it, before any
+/// builder is read, and the builder beside it installs nothing.
+class AnAtomicInstallTakesOnlyBuilders = Object new () (
+  class Subject = Object new () ()
+
+  class Impostor = Object new () (
+    public entryFor: anInstaller = (
+      ^{nil. nil}.
+    )
+  )
+
+  outcome: action in: kernel = (
+    ^[action value printString] on: kernel ArgumentError do: [:error |
+      error messageText , ' ' , error argument printString.
+    ].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      mirrors = platform mirrors.
+      builder = (mirrors ClassMirror reflecting: Subject) mixin declaration asBuilder.
+      instance = Subject new.
+    |
+    builder instanceSide methods addFromSource: 'public answer = (^42)'.
+    transcript
+        show: (outcome: [mirrors installAtomically: {builder. 3}] in: kernel);
+        newLine.
+    transcript
+        show: (outcome: [mirrors installAtomically: {Impostor new. builder}] in: kernel);
+        newLine.
+    transcript
+        print: (mirrors installAtomically: {});
+        newLine.
+    transcript
+        show: ([instance answer printString] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

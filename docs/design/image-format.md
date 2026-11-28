@@ -660,11 +660,16 @@ amplifies nothing ([memory.md](memory.md), "The amplification bound of a
 rejected load").
 
 The table is a **forest** (`r[image.mixins]`, `r[image.verify.mixin-tree]`),
-each tree in `mixin::preorder` order (`image/mixins.rs`). The module
-section's count must equal the number of trees the rows form
-(`DecodeError::ModuleCountMismatch`): a surplus tree would be declarations
-no module names, a missing one a module without a root. Row ids and the
-nesting ceiling cover the whole forest, and a row's
+each tree in `mixin::preorder` order (`image/mixins.rs`): first one tree
+per module, in module order, then one obsolete tree per declaration an
+install removed that the graph reaches, and after the rows a `u32`, how
+many of the last trees are obsolete ("Edited programs in the image"
+below). The count is held to the trees before anything is split by it,
+and the module section's count must equal the number of trees the rows
+form but the obsolete ones (`DecodeError::ModuleCountMismatch`): a
+surplus tree would be declarations no module names, a missing one a
+module without a root. Row ids and the nesting ceiling cover the whole
+forest, an obsolete tree held to the ceiling as a module's, and a row's
 nested declarations must lie in its own tree (`MixinTableNotATree`).
 
 A slot is its name, its kind and its accessibility (the access tags a method
@@ -707,8 +712,19 @@ and no standalone body (`BodyLessWithoutClauses`, `BodyLessWithMembers`).
 
 **Class objects are ordinary objects in the graph** (object body tag 7;
 `r[image.verify.class-records]`),
-encoded as `{MIXIN_ROW, row id, superclass, enclosing object, declaring
-class, applied clause and named class?}`. No class record applies a body-less
+encoded as `{creation stamp, MIXIN_ROW, row id, superclass, enclosing
+object, declaring class, applied clause and named class?}`, the stamp a
+`u64` right after the body tag, as in every class, body-less class and
+metaclass record: a class object keeps the stamp it was made with, so
+that an install after the load evaluates superclass clauses in the order
+the class objects were made ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The complete install", decision 10). The decoder refuses a stamp of
+2^59 or more (`CLASS_STAMP_LIMIT`), so that the loading world keeps
+stamps to draw above it, and two records of one stamp, found by sorting
+the stamps once every record is read, which costs no hash an image could
+aim at one probe chain; the loader moves the heap's counter past the
+highest (`r[image.verify.hashes]`, `r[image.load.class-stamps]`). No
+class record applies a body-less
 row's mixin (`BodyLessMixinApplied`): such a declaration's class object is
 the level its last clause adds. The declaring class has to be there because `outer`
 walks the declaration chain rather than the receiver's dynamic one, so an image
@@ -749,7 +765,9 @@ them would resolve the clause arguments in the named class's scope. The
 tag follows from the clause: a record whose clause is a body-less
 declaration's last must carry it, and every other class record must not
 (`BodyLessClassRecordMismatch`). The first pass sizes the record at the
-eleven fields the class object has; the enclosing object must be an object
+twelve fields every class object has, the same for every kind, which
+leave the fields a record's kind does not write `nil`; the enclosing
+object must be an object
 (`EnclosingNotAnObject`), an id past the table is refused, and the
 declaring class is held to being a class object by
 `check_class_references` with every other class reference. `inspect`
@@ -778,18 +796,18 @@ named by its own shipped name, of kind metaclass or level metaclass, under
 record whose class object has no metaclass rather than write a header the
 decoder could not pair. A metaclass
 record is a record like any other, sized and allocated as one placeholder, and
-the smallest record there is: counted with a two-byte class tag, 9 bytes
-for a class object of 80, about 8.9x, which with the decoder's own tables
-sets the bound a rejected load reaches in a release build, about 10.7x of
-the graph section's bytes; in a debug one the root list sets it, at 16x.
-Every live class tag is five bytes, so a metaclass record is at least 15
-and the release figure an upper bound ([memory.md](memory.md), "The
+the smallest class record: counted with a two-byte class tag, 17 bytes --
+its creation stamp among them -- for a class object of 112, about 6.6x, and
+8.0x with the decoder's own tables, as much as the 8x of a value's word,
+which set the bound a rejected load reaches in a release build; in a debug one
+the root list sets it, at 16x. Every live class tag is five bytes, so a
+metaclass record is at least 23 and its figure an upper bound ([memory.md](memory.md), "The
 amplification bound of a rejected load"); a shipped metaclass is no
 record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`, `r[image.modules]`): a `u32` count, equal to the mixin
-table's trees, then
+table's trees but its obsolete ones, then
 per module, in module order, its identity -- its path, id and version
 ([modules.md](modules.md), decision 10) -- and the `u32` object id of its
 root class's record in the graph; a module's text is no field of it,
@@ -807,7 +825,13 @@ project, never a directory of the machine that built the image: an origin
 tag from `opcodes.rs`, `ORIGIN_PROJECT` (2) followed by that path, or
 `ORIGIN_CORE` (3) followed by the file name of a module the binary holds,
 whose path is `core:` and that name -- only ever `Manifest.ns`, the one
-module of the binary's an image carries, `core:Manifest.ns`.
+module of the binary's an image carries, `core:Manifest.ns` -- or
+`ORIGIN_NONE` (4) and nothing, for a module a program declared from
+source (`ClassDeclarationBuilder fromSource:`), which no file holds and
+which has no path ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The complete install", decision 7); such a record's id lies outside
+`newspeak.`, and the decoder applies the project path's checks to an
+`ORIGIN_PROJECT` record alone (`r[image.verify.module-identity]`).
 Then the id as resolved, after an `as`, and `MODULE_UNVERSIONED` (0), or
 `MODULE_VERSIONED` (1) followed by the version's text; every string is a
 `u32` length and UTF-8. The origins 0 (`ORIGIN_FILE`, the path the module
@@ -2387,10 +2411,12 @@ and stand as guards, by reasoning rather than by a test: a body-less
 declaration's class object without its scope (`encode.rs`'s
 `encode_object`; the
 only allocation of one, `Heap::allocate_applied_level`, gives it its
-scope words, and no edit changes a declaration's body-less shape); the
+scope words, since every class object has the room for them, an install
+that changes a declaration's body-less shape included); the
 reified mixin of a class side whose instance side no longer exists (a
-full collection frees a module's tree whole, so a class side's mixin
-keeps its instance side's row, `reified_mixin_reference`); a reified
+full collection frees a module's tree, and an obsolete declaration's,
+whole, so a class side's mixin keeps its instance side's row,
+`reified_mixin_reference`); a reified
 mixin compiled from shipped source that no shipped name names
 (`encode_mixin_record`; a reified mixin names its instance
 side, and every shipped instance side is a `Class` entry's mixin or a
@@ -2858,6 +2884,29 @@ of a removed method, or of a replaced one, runs its old code after a load
 `a_closure_of_a_replaced_method_keeps_its_old_code_after_a_load`,
 `interpreter/install.rs`).
 
+**A removed declaration is an obsolete tree** (`r[image.write]`, step 4;
+`r[image.load.obsolete]`). A nested declaration an install removed lives
+on while something reaches it ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The complete install", decision 3), so after the walk the writer
+appends to the module trees one tree per removed declaration the graph
+reaches -- a class object applying, declaring or adding through a `<:`
+clause a mixin of it, a reified mixin of it, or a closure or a frame
+running a body of its last or a superseded version -- whether or not the
+image carries its former module, each with every declaration nested in
+it as it last was, its code in the code table and, in an image with
+source, its text; a removed declaration nothing reaches is not written,
+and one built without its text is refused in an image with source
+(``image encoding cannot carry the source of the removed class `<name>`, which was built without it``).
+No module record names an obsolete tree and its root is nested in no
+row. The loader registers each obsolete root out of every module's tree,
+with no enclosing row (`Heap::make_loaded_obsolete`), so its class
+objects, subclasses and instances run its last version, no module's
+text holds it, its reflected name is its own (`Inner`), and a full
+collection frees it once nothing reaches it, as in the world that wrote
+it (`an_obsolete_class_loads_obsolete`, `interpreter/install.rs`). No
+wire tag is added: the count after the rows says which trees are
+obsolete.
+
 **The source is each declaration's current text** ("Source" above): an
 image of an edited program carries each declaration once, as it now is, and
 no text an older version held, since no version keeps another's text
@@ -3013,8 +3062,10 @@ shipped world.
   the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
   free numbers (both retired on 2026-11-19 for `ORIGIN_PROJECT` (2) and
   `ORIGIN_CORE` (3), when a module record came to carry the module's
-  identity rather than the building machine's path), so a stale artifact
-  meets an unknown tag instead of decoding into a different program.
+  identity rather than the building machine's path, and `ORIGIN_NONE` (4)
+  joined them on 2026-11-27 for a module declared from source), so a
+  stale artifact meets an unknown tag instead of decoding into a
+  different program.
   `CLASS_MODULE`, `CLASS_MODULE_LEVEL`, `HASHED_MODULE_CLASS` and
   `HASHED_MODULE_LEVEL` are retired in turn, since a module's root class
   and its levels became records of the graph, which the module section

@@ -89,7 +89,7 @@ pub use value::{
     fits_small_integer,
 };
 use value::{at_rest, branded};
-pub(crate) use world::{World, forward_identity};
+pub(crate) use world::{Invalidation, World, forward_identity};
 
 /// The header an ordinary instance of an application is born with --
 /// its guard, `FixedPointers`, its word count -- computed once when the
@@ -106,6 +106,12 @@ impl InstanceHeader {
     }
 }
 
+/// The bound on an image's class records' creation stamps, 2^59: half the
+/// `SmallInteger` range a class object stores its stamp in, so that a
+/// world that loads an image still has 2^59 stamps above the image's
+/// highest to draw (`Heap::advance_class_stamp_past`).
+pub const CLASS_STAMP_LIMIT: u64 = 1 << 59;
+
 /// The sizes `image::decode::decode_graph_section`'s first pass gives each
 /// record before it allocates anything, stated beside the payloads they
 /// must agree with: a class object's fields, a closure's and a frame's
@@ -113,14 +119,9 @@ impl InstanceHeader {
 /// the words a block of so many fields occupies in all, its header and
 /// class word included.
 pub(crate) mod record_size {
+    /// Every class object's: an ordinary one, a metaclass, a level a `<:`
+    /// clause added and a body-less declaration's have the same fields.
     pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
-    /// A level a `<:` clause added: a class object's fields and the class
-    /// its clause named (`Heap::allocate_applied_level`).
-    pub(crate) const APPLIED_LEVEL_FIELDS: usize = super::class_field::APPLIED_LEVEL_COUNT;
-    /// A body-less declaration's class object: a level's fields and its
-    /// declaration's enclosing object and declaring class
-    /// (`Heap::class_declaration_scope`).
-    pub(crate) const BODY_LESS_CLASS_FIELDS: usize = super::class_field::BODY_LESS_CLASS_COUNT;
     /// The id of the mixin it stands for (`Heap::allocate_mixin_object`).
     pub(crate) const MIXIN_FIELDS: usize = 1;
     pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
@@ -2173,6 +2174,10 @@ pub struct Heap<'gc> {
     /// collector and a snapshot (`docs/design/memory.md`) and allocation
     /// order stays unobservable (`docs/design/object-model.md`).
     next_identity_hash: u32,
+    /// The next class object's creation stamp (`class_field::CREATION_STAMP`):
+    /// every class object draws one when it is made, so that the stamps
+    /// order class objects by their creation whatever moved them since.
+    next_class_stamp: u64,
     /// Every live activation. A frame is popped when its activation
     /// returns, so -- unlike `space` -- this is bounded by the deepest the
     /// program has been, not by everything it has run.
@@ -2750,6 +2755,7 @@ impl<'gc> Heap<'gc> {
         );
         let mut heap = Heap {
             next_identity_hash: 1,
+            next_class_stamp: 1,
             stack: ActivationStack::new(&machine_words),
             suspensions: Suspensions::default(),
             continuations: Continuations::default(),
@@ -2846,6 +2852,40 @@ impl<'gc> Heap<'gc> {
         if self.next_identity_hash <= max {
             self.next_identity_hash = Self::identity_hash_after(max);
         }
+    }
+
+    /// The next class object's creation stamp, drawn from the counter.
+    /// Two class objects never share one: a world that drew every stamp
+    /// below the `SmallInteger` ceiling -- 2^60 class objects, which no
+    /// heap holds -- stops rather than repeat one.
+    fn allocate_class_stamp(&mut self) -> u64 {
+        let stamp = self.next_class_stamp;
+        assert!(
+            i64::try_from(stamp).is_ok_and(fits_small_integer),
+            "internal: the class objects' creation stamps are exhausted"
+        );
+        self.next_class_stamp += 1;
+        stamp
+    }
+
+    /// Moves the class-stamp counter past `max`, the highest stamp an image
+    /// brought with it, so that every class object made afterwards is
+    /// ordered after every decoded one; never backwards. `max` is below
+    /// `CLASS_STAMP_LIMIT`, which the decoder holds every record's stamp
+    /// to, so the world keeps 2^59 stamps to draw.
+    pub(crate) fn advance_class_stamp_past(&mut self, max: u64) {
+        debug_assert!(max < CLASS_STAMP_LIMIT);
+        if self.next_class_stamp <= max {
+            self.next_class_stamp = max + 1;
+        }
+    }
+
+    /// `class`'s creation stamp (`class_field::CREATION_STAMP`); `None` for
+    /// a handle that is no class object.
+    pub(crate) fn class_creation_stamp(&self, class: ClassReference<'gc>) -> Option<u64> {
+        self.class_field(class, class_field::CREATION_STAMP)?
+            .as_small_integer()
+            .and_then(|stamp| u64::try_from(stamp).ok())
     }
 
     // ---------- Object construction ----------
@@ -3339,7 +3379,8 @@ impl<'gc> Heap<'gc> {
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
     ) -> ClassReference<'gc> {
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let (object, fields) =
             self.allocate_object(metaclass, Format::Class, 0, false, class_field::COUNT);
         write_words(&mut self.space.words_mut()[fields], fixed);
@@ -3347,33 +3388,25 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A level a `<:` clause added (`newspeak-spec.pdf` §6.2): a class object
-    /// as `allocate_class` makes one, and one field more, the class object
-    /// `named` its clause named (`class_field::NAMED_CLASS`). The clause
-    /// itself is set after, as every class object's later fields are.
-    ///
-    /// A body-less declaration's class object (`body_less`) has two fields
-    /// more, its declaration's enclosing object and declaring class, nil
-    /// until `class_set_declaration_scope` writes them: the declaration
-    /// that becomes this class object knows them only once its superclass
+    /// as `allocate_class` makes one, `named` the class object its clause
+    /// named (`class_field::NAMED_CLASS`). The clause itself is set after,
+    /// as every class object's later fields are, and so is a body-less
+    /// declaration's scope (`class_set_declaration_scope`): the declaration
+    /// that becomes this class object knows it only once its superclass
     /// clause has run.
     pub(crate) fn allocate_applied_level(
         &mut self,
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
         named: ClassReference<'gc>,
-        body_less: bool,
     ) -> ClassReference<'gc> {
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let named = self.store(Value::object(named));
-        let field_count = if body_less {
-            class_field::BODY_LESS_CLASS_COUNT
-        } else {
-            class_field::APPLIED_LEVEL_COUNT
-        };
         let (object, fields) =
-            self.allocate_object(metaclass, Format::Class, 0, false, field_count);
+            self.allocate_object(metaclass, Format::Class, 0, false, class_field::COUNT);
         let words = &mut self.space.words_mut()[fields];
-        write_words(&mut words[..class_field::COUNT], fixed);
+        write_words(words, fixed);
         words[class_field::NAMED_CLASS] = named.bits();
         object
     }
@@ -3394,10 +3427,11 @@ impl<'gc> Heap<'gc> {
     /// A class object's fields from its record, stored: the one place they
     /// are laid out, for a new class object and for a placeholder filled in
     /// place (`fill_placeholder_class`). Every field set after creation
-    /// starts nil: `this_class`, the applied clause and the value-class
-    /// verdict each have their setter. The application is named by its
-    /// index, so it must be the table's own entry.
-    fn class_fixed_words(&self, class: NewClass<'gc>) -> [Word; class_field::COUNT] {
+    /// starts nil: `this_class`, the applied clause, the named class, the
+    /// declaration's scope and the value-class verdict each have their
+    /// setter. The application is named by its index, so it must be the
+    /// table's own entry; `stamp` is the creation stamp.
+    fn class_fixed_words(&self, class: NewClass<'gc>, stamp: u64) -> [Word; class_field::COUNT] {
         let NewClass {
             application,
             enclosing,
@@ -3426,6 +3460,8 @@ impl<'gc> Heap<'gc> {
             fields[class_field::BUILTIN] = count_word(builtin as usize);
         }
         fields[class_field::APPLICATION] = count_word(application.index().index());
+        fields[class_field::CREATION_STAMP] =
+            count_word(usize::try_from(stamp).expect("internal: a creation stamp fits a word"));
         fields
     }
 
@@ -3442,7 +3478,8 @@ impl<'gc> Heap<'gc> {
     pub fn allocate_self_referential_class(&mut self, class: NewClass<'gc>) -> ClassReference<'gc> {
         // It is an instance of itself, so its id is its own instances id.
         let dispatch_id = class.application.dispatch_ids.instances;
-        let fixed = self.class_fixed_words(class);
+        let stamp = self.allocate_class_stamp();
+        let fixed = self.class_fixed_words(class, stamp);
         let (object, fields) =
             self.allocate_self_referential_guarded(dispatch_id, Format::Class, class_field::COUNT);
         write_words(&mut self.space.words_mut()[fields], fixed);
@@ -3513,11 +3550,15 @@ impl<'gc> Heap<'gc> {
     /// runs -- `class` may itself be a still-placeholder record with no
     /// application yet -- and must not be dispatched on before then.
     ///
-    /// `named` is a level's named class (`allocate_applied_level`), and the
-    /// placeholder has that field exactly when it is given; `scope` is a
-    /// body-less declaration's (`class_declaration_scope`), given only with
-    /// `named`, and the placeholder has its two fields exactly when it is
-    /// given.
+    /// `named` is a level's named class (`allocate_applied_level`) and
+    /// `scope` a body-less declaration's (`class_declaration_scope`), given
+    /// only with `named`; every class object has both fields, nil where
+    /// neither is given. `stamp` is the record's creation stamp, which the
+    /// decoder held unique.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a class record's parts, each read from the record"
+    )]
     pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
@@ -3526,9 +3567,10 @@ impl<'gc> Heap<'gc> {
         record: NewClass<'gc>,
         named: Option<ClassReference<'gc>>,
         scope: Option<DeclarationScope<'gc>>,
+        stamp: u64,
     ) -> bool {
         self.check_object_origin(object);
-        let fields = self.class_fixed_words(record);
+        let fields = self.class_fixed_words(record, stamp);
         let named = named.map(|named| self.store(Value::object(named)));
         let scope = scope.map(|scope| self.declaration_scope_words(scope));
         for word in fields
@@ -3538,17 +3580,14 @@ impl<'gc> Heap<'gc> {
         {
             self.debug_assert_tenured(*word);
         }
-        let expected = match (named, scope) {
-            (Some(_), Some(_)) => class_field::BODY_LESS_CLASS_COUNT,
-            (Some(_), None) => class_field::APPLIED_LEVEL_COUNT,
-            (None, None) => class_field::COUNT,
-            (None, Some(_)) => return false,
-        };
-        let placeholder = self.fields_mut(object);
-        if placeholder.len() != expected {
+        if named.is_none() && scope.is_some() {
             return false;
         }
-        write_words(&mut placeholder[..class_field::COUNT], fields);
+        let placeholder = self.fields_mut(object);
+        if placeholder.len() != class_field::COUNT {
+            return false;
+        }
+        write_words(placeholder, fields);
         if let Some(named) = named {
             placeholder[class_field::NAMED_CLASS] = named.bits();
         }
@@ -5600,6 +5639,7 @@ impl<'gc> Heap<'gc> {
             current: Rc::clone(mixin),
             enclosing,
             nested: Vec::new(),
+            obsolete: false,
         });
         self.tables
             .mixin_ids
@@ -5705,12 +5745,102 @@ impl<'gc> Heap<'gc> {
             .collect()
     }
 
+    /// The identity of every module whose root this heap names, the
+    /// shipped ones included, in row order: the world an install's new
+    /// identity is held to (`modules::check_distinct`).
+    pub(crate) fn module_identities(&self) -> Vec<Rc<crate::modules::ModuleIdentity>> {
+        self.tables
+            .mixins
+            .iter()
+            .flatten()
+            .filter(|row| row.enclosing.is_none())
+            .filter_map(|row| row.current.module_identity.clone())
+            .collect()
+    }
+
     /// The id of the mixin the mixin `id` is declared in: a nested
     /// declaration's enclosing declaration, a class side's instance side.
     /// `None` for a module's root, a builtin's mixin, and an id past the
     /// table or freed.
     pub(crate) fn enclosing_mixin_id(&self, id: MixinId) -> Option<MixinId> {
         self.mixin_row(id)?.enclosing
+    }
+
+    /// Makes the nested declaration `id` obsolete, as an install that
+    /// removed it from its enclosing declaration leaves it
+    /// (`docs/design/liveness-and-reflection.md`, "The complete
+    /// install", decision 3): its id leaves its parent's nested list, so
+    /// no new application of the parent reserves it a hidden slot and no
+    /// assembled text holds it, and its row and every row declared in it
+    /// stay, its class objects, instances and subclasses running its last
+    /// version, until a full collection finds nothing naming its tree,
+    /// which from here on is a tree of its own (`module_trees`). Its
+    /// `enclosing` is kept, so that its path and its reflected name still
+    /// say where it was declared.
+    pub(crate) fn make_obsolete(&mut self, id: MixinId) {
+        let enclosing = self.mixin_row_mut(id).enclosing;
+        debug_assert!(
+            enclosing.is_some(),
+            "internal: only a nested declaration is removed"
+        );
+        if let Some(enclosing) = enclosing {
+            self.mixin_row_mut(enclosing)
+                .nested
+                .retain(|nested| *nested != id);
+        }
+        self.mixin_row_mut(id).obsolete = true;
+        self.tables.mixins_changed();
+    }
+
+    /// Whether the mixin `id` is obsolete: an install removed its
+    /// declaration, or one it is declared in (`make_obsolete`). `false`
+    /// for an id past the table or freed.
+    pub(crate) fn is_obsolete(&self, id: MixinId) -> bool {
+        self.obsolete_root(id).is_some()
+    }
+
+    /// The removed declaration that makes the mixin `id` obsolete
+    /// (`is_obsolete`): `id` itself or the nearest declaration it is
+    /// declared in that an install removed, the root of the obsolete tree
+    /// `id` stands in, which an image writes whole. `None` for a mixin
+    /// that is not obsolete, and an id past the table or freed.
+    pub(crate) fn obsolete_root(&self, id: MixinId) -> Option<MixinId> {
+        let mut current = Some(id);
+        while let Some(each) = current {
+            let row = self.mixin_row(each)?;
+            if row.obsolete {
+                return Some(each);
+            }
+            current = row.enclosing;
+        }
+        None
+    }
+
+    /// The id of every removed declaration (`make_obsolete`), the root of
+    /// each obsolete tree, in row order.
+    pub(crate) fn obsolete_roots(&self) -> Vec<MixinId> {
+        self.tables
+            .mixins
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.as_ref().is_some_and(|row| row.obsolete))
+            .filter_map(|(index, _)| MixinId::from_index(index))
+            .collect()
+    }
+
+    /// Makes the mixin `id`, a tree's root registered from an image's
+    /// obsolete tree, obsolete as `make_obsolete` leaves a removed
+    /// declaration whose former module a collection freed: out of every
+    /// module's tree, declared in no row (`image::mixins::read`,
+    /// `r[image.load.obsolete]`). The image names no former parent, so
+    /// there is none to leave.
+    pub(crate) fn make_loaded_obsolete(&mut self, id: MixinId) {
+        debug_assert!(
+            self.mixin_row_mut(id).enclosing.is_none(),
+            "internal: an image's obsolete tree is declared in no row"
+        );
+        self.mixin_row_mut(id).obsolete = true;
+        self.tables.mixins_changed();
     }
 
     /// `mixin`'s text with every hole filled by the assembled text of the
@@ -6405,6 +6535,21 @@ impl<'gc> Heap<'gc> {
         declaration.mixin_applications.get(index).cloned()
     }
 
+    /// The id of the declaration whose `<:` clause added `class` and the
+    /// clause's position in it, for an install, which names a level by its
+    /// owner (`Mutator::field_names_of_class`); `None` for a class object no
+    /// mixin application added.
+    pub(crate) fn class_applied_declaration(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<(MixinId, usize)> {
+        let packed = self
+            .class_field(class, class_field::APPLIED_CLAUSE)?
+            .as_small_integer()?;
+        let (mixin, index, _) = crate::mixin::AppliedClause::unpack(packed)?;
+        Some((mixin, index))
+    }
+
     /// Which `<:` clause added `class` -- the applying declaration and the
     /// clause's position in it -- for the image encoder, which names a level's
     /// clause that way; `None` for a class object no mixin application added.
@@ -6540,9 +6685,9 @@ impl<'gc> Heap<'gc> {
         first: ClassReference<'gc>,
         second: ClassReference<'gc>,
     ) -> bool {
-        // Told by size first, one header read each: only a body-less
-        // declaration's class object has the declaration's scope, and only
-        // two of them need their declarations looked up.
+        // Told by the applied clause first, one read each: only a
+        // body-less declaration's class object has the declaration's
+        // scope, and only two of them need their declarations looked up.
         match (
             self.class_has_declaration_scope(first),
             self.class_has_declaration_scope(second),
@@ -6579,12 +6724,13 @@ impl<'gc> Heap<'gc> {
 
     /// Whether `class` is a body-less declaration's class object, the one
     /// class object with its declaration's scope
-    /// (`class_declaration_scope`), told by its size alone, one read of
-    /// the class object's header.
+    /// (`class_declaration_scope`): told first by its applied clause, one
+    /// read, which every class object but a level leaves nil.
     #[inline(always)]
     pub(crate) fn class_has_declaration_scope(&self, class: ClassReference<'gc>) -> bool {
-        self.pointer_words(class, Format::Class)
-            .is_some_and(|words| words.len() == class_field::BODY_LESS_CLASS_COUNT)
+        self.class_field(class, class_field::APPLIED_CLAUSE)
+            .is_some_and(|clause| !clause.is_nil())
+            && self.class_body_less_declaration(class).is_some()
     }
 
     /// For a body-less declaration's class object
@@ -6619,9 +6765,6 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         scope: DeclarationScope<'gc>,
     ) -> bool {
-        if !self.class_has_declaration_scope(class) {
-            return false;
-        }
         let DeclarationScope {
             enclosing,
             declaring_class,
@@ -7330,9 +7473,12 @@ impl<'gc> Heap<'gc> {
     /// Relinks `class`'s superclass pointer. Answers whether the write
     /// happened, mirroring `class_set_application` -- the matching relink on
     /// the application chain that carries the layout, called right alongside
-    /// this one. Two callers: the bootstrap's kernel phase, which links each
+    /// this one. Three callers: the bootstrap's kernel phase, which links each
     /// builtin class to the one its `Kernel.ns` clause names
-    /// (`interpreter::kernel`), and `tests/instantiate.rs`'s
+    /// (`interpreter::kernel`); an install's commit, which re-parents a class
+    /// object whose declaration's superclass clause changed over what the new
+    /// clause answered and installs the application over it
+    /// (`Mutator::reapply`); and `tests/instantiate.rs`'s
     /// `superclass_slot_initializer_runs_before_the_subclass_own_slots`: a
     /// root class's superclass clause may name only `Object` or `Value`
     /// (the root rule, `resolver::root_clause_defect`), so linking a
@@ -7354,11 +7500,15 @@ impl<'gc> Heap<'gc> {
         self.set_class_field(class, class_field::SUPERCLASS, Value::nil())
     }
 
-    /// Sets `class`'s enclosing object and declaring class. The bootstrap's
-    /// kernel phase is the one caller: a builtin class object exists before
-    /// the kernel instance that encloses it can, because a literal needs its
-    /// class from the first instruction on. Answers whether the write
-    /// happened, like the other class setters.
+    /// Sets `class`'s enclosing object and declaring class, for the three
+    /// that set them after a class object exists: the bootstrap's kernel
+    /// phase, since a builtin class object exists before the kernel
+    /// instance that encloses it can, because a literal needs its class
+    /// from the first instruction on; the image decoder, which gives a
+    /// decoded metaclass its class's, once that class is filled; and an
+    /// install that re-parents a class object, or a level following one,
+    /// whose code walks out from another context then (§6.2). Answers
+    /// whether the write happened, like the other class setters.
     pub fn class_set_lexical_context(
         &mut self,
         class: ClassReference<'gc>,
@@ -7390,6 +7540,43 @@ impl<'gc> Heap<'gc> {
             class_field::VALUE_CLASS_REFUSAL,
             Value::object(refusal),
         )
+    }
+
+    /// Clears `class`'s verdict on §3.1.1's enclosing-object condition: an
+    /// install re-parented it over a chain whose enclosing objects are all
+    /// values (`Mutator::redecide_value_class`). Answers whether the write
+    /// happened, like the other class setters.
+    pub(crate) fn class_clear_value_refusal(&mut self, class: ClassReference<'gc>) -> bool {
+        self.set_class_field(class, class_field::VALUE_CLASS_REFUSAL, Value::nil())
+    }
+
+    /// Writes the class a level's `<:` clause named: an install re-parents
+    /// a body-less declaration's class object, the level its last clause
+    /// adds, over the class its new last clause names. Answers whether the
+    /// write happened: `false` for a class object that is no level and for
+    /// a handle that is no class object.
+    pub(crate) fn class_set_named_class(
+        &mut self,
+        class: ClassReference<'gc>,
+        named: ClassReference<'gc>,
+    ) -> bool {
+        self.set_class_field(class, class_field::NAMED_CLASS, Value::object(named))
+    }
+
+    /// Makes `class` a class object no `<:` clause added: its applied
+    /// clause, named class and declaration's scope nil. An install turns a
+    /// body-less declaration's class object into the class object of the
+    /// declaration with a body it became, in place. Answers whether the
+    /// writes happened.
+    pub(crate) fn class_clear_applied_level(&mut self, class: ClassReference<'gc>) -> bool {
+        [
+            class_field::APPLIED_CLAUSE,
+            class_field::NAMED_CLASS,
+            class_field::DECLARATION_ENCLOSING,
+            class_field::DECLARATION_DECLARING_CLASS,
+        ]
+        .into_iter()
+        .all(|field| self.set_class_field(class, field, Value::nil()))
     }
 
     /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
@@ -7507,14 +7694,21 @@ impl<'gc> Heap<'gc> {
     ///
     /// The install's walk: there is no registry of a mixin's applications
     /// or a class's instances, so the space is the one place that holds
-    /// them all (`docs/design/liveness-and-reflection.md`, "The install is
-    /// one leaf, and its commit has no safepoint"). An object nothing
+    /// them all (`docs/design/liveness-and-reflection.md`, "The commit runs
+    /// nothing and has no safepoint"). An object nothing
     /// reaches any more is found as well, since only a collection tells
     /// the two apart, and none runs inside a leaf; a forwarder and a gap
     /// are no objects and are skipped.
+    ///
+    /// `reparented` names class objects an install re-parents whatever
+    /// mixin they apply -- a body-less declaration's, which applies its last
+    /// clause's mixin -- and the `<:` levels that follow such a class
+    /// object's application (`Mutator::follows_a_reparenting`), so that the
+    /// chains over them are found too.
     pub(crate) fn classes_and_instances_over(
         &self,
         replaced: impl Fn(MixinId) -> bool,
+        reparented: impl Fn(ClassReference<'gc>) -> bool,
     ) -> (Vec<ClassReference<'gc>>, Vec<ObjectReference<'gc>>) {
         // Per class object, by offset, whether its chain holds a replaced
         // level: every instance of a class asks the same question.
@@ -7523,10 +7717,11 @@ impl<'gc> Heap<'gc> {
             *verdicts.entry(class.offset.get()).or_insert_with(|| {
                 let mut level = Some(class);
                 while let Some(current) = level {
-                    let holds = self
-                        .class_application_entry(current)
-                        .and_then(|application| self.known_mixin_id(&application.mixin))
-                        .is_some_and(&replaced);
+                    let holds = reparented(current)
+                        || self
+                            .class_application_entry(current)
+                            .and_then(|application| self.known_mixin_id(&application.mixin))
+                            .is_some_and(&replaced);
                     if holds {
                         return true;
                     }
@@ -12286,7 +12481,7 @@ impl<'gc> Heap<'gc> {
     /// The hash is copied whether or not the old object has one, so a new
     /// object that was hashed already takes the old one's absence of a
     /// hash and answers another hash afterwards: a caller forwards only to
-    /// objects nothing has hashed yet, as the install (`install_edit`) does
+    /// objects nothing has hashed yet, as the install (`commit_install`) does
     /// to the fresh ones it builds.
     /// Last, one walk rewrites every handle the heap itself holds
     /// (`forward_everything`) and remembers every old holder that names a
@@ -16131,6 +16326,7 @@ mod tests {
             },
             None,
             None,
+            1,
         );
         assert!(!filled);
         assert!(!heap.is_class(placeholder));

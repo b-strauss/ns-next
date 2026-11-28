@@ -1,0 +1,47 @@
+/// A module whose id the project gave with `as` keeps that id through an
+/// install: a version its text declares is the module's version under the
+/// given id, and a rename replaces the given id's last part. Each shows in
+/// the loader's message for the module it would then collide with, and a
+/// version and name no other module has install.
+class App packageUsing: manifest = Object new (
+  |
+    private Given = manifest at: 'legacy.Util' version: '1'.
+  |
+) (
+  outcome: action = (
+    ^[
+      action value.
+      'staged'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Given new.
+      builder = (ClassMirror reflecting: Given) mixin declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: com.acme.Util@2.0.0 *) class Util = Object new () '.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          builder header source: '(* :module: com.acme.Util@3.0.0 *) class Util = Object new () '.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [builder header name: #Tool]);
+        newLine.
+    builder header source: '(* :module: com.acme.Util@4.0.0 *) class Util = Object new () '.
+    builder header name: #Tool.
+    builder install.
+    transcript
+        show: (ClassMirror reflecting: Given) name;
+        show: ' ';
+        print: instance answer;
+        newLine.
+  )
+)

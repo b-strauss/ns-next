@@ -1,0 +1,58 @@
+/// `nestedClasses addFromSource:` adds a nested class: before the install
+/// the enclosing class does not understand its name, and the builder's
+/// source shows it after the class's other members; after it, an
+/// instance made before the install answers the class, the same class
+/// object at every send, an implicit send of its name in the enclosing
+/// class reaches it, and the mixin mirror lists it. The class side has no
+/// nested classes.
+class ANestedClassIsAdded = Object new () (
+  class Holder = Object new () (
+    public made = (
+      ^Added new answer.
+    )
+
+    public class Kept = Object new () ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class Added = Object new () ( public answer = ( ^42 ) )'.
+    transcript
+        print: (builder source indexOf: 'public class Added')
+            > (builder source indexOf: 'class Kept');
+        newLine.
+    transcript
+        show: (outcome: [holder Added]);
+        show: ' ';
+        show: (outcome: [holder made]);
+        newLine.
+    builder install.
+    transcript
+        print: holder Added == holder Added;
+        show: ' ';
+        print: holder made;
+        show: ' ';
+        print: Holder new Added new answer;
+        newLine.
+    (ClassMirror reflecting: Holder) mixin nestedClasses do: [:each |
+      transcript
+          show: ' ';
+          show: each name.
+    ].
+    transcript newLine.
+    transcript
+        show: (outcome: [builder classSide nestedClasses]);
+        newLine.
+  )
+)

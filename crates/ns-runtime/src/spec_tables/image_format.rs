@@ -164,6 +164,7 @@ fn the_books_image_tags_are_the_encoders() {
         SLOT_LAZY_MUTABLE,
         ORIGIN_PROJECT,
         ORIGIN_CORE,
+        ORIGIN_NONE,
         MODULE_UNVERSIONED,
         MODULE_VERSIONED,
     );

@@ -43,3 +43,6 @@
 [submodule "prior-art/eurasia"]
 	path = prior-art/eurasia
 	url = https://github.com/newspeaklanguage/eurasia.git
+[submodule "prior-art/eastasia"]
+	path = prior-art/eastasia
+	url = https://github.com/newspeaklanguage/eastasia.git

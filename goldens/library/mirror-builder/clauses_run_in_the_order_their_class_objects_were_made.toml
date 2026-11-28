@@ -1,0 +1,4 @@
+rules = ["runtime.install.superclass"]
+stdout = '''
+bca
+'''

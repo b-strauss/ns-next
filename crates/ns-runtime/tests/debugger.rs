@@ -1200,7 +1200,7 @@ fn joined_fields_of(
         if let Some(version) = version {
             let class = resolved.module.root_class.name.name.clone();
             resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
-                path: format!("{version}/{class}.ns"),
+                path: Some(format!("{version}/{class}.ns")),
                 id: ns_runtime::modules::ModuleId::parse(&format!("com.acme.{class}"), &class)
                     .expect("an id"),
                 version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
@@ -9229,7 +9229,7 @@ fn load_versioned(
     let classes = ["1.0.0", "2.0.0"].map(|version| {
         let mut resolved = resolved_module(source);
         resolved.identity = Some(std::rc::Rc::new(ns_runtime::modules::ModuleIdentity {
-            path: format!("{class_name}-{version}/{class_name}.ns"),
+            path: Some(format!("{class_name}-{version}/{class_name}.ns")),
             id: ns_runtime::modules::ModuleId::parse(id, class_name).expect("an id"),
             version: Some(ns_runtime::modules::Version::parse(version).expect("a version")),
         }));

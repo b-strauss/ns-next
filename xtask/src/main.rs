@@ -46,7 +46,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
   caches               every golden with a two-entry global cache (profile caches)
   memory               ns-memory's clippy for Linux, macOS and Windows on ARM
   benchmarks           the benchmark programs verified at full size (profile benchmarks-verify)
-  stress               the suite under the fifteen stress modes and without the JIT, the unreached tests left out, then run-corpus plain and under each mode
+  stress               the suite under the sixteen stress modes and without the JIT, the unreached tests left out, then run-corpus plain and under each mode
   release-checks       the suite without debug assertions (cargo profile release-checks), ns-runtime's clippy for aarch64-pc-windows-msvc, a target without a JIT, and for aarch64-apple-darwin, Apple's JIT
   codegen              the hot path's machine code against its budgets (cargo asm, release)
   plugin-verification  the plugin against several IDEs (verifyPlugin buildPlugin)
@@ -56,7 +56,7 @@ groups (CLAUDE.md, \"The gates\", says when each runs):
 
 /// The stress switches the runtime reads in a debug build
 /// (`docs/design/README.md`, "Gates").
-const STRESS_MODES: [&str; 15] = [
+const STRESS_MODES: [&str; 16] = [
     "MOVES",
     "CACHES",
     "COLLECT",
@@ -72,6 +72,7 @@ const STRESS_MODES: [&str; 15] = [
     "PAUSE",
     "BREAKPOINTS",
     "STEP",
+    "INSTALL",
 ];
 
 /// The suite run beside the stress modes with the JIT off: every other
@@ -128,7 +129,9 @@ fn stress_suite_arguments(mode: &str, config: &Path, threads: usize) -> Vec<Stri
 /// How long each stress suite ran, in seconds, at two test threads apiece
 /// on the development machine's 24 cores (2026-11-15): the weights by
 /// which `stress_threads` shares the threads out. Only their ratios
-/// matter; a mode missing here weighs as the heaviest.
+/// matter; a mode missing here weighs as the heaviest. INSTALL's is
+/// NO_JIT's scaled by the two suites' lengths alone on every thread
+/// (2026-11-27: 35.6 s and 33.8 s).
 const STRESS_SUITE_SECONDS: &[(&str, u32)] = &[
     ("MOVES", 748),
     ("CACHES", 527),
@@ -145,6 +148,7 @@ const STRESS_SUITE_SECONDS: &[(&str, u32)] = &[
     ("PAUSE", 890),
     ("BREAKPOINTS", 431),
     ("STEP", 839),
+    ("INSTALL", 347),
     ("NO_JIT", 329),
 ];
 
@@ -1749,8 +1753,8 @@ mod tests {
     }
 
     #[test]
-    fn the_stress_group_runs_fifteen_modes() {
-        assert_eq!(STRESS_MODES.len(), 15);
+    fn the_stress_group_runs_sixteen_modes() {
+        assert_eq!(STRESS_MODES.len(), 16);
         for mode in [
             "JIT",
             "EXIT",
@@ -1761,6 +1765,7 @@ mod tests {
             "PAUSE",
             "BREAKPOINTS",
             "STEP",
+            "INSTALL",
         ] {
             assert!(STRESS_MODES.contains(&mode), "no stress mode {mode}");
         }
@@ -1812,7 +1817,7 @@ mod tests {
             );
         }
         let shares = stress_threads(&modes, 24);
-        assert_eq!(shares.iter().sum::<usize>(), 32);
+        assert_eq!(shares.iter().sum::<usize>(), 34);
         assert!(shares.iter().all(|threads| *threads >= 1));
         let collect = modes
             .iter()

@@ -1,0 +1,10 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install"]
+stdout = '''
+[public class Inner2 = Object new () ]
+an object does not understand #Inner2
+42 42
+'Inner2' true 42
+true 7
+an object does not understand #Inner
+Inner2
+'''

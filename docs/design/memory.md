@@ -1397,7 +1397,7 @@ refuses what the second pass would refuse about counts, ids, a symbol or a
 mixin named twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
 byte of the input left -- a guard no image reaches, since no record's
-object takes more than 8.9 times its record's bytes, about a word a byte
+object takes more than 6.6 times its record's bytes, about a word a byte
 (the table below), and a count claimed past the bytes is refused
 earlier. Then each record's placeholder is allocated at the
 size the first pass read, and the second pass fills each in place, every
@@ -1412,9 +1412,9 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 
 | Contribution | Release | Debug |
 |---|---|---|
-| A record's placeholder against its smallest record: a metaclass record of 9 bytes becomes a class object of 80 | 8.9x | 8.9x |
-| The same with the decoder's own tables -- a handle per record in the placeholder table (8 bytes in a release build, 16 in a debug one), the first pass's 8-byte size, a metaclass record's pending index | **10.7x** | 11.6x |
-| A value's word against its encoding: a one-byte `VALUE_NIL` becomes an 8-byte word | 8x | 8x |
+| A record's placeholder against its smallest record: a metaclass record of 17 bytes becomes a class object of 112 | 6.6x | 6.6x |
+| The same with the decoder's own tables -- a handle per record in the placeholder table (8 bytes in a release build, 16 in a debug one), the first pass's 8-byte size, a metaclass record's pending index and its 8-byte creation stamp, held until the stamps are checked unique | 8.0x | 8.5x |
+| A value's word against its encoding: a one-byte `VALUE_NIL` becomes an 8-byte word | **8x** | 8x |
 | A UTF-8 byte of a string packed in the 32-bit form | 4x | 4x |
 | An allocating value: an `i64` beyond 61 bits, or a float outside the immediate range, 9 bytes for a word and a 24-byte object (the `i64`'s one digit held in a boxed slice until its object is made, 4.4x while it lives) | 3.6x | 3.6x |
 | A one-digit `VALUE_LARGE_INTEGER`, 14 bytes for the same 32 (its digits read into a `Vec` first, 2.9x while it lives) | 2.3x | 2.3x |
@@ -1423,12 +1423,13 @@ doc comment, `image/decode.rs`, and for the text table `texts::decode`'s,
 | A symbol's text, allocated once per symbol-table entry | ≤ 4x of the symbol section | ≤ 4x of the symbol section |
 | A declaration's text, in an image with source: the 16 bytes of an empty text without holes become a 72-byte `Rc<DeclarationText>`, its 8-byte slot in the decoded table and a 16-byte entry of the check that each text has one owner; the last two are dropped before the graph pass, so 4.5x is held through it; a hole and a text's bytes cost what they take on the wire | ≤ 6x of the text table | ≤ 6x of the text table |
 
-The other record kinds stay below the metaclass record: a class record is at
-least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
-tables), a level a `<:` clause added at least 23 for 88, its one field more
-the class its clause named (3.8x; 4.9x and 5.2x), a body-less declaration's
-class object at least 25 for 104, the level's record and two presence flags
-for its declaration's scope (4.2x; 5.1x and 5.4x), a frame record at least 21
+Every class object has the same 14 words, 112 bytes, whatever its kind, and
+the other class records stay below the metaclass record: a class record is
+at least 27 bytes (4.1x; 5.3x and 5.6x with the decoder's tables), a level
+a `<:` clause added at least 31, its clause and the class it named (3.6x;
+4.6x and 4.9x), a body-less declaration's class object at least 33, the
+level's record and two presence flags for its declaration's scope (3.4x;
+4.4x and 4.6x), a frame record at least 21
 for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
 closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
@@ -1443,15 +1444,14 @@ in `decode_value`'s doc comment does; every class tag the encoder writes
 is five, a tag byte and a `u32` (`CLASS_RECORD`, `CLASS_SHIPPED`), and the
 byte-array record alone is counted at that. So every other record is at
 least three bytes longer per class it names than counted, each record's
-ratio above is an upper bound, and so is the 10.7x: a metaclass record is
-at least 15 bytes for its 80, 5.3x, and 6.4x and 6.9x with the decoder's
-tables, below the 8x of a value's word, which then sets the release
-build's figure. The bounds stay safe; tightening them in the doc comment,
-here and in `CLAUDE.md` together is open ([OPEN-WORK.md](../OPEN-WORK.md)).
+ratio above is an upper bound: a metaclass record is at least 23 bytes for
+its 112, 4.9x, and 5.9x and 6.3x with the decoder's tables. The bounds stay
+safe; tightening the record figures in the doc comment and here together is
+open ([OPEN-WORK.md](../OPEN-WORK.md)).
 
-**So the transient peak of a rejected load is about 10.7x of the graph
-section's bytes in a release build (a graph of metaclass records) and about
-16x in a debug one (a graph that is all root list), plus at most 4x of the
+**So the transient peak of a rejected load is about 8x of the graph
+section's bytes in a release build (a graph of one-byte values, one that is
+all root list, or one of metaclass records) and about 16x in a debug one (a graph that is all root list), plus at most 4x of the
 symbol section's bytes and, in an image with source, at most 6x of the
 text table's.** The texts are decoded and held to the rows before the
 graph pass, and a text belongs to one declaration, so the module texts
@@ -1485,7 +1485,7 @@ section that resolves lists at most as many names as the shipped world has, a
 few hundred; what the graph pass holds beside its placeholders -- the names
 and their resolution, a second resolution in the graph's own entry with the
 set dropped again -- is therefore bounded by the shipped world, a few KiB,
-not by the input. The figures above stand: about 10.7x of the graph section's
+not by the input. The figures above stand: about 8x of the graph section's
 bytes in a release build and 16x in a debug one, plus at most 4x of the
 symbol section's and 6x of the text table's, plus that constant.
 
@@ -2280,7 +2280,8 @@ so a freed `Rc<Mixin>` handing its address to a newly allocated one cannot
 make the new mixin hit the old entry and be given a **different, perfectly
 valid** application, the failure class the handle invariants exist to
 prevent. A full collection reclaims every application, every module's tree
-of mixins, every compiled body and every cache range nothing live names
+of mixins and every obsolete declaration's ([liveness-and-reflection.md](liveness-and-reflection.md),
+"The complete install", decision 3), every compiled body and every cache range nothing live names
 any more (`Mutator::reclaim_ids`), and drops every application-cache entry
 whose application or superclass key it freed, so the cache's size follows
 the live applications, edits or not
@@ -2403,7 +2404,7 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-There are fifteen stress modes, each a gate of its own at the end of a batch,
+There are sixteen stress modes, each a gate of its own at the end of a batch,
 each set by an environment variable to anything but empty or `0`, all of
 them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
 `NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
@@ -2443,7 +2444,11 @@ optimize stress mode too and makes optimized code leave for a
 safepoint at every tenth interrupt point it passes, which frees every
 body's copies -- a body freed often sitting out ever more rounds --
 before it installs what was requested since
-([execution.md](execution.md), "Speculation", "Verification").
+([execution.md](execution.md), "Speculation", "Verification"), and
+`NS_NEXT_STRESS_INSTALL`, which holds no safepoint and, after every
+install's commit, checks every cache entry the install kept against a
+fresh lookup for its key and every cell against its entry, panicking on
+a difference ([dispatch.md](dispatch.md), "Invalidation").
 
 `NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
 than at a limit, paced by heap size like the move stress mode but with floor
@@ -3103,7 +3108,7 @@ after the last tenure, and never polls a safepoint, so the peak argument
 stands; the handle paragraphs describe a 64-bit byte offset and name no
 frame arena; "A cache records what the lookup decided" reads the builtin
 tag as a field of the class object, which `act` still reads afresh on every
-send; the end-of-batch gates name fifteen stress modes, `SCAVENGE` among them;
+send; the end-of-batch gates name sixteen stress modes, `SCAVENGE` among them;
 and "Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier" is an invariant of its own; and "The
 VM mirror is a capability" says that the MirrorBuilder refuses every edit

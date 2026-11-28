@@ -578,9 +578,13 @@ fn walk_graph(
                 format!("ephemeron {{{}}}", read_values(reader, targets)?.join(", "))
             }
             opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
-            opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
+            opcodes::OBJECT_CLASS => {
+                let stamp = reader.read_u64()?;
+                format!("{} (made {stamp})", read_class_record(reader, targets)?)
+            }
             opcodes::OBJECT_BODY_LESS_CLASS => {
-                let record = read_class_record(reader, targets)?;
+                let stamp = reader.read_u64()?;
+                let record = format!("{} (made {stamp})", read_class_record(reader, targets)?);
                 let enclosing = if reader.read_boolean()? {
                     read_value(reader, targets)?
                 } else {
@@ -593,7 +597,11 @@ fn walk_graph(
                 )
             }
             opcodes::OBJECT_METACLASS => {
-                format!("metaclass of {}", read_class_tag(reader, targets)?)
+                let stamp = reader.read_u64()?;
+                format!(
+                    "metaclass of {} (made {stamp})",
+                    read_class_tag(reader, targets)?
+                )
             }
             opcodes::OBJECT_FRAME => {
                 let (record, code_offset) = read_frame_record(reader, symbols, targets)?;
@@ -740,17 +748,28 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     )
     .map_err(|error| error.to_string())?;
     let text_reports: Vec<Text> = decoded_texts.into_iter().map(|(text, _)| text).collect();
+    // A set, since both counts are the image's to choose.
+    let obsolete_rows: std::collections::HashSet<u32> =
+        decoded.obsolete_rows.iter().copied().collect();
     let mixin_lines = decoded
         .mixins
         .iter()
         .zip(decoded.code.iter())
-        .map(|(mixin, code)| {
+        .enumerate()
+        .map(|(row, (mixin, code))| {
             let text = match code.text {
                 Some(text) => format!("  text: {}", text.index),
                 None => String::new(),
             };
+            // A removed declaration's row roots an obsolete tree; the rows
+            // nested in it follow it.
+            let obsolete = if u32::try_from(row).is_ok_and(|row| obsolete_rows.contains(&row)) {
+                "  obsolete"
+            } else {
+                ""
+            };
             format!(
-                "{}  slots: {}  factory: {}  methods: {}{text}",
+                "{}  slots: {}  factory: {}  methods: {}{text}{obsolete}",
                 mixin.name,
                 mixin.slots.len(),
                 match &mixin.factory {
@@ -815,11 +834,10 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         .map(|module| {
             let root = format!("root object {}", module.root);
             ModuleReport {
-                identity: format!(
-                    "{} at {}",
-                    module.identity.display_name(),
-                    module.identity.path
-                ),
+                identity: match &module.identity.path {
+                    Some(path) => format!("{} at {path}", module.identity.display_name()),
+                    None => format!("{}, without a path", module.identity.display_name()),
+                },
                 root,
             }
         })

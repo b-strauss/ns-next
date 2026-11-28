@@ -1,0 +1,56 @@
+/// `nestedClasses addFromSource:` of a name the class already declares
+/// replaces that class and keeps it: the enclosing instance answers the
+/// class object it answered before, an instance made before the install
+/// answers the new methods, keeps the value of a slot of the same name and
+/// starts a new slot nil, and a class nested in the old declaration that
+/// the new one no longer declares is not understood.
+class ANestedClassIsReplacedAndItsInstancesMigrate = Object new () (
+  class Holder = Object new () (
+    public class Inner = Object new (
+      |
+        public x ::= 1.
+      |
+    ) (
+      public answer = (
+        ^x.
+      )
+
+      public class Deep = Object new () ()
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      before = holder Inner.
+      old = before new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    old x: 5.
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class Inner = Object new (| public x ::= 1. public y ::= 2. |) ( public answer = ( ^x * 10 ) )'.
+    transcript
+        print: old answer;
+        newLine.
+    builder install.
+    transcript
+        print: holder Inner == before;
+        show: ' ';
+        print: old answer;
+        show: ' ';
+        print: old y;
+        show: ' ';
+        print: holder Inner new y;
+        newLine.
+    transcript
+        show: (outcome: [old Deep]);
+        newLine.
+  )
+)

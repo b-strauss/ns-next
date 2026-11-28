@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The stress modes a plain server strips from its programs' environment.
-const STRESS_MODES: [&str; 15] = [
+const STRESS_MODES: [&str; 16] = [
     "MOVES",
     "COLLECT",
     "SCAVENGE",
@@ -38,6 +38,7 @@ const STRESS_MODES: [&str; 15] = [
     "PAUSE",
     "BREAKPOINTS",
     "STEP",
+    "INSTALL",
 ];
 
 /// The tools and their parameters, the required ones first.

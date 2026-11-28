@@ -279,8 +279,8 @@ struct FieldLabel {
 }
 
 /// The names of `object`'s `field_count` fields, from the layout of its
-/// class's application -- `MixinApplication::field_layout`, the walk an
-/// install copies fields by, so that the two never disagree: a slot is
+/// class's application -- `MixinApplication::checked_field_layout`, through
+/// the walk of the layout an install copies fields by, so that the two never disagree: a slot is
 /// named as it was declared, a nested class's hidden slot by the nested
 /// class's name -- both structure, which an image keeps without its
 /// source. A name declared on more than one level (a superclass's
@@ -312,11 +312,11 @@ fn field_labels<'gc>(
         .map(|index| {
             let field = layout.get(index)?;
             match field.name {
-                FieldName::Slot { mixin, name, .. } => Some(Declared {
+                FieldName::Slot { level, name } => Some(Declared {
                     name,
-                    declarer: mixin,
-                    declarer_name: heap.mixin(mixin)?.name,
-                    shipped: heap.mixin(mixin)?.shipped,
+                    declarer: level.mixin,
+                    declarer_name: heap.mixin(level.mixin)?.name,
+                    shipped: heap.mixin(level.mixin)?.shipped,
                     level: field.level,
                     filling: if field.lazy {
                         Filling::Lazy

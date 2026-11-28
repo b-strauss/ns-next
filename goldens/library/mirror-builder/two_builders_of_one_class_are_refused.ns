@@ -1,0 +1,41 @@
+/// `installAtomically:` refuses two builders of one class, naming it,
+/// whatever each stages: neither builder's method is installed, and each
+/// builder still holds what it staged, so either installs alone
+/// afterwards.
+class TwoBuildersOfOneClassAreRefused = Object new () (
+  class Subject = Object new () ()
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mirrors = platform mirrors.
+      declaration = (mirrors ClassMirror reflecting: Subject) mixin declaration.
+      first = declaration asBuilder.
+      second = declaration asBuilder.
+      instance = Subject new.
+      staged
+    |
+    first instanceSide methods addFromSource: 'public first = (^1)'.
+    second instanceSide methods addFromSource: 'public second = (^2)'.
+    staged:: first source.
+    transcript
+        show: (outcome: [mirrors installAtomically: {first. second}]);
+        newLine.
+    transcript
+        show: (outcome: [instance first]);
+        show: ' ';
+        show: (outcome: [instance second]);
+        newLine.
+    transcript
+        print: first source = staged;
+        newLine.
+    first install.
+    transcript
+        show: (outcome: [instance first]);
+        newLine.
+  )
+)

@@ -1,0 +1,2 @@
+/// A module whose class another module's builder edits.
+class Other = Object new () ()

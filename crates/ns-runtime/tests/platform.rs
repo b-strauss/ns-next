@@ -1190,12 +1190,12 @@ fn no_mirror_answers_a_withheld_value() {
         facets.push(facet);
     }
     // The derivation found what the facets hand out: 17 kernel classes, 9
-    // collections, 1 of time, 11 typed arrays and 2 mirrors, less the
+    // collections, 1 of time, 11 typed arrays and 3 mirrors, less the
     // `Collection`, `WeakArray` and `WeakMap` the kernel and the
     // collections facets both hand out. A facet widened on demand moves
     // the count with it.
     assert_eq!(facets.len(), 7, "the platform and its six facets");
-    assert_eq!(classes.len(), 37, "the classes the facets hand out");
+    assert_eq!(classes.len(), 38, "the classes the facets hand out");
     let (facet_array, class_array) = interpreter.enter(|mutator| {
         let facets = facets.iter().map(|facet| mutator.fetch(facet)).collect();
         let facets = Value::object(mutator.new_array(facets));

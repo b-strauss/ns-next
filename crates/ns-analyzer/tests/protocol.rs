@@ -17,7 +17,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// The timeout of every answer a test that compiles a module waits for,
 /// from `initialize` to `shutdown`. Such a test bootstraps the worker's
 /// interpreter, so it reaches the runtime and the stress gate runs it
-/// (`xtask/unreached-tests.txt` does not list it), alongside its fifteen
+/// (`xtask/unreached-tests.txt` does not list it), alongside its sixteen
 /// other suites, where a test of 0.03 s took 9 to 34 s and one of 0.2 s
 /// more than 25 (and `disasm_arithmetic_initializer` 19.5 s for 0.03 s):
 /// merely slow, as nothing of theirs grows under a stress mode. The

@@ -1,0 +1,57 @@
+/// A module declared from source whose `:module:` the loader would refuse
+/// is refused with the loader's message and declares nothing: an id and
+/// version the program's own module has, an id that does not end in the
+/// class's name, and one in the namespace `newspeak.`. A version no other
+/// module has installs. Two builders of one identity each pass their own
+/// check, but once the first is installed the second's install is
+/// refused, both named "a module declared from source" for want of a path.
+(* :module: com.acme.AModuleFromSourceWithATakenIdentityIsRefused@1.0.0 *)
+class AModuleFromSourceWithATakenIdentityIsRefused = Object new () (
+  outcome: action = (
+    ^[
+      action value.
+      'declared'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Builder = platform mirrors ClassDeclarationBuilder.
+      first
+      second
+    |
+    transcript
+        show: (outcome: [
+          Builder fromSource: '(* :module: com.acme.AModuleFromSourceWithATakenIdentityIsRefused@1.0.0 *)
+class AModuleFromSourceWithATakenIdentityIsRefused = Object new () ()'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          Builder fromSource: '(* :module: com.acme.Tool@1.0.0 *) class Util = Object new () ()'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          Builder fromSource: '(* :module: newspeak.Util *) class Util = Object new () ()'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [
+          (Builder fromSource: '(* :module: com.acme.AModuleFromSourceWithATakenIdentityIsRefused@2.0.0 *)
+class AModuleFromSourceWithATakenIdentityIsRefused = Object new () ()') install.
+        ]);
+        newLine.
+    first:: Builder fromSource: '(* :module: com.acme.Util@1.0.0 *) class Util = Object new () ()'.
+    second:: Builder fromSource: '(* :module: com.acme.Util@1.0.0 *) class Util = Object new () ()'.
+    transcript
+        show: (outcome: [first install]);
+        newLine.
+    transcript
+        show: (outcome: [second install]);
+        show: ' ';
+        print: second declaration;
+        newLine.
+  )
+)

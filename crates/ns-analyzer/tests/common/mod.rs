@@ -138,10 +138,12 @@ pub fn build_image(source: &Path, lowering: ns_runtime::Lowering, with_source: b
     let (id, version) = ns_runtime::modules::declared_identity(&resolved.module, &text)
         .unwrap_or_else(|error| panic!("{}: {error}", source.display()));
     let identity = ns_runtime::modules::ModuleIdentity {
-        path: source
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| panic!("{} has no file name", source.display())),
+        path: Some(
+            source
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| panic!("{} has no file name", source.display())),
+        ),
         id,
         version,
     };

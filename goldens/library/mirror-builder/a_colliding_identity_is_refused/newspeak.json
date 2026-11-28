@@ -1,0 +1,7 @@
+{
+  "main": "App.ns",
+  "modules": [
+    "v1/Util.ns",
+    "v2/Util.ns"
+  ]
+}

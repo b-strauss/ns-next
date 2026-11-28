@@ -1,0 +1,41 @@
+/// `header name:` renames a module's root class in place: the last part
+/// of the id its `:module:` declares follows the name, in the header and
+/// in the module's text, and the class object, an instance made before and
+/// the module's version stay. The manifest the program was given still
+/// answers the class under the id it was assembled with.
+class App packageUsing: manifest = Object new (
+  |
+    private modules = manifest.
+    private Json = manifest at: 'com.acme.Json'.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      instance = Json new.
+      builder = (ClassMirror reflecting: Json) mixin declaration asBuilder.
+    |
+    builder header name: #JsonCodec.
+    transcript
+        show: '[';
+        show: builder header source;
+        show: ']';
+        newLine.
+    builder install.
+    transcript
+        show: (ClassMirror reflecting: Json) name;
+        show: ' ';
+        print: Json name;
+        show: ' ';
+        print: instance encode;
+        show: ' ';
+        print: (modules at: 'com.acme.Json') == Json;
+        newLine.
+    transcript
+        show: '[';
+        show: (ClassMirror reflecting: Json) mixin declaration asBuilder header source;
+        show: ']';
+        newLine.
+  )
+)

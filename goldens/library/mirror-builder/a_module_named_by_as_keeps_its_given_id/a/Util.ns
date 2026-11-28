@@ -1,0 +1,7 @@
+/// A module the project gives another id than the one its text declares.
+(* :module: com.acme.Util@1.0.0 *)
+class Util = Object new () (
+  public answer = (
+    ^1.
+  )
+)

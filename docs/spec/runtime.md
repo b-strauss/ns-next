@@ -267,24 +267,155 @@ The bulk `become:`, reached only through the VM mirror by the install.
 ### Install(edits)
 
 r[runtime.install]
-A `ClassDeclarationBuilder`'s `install`
+The install of a list of builders' edits: `installAtomically:` given the
+list, or a `ClassDeclarationBuilder`'s `install`, the list of it alone
 ([`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)).
+A builder `fromSource:` in the list declares a module
+([`runtime.install.module`](#r-runtime.install.module)), prepared in step
+2 after the edits and committed with them in step 5.
 
-1. If the builder's class is the core library's, signal and change
-   nothing. If its header changes the class's name, access or superclass,
-   signal `the header renames Inner to Renamed; an edit keeps a class's
-   name`, `the header changes the access of Inner; an edit keeps it` or
-   `the header changes the superclass of Inner; an edit keeps it`, and
-   change nothing.
-2. Compile the staged declaration against the module's current text; if
-   it does not compile, signal and change nothing.
-3. At once and running no code: make the new mixin the mixin of every
-   application of the old one; for every instance whose layout changed,
-   make a new instance of the new layout holding each slot of the same
-   name and `nil` in each new one, and
-   [ForwardIdentity](#r-runtime.forward-identity) the old instances to them.
-4. A running activation finishes with the code it began with; every send
-   after step 3 finds the new methods.
+1. If two builders of the list edit one class, signal `two builders edit
+   Inner` and change nothing. If a builder edits a class another builder
+   of the list removes or replaces, or one nested in it, signal `the
+   builder of Inner edits a class the builder of Outer removes` (or
+   `replaces`) and change nothing. If a builder's class is the core
+   library's, signal and change nothing; if an install removed it, or a
+   class it is nested in, signal `Inner was removed by an install, and an
+   obsolete class is not edited` and change nothing.
+2. Prepare each module the list edits once: splice the staged edits of
+   its builders into the module's current text, in the list's order,
+   each starting from the text the one before it left, and compile the
+   staged declarations against the result; if one does not compile,
+   signal and change nothing. A module's root's header begins at its
+   first metadata comment, so it holds the root's `:module:`. A new name
+   -- the header's, or the one `name:` staged, which for a root rewrites
+   the last part of its `:module:` id too -- or a new access of a nested
+   class compiles its enclosing declaration with it, which answers the
+   class under its name and access; the class keeps its identity, its
+   class objects, its instances and the classes nested in it, and the
+   old name is no longer understood. If the new name is no identifier,
+   signal `Inner cannot be renamed to +, which is no identifier`; if the
+   enclosing class already declares a member of the new name, signal
+   `Outer already has a member named Sibling`; and change nothing.
+   Nested classes are paired with the old ones by their names: a class
+   text a builder adds under a name its class declares replaces that
+   class, which keeps its identity, its class objects and its instances;
+   one under a new name is a new class; a text that is not one class
+   declaration signals `addFromSource: of Outer's nested classes takes
+   one class declaration` and changes nothing. A class no longer declared
+   is removed and lives on obsolete: its enclosing class no longer
+   understands its name, and its class objects, its instances and its
+   subclasses keep running its last version until nothing reaches them.
+3. If a root's new text declares another id or version, the module keeps
+   its path, its root and its class objects and takes that identity,
+   held to the loader's rules
+   ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)):
+   a malformed declaration, an id under `newspeak.`, and an id and
+   version another module of the world has -- or an id another has where
+   either has no version -- signal the loader's message, the last naming
+   both paths, ``two modules are `com.acme.Util@2.0.0`: v1/Util.ns and
+   v2/Util.ns``, and change nothing. A module whose id the project gave
+   (`as`) keeps that id, a rename replacing its last part, and takes the
+   version its text declares. The manifest a program holds answers the
+   module under the id it was assembled with.
+4. If a staged declaration's superclass clause or `<:` clauses differ
+   from its current ones, evaluate them for each of its class objects
+   ([`runtime.install.superclass`](#r-runtime.install.superclass)). If
+   anything was installed, or a module loaded, since step 2 -- the
+   install epoch moved -- or a class object was made meanwhile, signal
+   and change nothing
+   ([`runtime.install.epoch`](#r-runtime.install.epoch)).
+5. At once and running no code, for every module's edits together: make
+   each new mixin the mixin of every application of the old one; for
+   every instance whose layout changed, make a new instance of the new
+   layout holding each slot of the same name and `nil` in each new one,
+   and [ForwardIdentity](#r-runtime.forward-identity) the old instances to
+   them. Then move the install epoch.
+6. A running activation finishes with the code it began with; every send
+   after step 5 finds the new methods.
+
+r[runtime.install.superclass]
+An install whose staged declaration writes another superclass clause or
+other `<:` clauses than its current version, or gains or loses a body of
+its own, evaluates the new clauses, before it installs anything, once for
+every class object of the declaration the program reaches when the
+install begins, in the order the class objects were made -- a class
+object nothing reaches is never evaluated, however long the memory
+still holds it: each as program code in the enclosing object its
+declaration was evaluated in, as part of the class that declares it,
+against the world as it is before the install, and caching nothing. A
+clause that signals ends the install with what it signals, changing
+nothing. If an answer is no class, signal
+`the superclass clause of Inner answered 3, which is no class`; if it
+would make a class inherit from itself, signal `the superclass clause of
+Base answers a class that inherits from Base`; and change nothing. The
+commit then re-parents each class object over what its clauses answered
+-- the class object keeping its identity, its `<:` levels built anew --
+migrates every instance whose layout changed by slot name, a slot of a
+level it lost gone and one of a level it gained `nil`, and runs no
+initializer. A mixin application without a body of its own is
+re-parented as any class: its class object, the level its last clause
+adds, becomes the level of the new last clause. A declaration that loses
+its body keeps its class objects, each becoming the level its last clause
+adds, and one that gains a body keeps them too, each becoming the class
+of its own body over the levels its clauses add. A `<:` level that names
+a class the install re-parents applies, once installed, what that class
+applies then, in that class's enclosing object and declaring class, as
+the clause's evaluation would apply it (§6.2): a class that lost its body
+gives the level its last clause's mixin, one that gained a body its own
+mixin; every instance over the level migrates as above, and every class
+over it has the value-class verdict (§3.1.1) decided again, as every
+class over a re-parented class has. An install that would change the
+clauses, or gain or lose the body, of a declaration a class object of
+which is being created -- its superclass clause still running, the
+install typically called from it -- signals `Inner is being created, and
+an install does not change its superclass meanwhile` before it installs
+anything, and the creation goes on over its clause's answer. A class
+re-parented onto or off a builtin keeps its instances ordinary objects,
+as its fresh instances are, since a subclass of a builtin takes none of
+its representation. A module's root evaluates nothing: it takes the superclass its new header names,
+`Object`, `Value` or `Value` applied over `Object`.
+
+r[runtime.install.epoch]
+Anything installed, or any module loaded, between an install's
+preparation and its commit -- by one of its own superclass clauses as by
+anything else -- fails the commit: signal `an install ran between the
+preparation and the commit of Inner's install; nothing was installed`.
+So does a class object of a declaration whose clauses the install
+evaluates that was made while they were evaluated and that the program
+still reaches at the commit, whose own clauses were never evaluated: signal `a class object of Inner was made while its
+superclass clauses were evaluated; nothing was installed`. Either way
+nothing changes. An install of no builders installs nothing and moves
+nothing, so it fails no install it runs within.
+
+r[runtime.install.module]
+`ClassDeclarationBuilder fromSource:` given a module's text checks it as
+the install would, and the builder's install declares the module:
+
+1. If the text is not one class declaration -- none, as an empty text or
+   a comment alone, two, or one followed by a member -- signal `fromSource: takes one class declaration`; if it
+   does not parse, signal `the module's source does not parse: <message>
+   (line <n>)`; if it does not resolve, signal `the module's source does
+   not resolve: <message> (line <n>)`; and change nothing.
+2. Its identity is what its `:module:` declares, held to the loader's
+   rules ([`semantics.module.identity`](language/semantics.md#r-semantics.module.identity)),
+   or without one its class's name and no version; it has no path. A
+   malformed declaration and an id under `newspeak.` signal the loader's
+   message; so do an id and version another module of the world or of the
+   same install has, or an id another has where either has no version,
+   a module without a path named `a module declared from source`: ``two
+   modules are `com.acme.Util@1.0.0`: v1/Util.ns and a module declared
+   from source``. Either way
+   nothing changes.
+3. The commit makes the module one of the world's, its text, every
+   character of it, its current text, and the builder stands for its
+   declaration from then on; it moves the install epoch, as a module's load
+   does. The manifest a program holds does not answer it.
+
+Before its install the builder stages nothing: reading either of its
+sides, or staging a new header or name through its header, signals `a
+ClassDeclarationBuilder from source stages nothing before its install`;
+its header's `source` answers `nil`, and so does its declaration.
 
 ## Capabilities and limits
 

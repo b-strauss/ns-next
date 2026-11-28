@@ -1,0 +1,11 @@
+/// A module whose version the program changes.
+(* :module: com.acme.Util@1.0.0 *)
+class Util = Object new (
+  |
+    public kept ::= 1.
+  |
+) (
+  public answer = (
+    ^42.
+  )
+)

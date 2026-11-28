@@ -1,0 +1,40 @@
+/// A module declared from source without `:module:` is named by its
+/// class, without a version: its header holds no metadata, a second
+/// module of that name is refused with the loader's message, which names
+/// a module without a path as one declared from source, and so is a
+/// module of the name of the program's own module, which declares no
+/// `:module:` either and is named by its path.
+class AModuleFromSourceWithoutMetadataIsNamedByItsClass = Object new () (
+  outcome: action = (
+    ^[
+      action value.
+      'declared'.
+    ] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Builder = platform mirrors ClassDeclarationBuilder.
+      builder = Builder fromSource: 'class Plain = Object new () ( public answer = ( ^1 ) )'.
+    |
+    builder install.
+    transcript
+        show: builder declaration name;
+        show: ' [';
+        show: builder header source;
+        show: ']';
+        newLine.
+    transcript
+        show: (outcome: [Builder fromSource: 'class Plain = Object new () ()']);
+        newLine.
+    transcript
+        show: (outcome: [
+          Builder fromSource: 'class AModuleFromSourceWithoutMetadataIsNamedByItsClass = Object new () ()'.
+        ]);
+        newLine.
+    transcript
+        show: (outcome: [Builder fromSource: 'class Other = Object new () ()']);
+        newLine.
+  )
+)

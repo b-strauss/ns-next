@@ -453,8 +453,11 @@ changes nothing when it refuses; it then gives each replacement the old
 object's identity hash, turns each old object into a forwarder, rewrites
 every handle the heap and the run's roots hold in one walk, keeps the
 remembered set for every old holder that now names a young object and
-invalidates every cache, all inside one leaf with no safepoint and no
-instruction between; no live object moves.
+invalidates the caches -- every cache for the bulk forward's leaf, and
+for an install's own forward exactly the entries naming an application
+the install re-applies, whose instances are all it forwards -- all
+inside one leaf with no safepoint and no instruction between; no live
+object moves.
 
 Protects:
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
@@ -468,21 +471,52 @@ objects, migrates instances and invalidates caches without running
 Newspeak code, sending to a user object or polling a safepoint between
 the end of its preparation and its own end; every failure arises before
 anything is replaced, and a failed install changes no version,
-application or guard.
+application or guard. The new superclass clauses an install evaluates
+run before the commit, as program code in activations of their own
+leaf's, and the commit only reads what they answered.
 
 Protects:
 [`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install),
 [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity)
 
+r[vm.heap.obsolete-mixin-out-of-tree]
+A nested declaration an install removes is obsolete: its id leaves its
+enclosing declaration's nested list, so no new application of the
+enclosing class reserves it a hidden slot and no module's text holds it,
+and it roots a tree of mixin ids of its own, its nested declarations and
+class sides in it, in no module's tree. Its row and its last version
+stay, its class objects, instances and subclasses running that version,
+until a full collection finds nothing naming its tree, which it frees on
+its own, whether or not the module it was removed from lives; a module
+freed before it leaves the obsolete root naming no enclosing row. No
+builder edits an obsolete declaration.
+
+Protects: [`runtime.install`](runtime.md#r-runtime.install),
+[`semantics.reflection.atomic-install`](language/semantics.md#r-semantics.reflection.atomic-install)
+
 r[vm.heap.migration-by-declared-name]
 An install migrates each instance whose layout changed by copying every
-field by the id of the level that declares it (that level's occurrence
-counted from the chain's root) and its name, a hidden nested-class slot
-by the nested declaration's id; a slot the edit adds or moves starts nil
-with no initializer run, shadowing slots of one name stay apart, fields
-are written through the store accessors, and only instances are
-forwarded.
+field by the name of the level that lays it down and, for a declared
+slot, the slot's name, for a hidden nested-class slot the nested
+declaration's id. A level is named by its owner -- the declaration whose
+`<:` clause applies it, or whose own mixin it is -- that owner's
+occurrence in the chain counted from the instance's class down, the
+level's mixin and its place among the owner's levels, all read before
+the commit changes any chain: while the install leaves the owner's own
+clauses as they were, the index of the clause that applies the level, or
+the owner's own level; where it changes them, the class the level's
+clause names (the owner itself for its own level) and that class's
+occurrence among the classes the owner's clauses name, in text order. So
+no superclass change of one class shifts the name of a level another
+declaration owns, a clause's level keeps its name when the class an
+earlier clause names gains or loses a body, and where an owner's own
+clauses change, its first remaining `<: M` takes the values of the first
+former clause naming `M`, and a level whose clause names another class
+than before starts nil. A slot the
+edit adds or moves starts nil with no initializer run, shadowing slots of
+one name stay apart, fields are written through the store accessors, and
+only instances are forwarded.
 
 Protects: [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
@@ -1809,13 +1843,18 @@ Protects: [`runtime.send`](runtime.md#r-runtime.send),
 
 r[vm.dispatch.invalidation-after-change]
 Whatever changes a class object's application or chain, a method table
-or a layout while guards stay unchanged -- the bulk forward, and so
-every install, even one that migrates nothing -- invalidates every
-cache, cell and verified slot-level pair before any code runs again;
-invalidation vacates every site and the global cache but keeps every
-family's range, since running activations keep their bases, and every
-cache carries the mixin application, never a class object or a method
-body, as its dependency key.
+or a layout invalidates, before any code runs again, every cache entry,
+cell and verified slot-level pair whose lookup it may change. An
+install, even one that migrates nothing, vacates exactly those naming
+an application it re-applies -- as an entry's guard, a lexical rule's
+enclosing application, a slot target's level or the guard it recorded,
+or the verified pair -- and the nested-class accessor entries naming a
+declaration version it replaces, and keeps every other entry; the bulk
+forward's leaf, a breakpoint's switch of a method's fast path and the
+cache stress mode vacate every site and the global cache. Invalidation
+keeps every family's range, since running activations keep their
+bases, and every cache carries the mixin application, never a class
+object or a method body, as its dependency key.
 
 Protects: [`runtime.install`](runtime.md#r-runtime.install),
 [`runtime.forward-identity`](runtime.md#r-runtime.forward-identity),
@@ -2333,7 +2372,9 @@ r[vm.machine.stale-copies-freed]
 Whatever changes something an optimized copy relied on frees it at once,
 its cells, dispatching rows and machine entry row written afresh to
 enter baseline code: an install frees every copy whose key or recorded
-dependencies name an application it rebuilt, the bulk forward every
+dependencies name an application it rebuilt, found through a list per
+application of the copies depending on it that holds every installed
+copy and no freed one, the bulk forward every
 copy, a full collection that reclaims an application id every key row
 and copy naming it, a slide of a feedback base every copy that inlined a
 body against it, and a breakpoint set or removed every copy naming the
@@ -2994,6 +3035,7 @@ rules whose breach it finds.
 | PAUSE | stress | Stops the run as for a debugger's pause at the safepoints its schedule picks, reads the whole stack and every value one level deep, evaluates in the top frame, and continues. | `vm.heap.stop-runs-no-code`, `vm.handle.debugger-holds-no-bare-handle`, `vm.activation.debugger-reads-no-dead-register`, `vm.activation.evaluation-above-every-window`, `vm.compiler.debug-tables-describe-their-body`, `vm.machine.observers-after-exit`, `vm.machine.written-frame-goes-on-interpreted`, `vm.machine.safepoint-request-bits`, `vm.machine.no-return-address-at-safepoint` |
 | BREAKPOINTS | stress | At every safepoint patches every statement start of each running body not yet patched with a breakpoint that never stops, so every golden runs through the breakpoint arm and patched bodies. | `vm.compiler.patched-slot-runs-original-once`, `vm.compiler.patch-kept-with-its-body`, `vm.compiler.slot-readers-see-original`, `vm.dispatch.method-never-changed-in-place` |
 | STEP | stress | At the safepoints its schedule picks, stops the run and takes a burst of steps into, over and out, reading the stack at every stop. | `vm.heap.stop-runs-no-code`, `vm.handle.debugger-holds-no-bare-handle`, `vm.activation.debugger-reads-no-dead-register`, `vm.activation.rewound-push-ran-nothing`, `vm.compiler.patched-slot-runs-original-once`, `vm.machine.safepoint-request-bits` |
+| INSTALL | stress | After every install's commit, checks that every cache entry, polymorphic slot, global entry and verified pair equals a fresh lookup for its key, and that every cell copies its entry, and panics on a difference. A lexical site's non-private entry, whose key does not name N, is looked up without N's private member, which the global entry of the same send is checked with; megamorphic sites, sites of loose ranges and entries whose key no live object has are skipped. | `vm.dispatch.cache-records-lookup`, `vm.dispatch.invalidation-after-change`, `vm.machine.cells-follow-entries` |
 | dead-register poison | debug | A push hands out and a pop gives back dead registers holding a poison word no value can be, and an instruction's read of that word aborts. | `vm.activation.dead-registers-nilled`, `vm.activation.top-at-window-end`, `vm.activation.program-counter-before-observation`, `vm.activation.debugger-reads-no-dead-register`, `vm.compiler.register-effects-declared` |
 | leftover check of both lowerings | debug | Both lowerings assert on every body they emit that no instruction reads a register the leftover analysis taints and that every register above a send's slots is dead. | `vm.activation.dead-registers-nilled`, `vm.compiler.argument-slots-top-live-registers`, `vm.compiler.register-effects-declared` |
 | activation generation | debug | An activation handle and a register base carry the generation of the frame they were minted for, in its flags word; every access checks it, and checks the index against the top, the frame's window and its header. | `vm.handle.space-relative`, `vm.handle.activation-never-stored`, `vm.activation.register-in-window`, `vm.activation.unwind-target-is-frame` |
@@ -3014,6 +3056,7 @@ rules whose breach it finds.
 | declaration code check | debug | Every lexical send asserts that its code's declaration-code mark agrees with the frame's captured chain. | `vm.dispatch.lexical-origin-from-code` |
 | read-only local assertions | debug | The lowering of an assignment asserts that its target is not one of the read-only locals, and the reference lowering's shape check holds the oracle's form. | `vm.compiler.value-register`, `vm.compiler.read-only-locals`, `vm.compiler.simultaneous-temporary-writable` |
 | code id cache check | debug | A hit of a body's code id cache asserts that it names the body's own row. | `vm.compiler.code-id-cache-current` |
+| dependency index check | debug | Every install's invalidation of optimized copies checks that the list per application of the copies depending on it holds exactly the installed copies, each under exactly the applications its key and its recorded dependencies name. | `vm.machine.stale-copies-freed` |
 | cell verification | debug | Every cell is compared with its entry, whole, after every compaction of the code zone and at every SCAVENGE scavenge. | `vm.dispatch.reserved-guards`, `vm.machine.cells-follow-entries`, `vm.machine.cell-addresses-fixed`, `vm.machine.compaction-remaps-every-holder` |
 | machine entry row check | debug | A machine entry row whose bit is set must be current when recorded, and every row is checked after a compaction. | `vm.machine.compaction-remaps-every-holder`, `vm.machine.machine-entry-rows` |
 | dispatching row check | debug | Every dispatching row is checked against the copies of its body after every compaction and slide. | `vm.machine.dispatching-rows` |

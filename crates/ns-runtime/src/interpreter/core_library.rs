@@ -313,7 +313,7 @@ pub(crate) fn shipped_module_identity(name: &str) -> Rc<ModuleIdentity> {
     let id = ModuleId::parse(&format!("newspeak.core.{name}"), name)
         .unwrap_or_else(|error| panic!("internal: {name} is no shipped module's name: {error}"));
     Rc::new(ModuleIdentity {
-        path: format!("core:{name}.ns"),
+        path: Some(format!("core:{name}.ns")),
         id,
         version: None,
     })
@@ -1064,7 +1064,7 @@ mod tests {
                         .module_identity
                         .clone()
                         .unwrap_or_else(|| panic!("{name}'s root mixin has no identity"));
-                    assert_eq!(identity.path, format!("core:{name}.ns"));
+                    assert_eq!(identity.path, Some(format!("core:{name}.ns")));
                     assert_eq!(identity.id.as_str(), format!("newspeak.core.{name}"));
                     assert_eq!(identity.version, None);
                 }

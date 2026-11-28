@@ -1571,30 +1571,71 @@ pub fn declared_slots_of(
 }
 
 /// What one field of an instance holds, by what it is named rather than
-/// where it lies: a declared slot by the mixin of the level declaring it,
-/// that mixin's occurrence in the chain and the slot's name; a hidden
-/// nested-class cache slot by the nested declaration's id and the
-/// occurrence of the level caching it. An install copies an instance's
-/// fields into its new layout by these (`MixinApplication::field_names`).
+/// where it lies: a declared slot by the level declaring it and the
+/// slot's name; a hidden nested-class cache slot by the level caching it
+/// and the nested declaration's id. An install copies an instance's
+/// fields into its new layout by these (`Mutator::field_names_of_class`).
 ///
-/// The declaring mixin is part of a slot's name because a subclass's slot
+/// The declaring level is part of a slot's name because a subclass's slot
 /// may shadow a superclass's slot of the same name: matched by name alone,
 /// a slot an edit adds under or over a shadowing one would take the other
-/// level's value. The occurrence is, because one chain may apply a mixin
-/// twice (`<:` clauses), and then two levels declare the same names; an
-/// install evaluates no superclass clause again, so a level's occurrence
-/// is the same before and after it.
+/// level's value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FieldName {
     Slot {
-        mixin: MixinId,
-        occurrence: u32,
+        level: LevelName,
         name: Symbol,
     },
     Nested {
+        level: LevelName,
         declaration: MixinId,
-        occurrence: u32,
     },
+}
+
+/// One level of a chain, by what names it rather than where it lies
+/// (`r[vm.heap.migration-by-declared-name]`): its owner -- the declaration
+/// whose `<:` clause applies it, or whose own mixin it is -- that owner's
+/// occurrence in the chain, the level's mixin and its place among the
+/// owner's levels (`LevelPlace`).
+///
+/// One chain may apply a mixin twice (`<:` clauses), and then two levels
+/// declare the same names; the owner tells them apart where the mixin
+/// cannot, and no other class's superclass change shifts it: a level
+/// applied by a subclass's clause keeps its name when a superclass gains
+/// or loses a clause applying the same mixin. The owner's occurrence is
+/// counted from the chain's top, the instance's class, since a superclass
+/// change of a class rebuilds only the levels below it; it tells apart the
+/// levels of one declaration's two class objects that a chain holds one
+/// over the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LevelName {
+    pub(crate) owner: MixinId,
+    pub(crate) owner_occurrence: u32,
+    pub(crate) mixin: MixinId,
+    pub(crate) place: LevelPlace,
+}
+
+/// A level's place among its owner's levels (`LevelName`).
+///
+/// While the install leaves the owner's own clauses as they were, a level
+/// is the level of its clause, by the clause's index, or the owner's own:
+/// the mixin a clause applies may change under it -- the class it names
+/// gaining or losing a body -- and a count of the mixin's levels would
+/// then shift onto another clause's level, one nothing touched. Only
+/// where the owner's clauses themselves change, so that an index no
+/// longer names the same clause, is a level placed by the clauses as
+/// written: by the class its clause names -- the owner's own declaration
+/// for its own level -- and that class's occurrence among the classes the
+/// owner's clauses name, in text order. So the owner's first remaining
+/// `<: M` keeps the values of the first former clause naming `M`, a level
+/// whose clause names another class than before starts nil, and a class
+/// an earlier clause names gaining or losing its body in the same install
+/// moves no value: the count is not over the mixins the levels apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LevelPlace {
+    Clause(usize),
+    Own,
+    Occurrence { named: MixinId, occurrence: u32 },
 }
 
 impl MixinApplication {
@@ -1603,41 +1644,17 @@ impl MixinApplication {
         self.index
     }
 
-    /// Every field of an instance, by index: each level's own slots from
-    /// its `own_slot_base`, then its hidden nested-class slots, read off
-    /// `nested_slot` -- superclass first -- each named with the id `heap`
-    /// answers for the level's mixin and the count of the levels nearer
-    /// the root that apply the same mixin. No two fields share a name: a
-    /// level declares a slot name, and caches a nested class, at most
-    /// once, and two levels of one mixin differ in their occurrence.
-    pub(crate) fn field_names(&self, heap: &crate::heap::Heap) -> Vec<FieldName> {
-        self.field_layout(heap)
-            .into_iter()
-            .map(|field| field.name)
-            .collect()
-    }
-
-    /// Every field of an instance, by index, as `field_names` names it,
-    /// with what a reader of the fields asks besides: the level that lays
-    /// it down and whether it is a lazy slot. The one walk of the layout,
-    /// so that an install, which copies fields by their names, and the
-    /// debugger, which shows them, never disagree on which field is which.
-    /// The install relies on every applied mixin being registered.
-    pub(crate) fn field_layout(&self, heap: &crate::heap::Heap) -> Vec<LaidOutField> {
-        let fields = self
-            .checked_field_layout(heap)
-            .expect("internal: an applied mixin is registered");
-        debug_assert_eq!(
-            fields.len(),
-            self.slot_count,
-            "internal: an application's fields are its levels' slots and cache slots"
-        );
-        fields
-    }
-
-    /// `field_layout`, or `None` where a level's mixin has no id in
-    /// `heap`: what a debugger query reads, which names the fields by
-    /// number then rather than ending the program it inspects.
+    /// Every field of an instance, by index, with what a reader of the
+    /// fields asks besides: the level that lays it down and whether it is
+    /// a lazy slot -- each level named by its mixin, as its own owner, and
+    /// the count of the levels nearer the root that apply the same mixin,
+    /// since the application chain records no clause. What the debugger
+    /// shows; an install names the levels by their class objects instead
+    /// (`Mutator::field_names_of_class`), through the same walk of the
+    /// layout (`lay_out_fields`), so that the two never disagree on which
+    /// field is which. `None` where a level's mixin has no id in `heap`,
+    /// which a query names by number then rather than ending the program it
+    /// inspects.
     pub(crate) fn checked_field_layout(
         &self,
         heap: &crate::heap::Heap,
@@ -1648,46 +1665,79 @@ impl MixinApplication {
             levels.push(application);
             level = application.superclass.as_deref();
         }
-        let mut fields = Vec::with_capacity(self.slot_count);
         let mut occurrences: HashMap<MixinId, u32> = HashMap::new();
-        for (level, application) in levels.into_iter().rev().enumerate() {
+        let mut named = Vec::with_capacity(levels.len());
+        for application in levels.into_iter().rev() {
             let id = heap.known_mixin_id(&application.mixin)?;
             let count = occurrences.entry(id).or_insert(0);
             let occurrence = *count;
             *count += 1;
-            fields.extend(application.mixin.slots.iter().map(|slot| LaidOutField {
-                name: FieldName::Slot {
+            named.push((
+                application,
+                LevelName {
+                    owner: id,
+                    owner_occurrence: occurrence,
                     mixin: id,
-                    occurrence,
-                    name: slot.name,
+                    place: LevelPlace::Occurrence {
+                        named: id,
+                        occurrence: 0,
+                    },
                 },
-                level,
-                lazy: slot.lazy,
-            }));
-            // This level's cache slots follow its own slots; every entry
-            // below `nested_start` is an inherited level's.
-            let nested_start = application.own_slot_base + application.mixin.slots.len();
-            let mut nested: Vec<(usize, MixinId)> = application
-                .nested_slot
-                .iter()
-                .filter(|(_, index)| **index >= nested_start)
-                .map(|(id, index)| (*index, *id))
-                .collect();
-            nested.sort_unstable_by_key(|(index, _)| *index);
-            fields.extend(nested.into_iter().map(|(_, declaration)| LaidOutField {
-                name: FieldName::Nested {
-                    declaration,
-                    occurrence,
-                },
-                level,
-                lazy: false,
-            }));
+            ));
         }
-        Some(fields)
+        Some(lay_out_fields(named, self.slot_count))
     }
 }
 
-/// One field of an instance's layout (`MixinApplication::field_layout`).
+/// Every field of an instance whose chain is `levels`, root first, each
+/// with its name, by index: each level's own slots from its
+/// `own_slot_base`, then its hidden nested-class slots, read off
+/// `nested_slot`. No two fields share a name as long as no two levels do:
+/// a level declares a slot name, and caches a nested class, at most once.
+pub(crate) fn lay_out_fields<'a>(
+    levels: impl IntoIterator<Item = (&'a MixinApplication, LevelName)>,
+    slot_count: usize,
+) -> Vec<LaidOutField> {
+    let mut fields = Vec::with_capacity(slot_count);
+    for (level, (application, level_name)) in levels.into_iter().enumerate() {
+        fields.extend(application.mixin.slots.iter().map(|slot| LaidOutField {
+            name: FieldName::Slot {
+                level: level_name,
+                name: slot.name,
+            },
+            level,
+            lazy: slot.lazy,
+        }));
+        // This level's cache slots follow its own slots; every entry
+        // below `nested_start` is an inherited level's.
+        let nested_start = application.own_slot_base + application.mixin.slots.len();
+        let mut nested: Vec<(usize, MixinId)> = application
+            .nested_slot
+            .iter()
+            .filter(|(_, index)| **index >= nested_start)
+            .map(|(id, index)| (*index, *id))
+            .collect();
+        nested.sort_unstable_by_key(|(index, _)| *index);
+        fields.extend(nested.into_iter().map(|(_, declaration)| LaidOutField {
+            name: FieldName::Nested {
+                level: level_name,
+                declaration,
+            },
+            level,
+            lazy: false,
+        }));
+    }
+    debug_assert_eq!(
+        fields.len(),
+        slot_count,
+        "internal: an application's fields are its levels' slots and cache slots"
+    );
+    fields
+}
+
+/// One field of an instance's layout (`lay_out_fields`, through
+/// `MixinApplication::checked_field_layout` or
+/// `Mutator::field_names_of_class`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LaidOutField {
     pub(crate) name: FieldName,

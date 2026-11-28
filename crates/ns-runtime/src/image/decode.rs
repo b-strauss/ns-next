@@ -173,12 +173,20 @@ pub enum DecodeError {
     MixinTableNotATree {
         row: u32,
     },
-    /// The mixin table holds a different number of declaration trees than
-    /// the image declares modules. Each tree's first row is a module's root,
-    /// so a surplus tree -- a row nothing reaches -- would be a module no
-    /// part of the image names, and a missing one a module without a root.
+    /// The mixin table holds a different number of module trees -- its
+    /// trees but the obsolete ones its count names -- than the image
+    /// declares modules. Each such tree's first row is a module's root, so
+    /// a surplus tree -- a row nothing reaches -- would be a module no part
+    /// of the image names, and a missing one a module without a root.
     ModuleCountMismatch {
         declared: u32,
+        trees: u32,
+    },
+    /// The mixin table counts more obsolete trees than its rows form
+    /// trees: the count names the last trees, and no split of the trees
+    /// leaves as many as it says.
+    ObsoleteTreeCountMismatch {
+        obsolete: u32,
         trees: u32,
     },
     /// A module record names its module as no project could: a path that
@@ -628,6 +636,15 @@ pub enum DecodeError {
     /// Refusing the image is the only answer that does not alias the hash
     /// to another one.
     IdentityHashTooWide(u32),
+    /// A class record's creation stamp at or past `CLASS_STAMP_LIMIT`: the
+    /// class object stores it as a `SmallInteger`, and the world that loads
+    /// the image draws every later stamp above the image's highest, so a
+    /// stamp near the top of that range would leave it none to draw.
+    ClassStampTooWide(u64),
+    /// Two class records of one creation stamp: the stamps order class
+    /// objects by their creation, which two of one stamp would leave
+    /// undecided.
+    DuplicateClassStamp(u64),
     /// A tag-named hash of 0. 0 means "not yet assigned", which the encoder
     /// expresses by leaving the object out; accepting a 0 would give one world
     /// two encodings.
@@ -912,7 +929,13 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::ModuleCountMismatch { declared, trees } => write!(
                 f,
-                "the image declares {declared} module(s) but its mixin table holds {trees} tree(s)"
+                "the image declares {declared} module(s) but its mixin table holds {trees} module \
+                 tree(s)"
+            ),
+            DecodeError::ObsoleteTreeCountMismatch { obsolete, trees } => write!(
+                f,
+                "the image's mixin table counts {obsolete} obsolete tree(s) but holds {trees} \
+                 tree(s)"
             ),
             DecodeError::ModuleIdentity { module, reason } => {
                 write!(f, "module {module} of the image: {reason}")
@@ -1256,6 +1279,14 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "identity hash {hash} does not fit the header word's 22 bits"
             ),
+            DecodeError::ClassStampTooWide(stamp) => write!(
+                f,
+                "a class record's creation stamp {stamp} is not below {}",
+                crate::heap::CLASS_STAMP_LIMIT
+            ),
+            DecodeError::DuplicateClassStamp(stamp) => {
+                write!(f, "two class records have the creation stamp {stamp}")
+            }
             DecodeError::UnassignedTagNamedHash => write!(
                 f,
                 "an image records identity hash 0 for an object it names by tag; an unassigned hash is recorded by leaving the object out"
@@ -3080,6 +3111,10 @@ pub struct DecodedGraph<'gc> {
     /// The largest identity hash of any decoded object -- `load` advances
     /// the interpreter's identity-hash counter past it.
     pub max_identity_hash: u32,
+    /// The highest creation stamp a class record carries, 0 for none: the
+    /// loader moves the heap's counter past it
+    /// (`Heap::advance_class_stamp_past`).
+    pub max_class_stamp: u64,
     /// The decoded table itself, in image order, and its frame records
     /// among it, in the same order. The roots reach most of them, but
     /// `verify_graph` must see *every* record -- a frame no root reaches
@@ -3278,18 +3313,18 @@ fn read_shipped_module<'gc>(
 /// after it, which no record this small reaches. A handle is 8 bytes in a
 /// release build and 16 in a debug one, a `Value` 8 and 16.
 ///
-/// - Per record, its object against its smallest record. A metaclass
-///   record is the smallest record there is, 9 bytes (a two-byte builtin
-///   header, the hash's 4, the body tag, a two-byte builtin class tag),
-///   and becomes a class object of 10 words, 80 bytes, 8.9x. A class
-///   record is at least 19 bytes for the same 80, 4.2x, and one of a level
-///   a `<:` clause added at least 23 (a `MIXIN_SHIPPED` one: the two-byte
-///   header, the hash, the body tag, the mixin reference's 5, the
-///   superclass's flag, the clause's 8 and the named class's two-byte tag)
-///   for the 11 words, 88 bytes, of a level, 3.8x; a body-less
-///   declaration's class object (`OBJECT_BODY_LESS_CLASS`) at least 25, a
-///   level's 23 and the presence flags of its declaration's enclosing
-///   object and declaring class, for 13 words, 104 bytes, 4.2x; a frame record at
+/// - Per record, its object against its smallest record. Every class
+///   object is 14 words, 112 bytes, whatever its kind. A metaclass record
+///   is the smallest class record, 17 bytes (a two-byte builtin header,
+///   the hash's 4, the body tag, the creation stamp's 8, a two-byte
+///   builtin class tag), 6.6x. A class record is at least 27 bytes, 4.1x,
+///   and one of a level a `<:` clause added at least 31 (a `MIXIN_SHIPPED`
+///   one: the two-byte header, the hash, the body tag, the stamp, the
+///   mixin reference's 5, the superclass's flag, the clause's 8 and the
+///   named class's two-byte tag), 3.6x; a body-less declaration's class
+///   object (`OBJECT_BODY_LESS_CLASS`) at least 33, a level's 31 and the
+///   presence flags of its declaration's enclosing object and declaring
+///   class, 3.4x; a frame record at
 ///   least 21 (the two-byte header, the hash, the body tag, a `TopLevel`
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
@@ -3304,13 +3339,15 @@ fn read_shipped_module<'gc>(
 ///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
 ///   pending index (8), a class record's pending entry (16), a frame
-///   record's handle and body offset (8 or 16, and 8). A graph of metaclass
-///   records then holds 80 + 8 + 8 = 96 bytes for 9, **10.7x** in a
-///   release build, and 80 + 16 + 8 = 104, **11.6x** in a debug one; every
-///   other record stays below (a class record 104 or 112 for 19, 5.5x or
-///   5.9x; a level's 112 or 120 for 23, 4.9x or 5.2x; a body-less
-///   declaration's class object's 128 or 136 for 25, 5.1x or 5.4x; a frame record 120 or
-///   136 for 21, 5.7x or 6.5x).
+///   record's handle and body offset (8 or 16, and 8), and every class,
+///   body-less class and metaclass record's creation stamp (8, held until
+///   the stamps are checked unique once every record is read). A graph of
+///   metaclass records then holds 112 + 8 + 8 + 8 = 136 bytes for 17,
+///   8.0x in a release build, and 112 + 16 + 8 + 8 = 144, 8.5x in a debug
+///   one; every other record stays below (a class record 144 or 152 for
+///   27, 5.3x or 5.6x; a level's 144 or 152 for 31, 4.6x or 4.9x; a
+///   body-less declaration's class object's the same for 33, 4.4x or 4.6x;
+///   a frame record 120 or 136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
 ///   an 8-byte word, 8x, which a record of many values approaches from
@@ -3341,9 +3378,9 @@ fn read_shipped_module<'gc>(
 ///   caps its reservation at the bytes left): 8 bytes a one-byte root in a
 ///   release build, 8x, and 16 in a debug one, **16x**.
 ///
-/// So the peak is about **10.7x** in a release build (a graph of
-/// metaclass records) and **16x** in a debug one (a graph that is all root
-/// list), plus at most 4x of the symbol section and, in an image with
+/// So the peak is about **8x** in a release build (a graph of one-byte
+/// values, one that is all root list, or one of metaclass records) and
+/// **16x** in a debug one (a graph that is all root list), plus at most 4x of the symbol section and, in an image with
 /// source, 6x of the text table (`texts::decode`). Not counted: each Rust
 /// allocation's own overhead in the allocator; a decoder table's `Vec`
 /// doubling as it grows, which holds both buffers for a moment; and the
@@ -4572,9 +4609,10 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    /// `decode_class_record`'s reading; answers the record's field count, a
-    /// level's one more than a class object's (`Heap::allocate_applied_level`).
-    fn class_record(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
+    /// `decode_class_record`'s reading; answers whether the record is a
+    /// level's, which carries the `<:` clause that added it and its named
+    /// class (`Heap::allocate_applied_level`).
+    fn class_record(&self, reader: &mut Reader) -> Result<bool, DecodeError> {
         match reader.read_u8()? {
             MIXIN_ROW => {
                 let id = reader.read_u32()?;
@@ -4589,9 +4627,9 @@ impl Sizing<'_, '_, '_> {
                 if reader.read_boolean()? {
                     decode_applied_clause(reader, self.context, None)?;
                     self.class_tag(reader, NamePosition::Superclass)?;
-                    return Ok(record_size::APPLIED_LEVEL_FIELDS);
+                    return Ok(true);
                 }
-                Ok(record_size::CLASS_FIELDS)
+                Ok(false)
             }
             MIXIN_SHIPPED => {
                 let named = read_shipped_mixin(reader, self.context.shipped)?;
@@ -4599,7 +4637,7 @@ impl Sizing<'_, '_, '_> {
                 let builtin = self.context.mutator.heap.class_builtin(named);
                 decode_applied_clause(reader, self.context, builtin)?;
                 self.class_tag(reader, NamePosition::Superclass)?;
-                Ok(record_size::APPLIED_LEVEL_FIELDS)
+                Ok(true)
             }
             tag => Err(DecodeError::InvalidTag {
                 what: "mixin reference",
@@ -4797,21 +4835,27 @@ impl Sizing<'_, '_, '_> {
                 }
                 (record_size::CLOSURE_FIXED_FIELDS + count, false)
             }
-            OBJECT_CLASS => (self.class_record(reader)?, false),
+            OBJECT_CLASS => {
+                reader.read_u64()?;
+                self.class_record(reader)?;
+                (record_size::CLASS_FIELDS, false)
+            }
             // A level's record and the declaration's scope; whether the
             // clause is a body-less declaration's last is the second pass's
             // to check, which the placeholder's size then agrees with.
             OBJECT_BODY_LESS_CLASS => {
-                if self.class_record(reader)? != record_size::APPLIED_LEVEL_FIELDS {
+                reader.read_u64()?;
+                if !self.class_record(reader)? {
                     return Err(DecodeError::BodyLessClassRecordMismatch);
                 }
                 if reader.read_boolean()? {
                     self.value(reader, NamePosition::Value)?;
                 }
                 self.optional_class(reader, NamePosition::FrameClass)?;
-                (record_size::BODY_LESS_CLASS_FIELDS, false)
+                (record_size::CLASS_FIELDS, false)
             }
             OBJECT_METACLASS => {
+                reader.read_u64()?;
                 self.class_tag(reader, NamePosition::Header)?;
                 (record_size::CLASS_FIELDS, false)
             }
@@ -5061,6 +5105,11 @@ pub fn decode_graph_section<'gc>(
     }
     let tables = Tables { objects: &objects };
     let mut max_identity_hash = 0;
+    let mut max_class_stamp = 0;
+    // Every class record's stamp, held unique once the records are read:
+    // sorted, not hashed, since the stamps are the input's to choose and a
+    // hash of chosen keys can be made to collide; 8 bytes a class record.
+    let mut class_stamps: Vec<u64> = Vec::new();
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
     let mut decoded_a_future = false;
@@ -5165,6 +5214,20 @@ pub fn decode_graph_section<'gc>(
         // read, so nothing beside it is built (`decode_value` has the
         // figures).
         let mut decoded_symbol = None;
+        // A class record's creation stamp, read right after its body tag.
+        let mut class_stamp = 0;
+        if matches!(
+            body,
+            OBJECT_CLASS | OBJECT_BODY_LESS_CLASS | OBJECT_METACLASS
+        ) {
+            let stamp = reader.read_u64()?;
+            if stamp >= crate::heap::CLASS_STAMP_LIMIT {
+                return Err(DecodeError::ClassStampTooWide(stamp));
+            }
+            class_stamps.push(stamp);
+            max_class_stamp = max_class_stamp.max(stamp);
+            class_stamp = stamp;
+        }
         let record = match body {
             OBJECT_INSTANCE => {
                 let count = reader.read_u32()? as usize;
@@ -5387,6 +5450,7 @@ pub fn decode_graph_section<'gc>(
                 record,
                 named,
                 declaration_scope,
+                class_stamp,
             ) {
                 return Err(DecodeError::UnexpectedEndOfFile);
             }
@@ -5442,12 +5506,18 @@ pub fn decode_graph_section<'gc>(
         };
         decode_frame(&mut body_reader, context, &tables, symbols, *frame)?;
     }
+    class_stamps.sort_unstable();
+    if let Some(pair) = class_stamps.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(DecodeError::DuplicateClassStamp(pair[0]));
+    }
+    drop(class_stamps);
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     check_program_instances(&context.mutator.heap, &objects)?;
     let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
         roots,
         max_identity_hash,
+        max_class_stamp,
         objects,
         frames,
     })

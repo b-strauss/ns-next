@@ -9,6 +9,8 @@
 //! not (`resolve.rs`).
 
 pub(crate) mod cells;
+#[cfg(debug_assertions)]
+mod verify;
 
 use super::Arguments;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +25,7 @@ use crate::bytecode::{CallSite, CompiledCode, Instruction};
 use crate::dispatch::{self, LexicalOrigin};
 use crate::hash::IdentityMap;
 use crate::heap::limits::{GrowthLimit, SITE_FLOOR};
-use crate::heap::reclaim::FreedIds;
+use crate::heap::reclaim::{FreedIds, StaleIds};
 use crate::heap::{ActivationReference, ApplicationIndex, Heap};
 use crate::jit::{self, JitState};
 use crate::mixin::{AccessorKind, DispatchId, Mixin, MixinMethod};
@@ -1287,19 +1289,33 @@ impl InlineCaches {
         self.verified_slot_level = None;
     }
 
-    /// Vacates exactly the entries that name an id a collection freed --
-    /// a guard, as an entry's own or a lexical rule's N, and an
-    /// application, as a slot target's level, with the guard it recorded
-    /// -- and forgets the verified slot level if it names one. The one
-    /// scrub a collection makes, run only when it freed something: a guard
-    /// or an index minted again must never meet an entry filled for the
-    /// application it named before, and every other entry stays warm
-    /// (`docs/design/dispatch.md`, "Invalidation"). A polymorphic site
-    /// stays polymorphic with its matching slots vacant; a megamorphic one
-    /// holds no guard.
+    /// Vacates exactly the entries that name an id a collection freed
+    /// (`forget_stale`). The one scrub a collection makes, run only when
+    /// it freed something: a guard or an index minted again must never
+    /// meet an entry filled for the application it named before, and
+    /// every other entry stays warm (`docs/design/dispatch.md`,
+    /// "Invalidation").
     pub(crate) fn forget_freed(&mut self, freed: &FreedIds) {
-        let names_freed = |entry: &CacheEntry| {
-            freed.guards.contains(&entry.guard) || target_names(&entry.target, freed)
+        self.forget_stale(freed);
+    }
+
+    /// Vacates exactly the entries, with their cells, that name a stale id
+    /// -- a guard, as an entry's own or a lexical rule's N, an
+    /// application, as a slot target's level, with the guard it recorded,
+    /// and a replaced declaration, as a nested-class target's mixin -- and
+    /// forgets the verified slot level if it names one; every other entry
+    /// stays warm. What a collection's scrub (`forget_freed`) and an
+    /// install's (`Mutator::commit_install`) vacate: every lookup an
+    /// install changes is one of an application it re-applies, whose old
+    /// guard and index no receiver carries any more, but for the
+    /// nested-class accessor, whose entry is guarded by the enclosing
+    /// object's unchanged application and would create the class of the
+    /// replaced version (`docs/design/dispatch.md`, "Invalidation"). A
+    /// polymorphic site stays polymorphic with its matching slots vacant;
+    /// a megamorphic one holds no guard.
+    pub(crate) fn forget_stale(&mut self, stale: &StaleIds) {
+        let names_stale = |entry: &CacheEntry| {
+            stale.guards.contains(&entry.guard) || target_names(&entry.target, stale)
         };
         for (index, entry) in self.sites.iter_mut().enumerate() {
             match entry.target {
@@ -1307,7 +1323,7 @@ impl InlineCaches {
                 Target::Polymorphic { block, .. } => {
                     if let Some(slots) = self.pool.get_mut(block as usize) {
                         for (position, slot) in slots.iter_mut().enumerate() {
-                            if names_freed(slot) {
+                            if names_stale(slot) {
                                 *slot = CacheEntry::vacant();
                                 self.cells.write_block_cell(block, position, Cell::VACANT);
                             }
@@ -1315,7 +1331,7 @@ impl InlineCaches {
                     }
                 }
                 _ => {
-                    if names_freed(entry) {
+                    if names_stale(entry) {
                         *entry = CacheEntry::vacant();
                         self.cells.write_site(index, Cell::VACANT);
                     }
@@ -1323,14 +1339,14 @@ impl InlineCaches {
             }
         }
         self.global.retain(&mut self.cells, |entry| {
-            let lexical_freed =
-                matches!(entry.rule, CacheRule::Lexical(guard) if freed.guards.contains(&guard));
-            !(freed.guards.contains(&entry.guard)
-                || lexical_freed
-                || target_names(&entry.target, freed))
+            let lexical_stale =
+                matches!(entry.rule, CacheRule::Lexical(guard) if stale.guards.contains(&guard));
+            !(stale.guards.contains(&entry.guard)
+                || lexical_stale
+                || target_names(&entry.target, stale))
         });
         if self.verified_slot_level.is_some_and(|(guard, level)| {
-            freed.guards.contains(&guard) || freed.applications.contains(&level)
+            stale.guards.contains(&guard) || stale.applications.contains(&level)
         }) {
             self.verified_slot_level = None;
         }
@@ -1510,16 +1526,21 @@ impl SiteSlide {
     }
 }
 
-/// Whether `target` names a freed application or guard: a slot target's
-/// level, and the guard it recorded for a receiver with that level. Every
-/// other target names no id but its entry's guard.
-fn target_names(target: &Target, freed: &FreedIds) -> bool {
+/// Whether `target` names a stale application, guard or declaration: a
+/// slot target's level, and the guard it recorded for a receiver with
+/// that level, and a nested-class target's mixin. Every other target
+/// names no id but its entry's guard.
+fn target_names(target: &Target, stale: &StaleIds) -> bool {
     match target {
         Target::Slot {
             level,
             recorded_guard,
             ..
-        } => freed.applications.contains(level) || freed.guards.contains(recorded_guard),
+        } => stale.applications.contains(level) || stale.guards.contains(recorded_guard),
+        Target::NestedClass { mixin, .. } => stale
+            .declarations
+            .iter()
+            .any(|replaced| Rc::ptr_eq(replaced, mixin)),
         _ => false,
     }
 }
@@ -2738,6 +2759,21 @@ fn record_transition<'gc>(
 /// transitions that follow have their reason.
 pub(crate) fn vacate_every_cache(mutator: &mut Mutator<'_>, cause: VacateCause) {
     mutator.caches.invalidate();
+    trace_vacated(mutator, cause);
+}
+
+/// Vacates the entries an install made stale
+/// (`InlineCaches::forget_stale`), traced as one event about no body for
+/// `VacateCause::Edit`, so that the transitions of the sites it vacated
+/// have their reason and an install is never silent in the trace.
+pub(crate) fn vacate_stale(mutator: &mut Mutator<'_>, stale: &crate::heap::reclaim::StaleIds) {
+    mutator.caches.forget_stale(stale);
+    trace_vacated(mutator, VacateCause::Edit);
+}
+
+/// Records the caches' vacating for `cause`, when the trace takes the
+/// `caches` category.
+fn trace_vacated(mutator: &mut Mutator<'_>, cause: VacateCause) {
     if mutator.jit.tracer.traces(TraceCategory::Caches) {
         mutator.jit.tracer.record(Pending::about_body(
             TraceCategory::Caches,
@@ -4183,6 +4219,281 @@ mod tests {
         );
         assert!(!caches.slot_level_verified(guard(1), level(1)));
         assert_eq!(caches.verify_cells_against(&|_| None, &jit), Ok(()));
+    }
+
+    /// Two unrelated classes, `Edited` and `Untouched`, each sent `value`
+    /// by `warm:and:`, their nested-class accessors sent by `classes`, and
+    /// a lexical send of `Edited`'s `helper` from `Edited`'s nested `Deep`;
+    /// `Sub`, a subclass of `Edited`, and `Mixed`, whose `<:` clause
+    /// applies `Edited`, each sent `value` by `warmLevels`, which also
+    /// sends `new` to `Sub`, `Mixed`, `Edited` and `Untouched`; and
+    /// `subAdded`, which sends the method the install adds to a new `Sub`.
+    const AN_EDITED_AND_AN_UNTOUCHED_CLASS: &str = indoc::indoc! {"
+        class Program = Object new () (
+          public class Edited = Object new () (
+            public value = ( ^1 )
+            public helper = ( ^2 )
+            public class Deep = Object new () (
+              public run = ( ^helper )
+            )
+          )
+          public class Untouched = Object new () (
+            public value = ( ^3 )
+          )
+          public warm: edited and: untouched = (
+            edited value.
+            untouched value.
+            ^0
+          )
+          public classes = (
+            Edited.
+            Untouched.
+            ^0
+          )
+          public class Sub = Edited () ()
+          public class Mixed = Object new <: Edited () ()
+          public warmLevels = (
+            Sub new value.
+            Mixed new value.
+            Edited new.
+            Untouched new.
+            ^0
+          )
+          public subAdded = ( ^Sub new added )
+        ) : ()
+    "};
+
+    /// An install vacates exactly what names an application it re-applies
+    /// or a declaration it replaces, with its cell -- `Edited`'s site
+    /// entry, the entries of a subclass and of a `<:` level over `Edited`,
+    /// `Edited new`'s factory entry, guarded by `Edited`'s metaclass, whose
+    /// class side the install replaced, the global-cache entry whose
+    /// lexical rule names `Edited`'s application, the verified pair naming
+    /// `Edited`'s level, and the accessor's entry naming `Edited`'s
+    /// replaced declaration -- and keeps `Untouched`'s entries and cells
+    /// as they were, every cell agreeing with its entry after. `Sub new`'s
+    /// and `Mixed new`'s factory entries stay too: §3.2 inherits no class
+    /// side, so each metaclass applies its own class side to `Class`, which
+    /// the install changes for neither, and the kept entry instantiates
+    /// `Sub` in its new layout.
+    /// The cells name machine code: every body is compiled at its first
+    /// entry. A subclass in another module is re-applied as this one is;
+    /// the install stress mode checks every entry against a fresh lookup
+    /// after each install of the suite, that one among them.
+    // spec: vm.dispatch.invalidation-after-change
+    #[test]
+    fn an_install_vacates_only_entries_naming_a_reapplied_application() {
+        let source = AN_EDITED_AND_AN_UNTOUCHED_CLASS;
+        let module = ns_syntax::parse(source).expect("parse");
+        let resolved = crate::resolve(
+            module,
+            Rc::from(source),
+            crate::types::SourceOrigin::File(std::path::PathBuf::from("t.ns")),
+        )
+        .expect("resolve");
+        let mut interpreter = crate::Interpreter::bootstrap();
+        // Each would vacate every cache between the warming and the
+        // install: the cache stress mode at every safepoint, a breakpoint
+        // or a step through a fast path's switch.
+        #[cfg(debug_assertions)]
+        {
+            interpreter.set_stress_caches(false);
+            interpreter.set_stress_breakpoints(false);
+            interpreter.set_stress_step(false);
+        }
+        interpreter.set_jit_stress(true);
+        let class = interpreter.load_module(&resolved);
+        let program = expect_ok(interpreter.instantiate(&class, &[]), "a Program");
+        let edited_class = expect_ok(
+            interpreter.send(&program, Symbol::intern("Edited"), &[]),
+            "Edited",
+        );
+        let untouched_class = expect_ok(
+            interpreter.send(&program, Symbol::intern("Untouched"), &[]),
+            "Untouched",
+        );
+        let edited = expect_ok(
+            interpreter.send(&edited_class, Symbol::NEW, &[]),
+            "an Edited",
+        );
+        let untouched = expect_ok(
+            interpreter.send(&untouched_class, Symbol::NEW, &[]),
+            "an Untouched",
+        );
+        let deep_class = expect_ok(
+            interpreter.send(&edited, Symbol::intern("Deep"), &[]),
+            "Deep",
+        );
+        let deep = expect_ok(interpreter.send(&deep_class, Symbol::NEW, &[]), "a Deep");
+        for _ in 0..2 {
+            expect_ok(
+                interpreter.send(
+                    &program,
+                    Symbol::intern("warm:and:"),
+                    &[edited.clone(), untouched.clone()],
+                ),
+                "warm:and:",
+            );
+            expect_ok(
+                interpreter.send(&program, Symbol::intern("classes"), &[]),
+                "classes",
+            );
+            expect_ok(interpreter.send(&deep, Symbol::intern("run"), &[]), "run");
+            expect_ok(
+                interpreter.send(&program, Symbol::intern("warmLevels"), &[]),
+                "warmLevels",
+            );
+        }
+        interpreter.enter(|mutator| {
+            let edited_object = mutator.fetch(&edited_class).as_object().expect("a class");
+            let edited_guard = mutator.heap.class_dispatch_ids(edited_object).instances;
+            let edited_level = mutator
+                .heap
+                .class_application_index(edited_object)
+                .expect("applied");
+            let program_object = mutator.fetch(&class).as_object().expect("a class");
+            let program_mixin = mutator
+                .heap
+                .class_application(program_object)
+                .expect("applied")
+                .mixin
+                .clone();
+            let code_of = |selector: &str| {
+                program_mixin
+                    .compiled_method(Symbol::intern(selector))
+                    .expect("Program has the method")
+                    .code
+                    .clone()
+            };
+            let value_sites = mutator
+                .caches
+                .site_indices_of(&code_of("warm:and:"), Symbol::intern("value"));
+            let edited_site = value_sites[0].expect("warmed");
+            let untouched_site = value_sites[1].expect("warmed");
+            let accessor_sites = |name: &str| {
+                mutator
+                    .caches
+                    .site_indices_of(&code_of("classes"), Symbol::intern(name))[0]
+                    .expect("warmed")
+            };
+            let edited_accessor = accessor_sites("Edited");
+            let untouched_accessor = accessor_sites("Untouched");
+            let warmed = |sites: Vec<Option<usize>>| -> Vec<usize> {
+                sites
+                    .into_iter()
+                    .map(|site| site.expect("warmed"))
+                    .collect()
+            };
+            let level_values = warmed(
+                mutator
+                    .caches
+                    .site_indices_of(&code_of("warmLevels"), Symbol::intern("value")),
+            );
+            let factories = warmed(
+                mutator
+                    .caches
+                    .site_indices_of(&code_of("warmLevels"), Symbol::NEW),
+            );
+            // `Sub`'s and `Mixed`'s `value`, and `Edited`'s `new`.
+            let reapplied: Vec<usize> = std::iter::once(edited_site)
+                .chain(level_values.iter().copied())
+                .chain(std::iter::once(factories[2]))
+                .collect();
+            let lexical_naming_edited = |caches: &InlineCaches| {
+                caches.global.entries.iter().any(|entry| {
+                    !entry.is_vacant() && entry.rule == CacheRule::Lexical(edited_guard)
+                })
+            };
+            let caches = &mutator.caches;
+            assert_eq!(caches.sites[edited_site].guard, edited_guard);
+            assert!(matches!(
+                caches.sites[edited_accessor].target,
+                Target::NestedClass { .. }
+            ));
+            assert!(lexical_naming_edited(caches), "the lexical entry is warm");
+            for site in &reapplied {
+                assert!(
+                    !matches!(caches.sites[*site].target, Target::Vacant),
+                    "every entry over `Edited` is warm"
+                );
+                assert_ne!(caches.cells.site(*site), Cell::VACANT);
+            }
+            assert!(matches!(
+                caches.sites[factories[2]].target,
+                Target::Factory { .. }
+            ));
+            // `Untouched`'s, and the factories of `Sub`, `Mixed` and
+            // `Untouched`.
+            let untouched_sites = [
+                untouched_site,
+                untouched_accessor,
+                factories[0],
+                factories[1],
+                factories[3],
+            ];
+            let untouched_before: Vec<(CacheEntry, Cell)> = untouched_sites
+                .iter()
+                .map(|site| (caches.sites[*site].clone(), caches.cells.site(*site)))
+                .collect();
+            assert!(
+                untouched_before
+                    .iter()
+                    .all(|(entry, _)| !matches!(entry.target, Target::Vacant)),
+                "Untouched's entries are warm"
+            );
+            mutator.caches.record_slot_level(edited_guard, edited_level);
+
+            let edited_id = mutator
+                .heap
+                .known_mixin_id(
+                    &mutator
+                        .heap
+                        .class_application(edited_object)
+                        .expect("applied")
+                        .mixin,
+                )
+                .expect("registered");
+            let edit = crate::interpreter::edit::Edit {
+                header: None,
+                instance_side: vec![crate::interpreter::edit::MemberEdit::AddMethod(
+                    "public added = ( ^4 )".to_string(),
+                )],
+                class_side: Vec::new(),
+                new_name: None,
+            };
+            if let Err(diagnostic) = mutator.install_one(edited_id, &edit) {
+                panic!("the install was refused: {diagnostic}");
+            }
+
+            let caches = &mutator.caches;
+            assert!(matches!(caches.sites[edited_site].target, Target::Vacant));
+            assert!(
+                matches!(caches.sites[edited_accessor].target, Target::Vacant),
+                "the accessor's entry named the replaced declaration"
+            );
+            assert!(!lexical_naming_edited(caches));
+            assert!(!caches.slot_level_verified(edited_guard, edited_level));
+            for site in reapplied.iter().chain([&edited_accessor]) {
+                assert!(
+                    matches!(caches.sites[*site].target, Target::Vacant),
+                    "an entry over `Edited` is vacated"
+                );
+                assert_eq!(caches.cells.site(*site), Cell::VACANT);
+            }
+            for (site, (before, cell)) in untouched_sites.iter().zip(&untouched_before) {
+                let after = &caches.sites[*site];
+                assert_eq!(before.guard, after.guard);
+                assert_eq!(caches.state_of(before), caches.state_of(after));
+                assert_eq!(caches.cells.site(*site), *cell, "the cell stays");
+            }
+            assert_eq!(caches.verify_cells(&mutator.heap, &mutator.jit), Ok(()));
+        });
+        let added = expect_ok(
+            interpreter.send(&program, Symbol::intern("subAdded"), &[]),
+            "subAdded",
+        );
+        let added = interpreter.enter(|mutator| mutator.fetch(&added).as_small_integer());
+        assert_eq!(added, Some(4), "the kept factory entry makes a new `Sub`");
     }
 
     /// A site moves vacant, monomorphic, polymorphic in the order first

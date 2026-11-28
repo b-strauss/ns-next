@@ -1,0 +1,5 @@
+rules = ["runtime.install.superclass", "semantics.mixin.clause-order"]
+stdout = '''
+an object does not understand #trait
+#trait #base nil #initialized
+'''

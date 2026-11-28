@@ -1,0 +1,47 @@
+/// A class re-parented onto a builtin with a representation of its own,
+/// `Array`, and back off it keeps its instances ordinary objects, their
+/// slot values kept: a subclass of a builtin gets no payload, so an
+/// instance made before the install is what a fresh instance of the class
+/// is, and answers the builtin's methods as a fresh one does.
+class AReparentingOntoABuiltinKeepsInstancesOrdinaryObjects = Object new () (
+  class Holder = Object new () (
+    public class Inner = Object new (
+      |
+        public x ::= 1.
+      |
+    ) ()
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder Inner new.
+      builder = (ClassMirror reflecting: holder Inner) mixin declaration asBuilder.
+    |
+    old x: 5.
+    builder header source: 'public class Inner = Array new (| public x ::= 1. |)'.
+    builder install.
+    transcript
+        show: (outcome: [old x]);
+        show: ' ';
+        show: (outcome: [old size]);
+        newLine;
+        show: (outcome: [holder Inner new x]);
+        show: ' ';
+        show: (outcome: [holder Inner new size]);
+        newLine.
+    builder header source: 'public class Inner = Object new (| public x ::= 1. |)'.
+    builder install.
+    transcript
+        show: (outcome: [old x]);
+        show: ' ';
+        show: (outcome: [old size]);
+        newLine.
+  )
+)

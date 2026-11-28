@@ -1,0 +1,5 @@
+rules = ["runtime.install.superclass"]
+stdout = '''
+the superclass clause of Base answers a class that inherits from Base
+#base true Object
+'''

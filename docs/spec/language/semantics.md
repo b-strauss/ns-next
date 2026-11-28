@@ -653,20 +653,31 @@ modules: a shipped class reached by navigation is held back.
 r[semantics.reflection.atomic-install]
 Several reflective changes are applied simultaneously and atomically: if
 any fails, none takes place (Bracha §8.2). ns-next applies the edits of
-one `ClassDeclarationBuilder` so: a class's slots, factory and
-initializer, its methods on either side and its lazy slots, changed for
-every application of its mixin at once, the instances whose layout
-changed migrated with their identity, and a running activation finishing
-with the code it began with. A failed install changes nothing, and the
-core library's classes cannot be edited.
-
-r[semantics.gap.reflection.several-builders]
-ns-next installs one builder's edits at a time: several builders' edits
-are not one atomic change, and a superclass change, the nested classes
-and a class declared from source with no predecessor cannot be edited.
-The complete install closes this gap
-(`docs/design/liveness-and-reflection.md`, "Planned: the complete
-install").
+one `ClassDeclarationBuilder`, or of several given to
+`installAtomically:`, so: a class's slots, factory and initializer, its
+methods on either side and its lazy slots, changed for every application
+of its mixin at once, the instances whose layout changed migrated with
+their identity, and a running activation finishing with the code it
+began with. A class can be renamed and a nested class's access changed,
+the class keeping its identity, its class objects and its instances, its
+old name no longer understood; a nested class can be added, replaced --
+keeping its identity, its class objects and its instances -- and
+removed, a removed class living on obsolete, its name no longer
+understood by its enclosing class while its class objects, instances and
+subclasses run its last version; a module's root can be renamed and its
+`:module:` changed, the same module under the new id or version, held to
+the loader's rules; a class's superclass and its `<:` clauses can change,
+the new clauses evaluated for every class object before anything is
+installed and each class object re-parented over what they answered,
+keeping its identity, its instances migrated by slot name. Several
+builders' edits are one change: each is
+spliced into its module's text in the order the builders are given, and
+two builders of one class, or one of a class another removes or
+replaces, are refused. A class declared from source with no
+predecessor, `ClassDeclarationBuilder fromSource:`, is a module, its
+`:module:` held to the loader's rules, and installs with the others. A
+failed install changes nothing, and the core library's classes cannot be
+edited.
 
 r[semantics.gap.reflection.object-class]
 Bracha §8.2 lets a program change the class of an individual object. No

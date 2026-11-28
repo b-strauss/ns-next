@@ -130,8 +130,7 @@ pub(crate) fn execute<'gc>(
             weak::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
         }
         Primitive::Reflection(primitive) => {
-            reflection::execute(mutator, primitive, receiver, arguments)
-                .map(|answer| Ok(Step::Value(answer)))
+            reflection::execute_step(mutator, primitive, receiver, arguments)
         }
         // Always `Some`: a leaf that declines here runs the failure block
         // the send carries, so a mirror row never answers `None`.

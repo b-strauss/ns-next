@@ -73,8 +73,10 @@ fn sources_of(program: &Path) -> Result<Vec<PathBuf>, String> {
             .into_iter()
             .flatten();
         for named in main.chain(modules) {
+            // A `modules` entry is a path or `{ "path", "as" }`.
             let name = named
                 .as_str()
+                .or_else(|| named.get("path").and_then(serde_json::Value::as_str))
                 .ok_or_else(|| format!("{}: a source is not a string", project.display()))?;
             files.push(program.join(name));
         }

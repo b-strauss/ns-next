@@ -75,12 +75,13 @@ first.
 | The specification's bytecode -- every instruction on a page of its own, the register effects, the wire encoding and the eight-byte form, both normative, and the rules the image decoder checks on a body, written into `docs/spec/bytecode.md`, four tables held to the code by tests; the decoder refuses a statement map leaving its body | Complete | 2026-11-24 | [specification-bytecode](superpowers/plans/2026-11-24-1601-specification-bytecode.md) |
 | The repository ready to publish -- the seven reference papers under their publishers' copyrights no longer carried but downloaded by `cargo xtask references`, each held to its SHA-256; the Newspeak corpus in `THIRD-PARTY-NOTICES.md`; the acknowledgements in the README | Complete | 2026-11-24 | -- |
 | The commit gate on GitHub Actions -- `.github/workflows/tests.yml` on Linux x64, Windows x64 and macOS on Apple silicon, at every push to `master` and every pull request, a step a check (`cargo xtask gates <group> --only <step>`), every step run past a failure, the suite in the nextest profile `ci`, the cargo build and the shipped code cached; the defects the three platforms found fixed: an editor's file and a trace's matched across links and Windows short names, a temporary breakpoint removed before the run goes on, the gate's test list read without colour, the list of unreached tests held to the tests that ran on Windows alone, and tests that assumed Windows' pages, paths, socket buffers or tab panes | Complete | 2026-11-25 | -- |
-| The stress modes on GitHub Actions -- `.github/workflows/stress.yml` on Linux x64 and macOS on Apple silicon, nightly when `master` changed and by hand: a job for each of the fifteen stress modes and the run without the JIT (`cargo xtask gates stress --only "stress <mode>"`, one run alone on every thread, past a failure), then `run-corpus` under its mode, restoring the commit gate's cargo build and never saving its own | Complete | 2026-11-25 | -- |
+| The stress modes on GitHub Actions -- `.github/workflows/stress.yml` on Linux x64 and macOS on Apple silicon, nightly when `master` changed and by hand: a job for each stress mode and the run without the JIT (`cargo xtask gates stress --only "stress <mode>"`, one run alone on every thread, past a failure), then `run-corpus` under its mode, restoring the commit gate's cargo build and never saving its own | Complete | 2026-11-25 | -- |
 | An implicit-receiver send of one keyword, `x: e`, writes the innermost mutable local `x` as `x:: e` does and answers `e`, as the canonical compiler's local write does, a parameter and an immutable local passed by (`resolver/local_writes.rs`, which makes each such send the assignment it is before anything compiles the module; the spec's `semantics.send.local-setter`, and the appendix's difference from §6.3.2); the language server colours its keyword as the local and the hints count it as a write; `Som.ns` sends `self hash: key` where its local `hash` would take the write | Complete | 2026-11-25 | -- |
 | The rest of Primordial Soup's core API, by a second inventory of every public selector: `Closure`'s `repeat`, `whileTrue`, `whileFalse`, `cull:cull:`, `cull:cull:cull:` and `valueWithArguments:`, a mirror row whose step activates the block with an Array's elements, and `True`'s and `False`'s `asString` | Complete | 2026-11-26 | -- |
 | The unary `whileTrue` and `whileFalse` and `repeat` on a block literal inlined by both lowerings as `whileTrue:` is (`control_flow::recognize`, `lower_while`, `Body::while_loop`), `repeat` a loop without a condition, so that a `^` in its block is the method's own return, as the canonical compiler's `isInlineableLoop:` inlines them | Complete | 2026-11-26 | -- |
 | The specification's image format -- the encodings, the header, the sections, the tags of fourteen spaces and the structure, the rules the decoder checks on an image, the bounds of a load and the operations *LoadImage* and *WriteImage*, all normative, written into `docs/spec/image-format.md`, the tags and the structure held to the code by tests and every refusal of the writer stated with its text; the decoder refuses a send and a method record whose argument count is not their selector's | Complete | 2026-11-26 | [specification-image-format](superpowers/plans/2026-11-26-1643-specification-image-format.md) |
 | The specification's VM invariants -- 227 `vm.*` rules in eight sections after the terms they are stated in, written into `docs/spec/vm-invariants.md`, each with a `Protects:` line reaching a rule of the first four parts and named by tests, by a detector of the chapter's table or by an `Undetected:` line; `cargo xtask spec` checks them, the table of detectors against the stress gate's modes and the pointers of `CLAUDE.md`, of the documents of `docs/` and of the design documents, which point at a rule by its rule line in a code span | Complete | 2026-11-27 | [specification-vm-invariants](superpowers/plans/2026-11-27-0004-specification-vm-invariants.md) |
+| The complete install, batch A of hot swap -- several builders installed as one (`installAtomically:`) through three VM-mirror leaves, prepare, evaluate a clause and commit, an install epoch and a prepared install cached without a handle; a superclass change evaluating its new clauses for every class object the program reaches, in the order of their creation stamps, and re-parenting each in place; every class object of one layout of twelve fields, so that a declaration gains or loses its body in place; nested classes added, replaced and removed, a removed one living on obsolete, freed on its own and carried by an image as an obsolete tree; renames, access changes and a module's identity changed in place; `ClassDeclarationBuilder fromSource:` declaring a module without a path (`ORIGIN_NONE`); the invalidation scoped to the entries and optimized copies naming a re-applied application, checked by the sixteenth stress mode, `INSTALL` | Complete | 2026-11-27 | [complete-install](superpowers/plans/2026-11-27-1554-complete-install.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -7824,7 +7825,8 @@ with its test reproduced first.
 - **An instance's fields named by their slots.** A stop showed every
   field as `field N`, and the platform's lazy slots as `nil`. A field is
   named from its class's application by the layout walk the install
-  copies fields by (`MixinApplication::field_layout`): a slot by its
+  copies fields by (`MixinApplication::checked_field_layout`, through
+  `lay_out_fields`): a slot by its
   name, a nested class's hidden slot by the class's name, a shadowed
   slot with its declaring mixin added -- `x (Base)`, numbered where one
   chain applies a mixin more than once, `x (M 2)`, and by its
@@ -8805,7 +8807,7 @@ Bracha's document its source and no longer its measure: decided with
 the user in seven decisions, and the hot swap work split into three
 batches, the first of which, the complete install, has its decisions
 recorded and waits ([liveness-and-reflection.md](design/liveness-and-reflection.md),
-"Planned: the complete install"). An executable model in Lean 4 written
+"The complete install"). An executable model in Lean 4 written
 in Verso was weighed and dropped. The book is Markdown rendered by
 mdBook 0.5.4, each normative rule preceded by an identifier as the Rust
 Reference has them; `cargo xtask spec` (`xtask/src/spec.rs`) checks the
@@ -8990,5 +8992,56 @@ statements of a rule shrunk to a sentence beside the pointer.
 - `95246d06` to `20e79fd2` -- the design documents and `CLAUDE.md` pointing at
   the rules.
 
-What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-complete install, then the debugger's stage 6.
+## The complete install (2026-11-27)
+
+Plan: [complete-install](superpowers/plans/2026-11-27-1554-complete-install.md),
+batch A of the debugger's hot swap, its decisions taken with the user on
+2026-11-22 and 2026-11-27
+([liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+complete install", decisions 1 to 11). Branch `feature/complete-install`.
+
+An install now changes everything a class declaration says, atomically.
+`Mirrors>>installAtomically:` installs several `ClassDeclarationBuilder`s
+as one, the builders of one module composing on one text, and a
+builder's `install` is the install of itself alone, both through an
+`Installer` and three VM-mirror rows that replace `installEdit:` --
+`reflectionPrepareInstall:ifFail:`, `reflectionInstall:evaluateClause:epoch:ifFail:`
+and `reflectionInstall:commitEpoch:superclasses:ifFail:` -- with an
+install epoch that fails a commit whose world moved and a one-entry
+cache of the last preparation that holds no handle. A header may change
+the superclass and the `<:` clauses: the new clauses run as program code
+for every class object the program reaches, two full collections
+keeping dead ones out, in the order of the creation stamp every class
+object now carries, and the commit re-parents each in place, migrating
+its instances by field name; every class object has one layout of
+twelve fields, so a declaration that gains or loses its body keeps its
+class objects. Nested classes are added, replaced and removed through
+the builder's `nestedClasses`; a removed one lives on obsolete, in a
+tree of ids of its own that a full collection frees on its own, and an
+image carries it as an obsolete tree. A class is renamed and its access
+changed in place, a root's rename rewriting its `:module:`, and a
+module's id and version change in place under its path, held to the
+loader's rules. `ClassDeclarationBuilder fromSource:` declares a module
+at run time, without a path (`ORIGIN_NONE`, origin tag 4). The install
+vacates only the cache entries, cells and optimized copies naming an
+application it re-applied, the copies found through a dependency index,
+and the sixteenth stress mode, `NS_NEXT_STRESS_INSTALL`, checks every
+entry it kept against a fresh lookup. Thirty-one goldens under
+`goldens/library/mirror-builder/` pin it, and the book's rules
+`runtime.install`, `runtime.install.superclass`, `runtime.install.epoch`,
+`runtime.install.module`, `image.load.obsolete`, `image.load.class-stamps`
+and `vm.heap.obsolete-mixin-out-of-tree` state it.
+
+- `e8d8d883`, `296b5001` -- the last decision and the plan.
+- `d0754a2b` -- several builders through three rows.
+- `63c065ac`, `6db8fddc` -- the scoped invalidation and its trace.
+- `14aa3fe5`, `c265637a` -- the INSTALL stress mode.
+- `af9d8443`, `e5c8a886` -- renames, access changes and a module's identity.
+- `ad29d10a`, `1f09ab1c` -- nested classes added, replaced and removed.
+- `f3d3c3af` -- obsolete classes in an image.
+- `33e92b95`, `2c02ef3a` -- a superclass change.
+- `2de5442f`, `7cbad965` -- the creation stamp and one layout.
+- `a1b4a7fd`, `2c486602` -- a module declared from source.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
+the debugger, batch B, the first part of the debugger's stage 6.

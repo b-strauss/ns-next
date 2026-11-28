@@ -1,0 +1,57 @@
+/// A header of another access changes the access of the class's accessor
+/// in its enclosing class, keeping the class: an ordinary send reaches a
+/// public class and not a protected or private one, a send to `self`
+/// reaches it whatever its access, and its class object and an instance
+/// made before stay. A header that writes out the access the class already
+/// had, `protected` for one declared without a modifier, changes nothing.
+class AnAccessChangeIsInstalled = Object new () (
+  class Subject = Object new () (
+    public answer = (
+      ^42.
+    )
+  )
+
+  /// Reaches the class through an ordinary send, as any other object
+  /// would.
+  class Probe = Object new () (
+    public reach: anObject = (
+      ^anObject Subject name.
+    )
+  )
+
+  outcome: action = (
+    ^[action value] on: Error do: [:error | error messageText].
+  )
+
+  install: header from: ClassMirror on: transcript = (
+    |
+      builder = (ClassMirror reflecting: Subject) mixin declaration asBuilder.
+    |
+    builder header source: header.
+    builder install.
+    transcript
+        print: (ClassMirror reflecting: Subject) mixin declaration accessModifier;
+        show: ' ';
+        show: (outcome: [Probe new reach: self]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      before = Subject.
+      old = Subject new.
+    |
+    install: 'protected class Subject = Object new ()' from: ClassMirror on: transcript.
+    install: 'public class Subject = Object new ()' from: ClassMirror on: transcript.
+    install: 'private class Subject = Object new ()' from: ClassMirror on: transcript.
+    transcript
+        print: Subject == before;
+        show: ' ';
+        show: Subject name;
+        show: ' ';
+        print: old answer;
+        newLine.
+  )
+)

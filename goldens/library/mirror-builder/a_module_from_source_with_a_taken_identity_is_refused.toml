@@ -1,0 +1,9 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install.module", "semantics.module.identity"]
+stdout = '''
+two modules are `com.acme.AModuleFromSourceWithATakenIdentityIsRefused@1.0.0`: a_module_from_source_with_a_taken_identity_is_refused.ns and a module declared from source
+`com.acme.Tool` does not end in the class's name `Util`
+`newspeak.Util` lies in the namespace `newspeak.`, which belongs to the modules ns-next ships
+declared
+declared
+two modules are `com.acme.Util@1.0.0`: a module declared from source and a module declared from source nil
+'''

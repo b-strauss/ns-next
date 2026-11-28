@@ -1,0 +1,8 @@
+rules = ["semantics.reflection.atomic-install", "runtime.install", "runtime.install.superclass"]
+stdout = '''
+#base
+true true
+true true false
+#other #other
+public class Inner = Other new ()
+'''

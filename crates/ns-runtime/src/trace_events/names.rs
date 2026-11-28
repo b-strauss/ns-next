@@ -547,7 +547,7 @@ mod tests {
         if let Some((id, version)) = identity {
             let class = id.rsplit('.').next().expect("a class");
             resolved.identity = Some(Rc::new(crate::modules::ModuleIdentity {
-                path: "t.ns".to_string(),
+                path: Some("t.ns".to_string()),
                 id: crate::modules::ModuleId::parse(id, class).expect("an id"),
                 version: Some(crate::modules::Version::parse(version).expect("a version")),
             }));
@@ -826,8 +826,9 @@ mod tests {
                 "public deposit: amount = ( balance:: balance + amount + 1 )".to_string(),
             )],
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, &edit)) {
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_one(id, &edit)) {
             panic!("the install was refused: {diagnostic}");
         }
         interpreter.enter(|mutator| {
@@ -857,8 +858,9 @@ mod tests {
             header: Some("public class Plain = Object new (| public count ::= 2. |)".to_string()),
             instance_side: Vec::new(),
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, &edit)) {
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_one(id, &edit)) {
             panic!("the install was refused: {diagnostic}");
         }
         interpreter.enter(|mutator| {
@@ -901,8 +903,9 @@ mod tests {
                 "public deposit: amount = ( balance:: balance + amount + 1 )".to_string(),
             )],
             class_side: Vec::new(),
+            new_name: None,
         };
-        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_edit(id, &edit)) {
+        if let Err(diagnostic) = interpreter.enter(|mutator| mutator.install_one(id, &edit)) {
             panic!("the install was refused: {diagnostic}");
         }
         interpreter.enter(|mutator| {

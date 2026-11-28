@@ -7,7 +7,9 @@
 > recorded guards of a slot access (road step 5b1, "`become:` is an eager
 > bulk forward", "What a slot access checks"), the atomic install that
 > calls the forward and re-applies every class object of an edited mixin
-> (road step 5b2a, "Everything stays editable"), and the reclamation of
+> (road step 5b2a, "Everything stays editable") -- since the complete
+> install over a new superclass too, a removed class living on obsolete --,
+> and the reclamation of
 > the per-heap ids -- every application, guard id, module tree of mixin
 > ids, superseded version and code id nothing names any more, freed in a
 > full collection and minted again smallest first, the application cache
@@ -1442,7 +1444,7 @@ is the nearest to `C`.
   error, raised where the levels are built. The level's metaclass applies
   the named class's class side, so its factory and its name are the named
   class's (`Heap::class_factory`, `Heap::class_name`), and the level keeps
-  the named class itself in one field more than a class object has
+  the named class itself in a field every other class object leaves nil
   (`class_field::NAMED_CLASS`), which the clause's check reads and the image
   rebuilds the metaclass from. Its own part runs with the clause's
   arguments, their count checked against the factory of the mixin it
@@ -1484,7 +1486,8 @@ and declaring class are `M1`'s so that `M1`'s methods walk `M1`'s lexical
 chain, and the declaration `M3`, a member class of the class it is written
 in, whose clause messages and arguments were written in `M3`'s scope (§6:
 the factory's parameters "are in scope throughout the mixin
-application"). So the class object keeps two fields more, `M3`'s own
+application"). So the class object keeps two fields more than a level
+uses, `M3`'s own
 enclosing object and declaring class (`class_field::DECLARATION_ENCLOSING`,
 `Heap::class_declaration_scope`), written by `nested::body_less_class`
 once the superclass clause has run and nil for a module's root, which §3.3
@@ -2314,7 +2317,8 @@ no class object, no activation's entered level, no application-cache key
 or value and no other application's superclass link or successor entry
 names it; a mixin id once no application, no class object's applied-clause
 field, no reified mixin object and no holder of one of its versions names
-it or any other id of its module's tree; a code id once no closure or
+it or any other id of its tree -- its module's, or the obsolete tree a
+declaration an install removed roots, freed on its own; a code id once no closure or
 frame object names it. A class's change of application restamps every
 instance's header by a heap walk (`Heap::class_set_application`;
 `r[vm.dispatch.header-guard-stamped]`) before
@@ -2536,18 +2540,22 @@ clause added the clause that added it (the applying declaration's mixin id,
 the clause index and the named builtin tag packed into one `SmallInteger`, or
 `nil`, since an `Rc<Mixin>` cannot live in the words), and its application
 as a `SmallInteger` full-width index, separate from the 22-bit guard id in
-instances' headers; the behaviour stays Rust. A class object is 80 bytes
-with its header and class word. The builtin tag, the applied clause and the
-application are numbers, the other five fields objects or `nil`, and the
-tracer sees only those. Two kinds of class object carry more, and only they
-grow, so the image's amplification bound does not move
-([memory.md](memory.md), "The amplification bound of a rejected load"): a
-level a `<:` clause added has a ninth field, the class object its clause
-named (`NAMED_CLASS`, 88 bytes), and a body-less declaration's class object
-two fields more, its declaration's enclosing object and declaring class
-(`DECLARATION_ENCLOSING`, `DECLARATION_DECLARING_CLASS`, 104 bytes; "Mixin
-application" above). All three are pointer fields, and on a shorter class
-object their ranges are empty (`pointer_ranges`). The applied clause packs the named builtin into a
+instances' headers; the behaviour stays Rust. Then three fields only some
+class objects use, `nil` on the others: for a level a `<:` clause added the
+class object its clause named (`NAMED_CLASS`), and for a body-less
+declaration's class object its declaration's enclosing object and declaring
+class (`DECLARATION_ENCLOSING`, `DECLARATION_DECLARING_CLASS`; "Mixin
+application" above); and last the creation stamp (`CREATION_STAMP`), a
+`SmallInteger` drawn from the heap's counter when the class object is made
+and kept by every move and by an image, which orders class objects by their
+creation -- the order in which an install evaluates superclass clauses
+([liveness-and-reflection.md](liveness-and-reflection.md), "The complete
+install", decision 10). Every class object has all twelve fields, 112 bytes with
+its header and class word, so that an install can turn a class object of a
+declaration with a body into a body-less declaration's and back in place,
+keeping its identity. The builtin tag, the applied clause, the application
+and the stamp are numbers, the other eight fields objects or `nil`, and the
+tracer sees only those. The applied clause packs the named builtin into a
 6-bit field, as its position in `BuiltinClass::ALL` plus one (0 for none),
 which caps the builtins: `mixin.rs`'s compile-time assertion keeps
 `BuiltinClass::ALL` shorter than 63, so there are at most 62.
@@ -2817,8 +2825,10 @@ location through every cached send and cost every program 2.5-7.4%.
 names one application, and an application's
 chain does not change while the caches persist:
 `Heap::class_set_application` on a superclass is the case that changes it
-under an unchanged guard, and the atomic install invalidates the caches
-after it. Recorded guards follow the
+under an unchanged guard, and the atomic install vacates, scoped, every
+cache entry and optimized copy decided for an application it re-applies
+after it ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Caches and their dependency keys"). Recorded guards follow the
 guard id's reuse rule: an activation's recorded guard keeps its
 application, and so the guard, from being reclaimed, and a collection
 that frees a guard vacates every cache entry and the verified pair that
@@ -2956,11 +2966,11 @@ set itself: after each holder's words are rewritten,
 `IdentityForward::holder_done` says whether one of them names a young
 object now, and every such old holder is remembered
 ([memory.md](memory.md), "The write barrier"). Last, the inline caches are
-flushed, all of them (`InlineCaches::invalidate`, the verified pair of
-"What a slot access checks" above included); scoping the invalidation to
-the applications an install affects stays deferred
-([liveness-and-reflection.md](liveness-and-reflection.md), "Caches and
-their dependency keys").
+flushed: all of them for the leaf (`InlineCaches::invalidate`, the verified
+pair of "What a slot access checks" above included), and for an install's
+own forward exactly the entries naming an application it re-applied, whose
+instances are all it forwards (`heap::Invalidation::Stale`,
+`InlineCaches::forget_stale`; [dispatch.md](dispatch.md), "Invalidation").
 
 It runs inside the leaf, in the middle of a step, not at the next
 safepoint: no instruction runs between the forward and the leaf's answer,
@@ -3088,6 +3098,34 @@ through the same walk, and continue from the divorced frame ("The object
 layout" above). Closures keep their old code, as in Smalltalk, and new
 ones get the new code. A value class's instances migrate the same way, inside the VM, which
 no program can observe, since a value has no identity.
+
+A superclass change re-parents a class object in place too: the install
+evaluates the new clauses for each class object, then writes its new
+superclass (`Heap::class_set_superclass`) and builds its `<:` levels
+anew, and a declaration that gains or loses a body of its own keeps its
+class objects, each rewritten from the class of its own body into the
+level its last clause adds or back, which every class object's one
+layout of twelve fields allows ("The object layout" above;
+[liveness-and-reflection.md](liveness-and-reflection.md), "The complete
+install", decisions 1 and 11).
+
+**A removed class lives on obsolete** (`r[vm.heap.obsolete-mixin-out-of-tree]`).
+A nested declaration an install removes leaves its enclosing
+declaration's nested list, so no application of the enclosing class
+reserves it a hidden slot, the enclosing instances migrating without
+it, and no module's text holds it; its id roots a tree of its own,
+outside every module's, with its nested declarations and class sides
+(`Heap::make_obsolete`, `Heap::is_obsolete`). Its row keeps its last
+version, so its class objects, its instances and its subclasses -- in
+another module too -- go on running it, and `outer` inside it reaches
+the enclosing instance its class object holds. A full collection frees
+the tree on its own once nothing names any of its ids, by the rule of a
+module's tree ("An application has two ids" above), whether or not its
+former module lives; a module freed first leaves the obsolete root
+naming no enclosing row. An image carries an obsolete tree the graph
+reaches, and the loader registers it obsolete with no enclosing row
+(`Heap::make_loaded_obsolete`; [image-format.md](image-format.md),
+"Edited programs in the image").
 
 ## Decisions
 

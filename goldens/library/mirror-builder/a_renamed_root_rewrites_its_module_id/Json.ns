@@ -1,0 +1,7 @@
+/// A module whose root class the program renames.
+(* :module: com.acme.Json@1.0.0 *)
+class Json = Object new () (
+  public encode = (
+    ^'json'.
+  )
+)

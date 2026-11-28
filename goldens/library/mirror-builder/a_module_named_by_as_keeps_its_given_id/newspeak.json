@@ -1,0 +1,8 @@
+{
+  "main": "App.ns",
+  "modules": [
+    { "path": "a/Util.ns", "as": "legacy.Util" },
+    "b/Util.ns",
+    "c/Tool.ns"
+  ]
+}

@@ -366,11 +366,13 @@ debugging API at the safepoint". What it and the later stages build on:
   (`r[image.write.source]`).
   An image does not record which lowering compiled its code
   ([compiler.md](compiler.md), "The reference lowering").
-- **The MirrorBuilder's install** replaces a program's class -- its header,
-  its methods on either side, its lazy slots -- atomically; it refuses a
-  shipped class, and cannot yet change a superclass or the nested classes
+- **The MirrorBuilder's install** replaces a program's classes -- their
+  headers, superclasses and names included, their methods on either
+  side, their lazy slots and nested classes -- atomically, several
+  builders as one, and declares a module from source; it refuses a
+  shipped class
   ([liveness-and-reflection.md](liveness-and-reflection.md), "A
-  MirrorBuilder and an atomic install").
+  MirrorBuilder and an atomic install", "The complete install").
 - **A signal searches its handler before anything unwinds**
   (`r[runtime.handler-search]`; "nothing is
   unwound until it decides", `Kernel.ns`, `signal`), and an unhandled
@@ -1391,7 +1393,7 @@ and held, as every value is. The heap's accessors
 alone describe a value (`r[vm.heap.stop-runs-no-code]`).
 
 An instance's fields are named from the layout of its class's application
-(`values.rs`'s `field_labels`, over `MixinApplication::field_layout`, the
+(`values.rs`'s `field_labels`, over `MixinApplication::checked_field_layout` and `lay_out_fields`, the
 one walk of the layout, which an install copies fields by too;
 `object-model.md`, "Mixin application"): each level of the chain, from the
 root, lays its own slots down at its slot base in declaration order, then
@@ -1469,7 +1471,7 @@ sends, skipping breakpoints as every evaluation does.
 ### The pause stress mode
 
 The pause stress mode (`NS_NEXT_STRESS_PAUSE`, debug builds, one of the
-`stress` gate's fifteen modes; `Interpreter::set_stress_pause` for a
+`stress` gate's sixteen modes; `Interpreter::set_stress_pause` for a
 test, `Interpreter::stress_pauses` the count of its stops) stops the run
 at the safepoints its schedule picks -- paced as the collect and suspend
 modes are (`Pacing::STANDARD`, `StressSchedule`,
@@ -1538,7 +1540,7 @@ to its outcome under both lowerings with the mode on and off.
 ### The breakpoint stress mode
 
 The breakpoint stress mode (`NS_NEXT_STRESS_BREAKPOINTS`, debug builds,
-one of the `stress` gate's fifteen modes;
+one of the `stress` gate's sixteen modes;
 `Interpreter::set_stress_breakpoints` for a test,
 `Interpreter::stress_breakpoint_hits` the count of the patches gone past
 since it was switched on) runs every program through the `Breakpoint` arm
@@ -1603,7 +1605,7 @@ is never optimized and the patches keep every body they patched.
 ### The step stress mode
 
 The step stress mode (`NS_NEXT_STRESS_STEP`, debug builds, one of the
-`stress` gate's fifteen modes; `Interpreter::set_stress_step` for a
+`stress` gate's sixteen modes; `Interpreter::set_stress_step` for a
 test, `Interpreter::stress_steps` the count of its steps that stopped,
 `Interpreter::stress_steps_ended` the count of those it ended itself)
 stops the run at the safepoints its schedule picks -- the pause stress

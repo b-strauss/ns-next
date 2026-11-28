@@ -1,0 +1,51 @@
+/// A mixin applied twice in one chain -- by a superclass's `<:` clause and
+/// by a subclass's -- names each level by the declaration whose clause
+/// applies it: when the superclass loses its clause, its level goes, and
+/// the subclass's level, whose clause nobody touched, keeps its slot
+/// values and its cached nested class object.
+class ALostMixinLevelLeavesASubclassLevelItsValues = Object new () (
+  class Holder = Object new () (
+    public class Marker = Object new (
+      |
+        public markerTag ::= nil.
+      |
+    ) (
+      public class Inside = Object new () ()
+    )
+
+    public class Base = Object new <: Marker (
+      |
+        public base ::= 1.
+      |
+    ) ()
+
+    public class Sub = Base new <: Marker (
+      |
+        public own ::= 3.
+      |
+    ) ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder Sub new.
+      inside = old Inside.
+      builder = (ClassMirror reflecting: holder Base) mixin declaration asBuilder.
+    |
+    old markerTag: 'upper'.
+    builder header source: 'public class Base = Object new (| public base ::= 1. |)'.
+    builder install.
+    transcript
+        print: old markerTag;
+        show: ' ';
+        print: old Inside == inside;
+        show: ' ';
+        print: old base;
+        show: ' ';
+        print: old own;
+        newLine.
+  )
+)

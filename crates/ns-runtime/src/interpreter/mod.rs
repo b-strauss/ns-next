@@ -211,6 +211,17 @@ pub(crate) enum Step<'gc> {
     /// declares it; its value is the superclass, from which the class is
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
+    /// Activate `code`, a superclass clause's body an install prepared, on
+    /// `enclosing` and as part of `declaring_class`, as `SuperclassClause`
+    /// activates a declaration's clause, and deliver its value as a
+    /// method's is delivered: an install's evaluation of a new clause for
+    /// a class object that exists, which creates and caches nothing
+    /// (`interpreter::install::superclasses`).
+    ClauseEvaluation {
+        code: Rc<crate::bytecode::CompiledCode>,
+        enclosing: ObjectReference<'gc>,
+        declaring_class: ClassReference<'gc>,
+    },
     /// Activate `method`, as `Step::Method` with owned arguments does, and
     /// do `then` with its value: how a future is forced for an instruction
     /// that runs again once it is resolved
@@ -633,6 +644,24 @@ pub struct Mutator<'gc> {
     /// The applications' liveness buffers a full collection reuses
     /// (`reclaim::ReclaimBuffers`).
     pub(crate) reclaim_buffers: reclaim::ReclaimBuffers,
+    /// The install epoch: raised by every install's commit and by every
+    /// module that joins the heap, so that a commit tells whether the
+    /// world moved since its preparation (`install::prepared`). Distinct
+    /// from the debugger's text revision, which also moves without an
+    /// install.
+    pub(crate) install_epoch: u64,
+    /// The last install prepared, for its commit or a preparation of the
+    /// same entries at the same epoch (`install::prepared`): ids, texts
+    /// and mixins, no handle, so nothing traces it.
+    pub(crate) prepared_install: install::prepared::PreparedInstallCache,
+    /// Whether the install stress mode is on (`NS_NEXT_STRESS_INSTALL`, or
+    /// `Interpreter::set_stress_install`): after every install's commit,
+    /// every cache entry is checked against a fresh lookup
+    /// (`Mutator::verify_caches_against_lookups`). On the mutator, since
+    /// the commit runs inside a mirror leaf and reaches nothing else.
+    /// Debug builds only.
+    #[cfg(debug_assertions)]
+    pub(crate) stress_install: bool,
 }
 
 /// A host's interpreter: the step state at rest (`World`), and what only
@@ -810,6 +839,7 @@ impl Interpreter {
         #[cfg(debug_assertions)]
         {
             interpreter.hold_safepoints_for_stress();
+            interpreter.set_stress_install(safepoint::stress_install_from_env());
             // The collect stress mode slides the site ranges at every
             // collection that finds one free, so that its collections
             // exercise every slide (`InlineCaches::plan_slide`).
@@ -1770,6 +1800,15 @@ impl Interpreter {
         self.hold_safepoints_for_stress();
     }
 
+    /// Turns the install stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_INSTALL` says: after every install's
+    /// commit, every cache entry checked against a fresh lookup and a
+    /// difference a panic. For tests. It holds no safepoint: the check
+    /// runs inside the install's leaf.
+    pub fn set_stress_install(&mut self, enabled: bool) {
+        self.enter(|mutator| mutator.stress_install = enabled);
+    }
+
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on; 0 while it is off.
     pub fn cache_invalidations(&self) -> usize {
@@ -2503,6 +2542,38 @@ impl<'gc> Mutator<'gc> {
         self.push_step_placed(step, send_arguments, sender, inlinable, None)
     }
 
+    /// The activation of the superclass clause body `code` on `enclosing`,
+    /// as part of `declaring_class`, which does `then` with its value: a
+    /// nested class's creation (`Step::SuperclassClause`) and an install's
+    /// evaluation of a new clause (`Step::ClauseEvaluation`) alike. Out of
+    /// line: a class object's creation is once per enclosing instance.
+    #[cold]
+    #[inline(never)]
+    fn push_superclass_clause(
+        &mut self,
+        code: Rc<crate::bytecode::CompiledCode>,
+        enclosing: ObjectReference<'gc>,
+        declaring_class: ClassReference<'gc>,
+        then: Continuation<'gc>,
+    ) -> Result<ActivationReference, Signal<'gc>> {
+        let feedback_base = self.feedback_base_for(&code);
+        let temporaries = code.registers_above_header();
+        self.push(
+            ActivationHeader {
+                receiver: Value::object(enclosing),
+                current_class: Some(declaring_class),
+                kind: ActivationKind::SuperclassClause(declaring_class),
+                method: None,
+                code,
+                then,
+                counted: true,
+                feedback_base,
+            },
+            Arguments::NONE,
+            temporaries,
+        )
+    }
+
     /// `push_step`, an activation that takes the send's own arguments laid
     /// on the send's slots from register `slots` of the sender's window
     /// when it is given (`push_placed`): the run loop's sends give it.
@@ -2710,23 +2781,17 @@ impl<'gc> Mutator<'gc> {
             }
             Step::SuperclassClause(creation) => {
                 let code = nested::superclass_clause_code(&creation.nested);
-                let feedback_base = self.feedback_base_for(&code);
-                let temporaries = code.registers_above_header();
-                let (enclosing, index, serial) =
-                    (creation.enclosing, creation.index, creation.serial);
-                let activation = self.push(
-                    ActivationHeader {
-                        receiver: Value::object(enclosing),
-                        current_class: Some(creation.declaring_class),
-                        kind: ActivationKind::SuperclassClause(creation.declaring_class),
-                        method: None,
-                        code,
-                        then: Continuation::NestedClass(creation),
-                        counted: true,
-                        feedback_base,
-                    },
-                    Arguments::NONE,
-                    temporaries,
+                let (enclosing, index, serial, declaring_class) = (
+                    creation.enclosing,
+                    creation.index,
+                    creation.serial,
+                    creation.declaring_class,
+                );
+                let activation = self.push_superclass_clause(
+                    code,
+                    enclosing,
+                    declaring_class,
+                    Continuation::NestedClass(creation),
                 )?;
                 // A nested class's creation is in progress exactly while its
                 // clause's activation is on the stack: marked once the push
@@ -2735,6 +2800,13 @@ impl<'gc> Mutator<'gc> {
                 // marks nothing.
                 nested::begin_creation(self, enclosing, index, serial);
                 Ok(activation)
+            }
+            Step::ClauseEvaluation {
+                code,
+                enclosing,
+                declaring_class,
+            } => {
+                self.push_superclass_clause(code, enclosing, declaring_class, Continuation::Deliver)
             }
             // Pushed as `Step::Method` pushes it, and only then given its
             // continuation, as the unwinder gives `valueOnUnwind:` its own
@@ -3648,8 +3720,6 @@ impl<'gc> Mutator<'gc> {
         // The level a body-less declaration's last clause adds is the
         // declaration's class object, which also keeps the declaration's
         // scope (`Heap::class_declaration_scope`).
-        let body_less = !clause.declaration.has_body
-            && clause.index + 1 == clause.declaration.mixin_applications.len();
         let class = self.heap.allocate_applied_level(
             object,
             crate::heap::NewClass {
@@ -3660,7 +3730,6 @@ impl<'gc> Mutator<'gc> {
                 builtin: None,
             },
             named,
-            body_less,
         );
         if !self.heap.class_set_applied_clause(class, clause) {
             unreachable!("internal: a level is a class object");
@@ -3845,7 +3914,7 @@ impl<'gc> Mutator<'gc> {
     /// synthesized class side built from the previous one, so that the
     /// next application of the id applies the replacement. Applications already built, and the class objects
     /// naming them, keep the version they were built from; the install
-    /// (`install_edit`) re-applies those. Answers the replacement's
+    /// (`commit_install`) re-applies those. Answers the replacement's
     /// declared nested declarations, which `Heap::adopt_nested` gives the
     /// id's row; until then the row names the previous version's.
     pub(crate) fn replace_mixin(
@@ -4242,7 +4311,7 @@ mod tests {
     /// A class object built after a replacement applies the replacement,
     /// though the enclosing mixin still holds the version it was built
     /// with; one built before keeps the application it was built from
-    /// until the install (`install_edit`) re-applies it.
+    /// until the install (`commit_install`) re-applies it.
     #[test]
     fn a_nested_class_created_after_a_replacement_is_the_replacement() {
         let (mut interpreter, outer) = load(OUTER);

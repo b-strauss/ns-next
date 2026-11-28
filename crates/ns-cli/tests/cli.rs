@@ -501,6 +501,7 @@ fn plain_run(program: &std::path::Path) -> Command {
         "PAUSE",
         "BREAKPOINTS",
         "STEP",
+        "INSTALL",
     ] {
         command.env_remove(format!("NS_NEXT_STRESS_{mode}"));
     }
@@ -721,6 +722,7 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .env_remove("NS_NEXT_STRESS_PAUSE")
         .env_remove("NS_NEXT_STRESS_BREAKPOINTS")
         .env_remove("NS_NEXT_STRESS_STEP")
+        .env_remove("NS_NEXT_STRESS_INSTALL")
         .output()
         .unwrap();
     assert_eq!(
