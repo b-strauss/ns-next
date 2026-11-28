@@ -1798,6 +1798,23 @@ both sides whether each was a number; Mandelbrot by 6.3% and CD by 2.8%,
 since `Float`'s comparison and arithmetic called their operation through a
 function pointer, with a store-forwarding stall after the call, and a
 `Float` with a `SmallInteger` went through the whole classification.
+
+**`nil`, `true` and `false` are answered by identity.** Each is the one
+instance of a kernel class no other class can be equal to, and never
+under construction, so `Value>>=`'s leaf decides a pair whose receiver is
+one of them by comparing the two words, before the walk: what the walk's
+class test, or its comparison of two leaves, answers
+(`builtins/value.rs`, `constant_identity`, held to the walk over every
+shape of argument by
+`the_constants_are_answered_by_identity_as_the_walk_answers_them`). It
+is the commonest pair the leaf sees -- Richards' `NoWork == packet`,
+which `Value>>==` answers with `=`, 366,000 times a run. The walk is
+inlined into `builtins::execute`, the one function every leaf enters,
+and the tests it gained for a value under construction made Richards
+3% slower in each of three layouts, its machine code, inlining and exits
+unchanged; answered before the walk, the pair made Richards about 22%
+faster than before those tests (8.9 ms against 11.3 to 11.6 ms, one
+pinned build in each of the three layouts).
 Measured on 2026-10-11, with these paths: the Are We Fast Yet benchmarks
 run as fast as on the tree without the tower, the largest ratio against it
 Json's 1.005, within the noise (three pinned builds a side, pooled, by the

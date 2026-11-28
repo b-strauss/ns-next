@@ -91,18 +91,30 @@ pub(crate) fn execute<'gc>(
     match primitive {
         ValuePrimitive::SameAs => {
             let other = arguments.first(&mutator.heap)?;
-            // A refusal, never a decline: `valueEquals:` would compare the
-            // slots built so far, which is the answer the refusal withholds.
-            let equal = match derived_equality(mutator, receiver, other) {
-                Ok(equal) => equal?,
-                Err(object) => {
-                    return Some(Err(under_construction_error(
-                        mutator,
-                        ValueQuestion::Compare,
-                        selector,
-                        receiver,
-                        object,
-                    )));
+            // `nil`, `true` and `false` are each the one instance of a class
+            // no other class can be equal to, and never under construction,
+            // so their pair is decided by identity -- what the walk's class
+            // test answers -- without the walk. It is the common pair: every
+            // `nil == anObject` (`Value>>==`), 366,000 a run of Richards,
+            // whose cost the walk's tests for an instance under construction
+            // raised 3% in three layouts.
+            let equal = if let Some(constant) = constant_identity(receiver, other) {
+                constant
+            } else {
+                // A refusal, never a decline: `valueEquals:` would compare
+                // the slots built so far, which is the answer the refusal
+                // withholds.
+                match derived_equality(mutator, receiver, other) {
+                    Ok(equal) => equal?,
+                    Err(object) => {
+                        return Some(Err(under_construction_error(
+                            mutator,
+                            ValueQuestion::Compare,
+                            selector,
+                            receiver,
+                            object,
+                        )));
+                    }
                 }
             };
             crate::interpreter::future::declines_for_a_future(
@@ -405,6 +417,20 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
     }
 }
 
+/// Whether `receiver` is `other`, when `receiver` is `nil`, `true` or
+/// `false`; `None` for every other receiver. Each of the three is the
+/// only instance of its class, a class of the kernel no other class can be
+/// equal to, so it equals exactly itself: `derived_equality` answers the
+/// same, by its class test or by comparing the two as leaves.
+fn constant_identity<'gc>(receiver: Value<'gc>, other: Value<'gc>) -> Option<bool> {
+    if receiver.is_nil() {
+        return Some(other.is_nil());
+    }
+    receiver
+        .as_boolean()
+        .map(|receiver| other.as_boolean() == Some(receiver))
+}
+
 /// `value` when it is an instance of a value class whose factory has not
 /// returned (`Heap::object_under_construction`); `None` for every other
 /// value, an immediate included.
@@ -449,8 +475,8 @@ fn derived_equality<'gc>(
         }
     }
     // The root pair is examined before the stack is used, so a pair its
-    // first step decides -- `nil = anObject`, two numbers, two values of
-    // unrelated classes -- allocates nothing: an empty `Vec` allocates
+    // first step decides -- two numbers, two values of unrelated classes,
+    // a slot's `nil = anObject` -- allocates nothing: an empty `Vec` allocates
     // only at its first push, and this leaf runs for every `=` that
     // reaches it: allocating the stack up front cost Richards 15 % of its
     // time on Windows' heap. The set of assumed pairs is made at its first
@@ -485,8 +511,8 @@ fn derived_equality<'gc>(
         // Two numbers are equal by value across their classes -- `3` and
         // `3.0` -- so the tower decides them before the classes are
         // compared (`docs/design/core-library.md`, "The numeric tower").
-        // The second side is read only when the first is a number: `nil ==
-        // anObject`, the common pair, then never asks the heap whether
+        // The second side is read only when the first is a number: a
+        // slot's `nil = anObject` then never asks the heap whether
         // `anObject` is one.
         if let Some((left, right)) = tower::operand(mutator.heap(), first)
             .and_then(|left| Some((left, tower::operand(mutator.heap(), second)?)))
@@ -738,6 +764,7 @@ fn derived_hash<'gc>(
 mod tests {
     use indoc::indoc;
 
+    use super::{constant_identity, derived_equality};
     use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -2398,6 +2425,67 @@ mod tests {
         let (selector, message) = refusal(&mut interpreter, compared, "boxed escaped = boxed nil");
         assert_eq!(selector, Symbol::EQUALS);
         assert_eq!(message, ESCAPING_NOT_COMPARED);
+    }
+
+    /// `nil`, `true` and `false` are answered by identity before the walk,
+    /// so that `nil == anObject`, the commonest pair the leaf sees, never
+    /// pays for the walk's tests: held here to what the walk itself
+    /// answers for each of them against every shape of argument -- the
+    /// three constants, numbers, a string, an array, an object that is no
+    /// value, a value, a class object and an instance under construction,
+    /// which is unequal to them since their classes cannot be equal to its
+    /// own -- and to answering nothing for any other receiver.
+    // spec: runtime.value.equality
+    // spec: semantics.value.under-construction
+    #[test]
+    fn the_constants_are_answered_by_identity_as_the_walk_answers_them() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let point = send(&mut interpreter, &fixture, "pointX:y:", &[one, two]);
+        let point_class = class_of(&mut interpreter, &point);
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let string = a_string(&mut interpreter, "nil");
+        let array = an_array(&mut interpreter);
+        let mut arguments: Vec<Root> = [
+            Value::nil(),
+            Value::boolean(true),
+            Value::boolean(false),
+            Value::small_integer(0),
+            Value::small_float(0.0),
+        ]
+        .into_iter()
+        .map(|value| interpreter.stash(value))
+        .collect();
+        arguments.extend([string, array, fixture, point, point_class, escaped]);
+        interpreter.enter(|mutator| {
+            for receiver in [Value::nil(), Value::boolean(true), Value::boolean(false)] {
+                for argument in &arguments {
+                    let other = mutator.fetch(argument);
+                    let walked = match derived_equality(mutator, receiver, other) {
+                        Ok(Some(equal)) => equal,
+                        Ok(None) => panic!("the walk declined a constant's pair"),
+                        Err(_) => panic!("the walk refused a constant's pair"),
+                    };
+                    assert_eq!(
+                        constant_identity(receiver, other),
+                        Some(walked),
+                        "{} = {}",
+                        mutator.heap().describe(receiver),
+                        mutator.heap().describe(other)
+                    );
+                }
+            }
+            for argument in &arguments[3..] {
+                let receiver = mutator.fetch(argument);
+                assert_eq!(
+                    constant_identity(receiver, Value::nil()),
+                    None,
+                    "{} is no constant",
+                    mutator.heap().describe(receiver)
+                );
+            }
+        });
     }
 
     /// The mark is a header bit, and every mover copies or slides the

@@ -9082,6 +9082,14 @@ pin it, and the book's rules `semantics.value.under-construction`,
 `bytecode.instruction.complete-instance`, `image.verify.under-construction`
 and `vm.heap.under-construction-only-on-value-instances` state it.
 
+The walk of a value's derived equality, which gained the tests for an
+instance under construction, measured Richards 3% slower in each of
+three layouts, by its 366,000 `nil == anObject` a run; `Value>>=`'s
+leaf now answers a pair whose receiver is `nil`, `true` or `false` by
+identity before the walk, and Richards runs about 22% faster than
+before the branch ([core-library.md](design/core-library.md), "`nil`,
+`true` and `false` are answered by identity").
+
 - `62ec3fef` -- the plan.
 - `cc798968` -- the mark and `CompleteInstance`.
 - `148cf455` -- the value questions refused.
