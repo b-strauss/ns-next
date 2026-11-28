@@ -47,11 +47,20 @@ after a push to the pull request's branch:
    > follow the skill watching-a-pull-request, "When a check fails". When
    > every check run has completed successfully and there is no open
    > comment to act on, delete this cron job, tell the user the CI result
-   > and push it. Never merge, and never act on a review comment, without
-   > the user's word.
+   > and push it -- before anything else, a merge the user already
+   > allowed included; if you then merge, push the merge too. Never
+   > merge, and never act on a review comment, without the user's word.
 
 2. Tell the user that the watch runs, what it reports, and that it ends on
    its own.
+
+## When the user has already allowed the merge
+
+A word like "merge once it is green" allows the merge; it does not
+replace the notifications. When every check has passed, send that push
+first, then merge, then send a second push that the pull request is
+merged, naming the merge commit. The user may have walked away because
+they allowed the merge: the push is how they learn it happened.
 
 ## When a check fails
 
@@ -88,6 +97,7 @@ step 2 and ask.
 | A check failed | "When a check fails": stop, read, fix, commit, push, restart |
 | A check failed for an infrastructure reason | Report and push; no code change |
 | A review comment or a conflict | Report and push; wait for the user's word |
+| Every check passed and the user already allowed the merge | Push "all green", merge, push "merged" |
 | The user wants the watch to cover conflicts and review comments until the merge, for days | Point them at `/steward`, which only the user can start |
 | The session is about to end | Say that the job dies with the session |
 
