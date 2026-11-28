@@ -184,7 +184,8 @@ management and its `become:` (`dispatch.md`, `memory.md`, `object-model.md`).
 `prior-art/are-we-fast-yet/`, `prior-art/v8/` and `prior-art/jdk/` are
 cited throughout `execution.md`, and `prior-art/eurasia/`, Gilad Bracha's
 Newspeak VM in Rust, which is to replace Primordial Soup as the reference
-implementation, is newly added.
+implementation, and `prior-art/eastasia/`, his high-performance native
+Newspeak VM sharing Eurasia's contract, are newly added.
 
 - **The canonical Newspeak implementation** — `prior-art/newspeak/`, from
   <https://github.com/newspeaklanguage/newspeak>. The reference for what the

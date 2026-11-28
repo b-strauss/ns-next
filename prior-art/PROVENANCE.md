@@ -26,6 +26,7 @@ that carry design weight.
 |---|---|---|
 | `newspeak/` | [newspeaklanguage/newspeak](https://github.com/newspeaklanguage/newspeak) | The canonical Newspeak implementation, on Squeak. The reference for what the language actually does when the specification is silent or ambiguous. |
 | `eurasia/` | [newspeaklanguage/eurasia](https://github.com/newspeaklanguage/eurasia) | A Newspeak VM in Rust by Gilad Bracha, for native platforms and the web (wasm32) from one code base, which is to replace Primordial Soup as the reference implementation: V5 bytecode, a snapshot format of its own (`docs/SNAPSHOT_FORMAT.md`), and the VM-kernel contract the `newspeak` tree documents (`VM_KERNEL_CONTRACT_DESIGN_2026-11-09.md`, `BYTECODES_V5_SPEC_2026-07-13.md`). Young: its first commit is of 2026-11-17, and it moves fast. |
+| `eastasia/` | [newspeaklanguage/eastasia](https://github.com/newspeaklanguage/eastasia) | A high-performance native Newspeak VM in Rust by Gilad Bracha, beside Eurasia and sharing its contract -- the snapshot format, V5 bytecode and kernel operations, its snapshot reader and writer taken from Eurasia's crates -- with an interpreter, type feedback, a JIT and a collector of its own (`crates/eastasia-core/src/`). Its design is `prior-art/newspeak/EASTASIA_DESIGN_2026-11-23.md`. The closest prior art to ns-next's own aim, a fast native Newspeak VM in Rust; young: its first commit is of 2026-11-25. Its workspace names Eurasia's crates by a path outside this tree (`../eurasia-contract/`), so it does not build here, which nothing here needs. |
 | `newspeak-benchmarks/` | [newspeaklanguage/benchmarks](https://github.com/newspeaklanguage/benchmarks) | The same benchmarks in Newspeak, Smalltalk, Dart, Java and JavaScript. Useful both as workloads and as a cross-language baseline for what a given program *should* cost. |
 | `primordialsoup/` | [rmacnak/primordialsoup](https://github.com/rmacnak/primordialsoup) | A Newspeak VM in C++ by Ryan Macnak, with its own bytecode set, image format and garbage collector. The closest prior art to what this repository is building, and the most direct source of comparison for the image format and the collector. |
 | `somns/` | [smarr/SOMns](https://github.com/smarr/SOMns) | A Newspeak on Truffle/Graal by Stefan Marr. The reference for the optimizing end of the design: self-optimizing interpreters, specialization, and the measurement methodology behind them. |
@@ -45,8 +46,9 @@ A submodule records one commit. These are the ones this repository points at.
 
 | Submodule | Commit | Upstream date | Added |
 |---|---|---|---|
-| `newspeak` | `c4aa0e46868b35435cfc3e9dc592c5c8e5e1a5a8` | 2026-11-23 | 2026-09-10 |
-| `eurasia` | `ddd32bd1a9a23f3184e7473e298bb2e6baa3b2c8` | 2026-11-23 | 2026-11-24 |
+| `newspeak` | `1bf636aff572abbab88ed2e3a8476bbe24e51008` | 2026-11-26 | 2026-09-10 |
+| `eurasia` | `f2dd5c48f03d33d4e618ea4f6b123b0adedf4de9` | 2026-11-25 | 2026-11-24 |
+| `eastasia` | `caac8f9fbf64a148b3e81bd7f773211b8e31a9be` | 2026-11-27 | 2026-11-28 |
 | `newspeak-benchmarks` | `874ba34d48a84249e1e663061a70eeb608bcf601` | 2018-01-27 | 2026-09-10 |
 | `primordialsoup` | `e7a7ece673f57fdeb43b586f297552e7e84c24ff` | 2026-09-26 | 2026-09-10 |
 | `somns` | `e56f4c2815cef4cae2045a9b05dc1fd190315ba6` | 2019-07-07 | 2026-09-10 |
@@ -141,6 +143,10 @@ code. `ns-next`'s own license is at `LICENSE`.
 - `eurasia` — the three-clause BSD licence, Gilad Bracha 2026-2027; see
   `prior-art/eurasia/LICENSE`, which also says it holds no code of
   Primordial Soup's.
+- `eastasia` — the three-clause BSD licence, Gilad Bracha 2026-2027; see
+  `prior-art/eastasia/LICENSE`, which repeats Eurasia's: no code of
+  Primordial Soup's but the kernel, actors and mirrors forks, under
+  Primordial Soup's Apache 2.0 licence for its Newspeak sources.
 - `nova` — Mozilla Public License 2.0; see `prior-art/nova/LICENSE.md`. Note
   that the MPL is file-level copyleft, which makes it the most restrictive
   license here for any purpose beyond reading.
@@ -180,7 +186,7 @@ Worth knowing before running `git submodule update --init` without an argument:
 everything else here combined (`strongtalk` 38 MB, `newspeak` 32 MB, `nova`
 8 MB, `somns` 5.7 MB, `are-we-fast-yet` 3.3 MB, `primordialsoup` 2.8 MB,
 `num-bigint` 777 KB, `newspeak-benchmarks` 389 KB, `num-rational` 192 KB,
-`num-integer` 163 KB, `eurasia` 1.3 MB). It is mostly generated C sources and platform build
+`num-integer` 163 KB, `eurasia` 2.2 MB, `eastasia` 1 MB). It is mostly generated C sources and platform build
 trees, none of which is the interesting part — the Cog and Spur design lives in
 the Smalltalk-side sources and the comments. Initialize it by name when you
 want it rather than pulling everything.
