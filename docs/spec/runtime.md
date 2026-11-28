@@ -364,7 +364,15 @@ the clause's evaluation would apply it (§6.2): a class that lost its body
 gives the level its last clause's mixin, one that gained a body its own
 mixin; every instance over the level migrates as above, and every class
 over it has the value-class verdict (§3.1.1) decided again, as every
-class over a re-parented class has. A module's root evaluates nothing: it takes the superclass its new header names,
+class over a re-parented class has. An install that would change the
+clauses, or gain or lose the body, of a declaration a class object of
+which is being created -- its superclass clause still running, the
+install typically called from it -- signals `Inner is being created, and
+an install does not change its superclass meanwhile` before it installs
+anything, and the creation goes on over its clause's answer. A class
+re-parented onto or off a builtin keeps its instances ordinary objects,
+as its fresh instances are, since a subclass of a builtin takes none of
+its representation. A module's root evaluates nothing: it takes the superclass its new header names,
 `Object`, `Value` or `Value` applied over `Object`.
 
 r[runtime.install.epoch]

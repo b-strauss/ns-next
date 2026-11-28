@@ -1,0 +1,61 @@
+/// An install from inside the superclass clause of a class object being
+/// created, which changes that class's superclass, is refused before it
+/// commits: the creation goes on to build the class object from what the
+/// clause answers, which the install's walk never saw. The class is then
+/// made over its old clause's answer, and the install changed nothing.
+class AnInstallFromTheClauseOfACreationInProgressIsRefused = Object new () (
+  class Holder = Object new (
+    |
+      public action ::= nil.
+    |
+  ) (
+    public class Base = Object new () (
+      public base = (
+        ^#base.
+      )
+    )
+
+    public class Other = Object new () (
+      public other = (
+        ^#other.
+      )
+    )
+
+    public class Inner = self reshaped new () ()
+
+    reshaped = (
+      action value.
+      ^Base.
+    )
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      second = Holder new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+      answer
+    |
+    builder instanceSide nestedClasses addFromSource: 'public class Inner = Other new () ()'.
+    holder action: [
+      answer:: outcome: [
+        builder install.
+        #installed.
+      ].
+    ].
+    second action: [nil].
+    transcript
+        show: (outcome: [holder Inner new base]);
+        newLine;
+        show: answer;
+        newLine;
+        show: (outcome: [second Inner new base]);
+        newLine.
+  )
+)

@@ -2287,22 +2287,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   developing an application in an empty world.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
   complete install", decision 7.
-- **An install from inside the clause of a creation in progress**
-  (2026-11-27). A nested class's accessor that is running its superclass
-  clause, and whose clause installs an edit of the same declaration,
-  builds its class object afterwards (`nested::after_clause`) from the old
-  clause's answer with the new mixin version, a class the install's walk
-  never saw. No test pins it, and whether such a creation should be
-  refused or re-evaluated is undecided.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
-  complete install", decision 1.
-- **A re-parenting onto or off a builtin with a native representation**
-  (2026-11-27) migrates the instances into a plain layout of the new
-  chain, by field name, whatever representation the builtin's instances
-  have; what a superclass change onto or off such a builtin should do to
-  existing instances is neither designed nor stated as a rule.
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
-  complete install", decision 1.
 - **A debugger evaluation at the install's collection safepoint**
   (2026-11-27). The Installer has a full collection served at a safepoint
   so that only class objects the program reaches are evaluated; a

@@ -1,0 +1,6 @@
+rules = ["runtime.install.superclass"]
+stdout = '''
+5 Collection>>do: is abstract: Inner must implement it
+1 Collection>>do: is abstract: Inner must implement it
+5 an object does not understand #size
+'''

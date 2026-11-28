@@ -75,6 +75,7 @@ impl<'gc> Mutator<'gc> {
             return Ok(Vec::new());
         }
         let prepared = self.prepared_for_commit(entries, epoch)?;
+        self.refuse_a_creation_in_progress(&prepared)?;
         let mut reparentings = self.clause_reparentings(&prepared, superclasses)?;
         // Before any walk of a superclass chain, each of which assumes it
         // ends.
@@ -809,11 +810,18 @@ impl<'gc> Mutator<'gc> {
             };
             // The class the level's clause names, by its declaration; the
             // owner's own level names its own.
-            let named = clause
-                .and_then(|_| self.heap.class_named(current))
-                .and_then(|named| self.heap.class_declaration(named))
-                .and_then(|declaration| self.heap.known_mixin_id(&declaration))
-                .unwrap_or(mixin);
+            // A level a clause added names a class object, whose declaration
+            // is registered: its class object applies it, or, body-less, is
+            // a level of a registered declaration's clause.
+            let named = match clause {
+                None => mixin,
+                Some(_) => self
+                    .heap
+                    .class_named(current)
+                    .and_then(|named| self.heap.class_declaration(named))
+                    .and_then(|declaration| self.heap.known_mixin_id(&declaration))
+                    .expect("internal: a level's named class has a registered declaration"),
+            };
             let count = mixins.entry(named).or_insert(0);
             let occurrence = *count;
             *count += 1;
@@ -3564,8 +3572,7 @@ mod tests {
         let module = interpreter
             .enter(|mutator| mutator.heap.module_source(outer_id))
             .expect("Outer's text");
-        // The removed class leaves the indentation it stood after, and the
-        // added one's line break follows it, which indoc would trim.
+        // The removed class's lines go whole, their indentation with them.
         let expected = indoc! {"
             class Outer = Object new () (
               public before = ( ^'ä🙂' )
@@ -3574,12 +3581,10 @@ mod tests {
             )
               /// Ende ä 🙂
               public after = ( ^'🙂ü' )
-            INDENT
 
             public class Added = () ( public b = ( ^'é' ) )
             )
-        "}
-        .replace("INDENT", "  ");
+        "};
         assert_eq!(module, expected);
         for (selector, expected) in [("before", "ä🙂"), ("after", "🙂ü")] {
             let answer = send(&mut interpreter, &instance, selector);

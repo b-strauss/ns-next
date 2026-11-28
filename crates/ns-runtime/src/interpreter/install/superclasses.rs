@@ -403,6 +403,56 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// Refuses `prepared` when it changes the clauses, or the shape, of a
+    /// nested declaration a class object of which is being created: an
+    /// enclosing object's hidden slot for it holds the creation's marker,
+    /// its superclass clause still running further down the stack -- the
+    /// install's own caller, typically. The creation would go on to build
+    /// the class object from that clause's answer and the declaration's new
+    /// version, a class object the install's walk never saw and its clauses
+    /// never answered for. A walk of the space, only when a nested
+    /// declaration's clauses change.
+    pub(super) fn refuse_a_creation_in_progress(
+        &self,
+        prepared: &PreparedInstall,
+    ) -> Result<(), String> {
+        let nested: Vec<MixinId> = prepared
+            .clauses_changed
+            .iter()
+            .copied()
+            .filter(|id| self.heap.enclosing_mixin_id(*id).is_some())
+            .collect();
+        if nested.is_empty() {
+            return Ok(());
+        }
+        let mut found = None;
+        self.heap.each_object(|object| {
+            if found.is_some() {
+                return;
+            }
+            let Some(application) = self.heap.class_application(self.heap.object_class(object))
+            else {
+                return;
+            };
+            // A creation's marker is the one `SmallInteger` a hidden slot
+            // holds (`nested::begin_creation`).
+            found = nested.iter().copied().find(|id| {
+                application.nested_slot.get(id).is_some_and(|index| {
+                    self.heap
+                        .instance_field(object, *index)
+                        .is_some_and(|value| value.as_small_integer().is_some())
+                })
+            });
+        });
+        match found {
+            Some(id) => Err(format!(
+                "{} is being created, and an install does not change its superclass meanwhile",
+                self.declaration_name(id)
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// The reflected name of the declaration `id`'s current version.
     fn declaration_name(&self, id: MixinId) -> String {
         self.heap

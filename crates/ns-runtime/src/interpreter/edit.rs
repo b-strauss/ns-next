@@ -993,6 +993,35 @@ fn member_range(member: &ast::Member) -> (u32, u32) {
     (start, span.end)
 }
 
+/// `start..end` widened to the whole lines it covers when nothing but
+/// spaces and tabs stands before it on its first line and after it on its
+/// last, so that a removed member leaves no line of indentation behind;
+/// otherwise as it is. Spans are byte offsets, and the widening steps over
+/// ASCII only, so it stays on character boundaries.
+fn whole_lines(text: &str, start: u32, end: u32) -> (u32, u32) {
+    let bytes = text.as_bytes();
+    let (start_index, end_index) = (start as usize, end as usize);
+    let blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
+    let line_start = bytes[..start_index]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |position| position + 1);
+    let line_end = bytes[end_index..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(bytes.len(), |position| end_index + position + 1);
+    let before_blank = bytes[line_start..start_index].iter().all(blank);
+    let after_blank = bytes[end_index..line_end]
+        .iter()
+        .all(|byte| blank(byte) || *byte == b'\n' || *byte == b'\r');
+    if !(before_blank && after_blank) {
+        return (start, end);
+    }
+    let offset =
+        |index: usize| u32::try_from(index).expect("internal: a span's lines lie within its text");
+    (offset(line_start), offset(line_end))
+}
+
 /// The kind and name of a member.
 fn member_kind_and_name(member: &ast::Member) -> (MemberKind, String) {
     match member {
@@ -1084,6 +1113,7 @@ fn apply_member_edit(
         return Ok(match existing(removed) {
             Some(member) => {
                 let (start, end) = member_range(member);
+                let (start, end) = whole_lines(text, start, end);
                 splice(text, start, end, "")
             }
             None => text.to_string(),
@@ -1563,9 +1593,10 @@ mod tests {
             inner_id,
             &instance_edit(vec![MemberEdit::RemoveMethod("a".to_string())]),
         );
+        // The removed member's lines go whole, their indentation with them.
         assert_eq!(
             &*removed.module_texts[0],
-            source.replace("/// Answers one.\n    public a = ( ^1 )", "")
+            source.replace("    /// Answers one.\n    public a = ( ^1 )\n", "")
         );
         let (_, fresh) = &removed.replacements[0];
         assert!(!fresh.methods.contains_key(&Symbol::intern("a")));

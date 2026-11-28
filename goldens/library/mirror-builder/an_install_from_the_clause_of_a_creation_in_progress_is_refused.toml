@@ -1,0 +1,6 @@
+rules = ["runtime.install.superclass"]
+stdout = '''
+#base
+Inner is being created, and an install does not change its superclass meanwhile
+#base
+'''

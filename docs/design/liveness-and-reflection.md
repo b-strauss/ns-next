@@ -1128,12 +1128,27 @@ the user on 2026-11-22 (1 to 8) and 2026-11-27 (8's interface, 9, 10 and
    class object after its superclass and after the class its clause
    named (`Mutator::reapply_order`; the goldens
    `a_level_naming_a_class_that_loses_its_body_applies_what_it_applies`
-   and `a_level_naming_a_class_that_gains_a_body_applies_its_mixin`). A
+   and `a_level_naming_a_class_that_gains_a_body_applies_its_mixin`). An
+   install that changes the clauses or the shape of a declaration one of
+   whose class objects is being created -- an enclosing object's hidden
+   slot holds the creation's marker, its clause, typically the install's
+   own caller, still running -- is refused before the commit, since the
+   creation would build a class object from its old clause's answer and
+   the new version, one the walk never saw
+   (`Mutator::refuse_a_creation_in_progress`; the golden
+   `an_install_from_the_clause_of_a_creation_in_progress_is_refused`). A
+   class re-parented onto or off a builtin with a representation of its
+   own, `Array` say, keeps its instances ordinary objects, as a fresh one
+   is, since a subclass of a builtin gets no payload ([core-library.md](core-library.md),
+   "A user subclass gets no payload"): no instance's format changes, and
+   an instance whose format the bulk forward refuses still refuses the
+   install (`refuse_an_unmigratable_instance`; the golden
+   `a_reparenting_onto_a_builtin_keeps_instances_ordinary_objects`). A
    module's root evaluates nothing: its class object takes the superclass
    its fresh `root_shape` names, `Object`, `Value`, or `Value` applied
    over `Object`. Only class objects the program reaches are evaluated
    or refused: the Installer has a full collection served before the
-   preparation it keeps and again before the commit ("The three leaves"
+   preparation it keeps and again before the commit ("The three rows"
    below), since the walk of the space meets dead class objects too, and
    a clause's side effects would otherwise depend on the collector.
    Anything installed, or any module loaded, between the preparation and
