@@ -1,0 +1,54 @@
+/// Where an install changes a declaration's own `<:` clauses, its levels
+/// are paired by the class each clause names, in text order, not by the
+/// mixin each level applies: when the same install makes the class an
+/// earlier clause names lose its body, so that its level comes to apply
+/// the mixin a later clause applies too, the later clause's level keeps
+/// its slot values.
+class AChangedClauseListPairsLevelsByTheClassesItsClausesName = Object new () (
+  class Holder = Object new () (
+    public class Trait = Object new (
+      |
+        public mark ::= #initialized.
+      |
+    ) ()
+
+    public class Other = Object new (
+      |
+        public other ::= 2.
+      |
+    ) ()
+
+    public class Inner = Object new () (
+      public inner = (
+        ^#inner.
+      )
+    )
+
+    public class User = Object new <: Inner <: Trait () ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      holder = Holder new.
+      old = holder User new.
+      builder = (ClassMirror reflecting: Holder) mixin declaration asBuilder.
+    |
+    old mark: 'kept'.
+    builder instanceSide nestedClasses addFromSource: 'public class Inner = Object new <: Trait.'.
+    builder
+        instanceSide
+        nestedClasses addFromSource: 'public class User = Object new <: Inner <: Trait <: Other () ()'.
+    builder install.
+    transcript
+        print: old mark;
+        show: ' ';
+        print: old other;
+        show: ' ';
+        print: holder User new mark;
+        show: ' ';
+        print: holder User new other;
+        newLine.
+  )
+)

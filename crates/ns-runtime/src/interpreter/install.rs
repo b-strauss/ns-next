@@ -781,7 +781,8 @@ impl<'gc> Mutator<'gc> {
         }
         let mut groups: IdentityMap<MixinId, u32> = IdentityMap::default();
         // The open group: its owner, its number among the owner's groups,
-        // the last clause it took and its mixins' counts.
+        // the last clause it took and the counts of the classes its
+        // clauses name.
         let mut open: Option<(MixinId, u32, usize, IdentityMap<MixinId, u32>)> = None;
         let mut levels: Vec<(Rc<MixinApplication>, LevelName)> = Vec::with_capacity(chain.len());
         for current in chain.into_iter().rev() {
@@ -806,11 +807,18 @@ impl<'gc> Mutator<'gc> {
             let Some((_, group, last, mixins)) = open.as_mut() else {
                 unreachable!("internal: a group is open");
             };
-            let count = mixins.entry(mixin).or_insert(0);
+            // The class the level's clause names, by its declaration; the
+            // owner's own level names its own.
+            let named = clause
+                .and_then(|_| self.heap.class_named(current))
+                .and_then(|named| self.heap.class_declaration(named))
+                .and_then(|declaration| self.heap.known_mixin_id(&declaration))
+                .unwrap_or(mixin);
+            let count = mixins.entry(named).or_insert(0);
             let occurrence = *count;
             *count += 1;
             let place = if clauses_changed.contains(&owner) {
-                LevelPlace::Occurrence(occurrence)
+                LevelPlace::Occurrence { named, occurrence }
             } else {
                 clause.map_or(LevelPlace::Own, |(_, index)| LevelPlace::Clause(index))
             };

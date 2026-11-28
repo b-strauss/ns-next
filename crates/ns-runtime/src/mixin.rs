@@ -1623,14 +1623,19 @@ pub(crate) struct LevelName {
 /// gaining or losing a body -- and a count of the mixin's levels would
 /// then shift onto another clause's level, one nothing touched. Only
 /// where the owner's clauses themselves change, so that an index no
-/// longer names the same clause, is a level placed by its mixin's
-/// occurrence among the owner's levels in the text order of its clauses:
-/// the owner's first remaining `<: M` keeps the first former one's values.
+/// longer names the same clause, is a level placed by the clauses as
+/// written: by the class its clause names -- the owner's own declaration
+/// for its own level -- and that class's occurrence among the classes the
+/// owner's clauses name, in text order. So the owner's first remaining
+/// `<: M` keeps the values of the first former clause naming `M`, a level
+/// whose clause names another class than before starts nil, and a class
+/// an earlier clause names gaining or losing its body in the same install
+/// moves no value: the count is not over the mixins the levels apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LevelPlace {
     Clause(usize),
     Own,
-    Occurrence(u32),
+    Occurrence { named: MixinId, occurrence: u32 },
 }
 
 impl MixinApplication {
@@ -1673,7 +1678,10 @@ impl MixinApplication {
                     owner: id,
                     owner_occurrence: occurrence,
                     mixin: id,
-                    place: LevelPlace::Occurrence(0),
+                    place: LevelPlace::Occurrence {
+                        named: id,
+                        occurrence: 0,
+                    },
                 },
             ));
         }

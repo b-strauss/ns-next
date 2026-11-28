@@ -944,14 +944,19 @@ below):
   (the goldens
   `an_untouched_clause_level_keeps_its_values_when_a_named_class_loses_its_body`
   and `…_gains_a_body`) -- and only where the owner's clauses change, the
-  mixin's occurrence among its levels in the text order of its clauses.
+  class the level's clause names and that class's occurrence among the
+  classes the owner's clauses name, in text order: counted over the
+  mixins the levels apply, it would shift the same way when the same
+  install makes a named class gain or lose its body (the golden
+  `a_changed_clause_list_pairs_levels_by_the_classes_its_clauses_name`).
   A count from the chain's root would shift when a superclass gains or
   loses a clause applying a mixin a subclass's clause applies too, and
   hand the subclass's untouched level the lost one's values; a
   re-parenting rebuilds only the levels below the class it changes, so a
   count from the top shifts none above it. Where an owner's own clauses
-  change, its first remaining `<: M` takes the values of its first
-  former one, in text order (the goldens
+  change, its first remaining `<: M` takes the values of the first
+  former clause naming `M`, in text order, and a level whose clause names
+  another class than before starts nil (the goldens
   `a_lost_mixin_level_leaves_a_subclass_level_its_values` and
   `a_gained_mixin_level_starts_nil_beside_a_subclass_level`). A slot the edit adds, or moves to another level, or of a level a
   re-parented chain gains, is `nil`, and its

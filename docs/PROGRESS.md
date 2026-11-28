@@ -7825,7 +7825,8 @@ with its test reproduced first.
 - **An instance's fields named by their slots.** A stop showed every
   field as `field N`, and the platform's lazy slots as `nil`. A field is
   named from its class's application by the layout walk the install
-  copies fields by (`MixinApplication::field_layout`): a slot by its
+  copies fields by (`MixinApplication::checked_field_layout`, through
+  `lay_out_fields`): a slot by its
   name, a nested class's hidden slot by the class's name, a shadowed
   slot with its declaring mixin added -- `x (Base)`, numbered where one
   chain applies a mixin more than once, `x (M 2)`, and by its
