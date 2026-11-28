@@ -1072,16 +1072,23 @@ the instance will have):
   declines, and that send refuses a marked receiver whose `=` is
   `Value`'s, so the leaf and the fallback never answer one comparison
   apart. A slot pair whose receiver's side is of a class with its own
-  `=` is that `=`'s to decide, which is why the walk declines it
-  (`compare_node`); a mark on either side of such a pair is therefore no
-  reason to refuse, and the walk tests the marks of a pair below the
-  root only once it knows it decides the pair itself -- otherwise it
-  declines, and the fallback's send decides, refusing or not as that
-  `=` does. The walk answers whichever it meets first, a refusal, an
-  unequal pair or such a decline, in its order. The hash leaf refuses
-  its receiver and every marked object its walk hashes itself, since
-  hashing reads state; a slot of a class with its own `=` the walk
-  declines, and `valueHashOfSlots` sends that slot its own `hash`
+  `=` is that `=`'s to decide, whatever the other slot holds, so the
+  walk asks first, below the root, whether it computes the receiver
+  side's `=` itself (`receiver_equality`: `Value`'s, an immediate's, or
+  that of a number, a String or a Symbol of the kernel's own class or
+  of a class object whose `=` is `Behavior`'s) and declines the pair
+  where it does not -- before its tower and its class test, which would
+  answer by shape for a `=` that may answer otherwise, and before the
+  marks, which are no reason to refuse such a pair: the fallback's send
+  decides, refusing or not as that `=` does
+  (`goldens/library/value/a_slot_with_its_own_equality_is_compared_by_it_against_any_slot.ns`).
+  The lookup it makes for an instance is the one the walk made for it
+  anyway, handed on to `compare_node`. The walk answers whichever it
+  meets first, a refusal, an unequal pair or such a decline, in its
+  order. The hash leaf refuses its receiver and every marked object its
+  walk hashes itself, since hashing reads state; it declines on the
+  same slots the equality walk declines on, before answering any by its
+  shape, and `valueHashOfSlots` sends such a slot its own `hash`
   (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`).
   A refusal is an error, never a decline: a decline would run
   `valueEquals:` or `valueHashOfSlots`, which would compare or hash

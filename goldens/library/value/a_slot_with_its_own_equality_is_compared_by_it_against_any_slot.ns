@@ -1,0 +1,51 @@
+/// newspeak-spec.pdf 3.1.1: a value compares each slot with the slot's own
+/// `=`. `Agreeable`'s `=` answers `true` for anything, so a `Box` holding
+/// one equals a `Box` holding `3` or `nil` -- whether the `Agreeable` is
+/// complete or still under construction, in its own initializer -- while a
+/// `Box` holding `3` or `nil` compares its slot with `3`'s or `nil`'s `=`,
+/// which finds an `Agreeable` unequal.
+///
+/// Each answer is kept in a slot -- a String is a value -- so the
+/// instances complete.
+class ASlotWithItsOwnEqualityIsComparedByItAgainstAnySlot = Object <: Value () (
+  public class Box on: aContents = Value new (
+    |
+      public contents = aContents.
+    |
+  ) ()
+
+  public class Agreeable = Value new (
+    |
+      public againstAnInteger = ((Box on: self) = (Box on: 3)) printString.
+      public againstNil = ((Box on: self) = (Box on: nil)) printString.
+      public integerAgainstIt = ((Box on: 3) = (Box on: self)) printString.
+    |
+  ) (
+    public = other = (
+      ^true.
+    )
+
+    public hash = (
+      ^7.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      agreeable = Agreeable new.
+    |
+    platform transcript
+        show: agreeable againstAnInteger;
+        newLine;
+        show: agreeable againstNil;
+        newLine;
+        show: agreeable integerAgainstIt;
+        newLine;
+        show: ((Box on: agreeable) = (Box on: 3)) printString;
+        newLine;
+        show: ((Box on: agreeable) = (Box on: nil)) printString;
+        newLine;
+        show: ((Box on: 3) = (Box on: agreeable)) printString;
+        newLine.
+  )
+)

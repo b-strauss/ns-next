@@ -493,7 +493,9 @@ identity method `==` as `^self = other` (`r[semantics.value.identity]`)
 requires an identity method a value's class declares to "return the same
 results as `Value`'s equality method", and a send of `=` makes that true by
 construction for every subclass. Where a leaf declines — a slot whose class
-brings its own `=`, a shape it does not handle, its node budget — the
+brings its own `=`, declined before the walk's tower or class test could
+answer for it by shape (`builtins/value.rs`, `receiver_equality`), a
+shape it does not handle, its node budget — the
 failure block runs `valueEquals:` or `valueHashOfSlots`, which walk the
 slots from Newspeak and send `=` or `hash` to each. Those two read a slot
 through `valueSlotCountOf:` and `valueSlotOf:at:`, which name their subject

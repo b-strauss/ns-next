@@ -302,6 +302,81 @@ fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -
     }
 }
 
+/// How a walk stands to the `=` of a node below its root, which the
+/// fallback compares by sending it `=` (`valueEquals:`) and hashes by
+/// sending it `hash` (`valueHashOfSlots`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiverEquality {
+    /// A `=` the walk computes bit for bit by a rule of its own: an
+    /// immediate's, a `String`'s or `Symbol`'s, a boxed `Float`'s, a
+    /// `LargeInteger`'s or a `Fraction`'s, each of exactly the kernel's
+    /// class, and a class object's whose `=` is `Behavior`'s or
+    /// `Metaclass`'s. The rules are `numbers::tower`'s and `text`'s, the
+    /// ones those classes' own `=` leaves call.
+    Walked,
+    /// `Value`'s own `=`, the derived equality, whose state the walk
+    /// unfolds (`state_is_a_value`).
+    Derived,
+    /// Any other `=` -- a value class's own, an ordinary object's identity
+    /// -- which only a send can answer, so the walk declines.
+    Own,
+}
+
+/// What the walks know about `value`'s `=`, asked of every node below the
+/// root before anything is answered by its shape.
+///
+/// An immediate costs nothing; an object its class word, compared with
+/// the kernel's classes, and for an instance the lookup of `=` that
+/// `compare_node` and `hash_node` would make anyway. Only a class object
+/// needs more: the lookup of its own `=` and of `Behavior`'s and
+/// `Metaclass`'s, since a program may declare `=` on a class side.
+fn receiver_equality<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> ReceiverEquality {
+    let Some(object) = value.as_object() else {
+        return ReceiverEquality::Walked;
+    };
+    let heap = mutator.heap();
+    if heap.is_class(object) {
+        let Lookup::Method(found, _) =
+            dispatch::lookup_public(heap, heap.object_class(object), Symbol::EQUALS)
+        else {
+            return ReceiverEquality::Own;
+        };
+        let behaviors = [BuiltinClass::Class, BuiltinClass::Metaclass]
+            .into_iter()
+            .any(|kind| {
+                matches!(
+                    dispatch::lookup_public(heap, mutator.builtin_class(kind), Symbol::EQUALS),
+                    Lookup::Method(method, _) if Rc::ptr_eq(&method, &found)
+                )
+            });
+        return if behaviors {
+            ReceiverEquality::Walked
+        } else {
+            ReceiverEquality::Own
+        };
+    }
+    let class = heap.object_class(object);
+    // Exactly the kernel's classes: a program's subclass may declare an
+    // `=` of its own over the same shape -- a `Fraction` subclass holds a
+    // numerator and a denominator -- and is asked like any other class.
+    let walked = [
+        BuiltinClass::String,
+        BuiltinClass::Symbol,
+        BuiltinClass::Float,
+        BuiltinClass::LargeInteger,
+        BuiltinClass::Fraction,
+    ]
+    .into_iter()
+    .any(|kind| class.same(mutator.builtin_class(kind)));
+    if walked {
+        ReceiverEquality::Walked
+    } else if state_is_a_value(mutator, object) {
+        ReceiverEquality::Derived
+    } else {
+        ReceiverEquality::Own
+    }
+}
+
 /// The **declared** slots of `object`, in declaration order, copied out so
 /// the walk holds no borrow of the heap while it goes on. The *indices*
 /// are never copied out: they are read through `with_declared_slots`, which
@@ -327,10 +402,14 @@ fn slots_of<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Vec<Va
 /// The two nodes' classes are `derived_equality`'s to compare, before this
 /// runs: they are identical, or two class objects of one application that
 /// the walk goes on to compare as a pair of their own.
+///
+/// `receiver` is what `receiver_equality` already found for `first`, if
+/// the walk asked, so that the lookup of its `=` is made once a pair.
 fn compare_node<'gc>(
     mutator: &Mutator<'gc>,
     first: Value<'gc>,
     second: Value<'gc>,
+    receiver: Option<ReceiverEquality>,
 ) -> Option<Pair<'gc>> {
     // A number equals only a number of its value, whatever its class --
     // decided whichever side is the number, so that a node with no number
@@ -360,7 +439,11 @@ fn compare_node<'gc>(
                     Some(second),
                 )));
             }
-            state_is_a_value(mutator, left).then_some(Pair::State(left, right))
+            let derived = receiver.map_or_else(
+                || state_is_a_value(mutator, left),
+                |receiver| receiver == ReceiverEquality::Derived,
+            );
+            derived.then_some(Pair::State(left, right))
         }
         // One application, two shapes: nothing builds such a pair today,
         // and answering "unequal" is the reading that cannot claim an
@@ -369,8 +452,14 @@ fn compare_node<'gc>(
     }
 }
 
-/// One node of the hash walk: `None` declines the whole hash.
-fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>> {
+/// One node of the hash walk: `None` declines the whole hash. `receiver`
+/// is what `receiver_equality` already found for `value`, if the walk
+/// asked, as for `compare_node`.
+fn hash_node<'gc>(
+    mutator: &Mutator<'gc>,
+    value: Value<'gc>,
+    receiver: Option<ReceiverEquality>,
+) -> Option<Node<'gc>> {
     // Every number's slot hash is its numeric hash folded by
     // `content_hash`: equal numbers in two slots -- `3` and `3.0` -- hash
     // alike, as `compare_node` makes them equal, and the fold keeps a
@@ -412,7 +501,11 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             if let Some(hash) = mutator.heap().string_hash(object) {
                 return Some(Node::Leaf(hash));
             }
-            state_is_a_value(mutator, object).then_some(Node::State(object))
+            let derived = receiver.map_or_else(
+                || state_is_a_value(mutator, object),
+                |receiver| receiver == ReceiverEquality::Derived,
+            );
+            derived.then_some(Node::State(object))
         }
     }
 }
@@ -521,24 +614,27 @@ fn derived_equality<'gc>(
     while let Some((first, second)) = root.take().or_else(|| work.pop()) {
         // Only the first pair taken is the root.
         let at_root = std::mem::take(&mut examining_root);
+        // Below the root, a pair is one `valueEquals:` compares by sending
+        // `=` to the receiver's side, so the walk answers it only where it
+        // computes that `=` itself -- before the tower and the classes,
+        // which answer by shape and would otherwise speak for a class whose
+        // own `=` might answer differently: `(Box on: aTag) = (Box on: 3)`
+        // is whatever `Tag>>=` says. The root's receiver has reached
+        // `Value>>=`, whose leaf this is.
+        let receiver = (!at_root).then(|| receiver_equality(mutator, first));
+        if receiver == Some(ReceiverEquality::Own) {
+            return Ok(None);
+        }
         // An instance whose factory has not returned has no state yet
         // (§3.1.1, "have been initialized"), and `Value`'s `=` answers no
         // question whose answer depends on it -- decided by the user on
         // 2026-11-28. On the receiver's side of a pair, the side `=` is
         // sent to, it answers nothing at all, before anything else is
-        // compared -- wherever that `=` is `Value`'s. The root's receiver
-        // has reached `Value>>=`. Any other pair is one `valueEquals:`
-        // sends `=` for when this walk declines, and that send refuses its
-        // receiver only where the receiver's class keeps `Value`'s `=`: a
-        // class with its own `=` decides the pair itself, which this walk
-        // leaves to it by declining (`compare_node`), and so a receiver of
-        // such a class is no reason to refuse -- the pair goes on to the
-        // class test and the decline as it would complete, and the walk
-        // and the send never answer apart. The argument's side is tested
-        // below, once the classes have had their say.
-        if let Some(object) = under_construction(mutator, first)
-            && (at_root || compare_node(mutator, first, second).is_some())
-        {
+        // compared: the walk has just made sure the pair's `=` is one it
+        // computes, and so one that refuses its receiver as `valueEquals:`'s
+        // send would. The argument's side is tested below, once the classes
+        // have had their say.
+        if let Some(object) = under_construction(mutator, first) {
             return Err(object);
         }
         // The classes first, for every shape: §3.1.1's equality is equality
@@ -591,17 +687,13 @@ fn derived_equality<'gc>(
         // `false` above without reading it -- `nil = aPoint`, `3 = aPoint`.
         // Past that the comparison would read its slots, which it does not
         // have yet. A number is never under construction, so the tower's
-        // pairs need no test. Below the root, a pair this walk declines is
-        // decided by its receiver's own `=`, which `valueEquals:` sends and
-        // which may answer without the argument's state, so the argument is
-        // refused only where the walk decides the pair itself.
-        let pair = compare_node(mutator, first, second);
-        if let Some(object) = under_construction(mutator, second)
-            && (at_root || pair.is_some())
-        {
+        // pairs need no test. A pair whose receiver's `=` is its own was
+        // declined above, so this refuses only where the walk decides the
+        // pair itself.
+        if let Some(object) = under_construction(mutator, second) {
             return Err(object);
         }
-        let Some(pair) = pair else {
+        let Some(pair) = compare_node(mutator, first, second, receiver) else {
             return Ok(None);
         };
         match pair {
@@ -773,21 +865,25 @@ fn derived_hash<'gc>(
     while let Some(current) = work.pop() {
         // Only the first node taken is the root.
         let at_root = std::mem::take(&mut examining_root);
+        // Below the root, a node is a slot `valueHashOfSlots` hashes by
+        // sending it `hash`, so the walk hashes it only where the equality
+        // walk would compare it itself -- before any answer by its shape --
+        // and declines on exactly the nodes that walk declines on: a slot
+        // whose class brings its own `=` is hashed by its own `hash`, which
+        // has to agree with that `=`, not with this walk.
+        let receiver = (!at_root).then(|| receiver_equality(mutator, current));
+        if receiver == Some(ReceiverEquality::Own) {
+            return Ok(None);
+        }
         // A hash taken from the slots an instance under construction has
         // so far would change once the rest were initialized, and a hash
         // cut off there would be no hash of the value it becomes -- so the
         // root, which has reached `Value>>hash`, and every node this walk
-        // hashes itself refuse. A slot the walk declines is hashed by its
-        // own `hash`, which `valueHashOfSlots` sends and which may answer
-        // without the state: refusing it here would answer apart from that
-        // send.
-        let node = hash_node(mutator, current);
-        if let Some(object) = under_construction(mutator, current)
-            && (at_root || node.is_some())
-        {
+        // hashes itself refuse.
+        if let Some(object) = under_construction(mutator, current) {
             return Err(object);
         }
-        let Some(node) = node else {
+        let Some(node) = hash_node(mutator, current, receiver) else {
             return Ok(None);
         };
         match node {
@@ -1027,7 +1123,8 @@ mod tests {
     ///
     /// `undefinedObject`, `truth` and `falsity` answer second instances of
     /// the constants' kernel classes, heap objects, and `myBoolean` one of a
-    /// program's subclass of `Boolean`; `large`, `negativeLarge` and
+    /// program's subclass of `Boolean`; `agreeable` one of a value class
+    /// whose own `=` answers `true` for anything; `large`, `negativeLarge` and
     /// `boxedFloat` answer numbers that are objects.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
@@ -1063,6 +1160,11 @@ mod tests {
                     | public itself = box at: 1 put: self. public never = Error signal: 'stop'. |
                 ) ()
                 class MyBoolean = Boolean new () ()
+                class Agreeable = Value new () (
+                    public = other = ( ^true )
+                    public hash = ( ^7 )
+                )
+                public agreeable = ( ^Agreeable new )
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
                 public undefinedObject = ( ^UndefinedObject new )
                 public truth = ( ^True new )
@@ -2560,6 +2662,87 @@ mod tests {
                 std::slice::from_ref(argument),
             );
             assert!(answered_flag(&mut interpreter, &sent, what), "{what}");
+        }
+    }
+
+    /// A slot whose class declares its own `=` is compared by that `=`
+    /// whatever the other slot holds -- `nil`, `3`, a value of another
+    /// class -- complete or under construction: `Agreeable>>=` answers
+    /// `true` for anything, so the walk declines the pair, before its tower
+    /// and its class test could answer `false` by shape, and the send
+    /// answers `true`. With the other slot on the receiver's side, the
+    /// walk decides the pair itself and answers `false`, an `Agreeable`
+    /// under construction included, since the classes cannot be equal.
+    // spec: semantics.value.under-construction
+    // spec: runtime.value.equality
+    #[test]
+    fn a_slot_with_its_own_equality_is_compared_by_it_against_any_slot() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let complete = send(&mut interpreter, &fixture, "agreeable", &[]);
+        let marked = send(&mut interpreter, &fixture, "agreeable", &[]);
+        interpreter.enter(|mutator| {
+            let object = mutator.fetch(&marked).as_object().expect("an Agreeable");
+            mutator.heap.mark_under_construction(object);
+        });
+        let one = interpreter.stash(Value::small_integer(1));
+        let point = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), one]);
+        let others = [
+            ("nil", interpreter.stash(Value::nil())),
+            ("3", interpreter.stash(Value::small_integer(3))),
+            ("a point", point),
+        ];
+        for (agreeable, which) in [(&complete, "agreeable"), (&marked, "marked agreeable")] {
+            let holding_agreeable = send(
+                &mut interpreter,
+                &fixture,
+                "boxed:",
+                std::slice::from_ref(agreeable),
+            );
+            for (name, other) in &others {
+                let holding_other = send(
+                    &mut interpreter,
+                    &fixture,
+                    "boxed:",
+                    std::slice::from_ref(other),
+                );
+                for (receiver, argument, expected, what) in [
+                    (
+                        &holding_agreeable,
+                        &holding_other,
+                        true,
+                        format!("boxed {which} = boxed {name}"),
+                    ),
+                    (
+                        &holding_other,
+                        &holding_agreeable,
+                        false,
+                        format!("boxed {name} = boxed {which}"),
+                    ),
+                ] {
+                    let compared = leaf(
+                        &mut interpreter,
+                        "value:sameAs:ifFail:",
+                        receiver,
+                        std::slice::from_ref(argument),
+                    );
+                    let leaf_answer = answered_boolean(&mut interpreter, compared, &what);
+                    // The walk declines, never answers `false`, where the
+                    // receiver's slot brings its own `=`.
+                    let expected_leaf = if expected { None } else { Some(false) };
+                    assert_eq!(leaf_answer, expected_leaf, "{what}: the leaf");
+                    let sent = send(
+                        &mut interpreter,
+                        receiver,
+                        "=",
+                        std::slice::from_ref(argument),
+                    );
+                    assert_eq!(
+                        answered_flag(&mut interpreter, &sent, &what),
+                        expected,
+                        "{what}"
+                    );
+                }
+            }
         }
     }
 

@@ -932,9 +932,10 @@ Both decoder passes read the record as an instance record, held to every
 rule one is held to; the second shapes its placeholder with the mark
 (`PlaceholderFormat::InstanceUnderConstruction`), so the loaded instance
 refuses `Value`'s `=`, `hash` and `==` as it did before the image was
-written, and `inspect` prints it as an `instance under construction`. Writing it as an
-ordinary instance would have made it, once loaded, a value its factory never
-finished (`an_aborted_construction_stays_under_construction_across_an_image`).
+written, and `inspect` prints it as an `instance under construction`.
+Writing it as an ordinary instance would have made it, once loaded, a
+value its factory never finished
+(`an_aborted_construction_stays_under_construction_across_an_image`).
 
 **Frames are object records.** A reified frame is an object of the frame
 format, an instance of the kernel-private `Activation`
@@ -1474,8 +1475,9 @@ offsets"; `a_record_of_a_program_class_carries_exactly_its_layout`,
 its instance, so an `OBJECT_INSTANCE_UNDER_CONSTRUCTION` record of any
 other class -- a program's, a shipped one's or a builtin's -- is a crafted
 image's, and the mark would make value equality and hash refuse that
-object for good. Whether a program class inherits `Value` is its application's,
-which exists only once the applications are rebuilt, so the check
+object for good. Whether a program class inherits `Value` is its
+application's, which exists only once the applications are rebuilt, so
+the check
 (`check_under_construction`) runs beside `check_program_instances`, after
 that and before any decoded code runs, over every record
 (`UnderConstructionOutsideValueClass`;

@@ -83,12 +83,13 @@ a question whose answer is fixed whatever its state is answered:
    value's class and its class cannot be equal -- `nil = aPoint`, `true =
    aPoint`, `3 = aPoint`, `'abc' = aPoint` -- and `Value`'s own `=`
    signals when they can.
-3. Among a value's slots, the comparison holds each pair it reaches to
-   the same rule, the receiver's slot as the receiver and the argument's
-   as the argument, and `hash` signals at every one it reaches -- so a
-   pair whose receiver's slot is of a class that declares its own `=` is
-   decided by that `=`, and a slot of such a class is hashed by its own
-   `hash`, each signalling only where it does.
+3. Among a value's slots, a pair whose receiver's slot is of a class
+   that declares its own `=` is decided by that `=` alone, whatever the
+   other slot holds, and a slot of such a class is hashed by its own
+   `hash`, each signalling only where it does. The comparison holds
+   every other pair it reaches to the rule above, the receiver's slot as
+   the receiver and the argument's as the argument, and `hash` signals
+   at every other slot it reaches.
 
 Each signal is an `Error` naming its class and the question, under the
 selector the question is asked by -- `=` or `hash` as sent, `=` for `==`
