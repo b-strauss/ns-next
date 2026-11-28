@@ -1,12 +1,12 @@
 //! Preparing an install of several builders' entries as one: the entries
 //! refused together before any text is touched, grouped by module, each
-//! module's entries spliced into one text in their order and compiled
-//! once (`Mutator::prepare_module`), and each module declared from source
-//! compiled on its own (`Mutator::prepare_source_module`); the install epoch that tells a
-//! commit whether anything was installed since its preparation; and the
-//! one prepared install kept between the leaves that prepare and commit
-//! it (`docs/design/liveness-and-reflection.md`, "The complete
-//! install", decision 8).
+//! module's entries spliced into one text in their order and compiled once
+//! (`Mutator::prepare_module`), and each module declared from source
+//! compiled on its own (`Mutator::prepare_source_module`); the install
+//! epoch that tells a commit whether anything was installed since its
+//! preparation; and the one prepared install kept between the leaves that
+//! prepare and commit it (`docs/design/liveness-and-reflection.md`, "The
+//! complete install", decision 8).
 
 use std::rc::Rc;
 

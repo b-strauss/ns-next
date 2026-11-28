@@ -1,7 +1,7 @@
 //! Installing the edits of several builders atomically: the commit after
 //! `Mutator::prepare_install` (`docs/design/liveness-and-reflection.md`,
 //! "A MirrorBuilder and an atomic install", "The commit runs nothing and
-//! has no safepoint"; "The complete install", "The three leaves").
+//! has no safepoint"; "The complete install", "The three rows").
 
 pub(super) mod prepared;
 pub(super) mod superclasses;
@@ -40,21 +40,21 @@ impl<'gc> Mutator<'gc> {
     /// changed.
     ///
     /// Refuses an `epoch` an install or a module load has moved since the
-    /// preparation that answered it; takes the prepared install the
-    /// leaves cached for the same entries and epoch, or prepares them
-    /// again; and finds what the install reaches, which is where
-    /// everything that can fail fails. Then commits, once for every
-    /// module's replacements together, without running Newspeak code,
-    /// sending to a user object or polling a safepoint, so that no program
-    /// observes a half-installed edit (`docs/design/liveness-and-reflection.md`,
-    /// "The commit runs nothing and has no safepoint"): every
-    /// fresh mixin under its old id, every class object found re-applied
-    /// superclasses first -- keeping its identity, as every class object
-    /// does, a class object whose superclass clause changed over what the
-    /// new clause answered -- the instances whose layout changed copied
-    /// into the new one by name and forwarded in one bulk forward, the
-    /// others restamped, every module declared from source registered
-    /// with its tree of ids; and raises the epoch.
+    /// preparation that answered it; takes the prepared install the leaves
+    /// cached for the same entries and epoch, or prepares them again; and
+    /// finds what the install reaches, which is where everything that can
+    /// fail fails. Then commits, once for every module's replacements
+    /// together, without running Newspeak code, sending to a user object or
+    /// polling a safepoint, so that no program observes a half-installed
+    /// edit (`docs/design/liveness-and-reflection.md`, "The commit runs
+    /// nothing and has no safepoint"): every fresh mixin under its old id,
+    /// every class object found re-applied superclasses first -- keeping
+    /// its identity, as every class object does, a class object whose
+    /// superclass clause changed over what the new clause answered -- the
+    /// instances whose layout changed copied into the new one by name and
+    /// forwarded in one bulk forward, the others restamped, every module
+    /// declared from source registered with its tree of ids; and raises the
+    /// epoch.
     ///
     /// `superclasses` pairs each class object whose new superclass clause
     /// the preparation asked to evaluate (`Mutator::clause_class_objects`)
@@ -271,12 +271,12 @@ impl<'gc> Mutator<'gc> {
     /// identity the loader would refuse beside the world's other modules
     /// (`docs/design/modules.md`, decision 5), and `modules`, the roots of
     /// the modules the install declares from source, likewise: two of one
-    /// id and one version, or two of one id where either has none, with
-    /// the loader's message naming both paths, earlier row first and the
+    /// id and one version, or two of one id where either has none, with the
+    /// loader's message naming both paths, earlier row first and the
     /// modules from source last, in entry order, each named as
-    /// `modules::PATHLESS_MODULE` for want of a path. Only the ids an install changes or adds are
-    /// compared, so an install never answers for a pair of modules it did
-    /// not touch.
+    /// `modules::PATHLESS_MODULE` for want of a path. Only the ids an
+    /// install changes or adds are compared, so an install never answers
+    /// for a pair of modules it did not touch.
     pub(super) fn refuse_a_colliding_identity(
         &self,
         replacements: &[(MixinId, Rc<Mixin>)],
@@ -3599,7 +3599,7 @@ mod tests {
     // A superclass change
 
     /// A module whose classes' superclasses an install changes, through
-    /// the VM mirror's three install leaves as `Installer>>install` sends
+    /// the VM mirror's three install rows as `Installer>>install` sends
     /// them: each clause the preparation names evaluated, then the commit
     /// given the class objects with their answers.
     const REPARENTED: &str = indoc! {"

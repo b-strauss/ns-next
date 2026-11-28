@@ -343,8 +343,9 @@ install begins, in the order the class objects were made -- a class
 object nothing reaches is never evaluated, however long the memory
 still holds it: each as program code in the enclosing object its
 declaration was evaluated in, as part of the class that declares it,
-against the world as it is before the install, and caching nothing. A clause that signals ends the install
-with what it signals, changing nothing. If an answer is no class, signal
+against the world as it is before the install, and caching nothing. A
+clause that signals ends the install with what it signals, changing
+nothing. If an answer is no class, signal
 `the superclass clause of Inner answered 3, which is no class`; if it
 would make a class inherit from itself, signal `the superclass clause of
 Base answers a class that inherits from Base`; and change nothing. The

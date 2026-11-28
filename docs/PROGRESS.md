@@ -9033,7 +9033,7 @@ entry it kept against a fresh lookup. Thirty-one goldens under
 and `vm.heap.obsolete-mixin-out-of-tree` state it.
 
 - `e8d8d883`, `296b5001` -- the last decision and the plan.
-- `d0754a2b` -- several builders through three leaves.
+- `d0754a2b` -- several builders through three rows.
 - `63c065ac`, `6db8fddc` -- the scoped invalidation and its trace.
 - `14aa3fe5`, `c265637a` -- the INSTALL stress mode.
 - `af9d8443`, `e5c8a886` -- renames, access changes and a module's identity.

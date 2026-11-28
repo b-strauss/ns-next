@@ -247,7 +247,8 @@ impl Ord for Version {
                     (true, true) => Ordering::Equal,
                     (true, false) => Ordering::Greater,
                     (false, true) => Ordering::Less,
-                    // Vec's order puts a prefix before its extensions, as semver does.
+                    // Vec's order puts a prefix before its extensions, as
+                    // semver does.
                     (false, false) => self.pre_release.cmp(&other.pre_release),
                 },
             )
@@ -448,8 +449,9 @@ pub fn check_unreserved(id: &ModuleId) -> Result<(), String> {
 /// Refuses two modules no request could pick between (decision 5): two of
 /// one id and one version, and two of one id where either has no version.
 /// Names the first such pair in the order given, the earlier module first,
-/// by their paths, a module without one as `PATHLESS_MODULE`. Linear in the count, each id's modules grouped as they
-/// come, since an image's module section is input of any size.
+/// by their paths, a module without one as `PATHLESS_MODULE`. Linear in the
+/// count, each id's modules grouped as they come, since an image's module
+/// section is input of any size.
 pub fn check_distinct<'identity>(
     identities: impl IntoIterator<Item = &'identity ModuleIdentity>,
 ) -> Result<(), String> {

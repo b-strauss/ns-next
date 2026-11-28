@@ -163,8 +163,9 @@ impl Edit {
     /// The edit `value` stands for, `{ header. instanceOperations.
     /// classOperations. newName }`; `None` for anything else, which the
     /// leaf declines. A class side takes method operations only, since
-    /// §6.3's class side declares nothing else: no lazy slot and no class. A new name is a Symbol or
-    /// `nil`; it is interned, as the class's name it would become is.
+    /// §6.3's class side declares nothing else: no lazy slot and no class.
+    /// A new name is a Symbol or `nil`; it is interned, as the class's name
+    /// it would become is.
     pub(crate) fn from_value<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Edit> {
         let elements = heap.array_elements(value.as_object()?)?;
         let [header, instance_side, class_side, new_name] = elements.as_slice() else {
@@ -2003,8 +2004,9 @@ mod tests {
         );
     }
 
-    /// The edits of `OUTER`'s `Inner` that `every_refusal_answers_its_diagnostic`
-    /// and `a_failed_preparation_changes_nothing` refuse, with their
+    /// The edits of `OUTER`'s `Inner` that
+    /// `every_refusal_answers_its_diagnostic` and
+    /// `a_failed_preparation_changes_nothing` refuse, with their
     /// diagnostics.
     fn refused_edits() -> Vec<(Edit, &'static str)> {
         vec![

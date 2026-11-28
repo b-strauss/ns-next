@@ -1,6 +1,6 @@
-/// `fromSource:` takes one class declaration: a text of two, or of a
-/// member after the class, is refused, as is one of none -- an empty
-/// text, a comment alone, the text `3 asString` answers --, and so is one that does not parse
+/// `fromSource:` takes one class declaration: a text of two, or of a member
+/// after the class, is refused, as is one of none (an empty text, a comment
+/// alone, the text `3 asString` answers), and so is one that does not parse
 /// or does not resolve, each with its line, declaring nothing; a text with
 /// non-ASCII characters keeps every one of them.
 class AModuleTextOfTwoDeclarationsIsRefused = Object new () (

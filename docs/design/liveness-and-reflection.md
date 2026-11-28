@@ -21,7 +21,7 @@
 > layout changed migrated by one bulk forward, or changes nothing.
 > The complete install is built, the first of hot swap's three batches
 > ("The complete install"): several builders install as one
-> (`installAtomically:`) through three VM-mirror leaves, a superclass
+> (`installAtomically:`) through three VM-mirror rows, a superclass
 > change evaluates the new clause for every class object the program
 > reaches, in their creation order, nested classes are added, replaced
 > and removed -- a removed one living on, obsolete, until nothing
@@ -1334,7 +1334,7 @@ the user on 2026-11-22 (1 to 8) and 2026-11-27 (8's interface, 9, 10 and
     a carve-out. The image record writes only the stamp new: a record's
     kind says where those fields are non-nil.
 
-**The three leaves.** A leaf runs no Newspeak code, so a superclass
+**The three rows.** A row runs no Newspeak code itself, so a superclass
 clause is evaluated between two of them, and the install is three
 `MIRROR` rows, appended after `block:valueWithArguments:ifFail:`, reported
 as `prepareInstall`, `evaluateClause:epoch:` and

@@ -459,7 +459,7 @@ Java counterparts in `benchmarks/are-we-fast-yet/java/`, Python ones in
   longer lose a cyclic-definition diagnosis. **The complete install --
   built** (2026-11-27,
   [its plan](superpowers/plans/2026-11-27-1554-complete-install.md)):
-  several builders installed as one through three VM-mirror leaves, a
+  several builders installed as one through three VM-mirror rows, a
   superclass change evaluated for every class object the program reaches
   in creation order, nested classes added, replaced and removed -- a
   removed one living on obsolete and carried by an image --, renames,
@@ -2294,7 +2294,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   drops a class object of the changed declaration, which the preparation
   after it would then evaluate. No test pins it.
   [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
-  complete install", "The three leaves".
+  complete install", "The three rows".
 - **A syntax error found while splicing an install's edits**
   (2026-10-19) reports a line of the module's composed text: its current
   text with the install's edits of that module spliced in, in the

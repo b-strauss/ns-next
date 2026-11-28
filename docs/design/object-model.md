@@ -2825,8 +2825,10 @@ location through every cached send and cost every program 2.5-7.4%.
 names one application, and an application's
 chain does not change while the caches persist:
 `Heap::class_set_application` on a superclass is the case that changes it
-under an unchanged guard, and the atomic install invalidates the caches
-after it. Recorded guards follow the
+under an unchanged guard, and the atomic install vacates, scoped, every
+cache entry and optimized copy decided for an application it re-applies
+after it ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Caches and their dependency keys"). Recorded guards follow the
 guard id's reuse rule: an activation's recorded guard keeps its
 application, and so the guard, from being reclaimed, and a collection
 that frees a guard vacates every cache entry and the verified pair that

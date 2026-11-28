@@ -293,10 +293,11 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
     /// object wherever it occurs, and so is a Float of the same bits, so
     /// two mirrors on `3` are equal. A reflectee that is a future is
     /// compared as the future, never forced; a future passed as `other` is
-    /// forced by the first message sent to it. Among mirrors it keeps `Object>>=`'s contract, and
-    /// `hash` agrees; it asks `other` whether it is an object mirror and
-    /// for its reflectee, so an object of a program's that claims to be one
-    /// may answer so, and the symmetry with it is that object's own.
+    /// forced by the first message sent to it. Among mirrors it keeps
+    /// `Object>>=`'s contract, and `hash` agrees; it asks `other` whether
+    /// it is an object mirror and for its reflectee, so an object of a
+    /// program's that claims to be one may answer so, and the symmetry with
+    /// it is that object's own.
     ///
     /// @param other any object; sent `isKindOfObjectMirror`, and
     /// `reflectee` when it answers true.
@@ -2182,8 +2183,8 @@ class MirrorsFactory usingVmMirror: mirror kernel: kernel = Value (
   /// One group of a side's members a ClassDeclarationBuilder edits -- a
   /// side's methods, or the instance side's lazy slots or nested classes:
   /// it stages, through the builder, the addition or replacement of a
-  /// member from its text and the removal of one by its name. It answers no mirrors; the
-  /// builder's `source` answers what is staged.
+  /// member from its text and the removal of one by its name. It answers no
+  /// mirrors; the builder's `source` answers what is staged.
   ///
   /// @factory makes a group that stages its additions as `anAddSymbol`
   /// and its removals as `aRemoveSymbol` through `aBlock`, keeping the
