@@ -3001,8 +3001,9 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Sets `instance`'s under-construction mark: only a factory's
-    /// allocation of an instance of a value class does.
-    fn mark_under_construction(&mut self, instance: ObjectReference<'gc>) {
+    /// allocation of an instance of a value class does, and whatever
+    /// rebuilds a marked one -- an image's load, an install's migration.
+    pub(crate) fn mark_under_construction(&mut self, instance: ObjectReference<'gc>) {
         let header = self.header(instance);
         debug_assert_eq!(header.format(), Format::FixedPointers);
         self.set_header(instance, header.with_under_construction(true));

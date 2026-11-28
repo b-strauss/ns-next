@@ -906,11 +906,23 @@ impl<'gc> Mutator<'gc> {
                 .get(&self.heap.object_identity_key(class))
                 .copied()
                 .expect("internal: the walk collects the class of every instance it collects");
+            // A construction cut short stays cut short across the edit, but
+            // only while the class still inherits `Value`: the mark is a
+            // value's alone, and an instance of a class re-parented off
+            // `Value` is an ordinary object, whose identity is its own.
+            let marked = self.heap.object_under_construction(*instance)
+                && self.heap.class_inherits_value(classes[position]);
             let Some(copy) = &copies[position] else {
+                if !marked {
+                    self.heap.complete_instance(*instance);
+                }
                 migration.kept.push(*instance);
                 continue;
             };
             let replacement = self.heap.allocate_instance(classes[position], copy.len());
+            if marked {
+                self.heap.mark_under_construction(replacement);
+            }
             for (field, source) in copy.iter().enumerate() {
                 let Some(source) = source else {
                     continue;
@@ -1892,6 +1904,84 @@ mod tests {
             assert_eq!(mutator.heap().instance_field_count(object), Some(2));
             assert_eq!(mutator.heap().object_identity_hash(object), hash);
         });
+    }
+
+    /// A value module whose `Point`'s construction is cut short when its
+    /// factory is told to fail, after its slot initializer has stored the
+    /// instance into `box`.
+    const CONSTRUCTING: &str = indoc! {"
+        class Outer = Object <: Value () (
+          public class Point x: xValue box: box fail: fail = Value new (
+            | public x = xValue. public itself = box at: 1 put: self. public check = fail ifTrue: [Error signal: 'stop']. |
+          ) ()
+          public escaped = (
+            | box = Array new: 1. |
+            [Point x: 1 box: box fail: true] on: Error do: [:error | nil].
+            ^box at: 1
+          )
+          public complete = (
+            ^Point x: 2 box: (Array new: 1) fail: false
+          )
+        ) : ()
+    "};
+
+    /// The text a value question about a `Point` under construction
+    /// signals.
+    const POINT_UNDER_CONSTRUCTION: &str = concat!(
+        "an instance of Point is still under construction: ",
+        "an instance of a value class is a value only once its factory has returned"
+    );
+
+    /// An `Outer` of `CONSTRUCTING`, a `Point` whose construction was cut
+    /// short, a complete one and `Point`'s id.
+    fn escaped_and_complete() -> (Interpreter, Root, Root, MixinId) {
+        let (mut interpreter, outer) = load(CONSTRUCTING);
+        let instance = expect_ok(interpreter.instantiate(&outer, &[]), "an Outer");
+        let escaped = send(&mut interpreter, &instance, "escaped");
+        let complete = send(&mut interpreter, &instance, "complete");
+        let point_id = nested_id_of(&mut interpreter, &outer, "Point");
+        (interpreter, escaped, complete, point_id)
+    }
+
+    /// Whether `root` names an object marked under construction.
+    fn under_construction(interpreter: &mut Interpreter, root: &Root) -> bool {
+        interpreter.enter(|mutator| {
+            let object = mutator.fetch(root).as_object().expect("an instance");
+            mutator.heap().object_under_construction(object)
+        })
+    }
+
+    /// A migration rebuilds an instance through an allocation that marks
+    /// nothing, so the mark goes with the instance by hand: a construction
+    /// cut short stays cut short across an edit, and a complete value
+    /// stays a value.
+    // spec: runtime.install
+    #[test]
+    fn a_migrated_instance_keeps_its_construction_mark() {
+        let (mut interpreter, escaped, complete, point_id) = escaped_and_complete();
+        install(
+            &mut interpreter,
+            point_id,
+            &header_edit(
+                "public class Point x: xValue box: box fail: fail = Value new (| public x = xValue. public itself = box at: 1 put: self. public check = fail ifTrue: [Error signal: 'stop']. public added = 3. |)",
+            ),
+        );
+        let fields = interpreter.enter(|mutator| {
+            let object = mutator.fetch(&escaped).as_object().expect("a Point");
+            mutator.heap().instance_field_count(object)
+        });
+        assert_eq!(fields, Some(4), "the instance migrated to the new layout");
+        assert!(under_construction(&mut interpreter, &escaped));
+        match interpreter.send(&escaped, Symbol::intern("hash"), &[]) {
+            Err(HostSignal::Error(error)) => {
+                assert_eq!(error.message.to_string(), POINT_UNDER_CONSTRUCTION);
+            }
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+            Ok(_) => panic!("the migrated instance under construction answered hash"),
+        }
+        assert!(!under_construction(&mut interpreter, &complete));
+        let hash = send(&mut interpreter, &complete, "hash");
+        assert!(integer(&mut interpreter, &hash).is_some());
     }
 
     /// Whether the class objects `first` and `second` share their

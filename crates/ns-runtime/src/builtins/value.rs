@@ -2290,4 +2290,40 @@ mod tests {
         assert_eq!(selector, Symbol::intern("hash"));
         assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
     }
+
+    /// The mark is a header bit, and every mover copies or slides the
+    /// header whole: a cut-short construction stays marked, and a complete
+    /// value unmarked, through a scavenge into a survivor space, a tenure
+    /// into the old space and a full collection's compaction.
+    // spec: vm.heap.under-construction-only-on-value-instances
+    #[test]
+    fn a_construction_mark_survives_a_scavenge_and_a_full_collection() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let one = interpreter.stash(Value::small_integer(1));
+        let point = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), one]);
+        let marks = |interpreter: &mut Interpreter| {
+            interpreter.enter(|mutator| {
+                [&escaped, &point].map(|root| {
+                    let object = mutator.fetch(root).as_object().expect("an instance");
+                    mutator.heap().object_under_construction(object)
+                })
+            })
+        };
+        assert_eq!(
+            marks(&mut interpreter),
+            [true, false],
+            "before any collection"
+        );
+        interpreter.scavenge_now();
+        assert_eq!(marks(&mut interpreter), [true, false], "after a scavenge");
+        interpreter.tenure_now();
+        assert_eq!(marks(&mut interpreter), [true, false], "after a tenure");
+        interpreter.collect_now();
+        assert_eq!(
+            marks(&mut interpreter),
+            [true, false],
+            "after a full collection"
+        );
+    }
 }

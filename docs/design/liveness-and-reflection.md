@@ -968,7 +968,16 @@ below):
   `testAddShadowedSlotSuperclass`, `:77-145`) asserts that the two are kept
   apart, where taking the last slot of a name would overwrite the
   shadowed one. The fields are written through `Heap::instance_set_field`
-  and nothing is sent. The instances that keep their shape -- among them
+  and nothing is sent. The new-shape copy is allocated as a plain
+  instance, which carries no under-construction mark, so the migration
+  marks it by hand when the old instance was marked and its class still
+  inherits `Value`: a construction cut short stays cut short across the
+  edit, and a complete value stays one. A marked instance of a class the
+  install re-parented off `Value` loses the mark, copy or kept instance
+  alike, since the mark is a value's alone
+  (`r[vm.heap.under-construction-only-on-value-instances]`) -- left on,
+  it would refuse the questions an ordinary object answers and make the
+  world's image one the decoder refuses. The instances that keep their shape -- among them
   every class object whose metaclass was re-applied -- are restamped with
   their class's new guard in the same pass (`Heap::stamp_dispatch_ids`),
   rather than by a walk per class as `Heap::class_set_application` does.

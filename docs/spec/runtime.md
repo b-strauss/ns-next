@@ -366,8 +366,13 @@ A builder `fromSource:` in the list declares a module
    each new mixin the mixin of every application of the old one; for
    every instance whose layout changed, make a new instance of the new
    layout holding each slot of the same name and `nil` in each new one,
-   and [ForwardIdentity](#r-runtime.forward-identity) the old instances to
-   them. Then move the install epoch.
+   under construction exactly when the old instance was
+   ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction))
+   and its class still inherits from `Value`, and
+   [ForwardIdentity](#r-runtime.forward-identity) the old instances to
+   them; an instance under construction whose class no longer inherits
+   from `Value` is under construction no more, whether its layout changed
+   or not. Then move the install epoch.
 6. A running activation finishes with the code it began with; every send
    after step 5 finds the new methods.
 

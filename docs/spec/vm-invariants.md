@@ -678,15 +678,19 @@ Protects: [`runtime.instantiate`](runtime.md#r-runtime.instantiate),
 r[vm.heap.under-construction-only-on-value-instances]
 The under-construction mark is set only on an ordinary instance -- the
 format of an object of fixed pointer fields -- of a class that inherits
-from `Value`, by its factory's allocation, and cleared only by its
-factory's completion; no other allocation sets it, and an object of any
-other format never reads as marked. The mark shares its header bit with
+from `Value`, by its factory's allocation or by what rebuilds a marked
+instance and carries the mark over -- an image's load, an install's
+migration -- and cleared only by its factory's completion or by an
+install that re-parents its class off `Value`; no other allocation sets
+it, every mover keeps it, and an object of any other format never reads
+as marked. The mark shares its header bit with
 a large integer's sign, so a mark set or cleared on another format would
 change the integer's value, and a sign read as a mark would make a large
 integer look unfinished.
 
 Protects: [`runtime.instantiate`](runtime.md#r-runtime.instantiate),
 [`bytecode.instruction.complete-instance`](bytecode.md#r-bytecode.instruction.complete-instance),
+[`runtime.install`](runtime.md#r-runtime.install),
 [`semantics.literal.integer`](language/semantics.md#r-semantics.literal.integer)
 
 r[vm.heap.value-tags]
