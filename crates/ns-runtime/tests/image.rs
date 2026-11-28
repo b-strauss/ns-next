@@ -19955,8 +19955,8 @@ fn an_aborted_construction_stays_under_construction_across_an_image() {
         .enter(|mutator| text_or_class_name(mutator, mutator.fetch(&refused)));
     assert_eq!(
         refused,
-        "an instance of Point is still under construction: an instance of a value class is a \
-         value only once its factory has returned"
+        "cannot hash an instance of Point: it is still under construction, and an instance of \
+         a value class is a value only once its factory has returned"
     );
     let after = expect_ok(
         loaded

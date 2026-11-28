@@ -4,5 +4,5 @@ stdout = '''
 making a point
 '''
 stderr = '''
-Uncaught Newspeak error: an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned
+Uncaught Newspeak error: cannot hash an instance of Point: it is still under construction, and an instance of a value class is a value only once its factory has returned
 '''

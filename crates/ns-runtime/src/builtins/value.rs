@@ -52,7 +52,9 @@ use crate::builtins::numbers::tower;
 use crate::builtins::primitive::{Primitive, ValuePrimitive};
 use crate::builtins::text;
 use crate::dispatch::{self, Lookup};
-use crate::interpreter::instantiate::{class_object_is_a_value, under_construction_error};
+use crate::interpreter::instantiate::{
+    ValueQuestion, class_object_is_a_value, under_construction_error,
+};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -95,7 +97,11 @@ pub(crate) fn execute<'gc>(
                 Ok(equal) => equal?,
                 Err(object) => {
                     return Some(Err(under_construction_error(
-                        mutator, selector, receiver, object,
+                        mutator,
+                        ValueQuestion::Compare,
+                        selector,
+                        receiver,
+                        object,
                     )));
                 }
             };
@@ -113,7 +119,11 @@ pub(crate) fn execute<'gc>(
         ValuePrimitive::Hash => match derived_hash(mutator, receiver) {
             Ok(hash) => hash.map(|hash| Ok(Value::small_integer(hash))),
             Err(object) => Some(Err(under_construction_error(
-                mutator, selector, receiver, object,
+                mutator,
+                ValueQuestion::Hash,
+                selector,
+                receiver,
+                object,
             ))),
         },
         ValuePrimitive::SlotCount => {
@@ -408,8 +418,10 @@ fn under_construction<'gc>(
 }
 
 /// Whether `left` and `right` are equal as values; `None` is the decline,
-/// and `Err` the instance under construction the walk reached, which
-/// refuses the comparison whatever the other nodes would have answered.
+/// and `Err` the instance under construction the walk reached on a pair's
+/// receiver side, or on its argument side where the classes left the pair
+/// open, before it met an unequal pair: the walk answers whichever of the
+/// two it meets first.
 ///
 /// A pair already on `assumed` is taken to be equal: that is what makes a
 /// cyclic value answer `true` instead of unfolding forever, and it is
@@ -451,14 +463,16 @@ fn derived_equality<'gc>(
     // The root pair is charged like a pushed one.
     let mut charged = 1usize;
     while let Some((first, second)) = root.take().or_else(|| work.pop()) {
-        // Before anything else, the root pair included: an instance whose
-        // factory has not returned has no state yet, so no verdict --
-        // not even one the tower or the classes would reach without its
-        // slots -- may be answered for a pair it is part of (§3.1.1, "have
-        // been initialized").
-        if let Some(object) =
-            under_construction(mutator, first).or_else(|| under_construction(mutator, second))
-        {
+        // An instance whose factory has not returned has no state yet
+        // (§3.1.1, "have been initialized"), and answers no question whose
+        // answer depends on it -- decided by the user on 2026-11-28. On the
+        // receiver's side of a pair, the side `=` is sent to, it answers
+        // nothing at all, before anything else is compared: the pair is
+        // what `valueEquals:` sends `=` for when this walk declines, and
+        // that send refuses its receiver, so the walk does as the send
+        // would and the two never answer apart. The argument's side is
+        // tested below, once the classes have had their say.
+        if let Some(object) = under_construction(mutator, first) {
             return Err(object);
         }
         // The classes first, for every shape: §3.1.1's equality is equality
@@ -506,6 +520,15 @@ fn derived_equality<'gc>(
                 Some((Value::object(first_class), Value::object(second_class)))
             }
         };
+        // An argument under construction whose class cannot equal the
+        // receiver's is unequal to it whatever its state, and was answered
+        // `false` above without reading it -- `nil = aPoint`, `3 = aPoint`.
+        // Past that the comparison would read its slots, which it does not
+        // have yet. A number is never under construction, so the tower's
+        // pairs need no test.
+        if let Some(object) = under_construction(mutator, second) {
+            return Err(object);
+        }
         let Some(pair) = compare_node(mutator, first, second) else {
             return Ok(None);
         };
@@ -2193,11 +2216,18 @@ mod tests {
         );
     }
 
-    /// The text every refusal of a value question about an `Escaping`
-    /// still under construction carries.
-    const ESCAPING_UNDER_CONSTRUCTION: &str = concat!(
-        "an instance of Escaping is still under construction: ",
-        "an instance of a value class is a value only once its factory has returned"
+    /// The text `=`'s refusal of an `Escaping` still under construction
+    /// carries.
+    const ESCAPING_NOT_COMPARED: &str = concat!(
+        "cannot compare an instance of Escaping: it is still under construction, ",
+        "and an instance of a value class is a value only once its factory has returned"
+    );
+
+    /// The text `hash`'s refusal of an `Escaping` still under construction
+    /// carries.
+    const ESCAPING_NOT_HASHED: &str = concat!(
+        "cannot hash an instance of Escaping: it is still under construction, ",
+        "and an instance of a value class is a value only once its factory has returned"
     );
 
     /// The refusal `result` carries: its selector and its text. Panics on
@@ -2213,21 +2243,23 @@ mod tests {
         }
     }
 
-    /// `=` refuses a receiver or an argument whose factory never returned,
-    /// before it compares anything: its slots are not all initialized, so
-    /// it has no state to be equal by -- and a refusal, never a decline,
-    /// so `valueEquals:` never meets it either.
+    /// `=` refuses a receiver whose factory never returned, before it
+    /// compares anything: its slots are not all initialized, so it has no
+    /// state to be equal by -- and a refusal, never a decline, so
+    /// `valueEquals:` never meets it either.
     // spec: semantics.value.under-construction
+    // spec: runtime.value.equality
     #[test]
-    fn the_equality_leaf_refuses_an_operand_under_construction() {
+    fn the_equality_leaf_refuses_a_receiver_under_construction() {
         let (mut interpreter, fixture) = a_value_fixture();
         let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
         let one = interpreter.stash(Value::small_integer(1));
         let point = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), one]);
+        let nil = interpreter.stash(Value::nil());
         for (receiver, argument, what) in [
             (&escaped, &escaped, "escaped = escaped"),
             (&escaped, &point, "escaped = point"),
-            (&point, &escaped, "point = escaped"),
+            (&escaped, &nil, "escaped = nil"),
         ] {
             let compared = leaf(
                 &mut interpreter,
@@ -2237,7 +2269,39 @@ mod tests {
             );
             let (selector, message) = refusal(&mut interpreter, compared, what);
             assert_eq!(selector, Symbol::EQUALS, "{what}");
-            assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION, "{what}");
+            assert_eq!(message, ESCAPING_NOT_COMPARED, "{what}");
+        }
+    }
+
+    /// An argument whose factory never returned is unequal to a receiver
+    /// of a class it cannot be equal to: that answer is fixed whatever its
+    /// state, so the leaf gives it, `false`, without reading the state.
+    // spec: semantics.value.under-construction
+    // spec: runtime.value.equality
+    #[test]
+    fn the_equality_leaf_answers_an_argument_under_construction_of_another_class() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let one = interpreter.stash(Value::small_integer(1));
+        let point = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), one]);
+        let nil = interpreter.stash(Value::nil());
+        let truth = interpreter.stash(Value::boolean(true));
+        for (receiver, what) in [
+            (&point, "point = escaped"),
+            (&nil, "nil = escaped"),
+            (&truth, "true = escaped"),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                receiver,
+                std::slice::from_ref(&escaped),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                Some(false),
+                "{what}"
+            );
         }
     }
 
@@ -2252,7 +2316,7 @@ mod tests {
         let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &escaped, &[]);
         let (selector, message) = refusal(&mut interpreter, hashed, "escaped hash");
         assert_eq!(selector, Symbol::intern("hash"));
-        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
+        assert_eq!(message, ESCAPING_NOT_HASHED);
     }
 
     /// A complete value may hold one under construction -- storing it is
@@ -2284,11 +2348,56 @@ mod tests {
         );
         let (selector, message) = refusal(&mut interpreter, compared, "boxed = boxed");
         assert_eq!(selector, Symbol::EQUALS);
-        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
+        assert_eq!(message, ESCAPING_NOT_COMPARED);
         let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
         let (selector, message) = refusal(&mut interpreter, hashed, "boxed hash");
         assert_eq!(selector, Symbol::intern("hash"));
-        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
+        assert_eq!(message, ESCAPING_NOT_HASHED);
+    }
+
+    /// Among a value's slots, each pair is held to the rule `=` holds its
+    /// operands to, the receiver's side being the slot `valueEquals:`
+    /// would send `=` to: a slot under construction there refuses, and one
+    /// on the argument's side is unequal to a slot of a class it cannot be
+    /// equal to.
+    // spec: semantics.value.under-construction
+    // spec: runtime.value.equality
+    #[test]
+    fn the_walk_holds_each_pair_of_slots_to_the_rule_of_its_operands() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let nil = interpreter.stash(Value::nil());
+        let holding_escaped = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&escaped),
+        );
+        let holding_nil = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&nil),
+        );
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &holding_nil,
+            std::slice::from_ref(&holding_escaped),
+        );
+        assert_eq!(
+            answered_boolean(&mut interpreter, compared, "boxed nil = boxed escaped"),
+            Some(false)
+        );
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &holding_escaped,
+            std::slice::from_ref(&holding_nil),
+        );
+        let (selector, message) = refusal(&mut interpreter, compared, "boxed escaped = boxed nil");
+        assert_eq!(selector, Symbol::EQUALS);
+        assert_eq!(message, ESCAPING_NOT_COMPARED);
     }
 
     /// The mark is a header bit, and every mover copies or slides the

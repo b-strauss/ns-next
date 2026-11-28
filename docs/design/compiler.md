@@ -387,12 +387,13 @@ factory's own arguments, the body's argument registers, so it names no
 list (`InitializeInstance`), completes it (`CompleteInstance`), which an
 initializer cut short by an unwind or a signal never reaches, so that an
 instance of a value class stays marked under construction for good, and
-returns the instance (`Return`), not the initializer's answer. It depends on nothing but the arity, and needs no
-AST and no resolver; `mixin::factory_entry` attaches it to every factory
-entry, so no image carries one and none can forge one, and the reference
-lowering has no shape of its own to check here. A host's `Interpreter::instantiate` runs `factory_body` of its
-argument count, so a class object a host built by hand, with no
-metaclass, instantiates too.
+returns the instance (`Return`), not the initializer's answer. It
+depends on nothing but the arity, and needs no AST and no resolver;
+`mixin::factory_entry` attaches it to every factory entry, so no image
+carries one and none can forge one, and the reference lowering has no
+shape of its own to check here. A host's `Interpreter::instantiate` runs
+`factory_body` of its argument count, so a class object a host built by
+hand, with no metaclass, instantiates too.
 
 **The `u16` ceilings.** A step count is a `u16`. It never overflows,
 because the resolver refuses more than 1,024 `<:` clauses ("Limits"

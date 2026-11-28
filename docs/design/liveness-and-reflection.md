@@ -977,8 +977,9 @@ below):
   alike, since the mark is a value's alone
   (`r[vm.heap.under-construction-only-on-value-instances]`) -- left on,
   it would refuse the questions an ordinary object answers and make the
-  world's image one the decoder refuses. The instances that keep their shape -- among them
-  every class object whose metaclass was re-applied -- are restamped with
+  world's image one the decoder refuses. The instances that keep their
+  shape -- among them every class object whose metaclass was re-applied
+  -- are restamped with
   their class's new guard in the same pass (`Heap::stamp_dispatch_ids`),
   rather than by a walk per class as `Heap::class_set_application` does.
 - *Forward*: one bulk forward, `heap::forward_identity`

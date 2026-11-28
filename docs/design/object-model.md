@@ -1048,21 +1048,39 @@ Each factory unmarks only its own instance, so a value whose initializer
 builds another of its class completes the inner one first
 (`goldens/library/value/a_value_built_inside_another_ones_initializer_completes_on_its_own.ns`).
 
-While an instance is marked, every value question about it is refused rather
-than answered:
+While an instance is marked, it answers no question whose answer depends
+on its state, and a question whose answer is fixed whatever its state is
+answered (decided with the user on 2026-11-28: a question of the second
+kind has the same answer before and after the factory returns, so
+answering it reveals nothing of the partial state and withholds nothing
+the instance will have):
 
 - **`=` and `hash`**, and through them `==` and `identityHash`, which
   `Value` declares as `=` and `hash`. The equality leaf
-  (`builtins/value.rs`) refuses when the receiver or the argument is
-  marked, before anything else -- the numeric tower and the classes
-  included, since an answer they gave without the slots would still be an
-  answer about an object that has no state yet -- and when its walk reaches
-  a marked object among the slots; the hash leaf likewise for its receiver
-  and every object its walk reaches. A refusal is an error, never a
-  decline: a decline would run `valueEquals:` or `valueHashOfSlots`, which
-  would compare or hash exactly the partial state the refusal withholds.
-  Both name the marked object's class through one text,
-  `instantiate::under_construction_error`.
+  (`builtins/value.rs`) refuses a marked receiver before anything else --
+  the numeric tower and the classes included. A marked argument is
+  answered `false` where the walk's class comparison finds that the two
+  classes cannot be equal -- `nil = aPoint`, `true = aPoint`, as the
+  number, String and Symbol leaves already answer `3 = aPoint` and `'abc' =
+  aPoint` without reading the argument's state -- and refused where the
+  comparison would go on to its slots. Every pair the walk reaches among
+  the slots is held to the same rule, its receiver's side as the receiver:
+  that side is the slot `valueEquals:` sends `=` to when the leaf
+  declines, and that send refuses a marked receiver, so the leaf and the
+  fallback never answer one comparison apart. The walk answers whichever
+  it meets first, a refusal or an unequal pair, in its order. The hash
+  leaf refuses its receiver and every marked object its walk reaches, since
+  hashing reads state. A refusal is an error, never a decline: a decline
+  would run `valueEquals:` or `valueHashOfSlots`, which would compare or
+  hash exactly the partial state the refusal withholds
+  (`goldens/library/value/a_value_under_construction_compares_unequal_to_another_class.ns`).
+- Every refusal names the marked object's class and the question, through
+  one builder, `instantiate::under_construction_error`, in the "cannot
+  <action> …: <reason>" form of the other value errors -- `cannot compare
+  an instance of Point: it is still under construction, and an instance of
+  a value class is a value only once its factory has returned`, `cannot
+  hash an instance of Point: …` and `cannot tell whether an instance of
+  Point is a value: …` (the wording decided with the user on 2026-11-28).
 - **Whether it is a value**, `objectIsValue:ifFail:` (`builtins/weak.rs`,
   after its decline for a future). `false` would be wrong too: the instance
   becomes a value the moment its factory returns, so an `Ephemeron` or a

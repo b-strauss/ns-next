@@ -2390,8 +2390,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   far reference, never as a value, since Bracha's formal semantics defines
   the transfer of a value only for a fully initialized one
   (`prior-art/newspeak/formal-semantics/actor-semantics.tex:41`;
-  `r[semantics.value.under-construction]`). The treatment of in-flight cross-actor promises at snapshot
-  time still needs design. How a turn waits for a promise is open
+  `r[semantics.value.under-construction]`). The treatment of in-flight
+  cross-actor promises at snapshot time still needs design. How a turn
+  waits for a promise is open
   (decided with the user on 2026-11-24): callbacks and promise pipelining
   as Bracha and E have it, `await` as Swift's actors have it, or a parked
   stack as Go's goroutines and Java's virtual threads have it

@@ -465,11 +465,13 @@ derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
 Newspeak. Both refuse, rather than decline, an instance still under
-construction that they meet -- the receiver, the argument or any object
-the walk reaches -- with `instantiate::under_construction_error`'s text,
-so that `valueEquals:` and `valueHashOfSlots` never compare or hash the
-slots built so far; `objectIsValue:ifFail:`, `Ephemeron`'s and
-`WeakMap`'s question about a key, refuses one with the same text
+construction whose state their answer would depend on -- the hash every
+one it reaches, the equality one on a pair's receiver side, or on its
+argument side where the classes could be equal -- with
+`instantiate::under_construction_error`'s text, so that `valueEquals:`
+and `valueHashOfSlots` never compare or hash the slots built so far;
+`objectIsValue:ifFail:`, `Ephemeron`'s and `WeakMap`'s question about a
+key, refuses one through the same builder
 ([object-model.md](object-model.md), "A value object's four conditions",
 `r[semantics.value.under-construction]`).
 

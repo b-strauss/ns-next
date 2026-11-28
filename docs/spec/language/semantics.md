@@ -67,19 +67,34 @@ once its factory has returned, its slots all initialized (Bracha §3.1.1:
 factory that never returns -- an unwind past its initializer, or a signal
 the initializer does not handle -- leaves it under construction for good,
 while its class inherits from `Value` (an install that re-parents the
-class off `Value` clears the mark, `r[runtime.install]`). While an instance is under construction, `=` and `hash` sent to it, `=`
-sent to a value with it as the argument, either of them reaching it among
-a value's slots, `==` and `identityHash`, which answer as `=` and `hash`
-do, and the question whether it is a value -- which an `Ephemeron`'s
-`key:` and a `WeakMap`'s `at:put:` ask of a key -- signal `an instance of
-Point is still under construction: an instance of a value class is a value
-only once its factory has returned`, naming its class, an `Error` under
-the selector the refused question is asked by: `=` or `hash` as sent,
-`=` for `==` and `hash` for `identityHash`, whose answers they are, and
-`isValue` for the question a key is asked. Storing it -- in a variable, an `Array` or a slot of
-another value -- and using it as the enclosing object of the classes
-nested in it are allowed, so a value module can build values in its own
-slots and two values can reach each other.
+class off `Value` clears the mark,
+[`runtime.install`](../runtime.md#r-runtime.install)). An instance under
+construction answers no question whose answer depends on its state, and
+a question whose answer is fixed whatever its state is answered:
+
+1. `=` and `hash` sent to it, `==` and `identityHash`, which answer as
+   `=` and `hash` do, and the question whether it is a value -- which an
+   `Ephemeron`'s `key:` and a `WeakMap`'s `at:put:` ask of a key --
+   signal.
+2. `=` sent to a value with it as the argument answers `false` when the
+   value's class and its class cannot be equal -- `nil = aPoint`, `true =
+   aPoint`, `3 = aPoint`, `'abc' = aPoint` -- and signals when they can.
+3. Among a value's slots, the comparison holds each pair it reaches to
+   the same rule, the receiver's slot as the receiver and the argument's
+   as the argument, and `hash` signals at every one it reaches.
+
+Each signal is an `Error` naming its class and the question, under the
+selector the question is asked by -- `=` or `hash` as sent, `=` for `==`
+and `hash` for `identityHash`, whose answers they are, and `isValue` for
+the question a key is asked: `cannot compare an instance of Point: it is
+still under construction, and an instance of a value class is a value
+only once its factory has returned` for `=`, `cannot hash an instance of
+Point: …` for `hash` and `cannot tell whether an instance of Point is a
+value: …` for `isValue`, each ending as the first does. Storing it -- in
+a variable, an `Array` or a slot of another value -- and using it as the
+enclosing object of the classes nested in it are allowed, so a value
+module can build values in its own slots and two values can reach each
+other.
 
 r[semantics.value.identity]
 A value object has no identity of its own: `Value` defines `==` as `=`,

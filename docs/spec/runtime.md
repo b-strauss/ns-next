@@ -222,31 +222,41 @@ r[runtime.value.equality]
 ([`semantics.value.identity`](language/semantics.md#r-semantics.value.identity)).
 
 1. Walk the pairs of objects the comparison reaches, from *left* and
-   *right*: each pair's classes and then its slots, in declaration
-   order, a pair already met assumed equal.
-2. If a pair holds an object under construction
-   ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction))
-   -- *left* or *right* itself, before anything else is compared --
-   signal `an instance of C is still under construction: an instance of
-   a value class is a value only once its factory has returned`, naming
-   that object's class; no slot's own `=` is sent.
-3. Otherwise answer `false` at the first pair found unequal, and `true`
-   when none is; a slot whose class declares its own `=` is compared by
-   sending it.
+   *right*: each pair's classes and then its slots, the last declared
+   first, a pair already met assumed equal. Where a slot's class declares
+   its own `=`, compare the slots instead in declaration order, each pair
+   by sending `=` to the receiver's slot, which runs this operation again
+   for a pair that is `Value`'s.
+2. At each pair, if its receiver's side is under construction
+   ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)),
+   signal `cannot compare an instance of C: it is still under
+   construction, and an instance of a value class is a value only once
+   its factory has returned`, naming that object's class, before anything
+   else is compared.
+3. Otherwise, if the pair's classes cannot be equal, the pair is unequal,
+   whatever the state of its argument's side.
+4. Otherwise, if its argument's side is under construction, signal step
+   2's text naming that object's class.
+5. The walk ends at the first pair that signals or is unequal, in its
+   order, answering `false` for an unequal one -- so a slot's own `=`
+   sent before it has run -- and `true` when none is.
 
 r[runtime.value.hash]
 `Value`'s `hash`, sent to *value*: an Integer computed from the objects
 its slots reach, alike for every two values `=` makes equal. If *value*,
-or an object its slots reach, is under construction, signal the text of
-[ValueEquality](#r-runtime.value.equality)'s step 2, naming that
+or an object its slots reach, is under construction, signal `cannot hash
+an instance of C: it is still under construction, and an instance of a
+value class is a value only once its factory has returned`, naming that
 object's class, instead of answering.
 
 r[runtime.value.is-value]
 Whether *object* is a value object, as an `Ephemeron`'s `key:` and a
 `WeakMap`'s `at:put:` ask of a key before refusing a value: an object
 under construction is neither a value nor an ordinary object yet, and the
-question signals the text of [ValueEquality](#r-runtime.value.equality)'s
-step 2 for it, naming its class, instead of answering.
+question signals `cannot tell whether an instance of C is a value: it is
+still under construction, and an instance of a value class is a value
+only once its factory has returned` for it, naming its class, instead of
+answering.
 
 ## Unwinding and exceptions
 

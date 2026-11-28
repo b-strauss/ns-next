@@ -7344,10 +7344,11 @@ per instruction), found these causes, each of which is a reason still true:
   (`enter_factory_body`) and pushes the initializer above it, or, for a class
   that runs no code, writes the answer and starts the factory at its
   `CompleteInstance`, which the run loop runs as it does after an
-  initializer's return. The frame is kept, so reflection, the depth count, unwinding and
-  stack traces see what they saw; no program code runs between the push and
-  those two instructions (`r[vm.activation.factory-prefix-uninterruptible]`),
-  so the only difference is a skipped safepoint. The
+  initializer's return. The frame is kept, so reflection, the depth count,
+  unwinding and stack traces see what they saw; no program code runs
+  between the push and those two instructions
+  (`r[vm.activation.factory-prefix-uninterruptible]`), so the only
+  difference is a skipped safepoint. The
   initializer is decided before the allocation, and any error returns the
   factory unexecuted at program counter 0 so the loop raises it in the
   body's order (`an_allocation_refused_is_raised_before_the_initializers_error`).
@@ -14337,8 +14338,8 @@ sends and the inline caches in machine code.
   word back, with no barrier, since the header holds no pointer; an
   immediate or an object of another format is left alone, as
   `Heap::complete_instance` leaves it, and optimized code emits it as a
-  simple node through that template. **An initializer invocation is a compiled call**
-  (`jit::sends::initialize`): `InitializeSuperclass` and
+  simple node through that template. **An initializer invocation is a
+  compiled call** (`jit::sends::initialize`): `InitializeSuperclass` and
   `InitializeAppliedLevel` place their arguments on their slots, and
   `InitializeInstance` copies the factory's own above its window, where
   `Mutator::push_above` pushes the initializer, once the stack has room for

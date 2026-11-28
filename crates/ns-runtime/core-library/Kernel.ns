@@ -2083,10 +2083,14 @@ class Kernel vmMirror: mirror = Value (
   ///
   /// An instance becomes a value when its factory returns: §3.1.1 also asks
   /// that its slots "have been initialized", and until they all are it is
-  /// under construction. While it is, `=`, `hash`, `==` and `identityHash`
+  /// under construction. While it is, it answers no question whose answer
+  /// depends on its state: `=`, `hash`, `==` and `identityHash` sent to it
   /// signal rather than answer from the slots built so far, and so does
   /// asking whether it is a value, as `Ephemeron>>key:` and
-  /// `WeakMap>>at:put:` do; it may still be stored, in a slot of another
+  /// `WeakMap>>at:put:` do. A question whose answer is fixed whatever its
+  /// state is answered: compared as the argument of an object of a class
+  /// it cannot be equal to -- `nil = aPoint`, `3 = aPoint` -- it is
+  /// unequal to it. It may still be stored, in a slot of another
   /// value among other places, and be the enclosing object of the classes
   /// nested in it. A factory cut short -- by an unwind past it, or a signal
   /// its initializer does not handle -- never returns, and an instance it
@@ -2151,10 +2155,14 @@ class Kernel vmMirror: mirror = Value (
     /// @answers whether `other` is of a class equal to the receiver's and
     /// its slots, in declaration order, are equal to the receiver's, each
     /// compared with `=`; a Boolean.
-    /// @signals Error 'an instance of … is still under construction: an
-    /// instance of a value class is a value only once its factory has
-    /// returned', naming the class, while the receiver, `other` or a value
-    /// the comparison reaches is under construction.
+    /// @signals Error 'cannot compare an instance of …: it is still under
+    /// construction, and an instance of a value class is a value only once
+    /// its factory has returned', naming the class, while the receiver is
+    /// under construction, or `other` is and its class could be equal to
+    /// the receiver's -- an `other` of a class that cannot is unequal
+    /// whatever its state, and answered `false` -- and likewise for each
+    /// pair of slots the comparison reaches before it finds an unequal
+    /// one, the receiver's slot in the receiver's part.
     /// @see `valueEquals:` and `Object>>=`.
     public = other = (
       ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other].
@@ -2179,9 +2187,11 @@ class Kernel vmMirror: mirror = Value (
     /// @param other any object.
     /// @answers what `=` answers; a subclass's own `=` decides it, so it
     /// is a Boolean only where that `=` answers one.
-    /// @signals Error what `=` signals, while the receiver, `other` or a
-    /// value the comparison reaches is under construction: an instance
-    /// whose factory has not returned has no identity yet.
+    /// @signals Error what `=` signals, where `=` signals for an instance
+    /// under construction -- the receiver, or an `other` or a value the
+    /// comparison reaches whose class could be equal to the one it is
+    /// compared with: an instance whose factory has not returned has no
+    /// identity yet.
     /// @see `=` and `Object>>==`.
     public == other = (
       ^self = other.
@@ -2205,11 +2215,11 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// @answers an Integer computed from the slots, alike for every two
     /// values `=` makes equal.
-    /// @signals Error 'an instance of … is still under construction: an
-    /// instance of a value class is a value only once its factory has
-    /// returned', naming the class, while the receiver or a value its
-    /// slots reach is under construction: a hash of the slots built so far
-    /// would change once the rest were.
+    /// @signals Error 'cannot hash an instance of …: it is still under
+    /// construction, and an instance of a value class is a value only once
+    /// its factory has returned', naming the class, while the receiver or a
+    /// value its slots reach is under construction: a hash of the slots
+    /// built so far would change once the rest were.
     /// @see `=` and `Object>>hash`.
     public hash = (
       ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots].
@@ -6707,10 +6717,10 @@ class Kernel vmMirror: mirror = Value (
     /// that is not a value, got …' followed by its printString, for a
     /// value other than nil -- an Integer, a Float, true, false, a String,
     /// an instance of a value class, a future whose value is one.
-    /// @signals Error 'an instance of … is still under construction: an
-    /// instance of a value class is a value only once its factory has
-    /// returned', naming the class, while `newKey` is an instance of a
-    /// value class under construction.
+    /// @signals Error 'cannot tell whether an instance of … is a value: it
+    /// is still under construction, and an instance of a value class is a
+    /// value only once its factory has returned', naming the class, while
+    /// `newKey` is an instance of a value class under construction.
     public key: newKey = (
       newKey isNil ifFalse: [
         (vmMirror objectIsValue: newKey ifFail: [false]) ifTrue: [
@@ -6855,10 +6865,10 @@ class Kernel vmMirror: mirror = Value (
     /// is not a value, got …' followed by its printString, for nil or a
     /// value -- an Integer, a Float, true, false, a String, an instance of
     /// a value class, a future whose value is one.
-    /// @signals Error 'an instance of … is still under construction: an
-    /// instance of a value class is a value only once its factory has
-    /// returned', naming the class, while `key` is an instance of a value
-    /// class under construction.
+    /// @signals Error 'cannot tell whether an instance of … is a value: it
+    /// is still under construction, and an instance of a value class is a
+    /// value only once its factory has returned', naming the class, while
+    /// `key` is an instance of a value class under construction.
     public at: key put: value = (
       |
         mask

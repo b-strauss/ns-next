@@ -21,7 +21,7 @@ class CutShortConstructionsInAHotLoopStayUnderConstruction = Object <: Value () 
   refusedHashes: count = (
     |
       refused ::= 0.
-      expected = 'an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned'.
+      expected = 'cannot hash an instance of Point: it is still under construction, and an instance of a value class is a value only once its factory has returned'.
     |
     1 to: count do: [:index |
       |

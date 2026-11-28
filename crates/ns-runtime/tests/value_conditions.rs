@@ -267,7 +267,7 @@ fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiat
 fn a_value_is_marked_only_until_its_factory_returns() {
     let source = indoc! {"
         class Probe = Value () (
-          class Point x: ax box: box fail: block = Value (
+          class Point x: anX box: box fail: block = Value (
             | public x = box at: 1 put: self. public y = block value. |
           ) ()
           public answer = (

@@ -1,0 +1,48 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized", and a value equals only an object of its
+/// own class. An instance of a value class whose factory has not returned
+/// answers no question whose answer depends on its state, but one whose
+/// answer is fixed whatever its state is answered: `nil`, `true`, `3` and
+/// `'abc'` are of classes no Point can be equal to, so each of them is
+/// unequal to it. As the receiver, and as the argument of a Point -- whose
+/// comparison would go on to the slots -- it refuses.
+///
+/// Each answer and each refusal is kept in a slot -- a String is a value --
+/// so the point completes.
+class AValueUnderConstructionComparesUnequalToAnotherClass = Object <: Value () (
+  public class Point x: anX other: other = Value new (
+    |
+      public x = anX.
+      public nilAsReceiver = (nil = self) printString.
+      public trueAsReceiver = (true = self) printString.
+      public integerAsReceiver = (3 = self) printString.
+      public stringAsReceiver = ('abc' = self) printString.
+      public comparedWithAnInteger = [(self = 3) printString] on: Error do: [:error |
+        error messageText.
+      ].
+      public comparedByAPoint = [(other = self) printString] on: Error do: [:error |
+        error messageText.
+      ].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      origin = Point x: 0 other: nil.
+      point = Point x: 1 other: origin.
+    |
+    platform transcript
+        show: point nilAsReceiver;
+        newLine;
+        show: point trueAsReceiver;
+        newLine;
+        show: point integerAsReceiver;
+        newLine;
+        show: point stringAsReceiver;
+        newLine;
+        show: point comparedWithAnInteger;
+        newLine;
+        show: point comparedByAPoint;
+        newLine.
+  )
+)

@@ -71,7 +71,11 @@ pub(crate) fn execute<'gc>(
                 .filter(|object| mutator.heap.object_under_construction(*object))
             {
                 return Some(Err(instantiate::under_construction_error(
-                    mutator, selector, receiver, object,
+                    mutator,
+                    instantiate::ValueQuestion::IsValue,
+                    selector,
+                    receiver,
+                    object,
                 )));
             }
             Some(Ok(Value::boolean(answer)))

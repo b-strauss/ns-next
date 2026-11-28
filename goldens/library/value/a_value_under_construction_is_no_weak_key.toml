@@ -1,4 +1,4 @@
 rules = ["semantics.value.under-construction", "runtime.value.is-value", "runtime.memory.ephemeron"]
 stdout = '''
-an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned
+cannot tell whether an instance of Point is a value: it is still under construction, and an instance of a value class is a value only once its factory has returned
 '''

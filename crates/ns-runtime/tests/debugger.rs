@@ -12780,8 +12780,9 @@ mod evaluation {
             );
             assert!(
                 description.contains(
-                    "an instance of Point is still under construction: an instance of a \
-                     value class is a value only once its factory has returned"
+                    "cannot hash an instance of Point: it is still under construction, and \
+                     an instance of a value class is a value only once its factory has \
+                     returned"
                 ),
                 "{description}"
             );

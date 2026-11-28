@@ -1925,11 +1925,10 @@ mod tests {
         ) : ()
     "};
 
-    /// The text a value question about a `Point` under construction
-    /// signals.
-    const POINT_UNDER_CONSTRUCTION: &str = concat!(
-        "an instance of Point is still under construction: ",
-        "an instance of a value class is a value only once its factory has returned"
+    /// The text `hash`'s refusal of a `Point` under construction carries.
+    const POINT_NOT_HASHED: &str = concat!(
+        "cannot hash an instance of Point: it is still under construction, ",
+        "and an instance of a value class is a value only once its factory has returned"
     );
 
     /// An `Outer` of `CONSTRUCTING`, a `Point` whose construction was cut
@@ -1974,7 +1973,7 @@ mod tests {
         assert!(under_construction(&mut interpreter, &escaped));
         match interpreter.send(&escaped, Symbol::intern("hash"), &[]) {
             Err(HostSignal::Error(error)) => {
-                assert_eq!(error.message.to_string(), POINT_UNDER_CONSTRUCTION);
+                assert_eq!(error.message.to_string(), POINT_NOT_HASHED);
             }
             Err(HostSignal::Return) => panic!("a non-local return escaped"),
             Ok(_) => panic!("the migrated instance under construction answered hash"),

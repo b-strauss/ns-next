@@ -2031,25 +2031,47 @@ fn non_value_slot_error<'gc>(
 /// no value, and its partial state is nothing a program may read through a
 /// value question. `receiver` is the receiver of the send the program
 /// wrote, which is `object` itself or the value it was compared with or
-/// reached from; `selector` is that send's. One text for every leaf that
-/// refuses, so the refusal reads the same whichever question met it first.
+/// reached from; `selector` is that send's. One builder for every leaf
+/// that refuses, so the refusals differ only in the question they name, in
+/// the "cannot <action> …: <reason>" form of the other value errors -- the
+/// wording the user decided on 2026-11-28.
 #[cold]
 pub(crate) fn under_construction_error<'gc>(
     mutator: &Mutator<'gc>,
+    question: ValueQuestion,
     selector: Symbol,
     receiver: Value<'gc>,
     object: ObjectReference<'gc>,
 ) -> NewspeakError<'gc> {
     let heap = mutator.heap();
     let class = heap.class_display_name(heap.object_class(object));
+    let refused = match question {
+        ValueQuestion::Compare => format!("cannot compare an instance of {class}"),
+        ValueQuestion::Hash => format!("cannot hash an instance of {class}"),
+        ValueQuestion::IsValue => {
+            format!("cannot tell whether an instance of {class} is a value")
+        }
+    };
     NewspeakError::error(
         selector,
         receiver,
         format!(
-            "an instance of {class} is still under construction: an instance of a value class \
-             is a value only once its factory has returned"
+            "{refused}: it is still under construction, and an instance of a value class is a \
+             value only once its factory has returned"
         ),
     )
+}
+
+/// The value question `under_construction_error` refuses, which its text
+/// names.
+#[derive(Clone, Copy)]
+pub(crate) enum ValueQuestion {
+    /// `=`, and `==`, which answers it.
+    Compare,
+    /// `hash`, and `identityHash`, which answers it.
+    Hash,
+    /// Whether the object is a value, as a weak key is asked.
+    IsValue,
 }
 
 /// A class's primary factory selector, defaulted to `new` for a class that

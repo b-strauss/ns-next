@@ -1,0 +1,9 @@
+rules = ["semantics.value.under-construction", "runtime.value.equality"]
+stdout = '''
+false
+false
+false
+false
+cannot compare an instance of Point: it is still under construction, and an instance of a value class is a value only once its factory has returned
+cannot compare an instance of Point: it is still under construction, and an instance of a value class is a value only once its factory has returned
+'''
