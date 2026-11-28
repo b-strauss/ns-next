@@ -492,7 +492,7 @@ minutes (the copy 7 s, the suite step 80 s with its build, nextest's run
 benchmark programs 83 s, which the slowest Newspeak benchmarks bound as
 before) and `aarch64` about 8 minutes (the suite step 441 s, its build
 included, nextest's run under QEMU 377 s; the whole suite's 662 s the
-same day); neither is part of `end-of-batch` (decided 2026-11-15), both run on demand. A cold run builds the image
+same day); neither is part of `end-of-batch` (decided 2026-11-15), and both run only when the user asks, since the CI runs every platform (2026-11-28). A cold run builds the image
 first, about ten minutes on 2026-11-04, nearly all of it the downloads
 from the snapshot service (QEMU's build itself 50 s), and compiles the
 workspace once per target.

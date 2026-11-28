@@ -22,7 +22,7 @@ Create a todo for each item.
 2. **Run the gates** the table names: for a batch that changed the runtime
    `cargo xtask gates end-of-batch` (`images`, `caches`, `benchmarks`,
    `release-checks`, `codegen` and `stress`; the Docker groups `linux` and
-   `aarch64` only on demand, as `CLAUDE.md`'s table says), and
+   `aarch64` only when the user asks, as `CLAUDE.md`'s table says), and
    `plugin-verification` beside it for one that changed the plugin. The stress modes act only in debug builds: MOVES
    moves every object at the run loop's safepoints, CACHES vacates every inline
    cache at every safepoint, COLLECT collects at every safepoint, SCAVENGE
