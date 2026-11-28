@@ -1,0 +1,5 @@
+rules = ["runtime.instantiate", "semantics.value.identity"]
+stdout = '''
+2000
+true
+'''

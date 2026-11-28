@@ -1,4 +1,4 @@
-rules = ["semantics.value", "semantics.value.identity", "semantics.value.conditions"]
+rules = ["semantics.value", "semantics.value.identity", "semantics.value.conditions", "runtime.value.class-equality"]
 stdout = '''
 false false false false
 true true true

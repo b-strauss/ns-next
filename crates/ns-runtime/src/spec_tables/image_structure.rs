@@ -1028,12 +1028,26 @@ fn everything() -> Sample {
 /// A level a nested class's `<:` clause added over a shipped class, whose
 /// record names its mixin by the shipped name, in a snapshot without
 /// source of a module without a path, as a module a program declared from
-/// source is written.
+/// source is written; and a value whose construction a caught signal cut
+/// short after it escaped, written as a record under construction.
 fn level_over_a_shipped_class() -> Sample {
     let source = indoc! {"
         class Host usingPlatform: p = Object <: Value () (
           public class Point = Object new <: Value () (
             public answer = ( ^7 )
+          )
+
+          public class Cut box: box = Value new (
+            |
+              public escaped = box at: 1 put: self.
+              public never = Error signal: 'stop'.
+            |
+          ) ()
+
+          public aborted = (
+            | box = Array new: 1. |
+            [Cut box: box] on: Error do: [:error | nil].
+            ^box at: 1
           )
         ) : ()
     "};
@@ -1049,6 +1063,10 @@ fn level_over_a_shipped_class() -> Sample {
         "Point",
     );
     let point = expect_ok(interpreter.instantiate(&point_class, &[]), "Point new");
+    let aborted = expect_ok(
+        interpreter.send(&host, Symbol::intern("aborted"), &[]),
+        "aborted",
+    );
     let identities = vec![ModuleIdentity {
         path: None,
         ..identity("Host.ns", "Host", "Host", None)
@@ -1059,8 +1077,14 @@ fn level_over_a_shipped_class() -> Sample {
             identity: &identities[0],
             with_source: false,
         }];
-        crate::image::snapshot(mutator, &modules, &[mutator.fetch(&point)])
-            .unwrap_or_else(|error| panic!("{error}"))
+        let roots = [mutator.fetch(&point), mutator.fetch(&aborted)];
+        assert!(
+            roots[1]
+                .as_object()
+                .is_some_and(|object| mutator.heap().object_under_construction(object)),
+            "the escaped instance is under construction"
+        );
+        crate::image::snapshot(mutator, &modules, &roots).unwrap_or_else(|error| panic!("{error}"))
     });
     Sample {
         name: "a level over a shipped class",

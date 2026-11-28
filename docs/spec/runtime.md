@@ -175,7 +175,9 @@ The primary factory of *class*
    clause that a host built past the resolver -- signal it, as
    `cannot instantiate C: ` and its reason; nothing is made.
 3. Let *o* be a new object of *class*, every slot of it and of its
-   superclasses `nil`.
+   superclasses `nil`. If *class* inherits from `Value` and *o* is an
+   ordinary instance -- every such class's but `String`'s, whose `new`
+   answers an empty string -- *o* is marked under construction.
 4. Run *class*'s initializer on *o* with *arguments*, which runs, in
    this order, the superclass clause's message, the superclass's
    initializer on *o*, each `<:` clause's message and its level's
@@ -186,7 +188,10 @@ The primary factory of *class*
    factory's signals `the superclass clause of class C sends #s, but the
    primary factory of class B is #t` (or `a mixin application clause of
    class C sends`...).
-5. Answer *o*.
+5. Clear *o*'s mark, if it carries one, and answer *o*. A run of the
+   initializer that does not return -- an unwind past it, a signal it
+   does not handle -- never reaches this step, and *o* stays marked for
+   good; storing *o* while it is marked is allowed.
 
 ### SlotRead(object, slot) and SlotWrite(object, slot, value)
 
@@ -210,6 +215,121 @@ an object that no longer has those slots, its next access to one of them
 signals `x no longer has the slots of C, which the running code was
 compiled for`; one whose replacement still has them -- an instance of a
 subclass -- reads and writes them in the replacement.
+
+### ValueEquality(left, right), ClassEquality(left, right), ValueHash(value) and IsValue(object)
+
+r[runtime.value.equality]
+`Value`'s `=`, sent to *left* with *right*
+([`semantics.value.identity`](language/semantics.md#r-semantics.value.identity)).
+
+1. Walk the pairs of objects the comparison reaches, from *left* and
+   *right*: each pair's classes, then its slots in declaration order,
+   each unfolded before the next -- the order `valueEquals:` compares
+   them in -- a pair already met assumed equal. Where a pair below the
+   root has a receiver's side whose `=` is not one this operation
+   computes itself -- `Value`'s; a number's, a String's or a Symbol's,
+   of the kernel's own class; a class object's `Behavior>>=` or
+   `Metaclass>>=` -- as a class that declares its own `=` has, compare
+   the slots instead in declaration order, each pair by sending `=` to
+   the receiver's slot, which decides it, under construction or not, and
+   runs this operation again for a pair that is `Value`'s. The steps
+   below hold every other pair.
+2. If the pair's receiver's side is under construction
+   ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)),
+   signal `cannot compare an instance of C: it is still under
+   construction, and an instance of a value class is a value only once
+   its factory has returned`, naming that object's class, before anything
+   else is compared.
+3. Otherwise, if both sides are numbers, the pair is equal exactly when
+   they are equal by value, across their classes -- `3` and `3.0` -- as
+   a number's `=` answers; a number and an object of a number's class
+   that holds none -- `1/2` and `Fraction new`, in either order -- are
+   unequal. Otherwise, where the receiver's side is a
+   value whose class side declares `==` of its own, that `==` compares
+   the two classes, as `valueEquals:` sends it, and the slots are
+   compared by sending, as step 1 does; `valueEquals:` reads each side's
+   slots through readers that signal step 2's text for one under
+   construction. Otherwise the classes are compared by `Behavior>>==`
+   ([ClassEquality](#r-runtime.value.class-equality)): if they cannot be
+   equal, the pair is unequal, whatever the state of its argument's
+   side.
+4. Otherwise, if its argument's side is under construction, signal step
+   2's text naming that object's class.
+5. An immediate and another instance of its class -- `nil` and
+   `UndefinedObject new` -- are equal, neither having any slot. Two
+   Strings, or two Symbols, are compared by their characters, as their
+   own `=` compares them.
+6. The walk ends at the first pair that signals or is unequal, in its
+   order, answering `false` for an unequal one, and `true` when none is.
+
+r[runtime.value.class-equality]
+`Behavior`'s and `Metaclass`'s `=` and `==`, sent to a class object
+*left* with *right*, and the comparison of two classes in
+[ValueEquality](#r-runtime.value.equality); `==` answers what `=` does.
+A class side that declares `=` or `==` of its own answers that message
+for its class objects itself, and the walk leaves a pair to that `=`
+where the receiver's side is a class object whose class side declares
+it.
+
+1. If *right* is *left*, they are equal.
+2. A class object is a value exactly when its enclosing object is a
+   an instance of a class that inherits from `Value`, under
+   construction or not, or `nil` -- for the class object of a declaration
+   without a body, both its declaration's enclosing object and the one
+   its level reaches -- and a metaclass is one when its class is. Two
+   distinct class objects are unequal unless both are values, apply one
+   mixin application and, where either is the class object of a
+   declaration without a body, are both of that same declaration; a
+   class object that is no value is equal only to itself.
+3. Two metaclasses are equal exactly when the classes they are the
+   metaclasses of are equal, compared by this operation.
+4. Any other two class objects are equal exactly when three pairs are,
+   compared in this order: their declarations' enclosing objects (`nil`
+   for every class object but a body-less declaration's), the enclosing
+   objects their levels reach, and their superclasses. Each pair is
+   compared as [ValueEquality](#r-runtime.value.equality) compares a
+   pair below its root: two class objects by this operation, a pair
+   whose receiver's side has an `=` the walk does not compute by sending
+   it `=`, and an instance under construction refused as there. A pair
+   of class objects already met is assumed equal, so a class reached
+   again through its own enclosing value ends in `true` rather than
+   unfolding forever.
+5. The comparison ends at the first pair that signals or is unequal, in
+   its order, answering `false` for an unequal one, and `true` when none
+   is.
+
+r[runtime.value.hash]
+`Value`'s `hash`, sent to *value*, is defined over the first 4096 nodes
+of *value*'s unfolding, visited breadth-first: *value* first, then the
+nodes on a queue in the order they were put on it.
+
+1. *value* is unfolded: it adds its slot count, 0 for a state that is no
+   slots, and puts its slots on the queue in declaration order.
+2. Any other node is unfolded the same way where both its `=` and its
+   `hash` are `Value`'s; otherwise it adds what its own `hash` answers --
+   `nil`'s 0, a Boolean's, a number's, a String's, a Symbol's, a class
+   object's, or the method a class declares -- and puts nothing on the
+   queue.
+3. The sum starts at 0 and, after each addition, is masked to its low 60
+   bits (`bitAnd: 2^60 - 1`), so it is a `SmallInteger` from 0 to
+   2^60 - 1 whatever the nodes add.
+4. Once 4096 nodes have been visited, the sum so far is the hash, so that
+   a value whose state reaches itself has one; two equal values unfold to
+   the same sequence of nodes however their states share structure -- a
+   ring of one value and an equal ring of two -- and hash alike.
+5. If *value*, or a node step 2 unfolds, is under construction, signal
+   `cannot hash an instance of C: it is still under construction, and an
+   instance of a value class is a value only once its factory has
+   returned`, naming that object's class, instead of answering. A node
+   whose `hash` is its own answers as that method does.
+r[runtime.value.is-value]
+Whether *object* is a value object, as an `Ephemeron`'s `key:` and a
+`WeakMap`'s `at:put:` ask of a key before refusing a value: an object
+under construction is neither a value nor an ordinary object yet, and the
+question signals `cannot tell whether an instance of C is a value: it is
+still under construction, and an instance of a value class is a value
+only once its factory has returned` for it, naming its class, instead of
+answering.
 
 ## Unwinding and exceptions
 
@@ -329,8 +449,13 @@ A builder `fromSource:` in the list declares a module
    each new mixin the mixin of every application of the old one; for
    every instance whose layout changed, make a new instance of the new
    layout holding each slot of the same name and `nil` in each new one,
-   and [ForwardIdentity](#r-runtime.forward-identity) the old instances to
-   them. Then move the install epoch.
+   under construction exactly when the old instance was
+   ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction))
+   and its class still inherits from `Value`, and
+   [ForwardIdentity](#r-runtime.forward-identity) the old instances to
+   them; an instance under construction whose class no longer inherits
+   from `Value` is under construction no more, whether its layout changed
+   or not. Then move the install epoch.
 6. A running activation finishes with the code it began with; every send
    after step 5 finds the new methods.
 

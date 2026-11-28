@@ -1356,6 +1356,14 @@ fn run_stretch<'gc>(
                                             &mut handoff,
                                         )
                                     }
+                                    CompactInstruction::CompleteInstance { instance } => {
+                                        complete_instance(
+                                            mutator,
+                                            register_base,
+                                            u16::from(instance),
+                                        );
+                                        next!()
+                                    }
                                     CompactInstruction::CheckAppliedClause { steps, selector } => {
                                         match mutator
                                             .check_applied_clause(activation, steps, selector)
@@ -2146,6 +2154,10 @@ fn run_wide<'gc>(
                 floor,
                 handoff,
             )
+        }
+        Instruction::CompleteInstance { instance } => {
+            complete_instance(mutator, register_base, *instance);
+            return WideOutcome::Next;
         }
         Instruction::CheckAppliedClause { steps, selector } => {
             match mutator.check_applied_clause(activation, *steps, *selector) {
@@ -3048,6 +3060,16 @@ pub(crate) fn allocate_instance_into<'gc>(
         .heap
         .set_register(register_base, destination, instance);
     Ok(())
+}
+
+/// `CompleteInstance`: the instance in `instance` is no longer under
+/// construction. A register holding no object -- only a crafted body puts
+/// one there -- completes nothing.
+#[inline(never)]
+fn complete_instance(mutator: &mut Mutator<'_>, register_base: RegisterBase, instance: u16) {
+    if let Some(object) = mutator.heap.register(register_base, instance).as_object() {
+        mutator.heap.complete_instance(object);
+    }
 }
 
 /// `InitializeInstance`: the receiver's initializer on the instance in

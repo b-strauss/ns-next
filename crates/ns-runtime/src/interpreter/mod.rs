@@ -511,6 +511,11 @@ pub struct Mutator<'gc> {
     /// move or a collection can invalidate, so it needs no root and nothing
     /// traces it.
     pub(crate) value_equality_method: Option<Rc<crate::mixin::MixinMethod>>,
+    /// The method `Value` declares as `hash`, recorded beside
+    /// `value_equality_method` and for the same reason: the hash walk
+    /// unfolds a node only where its `hash` is this one, and sends any
+    /// other node its own `hash` -- declines, in the leaf.
+    pub(crate) value_hash_method: Option<Rc<crate::mixin::MixinMethod>>,
     /// `Value`'s own mixin, recorded by the bootstrap's kernel phase just
     /// before `Value`'s class object is filled: what `apply_mixin` compares
     /// a mixin against to answer §3.1.1's "its class inherits from class
@@ -972,6 +977,40 @@ impl Interpreter {
                 .collect();
             let decided =
                 mutator.decide_send(receiver, selector, Arguments::Values(&arguments.as_slice()));
+            mutator.start(decided, Arguments::Values(&arguments.as_slice()))
+        });
+        self.run_from_host(start, depth)
+    }
+
+    /// A test's lexical send of `selector` to `receiver` from the code of
+    /// the builtin class `lexical_class`, which reaches that class's
+    /// private members (§5.9): `Value`'s `valueEquals:` and
+    /// `valueHashOfSlots`, and `Behavior`'s `behaviorEquals:`, which the
+    /// equality and hash leaves stand in for, so that a test can hold each
+    /// leaf to the method it answers for.
+    #[cfg(test)]
+    pub(crate) fn send_lexically(
+        &mut self,
+        receiver: &Root,
+        lexical_class: BuiltinClass,
+        selector: Symbol,
+        arguments: &[Root],
+    ) -> HostResult {
+        let depth = self.world.activation_depth();
+        let start = self.enter(|mutator| {
+            let receiver = mutator.fetch(receiver);
+            let arguments: Vec<Value> = arguments
+                .iter()
+                .map(|argument| mutator.fetch(argument))
+                .collect();
+            let class = mutator.builtin_class(lexical_class);
+            let resolved = mutator.resolve_lexical(receiver, Some(class), selector);
+            let decided = mutator.act(
+                resolved,
+                receiver,
+                selector,
+                Arguments::Values(&arguments.as_slice()),
+            );
             mutator.start(decided, Arguments::Values(&arguments.as_slice()))
         });
         self.run_from_host(start, depth)

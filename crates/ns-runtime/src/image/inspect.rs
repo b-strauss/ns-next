@@ -565,6 +565,10 @@ fn walk_graph(
             opcodes::OBJECT_INSTANCE => {
                 format!("instance {{{}}}", read_values(reader, targets)?.join(", "))
             }
+            opcodes::OBJECT_INSTANCE_UNDER_CONSTRUCTION => format!(
+                "instance under construction {{{}}}",
+                read_values(reader, targets)?.join(", ")
+            ),
             opcodes::OBJECT_STRING => format!("string {:?}", reader.read_str()?),
             opcodes::OBJECT_BYTE_ARRAY => read_byte_array_record(reader)?,
             opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),

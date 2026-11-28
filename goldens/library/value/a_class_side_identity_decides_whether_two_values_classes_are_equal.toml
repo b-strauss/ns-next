@@ -1,0 +1,10 @@
+rules = ["semantics.value.under-construction", "runtime.value.equality", "runtime.value.class-equality"]
+stdout = '''
+true
+false
+false
+true
+false
+false
+cannot compare an instance of Late: it is still under construction, and an instance of a value class is a value only once its factory has returned
+'''

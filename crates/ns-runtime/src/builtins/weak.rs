@@ -51,15 +51,35 @@ pub(crate) fn execute<'gc>(
         }
         // Declined for a future it would answer `false` to, so the failure
         // path asks again of the future's value
-        // (`interpreter::future::declines_for_a_future`).
-        WeakPrimitive::IsValue => crate::interpreter::future::declines_for_a_future(
-            mutator,
-            Primitive::Weak(primitive),
-            is_a_value(mutator, receiver),
-            receiver,
-            arguments,
-        )
-        .map(|answer| Ok(Value::boolean(answer))),
+        // (`interpreter::future::declines_for_a_future`). An instance of a
+        // value class whose factory has not returned is refused instead of
+        // answered: it is no value yet, but answering `false` would let a
+        // weak structure key an object that becomes a value the moment its
+        // factory returns, so the question waits for that as `=` and
+        // `hash` do -- and `Ephemeron>>key:` and `WeakMap>>at:put:`, which
+        // ask it, need no check of their own.
+        WeakPrimitive::IsValue => {
+            let answer = crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Weak(primitive),
+                is_a_value(mutator, receiver),
+                receiver,
+                arguments,
+            )?;
+            if let Some(object) = receiver
+                .as_object()
+                .filter(|object| mutator.heap.object_under_construction(*object))
+            {
+                return Some(Err(instantiate::under_construction_error(
+                    mutator,
+                    instantiate::ValueQuestion::IsValue,
+                    selector,
+                    receiver,
+                    object,
+                )));
+            }
+            Some(Ok(Value::boolean(answer)))
+        }
     }
 }
 

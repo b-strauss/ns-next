@@ -74,20 +74,21 @@ fn the_instantiation_instructions_keep_their_numbers() {
     assert_eq!(OPCODE_CHECK_APPLIED_CLAUSE, 43);
     assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 50);
     assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 51);
+    assert_eq!(OPCODE_COMPLETE_INSTANCE, 52);
 }
 
 /// The instruction section's "next free number" comment is where the next
 /// instruction takes its tag from, so it moves with every new one.
 // spec: bytecode.wire.tag-assigned-once
 #[test]
-fn the_next_free_instruction_tag_is_fifty_two() {
+fn the_next_free_instruction_tag_is_fifty_three() {
     // Line by line, so a checkout with CRLF line endings reads it too.
     let source = include_str!("../src/image/opcodes.rs");
     assert!(
         source
             .lines()
-            .any(|line| line == "// Next free number: 52."),
-        "image/opcodes.rs names 52 as the next free instruction tag"
+            .any(|line| line == "// Next free number: 53."),
+        "image/opcodes.rs names 53 as the next free instruction tag"
     );
 }
 
@@ -283,6 +284,7 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_EPHEMERON,
         OBJECT_MIXIN,
         OBJECT_BODY_LESS_CLASS,
+        OBJECT_INSTANCE_UNDER_CONSTRUCTION,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -293,7 +295,7 @@ fn retired_object_body_tags_are_refused() {
         .chain(RETIRED_OBJECT_BODIES.iter())
         .max()
         .map_or(0, |highest| highest + 1);
-    assert_eq!(next_free, 17);
+    assert_eq!(next_free, 18);
 }
 
 /// The graph section's tags, pinned for the same reason as the instruction
@@ -329,6 +331,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_EPHEMERON, 13);
     assert_eq!(OBJECT_MIXIN, 14);
     assert_eq!(OBJECT_BODY_LESS_CLASS, 16);
+    assert_eq!(OBJECT_INSTANCE_UNDER_CONSTRUCTION, 17);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_SHIPPED, 2);
@@ -479,6 +482,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_EPHEMERON,
             OBJECT_MIXIN,
             OBJECT_BODY_LESS_CLASS,
+            OBJECT_INSTANCE_UNDER_CONSTRUCTION,
         ],
         &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,

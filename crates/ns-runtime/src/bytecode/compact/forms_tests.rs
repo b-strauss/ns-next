@@ -8,7 +8,7 @@ use crate::spec_tables::bytecode_table;
 /// How many forms there are: the arms of `form_name`. A new variant adds
 /// an arm there, which the compiler demands, and raises this count beside
 /// it, which the test holds `every_form` -- and so the book's rows -- to.
-const FORM_KINDS: usize = 64;
+const FORM_KINDS: usize = 65;
 
 /// The name of `form`'s variant. The match has no `_` arm, so that a new
 /// variant fails to compile until it is named here.
@@ -73,6 +73,7 @@ fn form_name(form: CompactInstruction) -> &'static str {
         CompactInstruction::IntegerEqual { .. } => "IntegerEqual",
         CompactInstruction::AllocateInstance { .. } => "AllocateInstance",
         CompactInstruction::InitializeInstance { .. } => "InitializeInstance",
+        CompactInstruction::CompleteInstance { .. } => "CompleteInstance",
         CompactInstruction::CheckAppliedClause { .. } => "CheckAppliedClause",
         CompactInstruction::InitializeSuperclass { .. } => "InitializeSuperclass",
         CompactInstruction::InitializeAppliedLevel { .. } => "InitializeAppliedLevel",
@@ -340,6 +341,7 @@ fn every_form() -> Vec<CompactInstruction> {
             destination: BYTE,
             instance: BYTE,
         },
+        Form::CompleteInstance { instance: BYTE },
         Form::CheckAppliedClause {
             steps: HALF,
             selector,

@@ -95,93 +95,94 @@ assigned once and never changes meaning
 ([`bytecode.wire.tag-assigned-once`](bytecode.md#r-bytecode.wire.tag-assigned-once)).
 
 ```spec-table image-tags
-header-flag      retired                  1
-header-flag      retired                  2
-header-flag      start                    4
-header-flag      has-source               8
-value            nil                      0
-value            false                    1
-value            true                     2
-value            small-integer            3
-value            float                    4
-value            object-id                5
-value            class-tag                6
-value            retired                  7
-value            retired                  8
-value            large-integer            9
-value            fraction                 10
-value            shipped-module           11
-object-body      instance                 0
-object-body      string                   1
-object-body      symbol                   2
-object-body      array                    3
-object-body      retired                  4
-object-body      retired                  5
-object-body      closure                  6
-object-body      class                    7
-object-body      metaclass                8
-object-body      retired                  9
-object-body      retired                  10
-object-body      byte-array               11
-object-body      weak-array               12
-object-body      ephemeron                13
-object-body      mixin                    14
-object-body      frame                    15
-object-body      body-less-class          16
-mixin-reference  row                      0
-mixin-reference  retired                  1
-mixin-reference  shipped                  2
-mixin-side       instance                 0
-mixin-side       class                    1
-class-reference  retired                  0
-class-reference  retired                  1
-class-reference  record                   2
-class-reference  retired                  3
-class-reference  retired                  4
-class-reference  retired                  5
-class-reference  retired                  6
-class-reference  retired                  7
-class-reference  shipped                  8
-frame-kind       method                   0
-frame-kind       closure                  1
-frame-kind       top-level                2
-frame-kind       initializer              3
-frame-kind       superclass-clause        4
-frame-kind       retired                  5
-frame-kind       retired                  6
-frame-kind       own-initializer          7
-frame-kind       standalone-initializer   8
-frame-kind       factory                  9
-frame-body       none                     0
-frame-body       code                     1
-frame-body       declared                 2
-hashed           retired                  0
-hashed           retired                  1
-hashed           retired                  2
-hashed           retired                  3
-hashed           retired                  4
-hashed           retired                  5
-hashed           retired                  6
-hashed           shipped                  7
-slot-kind        immutable                0
-slot-kind        mutable                  1
-slot-kind        lazy-immutable           2
-slot-kind        lazy-mutable             3
-origin           retired                  0
-origin           retired                  1
-origin           project                  2
-origin           core                     3
-origin           none                     4
-module-version   unversioned              0
-module-version   versioned                1
-shipped-kind     module-instance          0
-shipped-kind     class                    1
-shipped-kind     metaclass                2
-shipped-kind     level                    3
-shipped-kind     level-metaclass          4
-access           public                   0
-access           protected                1
-access           private                  2
+header-flag      retired                      1
+header-flag      retired                      2
+header-flag      start                        4
+header-flag      has-source                   8
+value            nil                          0
+value            false                        1
+value            true                         2
+value            small-integer                3
+value            float                        4
+value            object-id                    5
+value            class-tag                    6
+value            retired                      7
+value            retired                      8
+value            large-integer                9
+value            fraction                     10
+value            shipped-module               11
+object-body      instance                     0
+object-body      string                       1
+object-body      symbol                       2
+object-body      array                        3
+object-body      retired                      4
+object-body      retired                      5
+object-body      closure                      6
+object-body      class                        7
+object-body      metaclass                    8
+object-body      retired                      9
+object-body      retired                      10
+object-body      byte-array                   11
+object-body      weak-array                   12
+object-body      ephemeron                    13
+object-body      mixin                        14
+object-body      frame                        15
+object-body      body-less-class              16
+object-body      instance-under-construction  17
+mixin-reference  row                          0
+mixin-reference  retired                      1
+mixin-reference  shipped                      2
+mixin-side       instance                     0
+mixin-side       class                        1
+class-reference  retired                      0
+class-reference  retired                      1
+class-reference  record                       2
+class-reference  retired                      3
+class-reference  retired                      4
+class-reference  retired                      5
+class-reference  retired                      6
+class-reference  retired                      7
+class-reference  shipped                      8
+frame-kind       method                       0
+frame-kind       closure                      1
+frame-kind       top-level                    2
+frame-kind       initializer                  3
+frame-kind       superclass-clause            4
+frame-kind       retired                      5
+frame-kind       retired                      6
+frame-kind       own-initializer              7
+frame-kind       standalone-initializer       8
+frame-kind       factory                      9
+frame-body       none                         0
+frame-body       code                         1
+frame-body       declared                     2
+hashed           retired                      0
+hashed           retired                      1
+hashed           retired                      2
+hashed           retired                      3
+hashed           retired                      4
+hashed           retired                      5
+hashed           retired                      6
+hashed           shipped                      7
+slot-kind        immutable                    0
+slot-kind        mutable                      1
+slot-kind        lazy-immutable               2
+slot-kind        lazy-mutable                 3
+origin           retired                      0
+origin           retired                      1
+origin           project                      2
+origin           core                         3
+origin           none                         4
+module-version   unversioned                  0
+module-version   versioned                    1
+shipped-kind     module-instance              0
+shipped-kind     class                        1
+shipped-kind     metaclass                    2
+shipped-kind     level                        3
+shipped-kind     level-metaclass              4
+access           public                       0
+access           protected                    1
+access           private                      2
 ```
 
 ## Structure
@@ -328,9 +329,10 @@ hash, a `u32`, 0 for an object that was never asked for one; the body a
 tag of the space `object-body` and its fields.
 
 r[image.graph.record]
-Each body tag is followed by the fields its row gives: an instance's,
-array's, weak array's and ephemeron's values, counted; a string's text; a
-symbol's symbol; a closure's body, the record of the frame it captured
+Each body tag is followed by the fields its row gives: an instance's --
+one under construction under a tag of its own -- an array's, weak
+array's and ephemeron's values, counted; a string's text; a symbol's
+symbol; a closure's body, the record of the frame it captured
 and its copied values; a class's record, the mixin it applies -- a row
 of the mixin table or a shipped name -- then its superclass, enclosing
 object, declaring class and, for a level a `<:` clause added, the
@@ -417,6 +419,7 @@ object-body/object-body/weak-array         count:u32  element:value*count
 object-body/object-body/ephemeron          count:u32  field:value*count
 object-body/object-body/mixin              mixin:reified-mixin  side:mixin-side
 object-body/object-body/frame              frame:frame
+object-body/object-body/instance-under-construction  count:u32  field:value*count
 object-body/object-body/body-less-class    stamp:u64  record:class-record  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class
 class-record/mixin-reference
 class-record/mixin-reference/row           row:row-id  has_superclass:u8  superclass:class-reference?has_superclass  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class  has_clause:u8  applying_row:row-id?has_clause  clause:u32?has_clause  named:class-reference?has_clause
@@ -729,8 +732,18 @@ r[image.verify.program-instances]
     made and as an edit migrates it. A class object is the exception: it
     is written as a class record.
 
+r[image.verify.under-construction]
+24. Only an instance of a class that inherits `Value` is written as an
+    `instance-under-construction` record: an instance of a value class
+    whose construction was cut short before the image was written
+    ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)).
+    A load rebuilds it still under construction, so that it answers no
+    value question after the load either, and refuses the record for an
+    object of any other class. The record is laid out as an `instance`
+    record and held to every rule an instance record is held to.
+
 r[image.verify.shipped-instances]
-24. Every object of a shipped class whose layout the loading binary
+25. Every object of a shipped class whose layout the loading binary
     declares is an instance record of exactly that class's slot count.
     That is every shipped class but those whose objects are written as
     records of their own: arrays, strings, symbols, closures, classes,
@@ -742,14 +755,14 @@ r[image.verify.shipped-instances]
       `Fraction new` makes it, since a fraction is written as a value.
 
 r[image.verify.value-classes]
-25. A load does not trust the image about whether a class meets the
+26. A load does not trust the image about whether a class meets the
     value-class conditions (§3.1.1). It decides them again for every
     class the image carries, as building the class from its source
     decides them. So a value class whose enclosing objects are not all
     values refuses to be instantiated after a load, as it did before.
 
 r[image.verify.numbers]
-26. A number is written in its one canonical form:
+27. A number is written in its one canonical form:
     - A `LargeInteger` holds to
       [`bytecode.verify.large-integer`](bytecode.md#r-bytecode.verify.large-integer):
       its sign byte is 0 or 1, its value does not fit an `i64`, its most
@@ -758,7 +771,7 @@ r[image.verify.numbers]
       its denominator is greater than 1, and the two share no factor.
 
 r[image.verify.hashes]
-27. Every identity hash fits the 22 bits an object's header holds: it is
+28. Every identity hash fits the 22 bits an object's header holds: it is
     below 4,194,304. A tag-named hash is never 0, and each shipped name
     has at most one. Every class, body-less class and metaclass record's
     creation stamp is below 2^59, half the `SmallInteger` range, so that
@@ -766,10 +779,10 @@ r[image.verify.hashes]
     have the same.
 
 r[image.verify.started-image-roots]
-28. A started image has exactly one root, the application `load` starts.
+29. A started image has exactly one root, the application `load` starts.
 
 r[image.verify.mirror]
-29. No image holds the VM mirror, nor an instance of its class or of
+30. No image holds the VM mirror, nor an instance of its class or of
     `Top`, and neither class stands where a program could reach it
     ([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)):
     - the mirror's class has no declaration, so no shipped name names it
@@ -915,7 +928,7 @@ built included, is dropped with it
    ([`image.verify.modules`](#r-image.verify.modules),
    [`image.verify.root-rule`](#r-image.verify.root-rule)); read the
    tag-named hashes ([`image.hashes`](#r-image.hashes)); and hold the
-   graph to rules 15 to 29
+   graph to rules 15 to 30
    ([`image.shipped.positions`](#r-image.shipped.positions) to
    [`image.verify.mirror`](#r-image.verify.mirror)), each a record shows
    alone as it is read and the rest once every record exists. Refuse a

@@ -1,0 +1,32 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". A WeakMap refuses a value as its key, so
+/// `at:put:` asks whether its key is a value, and an instance of a value
+/// class whose factory has not returned answers none: `at:put:` signals
+/// that the instance is still under construction rather than that it is a
+/// value, and the map holds no entry for it.
+///
+/// The refusal is caught in the initializer and its text kept in a slot,
+/// so the point completes.
+class AValueUnderConstructionIsNoWeakMapKey = Object <: Value () (
+  public class Point x: anX map: map = Value new (
+    |
+      public x = anX.
+      public refusal = [
+        map at: self put: 'point'.
+        'accepted'.
+      ] on: Error do: [:error | error messageText].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      map = platform kernel WeakMap new.
+      point = Point x: 1 map: map.
+    |
+    platform transcript
+        show: point refusal;
+        newLine;
+        show: (map includesKey: point) printString;
+        newLine.
+  )
+)

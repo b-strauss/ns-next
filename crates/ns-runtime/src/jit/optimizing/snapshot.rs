@@ -234,6 +234,9 @@ pub(crate) enum SnapshotInstruction {
         instance: u16,
         destination: u16,
     },
+    CompleteInstance {
+        instance: u16,
+    },
     CheckAppliedClause {
         steps: u16,
         selector: Symbol,
@@ -522,6 +525,9 @@ impl SnapshotInstruction {
             } => Instruction::InitializeInstance {
                 instance: *instance,
                 destination: *destination,
+            },
+            SnapshotInstruction::CompleteInstance { instance } => Instruction::CompleteInstance {
+                instance: *instance,
             },
             SnapshotInstruction::CheckAppliedClause { steps, selector } => {
                 Instruction::CheckAppliedClause {
@@ -880,6 +886,9 @@ fn convert(
         } => SnapshotInstruction::InitializeInstance {
             instance: *instance,
             destination: *destination,
+        },
+        Instruction::CompleteInstance { instance } => SnapshotInstruction::CompleteInstance {
+            instance: *instance,
         },
         Instruction::CheckAppliedClause { steps, selector } => {
             SnapshotInstruction::CheckAppliedClause {
@@ -1547,6 +1556,7 @@ mod tests {
                 ),
                 copied: vec![91, 92],
             },
+            Instruction::CompleteInstance { instance: 93 },
         ]
     }
 
@@ -1558,7 +1568,7 @@ mod tests {
             .collect();
         assert_eq!(
             kinds.len(),
-            37,
+            38,
             "the list names each variant of Instruction"
         );
     }

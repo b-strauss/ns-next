@@ -1,0 +1,26 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". An instance of a value class whose
+/// factory has not returned is no value yet, so it has no hash: one taken
+/// from the slots initialized so far would change once the rest were, and
+/// a hashed collection that had stored it would lose it.
+///
+/// The initializer hashes `self` between two of its slots, and the hash
+/// refuses, naming the class; nothing catches the error, so the program
+/// ends after the line before it.
+class AValueUnderConstructionCannotBeHashed = Object <: Value () (
+  public class Point x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public hashed = self hash.
+      public y = aY.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'making a point';
+        newLine;
+        show: (Point x: 1 y: 2) x printString;
+        newLine.
+  )
+)

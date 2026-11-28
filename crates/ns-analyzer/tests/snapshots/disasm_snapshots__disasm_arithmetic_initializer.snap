@@ -26,4 +26,5 @@ initializer Arithmetic initializer, own part (args 0, registers 17)
 method Arithmetic factory new (args 0, registers 15)
    0   stmt 0  AllocateInstance r13
    1   stmt 0  InitializeInstance r14 <- r13 (arguments)
-   2   stmt 0  Return r13
+   2   stmt 0  CompleteInstance r13
+   3   stmt 0  Return r13

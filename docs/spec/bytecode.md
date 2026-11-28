@@ -205,6 +205,7 @@ BranchIfTrue                 register                                       -   
 IntegerBinary                left,right                                     destination  target   yes            0            no
 AllocateInstance             -                                              destination  -        yes            0            no
 InitializeInstance           instance                                       destination  -        yes            0            no
+CompleteInstance             instance                                       -            -        yes            0            no
 CheckAppliedClause           -                                              -            -        yes            0            no
 InitializeSuperclass         argument_sources                               destination  -        yes            0            no
 InitializeAppliedLevel       argument_sources                               destination  -        yes            0            no
@@ -763,6 +764,22 @@ frame's own argument registers, which it names by no operand.
    [Instantiate](runtime.md#r-runtime.instantiate) runs it
    ([`semantics.instantiation.initializer-order`](language/semantics.md#r-semantics.instantiation.initializer-order)).
 
+### CompleteInstance
+
+r[bytecode.instruction.complete-instance]
+**Operands.** `instance`, a register.
+**Encoding.** [Wire](#r-bytecode.wire.tags) tag 52; [eight-byte](#r-bytecode.compact.forms) forms `CompleteInstance`, `Wide`.
+**Reads** `instance`. **Writes** nothing. **Jumps** nowhere.
+
+A factory body's completion, after its initialization returned.
+
+1. If `instance` holds an ordinary instance marked under construction,
+   clear the mark, as [Instantiate](runtime.md#r-runtime.instantiate)'s
+   last step does. Any other value -- an unmarked instance, an object of
+   another kind, a value that is no object -- is left as it is.
+
+It signals nothing.
+
 ### CheckAppliedClause
 
 r[bytecode.instruction.check-applied-clause]
@@ -936,6 +953,7 @@ instruction        SendInlinable                48
 instruction        SendSuper                    49
 instruction        InitializeSuperclass         50
 instruction        InitializeAppliedLevel       51
+instruction        CompleteInstance             52
 literal            Nil                          0
 literal            Boolean                      1
 literal            SmallInteger                 2
@@ -1008,6 +1026,7 @@ BranchIfTrue                 register:u16  target:u32
 IntegerBinary                operation:u8  destination:u16  left:u16  right:u16  target:u32
 AllocateInstance             destination:u16
 InitializeInstance           instance:u16  destination:u16
+CompleteInstance             instance:u16
 CheckAppliedClause           steps:u16  selector:symbol
 InitializeSuperclass         steps:u16  selector:symbol  argument_base:u16  argument_sources:registers  destination:u16
 InitializeAppliedLevel       steps:u16  argument_base:u16  argument_sources:registers  destination:u16
@@ -1163,6 +1182,7 @@ IntegerGreaterOrEqual        destination:u8  left:u8  right:u8  target:u32
 IntegerEqual                 destination:u8  left:u8  right:u8  target:u32
 AllocateInstance             destination:u8
 InitializeInstance           destination:u8  instance:u8
+CompleteInstance             instance:u8
 CheckAppliedClause           steps:u16  selector:symbol
 InitializeSuperclass         destination:u8  site:u16
 InitializeAppliedLevel       destination:u8  argument_base:u8  steps:u16  arguments:u16

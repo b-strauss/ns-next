@@ -663,12 +663,15 @@ impl Decoder<'_> {
                     destination,
                 }
             }
-            34 => {
+            34 => Instruction::CompleteInstance {
+                instance: self.reader.u16(),
+            },
+            35 => {
                 let steps = self.reader.u16();
                 let selector = self.symbol();
                 Instruction::CheckAppliedClause { steps, selector }
             }
-            35 => {
+            36 => {
                 let steps = self.reader.u16();
                 let selector = self.symbol();
                 let argument_base = self.reader.u16();
@@ -682,7 +685,7 @@ impl Decoder<'_> {
                     destination,
                 }
             }
-            36 => {
+            37 => {
                 let steps = self.reader.u16();
                 let argument_base = self.reader.u16();
                 let argument_sources = self.registers();

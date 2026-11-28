@@ -1,0 +1,67 @@
+/// newspeak-spec.pdf 3.1.1: a value equals an object of an equal class
+/// whose slots are equal, and `Value` compares the two classes with `==`,
+/// sent to the receiver's class. A class side may declare `==` of its own:
+/// `Loose`'s answers `true` for anything, so a `Loose` equals an `Other`
+/// with equal slots, as the receiver and as a slot of a `Box`, though
+/// `Behavior`'s `==` would find the classes unequal. With the `Other` as
+/// the receiver its class answers by `Behavior`'s `==`, and the two are
+/// unequal. A subclass of `Loose` has a class side of its own, which
+/// declares no `==`. A `Late` under construction compared by a `Loose` is
+/// refused: the comparison would go on to its slots.
+///
+/// Each answer is kept in a slot -- a String is a value -- so the
+/// instances complete.
+class AClassSideIdentityDecidesWhetherTwoValuesClassesAreEqual = Object <: Value () (
+  public class Box on: aContents = Value new (
+    |
+      public contents = aContents.
+    |
+  ) ()
+
+  public class Loose x: anX = Value new (
+    |
+      public x = anX.
+    |
+  ) () : (
+    public == other = (
+      ^true.
+    )
+  )
+
+  public class Strict x: anX = Loose x: anX () ()
+
+  public class Other x: anX = Value new (
+    |
+      public x = anX.
+    |
+  ) ()
+
+  public class Late = Value new (
+    |
+      public comparedByALoose = [((Loose x: 1) = self) printString] on: Error do: [:error |
+        error messageText.
+      ].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ((Loose x: 1) = (Other x: 1)) printString;
+        newLine;
+        show: ((Loose x: 1) = (Other x: 2)) printString;
+        newLine;
+        show: ((Other x: 1) = (Loose x: 1)) printString;
+        newLine;
+        show: ((Box on: (Loose x: 1)) = (Box on: (Other x: 1))) printString;
+        newLine;
+        show: ((Box on: (Other x: 1)) = (Box on: (Loose x: 1))) printString;
+        newLine;
+        show: ((Strict x: 1) = (Other x: 1)) printString;
+        newLine;
+        show: Late new comparedByALoose;
+        newLine.
+  )
+)

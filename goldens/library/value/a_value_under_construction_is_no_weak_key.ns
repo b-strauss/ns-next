@@ -1,0 +1,26 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". Whether an object is a value is itself a
+/// value question, and an instance of a value class whose factory has not
+/// returned answers none: an `Ephemeron`, which refuses a value as its key,
+/// cannot decide about it, so `key:` signals that the instance is still
+/// under construction rather than that it is a value.
+///
+/// The refusal is caught in the initializer and its text kept in a slot,
+/// so the point completes.
+class AValueUnderConstructionIsNoWeakKey = Object <: Value () (
+  public class Point x: anX ephemerons: ephemerons = Value new (
+    |
+      public x = anX.
+      public refusal = [
+        ephemerons new key: self.
+        'accepted'.
+      ] on: Error do: [:error | error messageText].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Point x: 1 ephemerons: platform kernel Ephemeron) refusal;
+        newLine.
+  )
+)

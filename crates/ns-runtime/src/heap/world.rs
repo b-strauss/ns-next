@@ -151,6 +151,7 @@ impl World {
                 kernel: None,
                 shipped_world: crate::interpreter::shipped_world::ShippedWorld::default(),
                 value_equality_method: None,
+                value_hash_method: None,
                 value_mixin: None,
                 behavior_mixin: None,
                 metaclasses_ready: false,

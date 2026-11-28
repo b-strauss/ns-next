@@ -1,0 +1,7 @@
+rules = ["semantics.value.under-construction", "runtime.instantiate"]
+stdout = '''
+true
+true
+true
+true
+'''

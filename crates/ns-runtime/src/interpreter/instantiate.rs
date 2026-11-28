@@ -696,7 +696,9 @@ impl<'gc> Mutator<'gc> {
     /// whose levels run no code, its answer written -- with the factory's
     /// program counter at `InitializeInstance`, as that send stores it.
     /// Answers the activation to run and where: the initializer from its
-    /// start, or the factory at its `Return`.
+    /// start, or the factory at its `CompleteInstance`, which the run loop
+    /// runs as it runs it after an initializer's return, so that the
+    /// instance is completed on either path.
     ///
     /// The run loop's order of errors is kept by not taking this path
     /// whenever one is raised: the initializer is decided first, which
@@ -746,7 +748,8 @@ impl<'gc> Mutator<'gc> {
         else {
             debug_assert!(!runs_code);
             // `InitializeInstance` answered the instance: written to its
-            // destination, and the factory carries on at its `Return`.
+            // destination, and the factory carries on at its
+            // `CompleteInstance`.
             self.heap
                 .set_register(register_base, registers.answer, instance);
             return Ok((factory, FACTORY_INITIALIZE + 1));
@@ -865,7 +868,7 @@ impl<'gc> Mutator<'gc> {
                 }),
             _ => self.allocate_refusing(class, |heap, class, slot_count, header| match header {
                 Some(header) => heap.allocate_instance_with(class, header, slot_count),
-                None => heap.allocate_instance(class, slot_count),
+                None => heap.allocate_factory_instance(class, slot_count),
             }),
         }
     }
@@ -1380,25 +1383,31 @@ pub(crate) struct FactoryRegisters {
 /// The registers of `code` when it is a factory body
 /// (`compiler::factory_body`) in its eight-byte form: `AllocateInstance`
 /// into the instance's register, `InitializeInstance` of it into the
-/// answer's, `Return` of the instance. `None` for every other body, which
-/// `Mutator::enter_factory_body` leaves to the run loop.
+/// answer's, `CompleteInstance` of it -- where the fast path's factory
+/// goes on -- and `Return` of the instance. `None` for every other body,
+/// which `Mutator::enter_factory_body` leaves to the run loop.
 pub(crate) fn factory_registers(code: &crate::bytecode::CompiledCode) -> Option<FactoryRegisters> {
     use crate::bytecode::CompactInstruction;
-    if code.instruction_count() != 3 {
+    if code.instruction_count() != 4 {
         return None;
     }
-    match (code.slot(0), code.slot(1), code.slot(2)) {
+    match (code.slot(0), code.slot(1), code.slot(2), code.slot(3)) {
         (
             CompactInstruction::AllocateInstance { destination },
             CompactInstruction::InitializeInstance {
                 destination: answer,
                 instance,
             },
+            CompactInstruction::CompleteInstance {
+                instance: completed,
+            },
             CompactInstruction::Return { register },
-        ) if instance == destination && register == destination => Some(FactoryRegisters {
-            instance: u16::from(instance),
-            answer: u16::from(answer),
-        }),
+        ) if instance == destination && completed == destination && register == destination => {
+            Some(FactoryRegisters {
+                instance: u16::from(instance),
+                answer: u16::from(answer),
+            })
+        }
         _ => None,
     }
 }
@@ -2009,6 +2018,60 @@ fn non_value_slot_error<'gc>(
             mutator.heap().describe(value)
         ),
     )
+}
+
+/// The refusal of a value question -- `=`, `hash` or whether it is a value
+/// -- about `object`, an instance of a value class whose factory has not
+/// returned (`Heap::object_under_construction`). §3.1.1 makes an object a
+/// value only once its slots "have been initialized", so until then it has
+/// no state to compare or hash by, and answering from the slots it has so
+/// far would let its equality and its hash change once it is complete.
+///
+/// It names the class only, never the slots built so far: the instance is
+/// no value, and its partial state is nothing a program may read through a
+/// value question. `receiver` is the receiver of the send the program
+/// wrote, which is `object` itself or the value it was compared with or
+/// reached from; `selector` is that send's. One builder for every leaf
+/// that refuses, so the refusals differ only in the question they name, in
+/// the "cannot <action> …: <reason>" form of the other value errors -- the
+/// wording the user decided on 2026-11-28.
+#[cold]
+pub(crate) fn under_construction_error<'gc>(
+    mutator: &Mutator<'gc>,
+    question: ValueQuestion,
+    selector: Symbol,
+    receiver: Value<'gc>,
+    object: ObjectReference<'gc>,
+) -> NewspeakError<'gc> {
+    let heap = mutator.heap();
+    let class = heap.class_display_name(heap.object_class(object));
+    let refused = match question {
+        ValueQuestion::Compare => format!("cannot compare an instance of {class}"),
+        ValueQuestion::Hash => format!("cannot hash an instance of {class}"),
+        ValueQuestion::IsValue => {
+            format!("cannot tell whether an instance of {class} is a value")
+        }
+    };
+    NewspeakError::error(
+        selector,
+        receiver,
+        format!(
+            "{refused}: it is still under construction, and an instance of a value class is a \
+             value only once its factory has returned"
+        ),
+    )
+}
+
+/// The value question `under_construction_error` refuses, which its text
+/// names.
+#[derive(Clone, Copy)]
+pub(crate) enum ValueQuestion {
+    /// `=`, and `==`, which answers it.
+    Compare,
+    /// `hash`, and `identityHash`, which answers it.
+    Hash,
+    /// Whether the object is a value, as a weak key is asked.
+    IsValue,
 }
 
 /// A class's primary factory selector, defaulted to `new` for a class that

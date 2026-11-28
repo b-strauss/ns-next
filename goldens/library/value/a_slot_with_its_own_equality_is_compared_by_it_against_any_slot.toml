@@ -1,0 +1,9 @@
+rules = ["semantics.value.under-construction", "runtime.value.equality"]
+stdout = '''
+true
+true
+false
+true
+true
+false
+'''

@@ -4942,8 +4942,11 @@ refused leaves the program stopped where it was, nothing begun.
   continuation it wraps and decides by that one. An initializer's frame
   takes no value: it answers `self`, as its end does, and the slots it
   has not initialized stay `nil` -- the state an initializer that raised
-  an error leaves an instance in, should its `self` have escaped. The
-  other continuations are shipped code's: `VmErrorSignalled` is the
+  an error leaves an instance in, should its `self` have escaped. Control
+  then goes back to its factory, whose `CompleteInstance` completes an
+  instance of a value class although its later slots never ran: the
+  debugger's explicit action, not a construction cut short. The other
+  continuations are shipped code's: `VmErrorSignalled` is the
   kernel's `signal`, `Reexecute` its `resolve`, and the unwind markers
   `on:do:`, `ensure:` and `ifCurtailed:` are kernel methods, so the
   shipped frames' rule below refuses them. Primordial Soup restarts and

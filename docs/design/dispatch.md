@@ -725,19 +725,25 @@ unhandled-send error rather than a panic. The one observable consequence —
 a user subclass's own `doesNotUnderstand:` is passed by, per §5.10 — is
 [core-library.md](core-library.md), "The one observable difference".
 
-**Four rows serve `Value` rather than one builtin class**, and they are where
+**Five rows serve `Value` rather than one builtin class**, and they are where
 the rule that a leaf may not send shows most plainly:
 `value:sameAs:ifFail:` (reported `=`) and `valueHash:ifFail:` (`hash`) derive
-a value's equality and hash from its state, and `valueSlotCount:ifFail:`
-(`slotCount`) and `value:slotAt:ifFail:` (`slotAt:`) read that state
-(`builtins/value.rs`). **The derivation declines; it never sends.** Comparing
+a value's equality and hash from its state,
+`valueSlotCount:asking:of:ifFail:` (`slotCountAsking:of:`) and
+`value:slotAt:asking:of:ifFail:` (`slotAt:asking:of:`) read that state for
+the Newspeak fallback, refusing a subject under construction as the leaves
+do, and `valueHashUnfolds:ifFail:` (`hashUnfolds`) tells the fallback which
+nodes the hash leaf unfolds (`builtins/value.rs`). **The derivation
+declines; it never sends.** Comparing
 two values means comparing their slots, and a slot's class may bring its own
 `=` — user Newspeak the leaf would have to run, which no native may do
 ([core-library.md](core-library.md), "The rule: a native that calls back into
 Newspeak must not stay a Rust native"). So the leaf decides only the shapes
 it can decide without sending — the immediates, the text payloads, and slots
 whose classes it knows answer the derived `=` — and declines everything
-else, including a graph wider or deeper than its node budget, which is an
+else, including a pair of graphs the equality walk cannot finish within
+its node budget -- the hash's budget is part of the hash's definition
+(`r[runtime.value.hash]`) and declines nothing -- which is an
 ordinary primitive failure taking the ordinary path above:
 `Value`'s `ifFail:` block runs `valueEquals:` or `valueHashOfSlots`, which
 walk the slots from Newspeak and send `=` or `hash` to each. The cost of the

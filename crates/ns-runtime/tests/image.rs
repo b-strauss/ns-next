@@ -1276,14 +1276,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(52); // ... one past the last real tag
+    writer.write_u8(53); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 52
+            tag: 53
         })
     );
 }
@@ -1892,6 +1892,74 @@ fn an_instantiation_instruction_a_crafted_image_runs_raises_an_error() {
                     expect_ok(result, "run");
                 }
             }
+        }
+    }
+}
+
+/// A crafted image can put a factory body's completion anywhere and on
+/// anything: on a negative `LargeInteger`, whose sign shares the header bit
+/// of the under-construction mark, it changes nothing, in its eight-byte
+/// form and its wide one, interpreted and as machine code, so that a body
+/// can at most complete an instance early, never alter another object.
+// spec: bytecode.instruction.complete-instance
+// spec: vm.heap.under-construction-only-on-value-instances
+#[test]
+fn a_completion_a_crafted_image_runs_on_another_object_changes_nothing() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+          public run = ( ^1 )
+        ) : ()
+    "};
+    let negative = ArbitraryInteger::parse("-99999999999999999999", 10).unwrap();
+    for register in [HEADER_REGISTERS, HEADER_REGISTERS + 600] {
+        let doctored_body = Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![
+                Instruction::LoadLiteral {
+                    destination: register,
+                    literal: Literal::LargeInteger(negative.clone()),
+                },
+                Instruction::CompleteInstance { instance: register },
+                Instruction::Return { register },
+            ],
+            0,
+            register + 1,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        ));
+        let (mut interpreter, class) = load(source);
+        let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+        let bytes = interpreter.enter(|mutator| {
+            let class = class_reference(mutator, &class);
+            let doctored = with_method_code(mixin_of(mutator.heap(), class), "run", doctored_body);
+            install_mixin(mutator, class, doctored);
+            let instance = mutator.fetch(&instance);
+            snapshot_one(mutator, false, "t.ns", class, &[instance]).expect("snapshot")
+        });
+        let mut loaded = image::load(&bytes).expect("load");
+        // Sent past the entry that compiles it, so that machine code runs
+        // the completion too where there is a JIT.
+        for _ in 0..3 {
+            let answer = expect_ok(
+                loaded
+                    .interpreter
+                    .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+                "run",
+            );
+            let kept = loaded.interpreter.enter(|mutator| {
+                let object = mutator
+                    .fetch(&answer)
+                    .as_object()
+                    .expect("a LargeInteger is an object");
+                (
+                    mutator.heap().large_integer(object),
+                    mutator.heap().object_under_construction(object),
+                )
+            });
+            assert_eq!(kept.0.as_ref(), Some(&negative), "the sign is kept");
+            assert!(!kept.1, "a LargeInteger never reads as under construction");
         }
     }
 }
@@ -19795,6 +19863,141 @@ fn a_record_of_a_program_class_with_another_body_is_refused() {
              that class is one"
         );
     }
+}
+
+/// A value module whose `Holder`'s initializer starts a value's
+/// construction that escapes `self` into a box and is cut short by a caught
+/// signal, then builds a value that completes: what `ns-next build` writes
+/// once the application's initializers have returned. The values are the
+/// module's, since a value class's enclosing objects must be values, and
+/// the box is `Holder`'s, since a value's slots hold values.
+const AN_ABORTED_CONSTRUCTION: &str = indoc! {"
+    class Values = Object <: Value () (
+      public class Point x: anX box: box = Value new (
+        |
+          public x = anX.
+          public escaped = box at: 1 put: self.
+          public y = Error signal: 'stop'.
+        |
+      ) ()
+
+      public class Pair x: anX y: aY = Value new (
+        |
+          public x = anX.
+          public y = aY.
+        |
+      ) ()
+
+      public class Holder = Object new (
+        |
+          box = Array new: 1.
+          aborted = [Point x: 1 box: box] on: Error do: [:error | nil].
+          escaped = box at: 1.
+          complete = Pair x: 3 y: 4.
+        |
+      ) (
+        public escapedHash = (
+          ^[escaped hash printString] on: Error do: [:error | error messageText]
+        )
+
+        public completeHash = (
+          ^complete hash
+        )
+      )
+
+      public holder = (
+        ^Holder new
+      )
+    ) : ()
+"};
+
+/// A construction cut short keeps its mark across an image: the escaped
+/// instance still refuses `hash` once loaded, and a value that completed in
+/// the same image hashes as it did before.
+// spec: image.verify.under-construction
+// spec: semantics.value.under-construction
+#[test]
+fn an_aborted_construction_stays_under_construction_across_an_image() {
+    let (mut interpreter, class) = load(AN_ABORTED_CONSTRUCTION);
+    let module = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let holder = expect_ok(
+        interpreter.send(&module, Symbol::intern("holder"), &[]),
+        "holder",
+    );
+    let before = expect_ok(
+        interpreter.send(&holder, Symbol::intern("completeHash"), &[]),
+        "completeHash before",
+    );
+    let before = small_integer_of(&mut interpreter, &before);
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let holder = mutator.fetch(&holder);
+        snapshot_one(mutator, false, "t.ns", class, &[holder]).expect("snapshot")
+    });
+    // Only the escaped `Point` is written marked; the completed `Pair` and
+    // `Holder` are ordinary instance records.
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let marked = report
+        .graph_objects
+        .iter()
+        .filter(|object| object.contains("instance under construction"))
+        .count();
+    assert_eq!(marked, 1, "{:?}", report.graph_objects);
+    let mut loaded = image::load(&bytes).expect("load");
+    let refused = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("escapedHash"), &[]),
+        "escapedHash",
+    );
+    let refused = loaded
+        .interpreter
+        .enter(|mutator| text_or_class_name(mutator, mutator.fetch(&refused)));
+    assert_eq!(
+        refused,
+        "cannot hash an instance of Point: it is still under construction, and an instance of \
+         a value class is a value only once its factory has returned"
+    );
+    let after = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("completeHash"), &[]),
+        "completeHash after",
+    );
+    assert_eq!(small_integer_of(&mut loaded.interpreter, &after), before);
+}
+
+/// Only an instance of a value class is ever under construction, so a
+/// record marking an instance of a plain program class, or of a shipped
+/// class that is no value class, is refused: only a crafted image holds one.
+// spec: image.verify.under-construction
+#[test]
+fn an_image_marking_an_instance_of_a_class_that_is_no_value_class_is_refused() {
+    let marked = |writer: &mut encode::Writer| {
+        writer.write_u8(OBJECT_INSTANCE_UNDER_CONSTRUCTION);
+        writer.write_u32(2);
+        writer.write_u8(VALUE_NIL);
+        writer.write_u8(VALUE_NIL);
+    };
+    let error = GraphFixture::with_source(TWO_SLOTS).decode_error(&a_holder_object(marked));
+    assert_eq!(
+        error,
+        decode::DecodeError::UnderConstructionOutsideValueClass
+    );
+    assert_eq!(
+        error.to_string(),
+        "an object is marked under construction, but its class does not inherit Value, and \
+         only an instance of a value class is ever under construction"
+    );
+    let stopwatch = class_records(1, |writer| {
+        writer.write_shipped(STOPWATCH_NAME);
+        writer.write_u32(5); // identity hash
+        marked(writer);
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&stopwatch),
+        decode::DecodeError::UnderConstructionOutsideValueClass
+    );
 }
 
 /// A module instance holds the core library's state, as the platform holds

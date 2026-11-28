@@ -667,6 +667,10 @@ fn encode_instruction(
             writer.write_u16(*instance);
             writer.write_u16(*destination);
         }
+        Instruction::CompleteInstance { instance } => {
+            writer.write_u8(OPCODE_COMPLETE_INSTANCE);
+            writer.write_u16(*instance);
+        }
         Instruction::CheckAppliedClause { steps, selector } => {
             writer.write_u8(OPCODE_CHECK_APPLIED_CLAUSE);
             writer.write_u16(*steps);
@@ -1825,8 +1829,14 @@ fn encode_object<'gc>(
             writer.write_u8(OBJECT_INSTANCE);
             encode_values(writer, &fields, NamePosition::Value, context)?;
         }
+        // A value whose construction was cut short keeps its mark across
+        // the image, or it would load as a value its factory never made.
         ObjectShape::Instance => {
-            writer.write_u8(OBJECT_INSTANCE);
+            writer.write_u8(if heap.object_under_construction(object) {
+                OBJECT_INSTANCE_UNDER_CONSTRUCTION
+            } else {
+                OBJECT_INSTANCE
+            });
             let fields = heap.instance_fields(object).unwrap_or_default();
             encode_values(writer, &fields, NamePosition::Value, context)?;
         }

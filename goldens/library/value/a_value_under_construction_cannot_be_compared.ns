@@ -1,0 +1,38 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized", and a value is equal to another by its
+/// state. An instance of a value class whose factory has not returned has
+/// no state to compare yet, so `=` refuses it on either side: as the
+/// receiver, and as the argument a complete value is compared with.
+///
+/// Each refusal is caught inside the initializer and its text kept in a
+/// slot -- a String is a value -- so the point completes, and two complete
+/// points with equal slots then compare equal as any values do.
+class AValueUnderConstructionCannotBeCompared = Object <: Value () (
+  public class Point x: anX other: other = Value new (
+    |
+      public x = anX.
+      public asReceiver = [
+        self = other.
+        'answered'.
+      ] on: Error do: [:error | error messageText].
+      public asArgument = [
+        other = self.
+        'answered'.
+      ] on: Error do: [:error | error messageText].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      origin = Point x: 0 other: nil.
+      point = Point x: 1 other: origin.
+    |
+    platform transcript
+        show: point asReceiver;
+        newLine;
+        show: point asArgument;
+        newLine;
+        show: (point = (Point x: 1 other: origin)) printString;
+        newLine.
+  )
+)

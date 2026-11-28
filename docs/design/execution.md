@@ -7343,10 +7343,12 @@ per instruction), found these causes, each of which is a reason still true:
   does the factory's `AllocateInstance` and `InitializeInstance` at the push
   (`enter_factory_body`) and pushes the initializer above it, or, for a class
   that runs no code, writes the answer and starts the factory at its
-  `Return`. The frame is kept, so reflection, the depth count, unwinding and
-  stack traces see what they saw; no program code runs between the push and
-  those two instructions (`r[vm.activation.factory-prefix-uninterruptible]`),
-  so the only difference is a skipped safepoint. The
+  `CompleteInstance`, which the run loop runs as it does after an
+  initializer's return. The frame is kept, so reflection, the depth count,
+  unwinding and stack traces see what they saw; no program code runs
+  between the push and those two instructions
+  (`r[vm.activation.factory-prefix-uninterruptible]`), so the only
+  difference is a skipped safepoint. The
   initializer is decided before the allocation, and any error returns the
   factory unexecuted at program counter 0 so the loop raises it in the
   body's order (`an_allocation_refused_is_raised_before_the_initializers_error`).
@@ -14327,8 +14329,17 @@ sends and the inline caches in machine code.
   mirror's class among them (`r[vm.mirror.not-instantiable]`), a refusal, an
   overflowing count, eden at its limit -- runs through `Leaf::Step`, which
   runs `allocate_instance` and, for a refusal, exits so that the interpreter
-  raises. **An initializer invocation is a compiled call**
-  (`jit::sends::initialize`): `InitializeSuperclass` and
+  raises. The header word the row records carries the under-construction
+  mark of an instance of a value class, so the inline bump marks it as the
+  interpreter does. Its `CompleteInstance` is a template
+  (`MacroAssembler::complete_instance`): it loads the header word of the
+  ordinary instance the register names, clears the mark with the
+  complement of `MachineLayout::under_construction_bit` and stores the
+  word back, with no barrier, since the header holds no pointer; an
+  immediate or an object of another format is left alone, as
+  `Heap::complete_instance` leaves it, and optimized code emits it as a
+  simple node through that template. **An initializer invocation is a
+  compiled call** (`jit::sends::initialize`): `InitializeSuperclass` and
   `InitializeAppliedLevel` place their arguments on their slots, and
   `InitializeInstance` copies the factory's own above its window, where
   `Mutator::push_above` pushes the initializer, once the stack has room for

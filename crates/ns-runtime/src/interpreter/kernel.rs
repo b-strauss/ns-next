@@ -319,6 +319,15 @@ impl<'gc> Mutator<'gc> {
                     .compiled_method(crate::Symbol::EQUALS)
                     .cloned()
             });
+        self.value_hash_method = self
+            .heap
+            .class_application(self.builtin_class(BuiltinClass::Value))
+            .and_then(|application| {
+                application
+                    .mixin
+                    .compiled_method(crate::Symbol::intern("hash"))
+                    .cloned()
+            });
         self.refresh_immediate_dispatch_ids();
         // The root is built as a user root is, by the root rule's shape
         // (`load_root_class`), from the filled `Object` and `Value`; its
@@ -1138,8 +1147,8 @@ mod tests {
         // §5.9 reaches a private member only through a lexical send, so the
         // other side's state has to be read by naming it as an argument,
         // which a primitive method may not do.
-        ("Value", "valueSlotCountOf:"),
-        ("Value", "valueSlotOf:at:"),
+        ("Value", "valueSlotCountOf:asking:"),
+        ("Value", "valueSlotOf:at:asking:"),
         // A string literal is no quick answer: an ordinary method, like
         // `hash` above, whose integer literal is none either.
         ("True", "printString"),

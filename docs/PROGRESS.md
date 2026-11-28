@@ -82,6 +82,7 @@ first.
 | The specification's image format -- the encodings, the header, the sections, the tags of fourteen spaces and the structure, the rules the decoder checks on an image, the bounds of a load and the operations *LoadImage* and *WriteImage*, all normative, written into `docs/spec/image-format.md`, the tags and the structure held to the code by tests and every refusal of the writer stated with its text; the decoder refuses a send and a method record whose argument count is not their selector's | Complete | 2026-11-26 | [specification-image-format](superpowers/plans/2026-11-26-1643-specification-image-format.md) |
 | The specification's VM invariants -- 227 `vm.*` rules in eight sections after the terms they are stated in, written into `docs/spec/vm-invariants.md`, each with a `Protects:` line reaching a rule of the first four parts and named by tests, by a detector of the chapter's table or by an `Undetected:` line; `cargo xtask spec` checks them, the table of detectors against the stress gate's modes and the pointers of `CLAUDE.md`, of the documents of `docs/` and of the design documents, which point at a rule by its rule line in a code span | Complete | 2026-11-27 | [specification-vm-invariants](superpowers/plans/2026-11-27-0004-specification-vm-invariants.md) |
 | The complete install, batch A of hot swap -- several builders installed as one (`installAtomically:`) through three VM-mirror leaves, prepare, evaluate a clause and commit, an install epoch and a prepared install cached without a handle; a superclass change evaluating its new clauses for every class object the program reaches, in the order of their creation stamps, and re-parenting each in place; every class object of one layout of twelve fields, so that a declaration gains or loses its body in place; nested classes added, replaced and removed, a removed one living on obsolete, freed on its own and carried by an image as an obsolete tree; renames, access changes and a module's identity changed in place; `ClassDeclarationBuilder fromSource:` declaring a module without a path (`ORIGIN_NONE`); the invalidation scoped to the entries and optimized copies naming a re-applied application, checked by the sixteenth stress mode, `INSTALL` | Complete | 2026-11-27 | [complete-install](superpowers/plans/2026-11-27-1554-complete-install.md) |
+| Values under construction -- an instance of a value class marked under construction in its header until its factory's new `CompleteInstance` clears the mark, every question whose answer depends on its state refused, a construction cut short leaving it marked for good; the mark carried by an image as object-body tag 17 and kept or cleared by an install's migration; `nil`, `true` and `false` answering `Value>>=` by identity before the walk; the equality and hash walks of `builtins/value.rs` answering exactly as `valueEquals:`, `behaviorEquals:` and `valueHashOfSlots` would, declining every node whose `=` or `hash` they do not compute themselves, held to the methods by a differential test; a value's hash defined over the first 4096 nodes of its breadth-first unfolding, in the leaf and the method alike | Complete | 2026-11-28 | [half-built-values](superpowers/plans/2026-11-28-1043-half-built-values.md) |
 ## Notes
 
 **Milestone renumbering (2026-09-06).** Language completeness was pulled ahead of
@@ -9045,3 +9046,112 @@ and `vm.heap.obsolete-mixin-out-of-tree` state it.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
 the debugger, batch B, the first part of the debugger's stage 6.
+
+## Values under construction (2026-11-28)
+
+Plan: [half-built-values](superpowers/plans/2026-11-28-1043-half-built-values.md),
+its decisions taken with the user on 2026-11-28
+([object-model.md](design/object-model.md), "A value object's four
+conditions"). Branch `feature/half-built-values`.
+
+§3.1.1 makes an object a value only once its slots "have been
+initialized", and an instance of a value class is now no value until its
+factory has returned. Its factory's allocation marks it under
+construction -- bit 32 of a `FixedPointers` header, the bit a
+`LargeInteger`'s sign takes, part of the header every application of a
+class that inherits `Value` precomputes, so neither the interpreter's
+allocation nor machine code's tests anything new -- and the factory's
+new instruction `CompleteInstance`, after the initializer has returned,
+clears it. A construction cut short by an unwind or an unhandled signal
+never reaches it, so an instance it handed out stays under construction
+while its class inherits from `Value`. While marked, it answers no
+question whose answer depends on its state: `Value`'s own `=` and
+`hash`, the derived ones, `==` and `identityHash` through them, and
+`objectIsValue:` sent to it signal an `Error` naming the question and
+its class -- `cannot compare an instance of Point: it is still under
+construction, …` -- so an `Ephemeron`'s `key:` and a `WeakMap`'s
+`at:put:` refuse it without a check of their own, while a value class
+that declares its own `=` or `hash` decides for itself; a question
+whose answer is fixed whatever its state is answered, so `nil = aPoint`
+and `3 = aPoint` answer `false`, while a `Point` compared with it
+signals (both decided with the user on 2026-11-28); storing it and
+using it as an enclosing object stay allowed, so a value module builds
+its nested values and two values can reach each other. An image
+carries the mark as object-body tag 17,
+`instance-under-construction`, refused for a class that does not inherit
+`Value`; the install's migration keeps it and clears it where the class
+is re-parented off `Value`. Seventeen goldens under `goldens/library/value/`
+pin it, and the book's rules `semantics.value.under-construction`,
+`runtime.value.equality`, `runtime.value.hash`, `runtime.value.is-value`,
+`bytecode.instruction.complete-instance`, `image.verify.under-construction`
+and `vm.heap.under-construction-only-on-value-instances` state it.
+
+The walk of a value's derived equality, which gained the tests for an
+instance under construction, measured Richards 3% slower in each of
+three layouts, by its 366,000 `nil == anObject` a run, from one pinned
+build per layout; `Value>>=`'s leaf now answers a pair whose receiver
+is `nil`, `true` or `false` by identity before the walk, and Richards
+runs 19.2% faster than on `master` (9.159 against 11.340 ms, three
+pinned builds a side, every build of the branch below every build of
+`master`) ([core-library.md](design/core-library.md), "`nil`, `true`
+and `false` are answered by identity"). Over the sixteen Are We Fast
+Yet programs and the seven micro sources the branch runs 0.94% faster
+than `master` by the geometric mean, Richards and `bench_megamorphic`
+(-2.9%) separated faster and no program separated slower.
+
+A value's hash is defined over the first 4096 nodes of its breadth-first
+unfolding, the sum masked to its low 60 bits after every node, and
+`Value>>valueHashOfSlots` follows the same definition with a queue, so
+the leaf and the method answer alike, a value whose state reaches
+itself hashes, and equal rings of one and of two values hash alike
+(decided with the user on 2026-11-28, option B). The slot readers
+`valueEquals:` and `valueHashOfSlots` go through refuse a subject under
+construction themselves.
+
+Below the root, the walks answer only where they compute the node's own
+`=` or `hash` -- `Value`'s, an immediate's, a number's, a String's or a
+Symbol's of the kernel's own class, a class object's whose `=` is
+`Behavior`'s or `Metaclass`'s -- and decline every other node, before
+the tower or the class test could answer by its shape and before its
+mark could refuse it, so that a slot whose class brings its own `=`
+decides its pair, as `valueEquals:`'s send would. Where a value's class
+side declares `==`, which `valueEquals:` sends to compare the classes,
+the walk declines too, told by a flag of the metaclass's application
+(`Heap::class_side_declares_identity`). The walks examine the pairs in
+the methods' order, so a refusal and an unequal pair are met where the
+methods meet them, and
+`the_leaves_answer_as_the_methods_they_stand_for_over_every_shape`
+holds them to `valueEquals:`, `behaviorEquals:` and `valueHashOfSlots`
+over every pair of every shape.
+
+- `62ec3fef` -- the plan.
+- `cc798968` -- the mark and `CompleteInstance`.
+- `148cf455` -- the value questions refused.
+- `25693167` -- the mark in an image.
+- `91b85ced` -- the mark through an install's migration.
+- `93d200db` -- the reviews' findings.
+- `80729e35`, `1126091f` -- this entry and the open work; the
+  collection test in a debug build only.
+- `c4896f47` -- the questions a value under construction answers, the
+  refusal's wording and the final review's findings.
+- `33993efb`, `03253464` -- this entry, and the install that leaves
+  instances passing as values named next.
+- `101e5af5` -- `nil`, `true` and `false` answered by identity.
+- `0d9480f1`, `c113c82d`, `2495d67a`, `46c2a8fc` -- the re-reviews'
+  residuals: a marked argument left to the walk by the constants'
+  answer, and a slot pair with its own `=` neither refused for a mark
+  nor answered by its shape.
+- `52c75cec`, `dd4894c0` -- the rule for a branch's review findings in
+  `CLAUDE.md` and its skill.
+- `986f7d69` -- the walks answer as the methods they stand for, the
+  class side's `==` a flag of its application, and the differential
+  test.
+- `9bef6051` -- a value's hash defined by its breadth-first unfolding.
+- `950582c9` -- a slot reader's refusal names the receiver whose answer
+  it refuses.
+- `9e004cca` -- the final measurement.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": an install that
+refuses to leave instances passing as values without being values, then
+hot swap in the debugger, batch B, the first part of the debugger's
+stage 6.

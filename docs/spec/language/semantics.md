@@ -36,8 +36,11 @@ inherits from `Value` and the conditions of
 r[semantics.value.conditions]
 An instance of a class that inherits from `Value` is made only when it
 can be a value object; otherwise the instantiation signals an error named
-under the class's primary factory, and nothing is made. Four conditions
-are checked, each where the instance would come into being:
+under the class's primary factory, and nothing is made. It becomes one
+only once its factory has returned
+([`semantics.value.under-construction`](#r-semantics.value.under-construction)).
+Four conditions are checked, each where the instance would come into
+being:
 
 1. No class from the instance's class up to its root declares a mutable
    slot: ``cannot instantiate Counter: a value object is deeply
@@ -56,6 +59,50 @@ the level whose enclosing object fails when it is not the class's own,
    slot it declares holds a value`.
 
 A class that breaks a condition but is never instantiated never fails.
+
+r[semantics.value.under-construction]
+An instance of a class that inherits from `Value` is a value object only
+once its factory has returned, its slots all initialized (Bracha §3.1.1:
+"have been initialized"); until then it is *under construction*, and a
+factory that never returns -- an unwind past its initializer, or a signal
+the initializer does not handle -- leaves it under construction for good,
+while its class inherits from `Value` (an install that re-parents the
+class off `Value` clears the mark,
+[`runtime.install`](../runtime.md#r-runtime.install)). An instance under
+construction answers no question whose answer depends on its state, and
+a question whose answer is fixed whatever its state is answered:
+
+1. `Value`'s own `=` and `hash` -- the derived equality and hash --
+   sent to it, `==` and `identityHash`, which answer as `=` and `hash`
+   do, and the question whether it is a value -- which an `Ephemeron`'s
+   `key:` and a `WeakMap`'s `at:put:` ask of a key -- signal. A value
+   class that declares an `=` or a `hash` of its own decides for itself
+   what that method answers, and `==` and `identityHash` answer as it
+   does.
+2. `=` sent to a value with it as the argument answers `false` when the
+   value's class and its class cannot be equal -- `nil = aPoint`, `true =
+   aPoint`, `3 = aPoint`, `'abc' = aPoint` -- and `Value`'s own `=`
+   signals when they can.
+3. Among a value's slots, a pair whose receiver's slot is of a class
+   that declares its own `=` is decided by that `=` alone, whatever the
+   other slot holds, and a slot of such a class is hashed by its own
+   `hash`, each signalling only where it does. The comparison holds
+   every other pair it reaches to the rule above, the receiver's slot as
+   the receiver and the argument's as the argument, and `hash` signals
+   at every other slot it reaches.
+
+Each signal is an `Error` naming its class and the question, under the
+selector the question is asked by -- `=` or `hash` as sent, `=` for `==`
+and `hash` for `identityHash`, whose answers they are, and `isValue` for
+the question a key is asked: `cannot compare an instance of Point: it is
+still under construction, and an instance of a value class is a value
+only once its factory has returned` for `=`, `cannot hash an instance of
+Point: …` for `hash` and `cannot tell whether an instance of Point is a
+value: …` for `isValue`, each ending as the first does. Storing it -- in
+a variable, an `Array` or a slot of another value -- and using it as the
+enclosing object of the classes nested in it are allowed, so a value
+module can build values in its own slots and two values can reach each
+other.
 
 r[semantics.value.identity]
 A value object has no identity of its own: `Value` defines `==` as `=`,

@@ -254,12 +254,15 @@ pub fn factory_body(argument_count: u16) -> CompiledCode {
                 instance,
                 destination: answer,
             },
+            // Reached only once the initializer returned: an instance of a
+            // value class is a value from here on, never before.
+            Instruction::CompleteInstance { instance },
             Instruction::Return { register: instance },
         ],
         argument_count,
         register_count,
         0,
-        vec![(0, 0..3)],
+        vec![(0, 0..4)],
         source,
     )
 }

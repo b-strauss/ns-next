@@ -457,16 +457,30 @@ and `String new` answers the empty string, of the byte format
 `AllocateInstance` runs and which reads the class object's builtin field on
 every instantiation, beside `Array`'s and the VM mirror's class.
 
-Four further rows serve `Value` itself rather than one builtin:
-`value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
-`valueSlotCount:ifFail:` (`slotCount`) and `value:slotAt:ifFail:`
-(`slotAt:`). The first two are the equality and hash `builtins/value.rs`
+Five further rows serve `Value` itself rather than one builtin:
+`value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`), the
+two readers `valueSlotCount:asking:of:ifFail:` (`slotCountAsking:of:`)
+and `value:slotAt:asking:of:ifFail:` (`slotAt:asking:of:`), which refuse
+a subject under construction in the words of the question they are
+asked, naming the receiver whose answer is refused, and
+`valueHashUnfolds:ifFail:` (`hashUnfolds`), which tells
+`valueHashOfSlots` the nodes the hash leaf unfolds. The first two are
+the equality and hash `builtins/value.rs`
 derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
-Newspeak.
+Newspeak. Both refuse, rather than decline, an instance still under
+construction whose state their answer would depend on -- the hash every
+one it reaches, the equality one on a pair's receiver side, or on its
+argument side where the classes could be equal -- with
+`instantiate::under_construction_error`'s text, so that `valueEquals:`
+and `valueHashOfSlots` never compare or hash the slots built so far;
+`objectIsValue:ifFail:`, `Ephemeron`'s and `WeakMap`'s question about a
+key, refuses one through the same builder
+([object-model.md](object-model.md), "A value object's four conditions",
+`r[semantics.value.under-construction]`).
 
-The last two are the first *reflective* leaves the mirror carries: given an
+The two readers are the first *reflective* leaves the mirror carries: given an
 object, how many slots its class's application declares, and what the slot
 at an index holds. They exist because the Newspeak fallback has to read
 state from a receiver it cannot send a private selector to, but they are
@@ -484,16 +498,38 @@ identity method `==` as `^self = other` (`r[semantics.value.identity]`)
 requires an identity method a value's class declares to "return the same
 results as `Value`'s equality method", and a send of `=` makes that true by
 construction for every subclass. Where a leaf declines — a slot whose class
-brings its own `=`, a shape it does not handle, its node budget — the
+brings its own `=`, declined before the walk's tower or class test could
+answer for it by shape (`builtins/value.rs`, `receiver_equality`), a
+shape it does not handle, the equality walk's node budget (the hash's
+is part of its definition, below, and no decline) — the
 failure block runs `valueEquals:` or `valueHashOfSlots`, which walk the
-slots from Newspeak and send `=` or `hash` to each. Those two read a slot
-through `valueSlotCountOf:` and `valueSlotOf:at:`, which name their subject
-rather than forwarding `self`: a private member is reachable only through a
-lexical send (§5.9), so the *other* side's state cannot be read by sending
-it a private selector, and both sides have to go through the same leaf.
+slots from Newspeak, sending `=` to each slot or `hash` to each node the
+hash does not unfold. Those two read a slot through
+`valueSlotCountOf:asking:` and `valueSlotOf:at:asking:`, which name their
+subject rather than forwarding `self`: a private member is reachable
+only through a lexical send (§5.9), so the *other* side's state cannot
+be read by sending it a private selector, and both sides have to go
+through the same leaf.
 Naming the subject is also what costs those two the primitive-method fast
 path, which only the declining path pays.
 
+**A value's hash is breadth-first and bounded.** `Value>>hash` is
+defined over the first 4096 nodes of the receiver's breadth-first
+unfolding, the sum masked to its low 60 bits after every node
+([object-model.md](object-model.md), "A value's hash is defined over a
+breadth-first prefix of its unfolding"; `r[runtime.value.hash]`), and
+`valueHashOfSlots` follows that definition with a queue of its own, so
+the leaf and the method answer the same number wherever the leaf
+answers at all, a value whose state reaches itself hashes, and a ring of
+one value hashes as an equal ring of two. The user decided this on
+2026-11-28 (option B), over keeping a truncated sum as the leaf's
+exception and over detecting cycles: Bracha's VMs have no structural
+value hash to follow, and OCaml's `Hashtbl.hash` walks a value
+breadth-first within a bound the same way. The readers the method goes
+through, `valueSlotCountOf:asking:` and `valueSlotOf:at:asking:`, refuse
+a subject under construction in the words of the question they are
+asked, so `valueEquals:` and `valueHashOfSlots` refuse where the leaves
+do by construction.
 **A value's state is the slots its classes *declare*, and nothing else.**
 An instance's field vector holds more than that: each level lays its own
 slots down at its `own_slot_base` and then one hidden cache slot per nested
@@ -507,7 +543,7 @@ status 0. Which indices are state is decided once, when the application is
 built: `MixinApplication::declared_slots`, computed in `apply_mixin` beside
 `nested_slot` and `inherits_value` because nothing about an application
 changes afterwards. Everything that asks borrows that one list through one
-wrapper — both Rust walks, and the `slotCount` and `slotAt:` leaves the
+wrapper — both Rust walks, and the two reader leaves the
 Newspeak fallback reads a slot through. That is what keeps the leaf and the
 fallback comparing the same slots in the same order — if they disagreed, `=`
 would answer one thing when the leaf decided and another when it declined —
@@ -1778,23 +1814,66 @@ orderings and `=` through `tower::ordering_double`, for a `SmallInteger`
 within 2^53 only (`exact_double`), where IEEE 754's comparison is the
 exact one. Both are inlined generic functions, not closures over a
 function pointer. `tower::operand` is inlined too, so a value that is no
-object -- `nil`, a Boolean -- is refused without a call, and a value's
-derived equality reads the second side of a pair only when the first is a
-number. Every other case goes to the tower;
+object -- `nil`, a Boolean -- is refused without a call, and the walk of
+a value's derived equality (`builtins/value.rs`, `derived_equality`)
+reads a pair's second side as a number only when the first is one;
+`compare_node`, which decides every pair the walk does not decide before
+it, reads both sides with `tower::operand` again. Every other case goes
+to the tower;
 `the_float_fast_path_agrees_with_the_tower` holds the fast path to it over
 every pair of its samples. The first build of the tower lacked these and
-was measurably slower: Richards by 7.5%, since its `NoWork == packet`, with
-`NoWork` nil, goes through a value's equality, which then asked the heap of
-both sides whether each was a number; Mandelbrot by 6.3% and CD by 2.8%,
+was measurably slower: Richards by 7.5%, since a value's equality then
+asked the heap of both sides of every pair whether each was a number --
+its `NoWork == packet`, with `NoWork` nil, went through that walk then, as
+a slot holding `nil` compared with an object still does; Mandelbrot by
+6.3% and CD by 2.8%,
 since `Float`'s comparison and arithmetic called their operation through a
 function pointer, with a store-forwarding stall after the call, and a
 `Float` with a `SmallInteger` went through the whole classification.
+
 Measured on 2026-10-11, with these paths: the Are We Fast Yet benchmarks
 run as fast as on the tree without the tower, the largest ratio against it
 Json's 1.005, within the noise (three pinned builds a side, pooled, by the
 protocol of [execution.md](execution.md), "What removing the re-entries
 moved"); Mandelbrot and NBody run about 4% faster.
 
+**`nil`, `true` and `false` are answered by identity.** Each is an
+immediate word, never under construction, of a kernel class no other
+class can be equal to. Its class has other instances -- `UndefinedObject
+new` and `True new` answer heap objects -- which `valueEquals:` finds
+equal to the immediate, neither having any slot, and which the walk
+compares the same way (`compare_node`), refusing one still under
+construction. So `Value>>=`'s leaf decides a pair whose receiver is one
+of the three by comparing the two words, before the walk, wherever the
+argument is an immediate or a heap object of another application, told
+by the dispatch id in its header word; an argument of the constant's own
+application goes through the walk (`builtins/value.rs`,
+`constant_identity`, held to the walk over every shape of argument, a
+second instance of each constant's class complete and under
+construction included, by
+`the_constants_are_answered_by_identity_as_the_walk_answers_them`). The
+pair is the commonest the leaf sees -- Richards' `NoWork == packet`,
+which `Value>>==` answers with `=`, 366,000 times a run -- and its
+argument is a heap object of another class, so it costs one read of a
+header word. The walk is inlined into `builtins::execute`, the one
+function every leaf enters, and the tests it gained for a value under
+construction made Richards 3% slower in each of three layouts, its
+machine code, inlining and exits unchanged. Answered before the walk,
+the pair makes Richards 19.2% faster than on the tree without the mark:
+9.159 ms against 11.340 ms, the three builds of each side 9.108 to 9.206
+ms against 11.267 to 11.452, by the protocol of
+[execution.md](execution.md), "What removing the re-entries moved" --
+three pinned builds a side in the layouts a, b and c, three rounds in
+one sitting, every process held to the performance cores (measured on
+2026-11-28, `950582c9` against `65aee7be`). Over the sixteen Are We
+Fast Yet programs and the seven micro sources the geometric mean moves
+-0.94%, each of the branch's builds below each of `master`'s, and no
+row is separated slower. How the argument is tested matters at this
+rate: its class word, read through `Heap::object_class`, cost Richards
+3% (9.2 against 8.9 ms); its header word read as the dispatch id,
+without the block's bounds (`Heap::object_dispatch_id`), costs nothing
+measurable. The 3% figures come from one pinned build per layout, not
+from the pooled protocol.
 ## `ByteArray`, `StringBuilder` and the views
 
 The kernel completion's fifth sub-project ("The kernel completed
@@ -2431,7 +2510,10 @@ root sends the kernel instance it keeps, and one the instance understands
   future: it declines where it would answer `false` and a future is its
   subject, and the failure path asks again of the future's value
   (`interpreter::future::declines_for_a_future`), so a future standing for
-  a value is refused as the value is. `nil` is the key of an ephemeron
+  a value is refused as the value is. An instance of a value class still
+  under construction it neither accepts nor refuses as a value: the leaf
+  itself signals that the instance is under construction
+  (`r[semantics.value.under-construction]`). `nil` is the key of an ephemeron
   that has none, the state it is made in and the one its collected key
   leaves it in (`r[runtime.memory.ephemeron]`).
   `isKindOfEphemeron` answers `true`.
@@ -4149,7 +4231,7 @@ slots for the same reason. No prior art defines a value's equality over
 one: canonical Newspeak derives no equality for values, and SOMns, which
 does, has no lazy slots. `mixin::declared_slots_of` leaves a lazy slot
 out of `MixinApplication::declared_slots`, which both equality walks and
-the fallback's `slotCount`/`slotAt:` leaves read. A lazy slot of a value
+the fallback's two reader leaves read. A lazy slot of a value
 is still one of its slots for §3.1.1's deep immutability: its getter's
 `InitializeSlot` refuses a non-value exactly as an initializer's does,
 naming the slot, under the getter's selector.

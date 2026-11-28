@@ -1,0 +1,71 @@
+/// newspeak-spec.pdf 3.1.1: only an object whose class inherits from
+/// `Value` is a value, and only a value is under construction until its
+/// factory returns. An install that re-parents a value class onto `Object`
+/// makes the instances whose construction was cut short ordinary objects,
+/// whose identity is their own: an `Ephemeron`, which asks whether its key
+/// is a value, takes them as keys from then on, whether they keep their
+/// layout (`Point`) or migrate to a new one (`Wide`, which gains a slot).
+class AnInstanceWhoseClassStopsInheritingValueLosesItsConstructionMark = Object <: Value () (
+  public class Point box: box = Value new (
+    |
+      public itself = box at: 1 put: self.
+      public never = Error signal: 'stop'.
+    |
+  ) ()
+
+  public class Wide box: box = Value new (
+    |
+      public itself = box at: 1 put: self.
+      public never = Error signal: 'stop'.
+    |
+  ) ()
+
+  escaped: factory = (
+    |
+      box = Array new: 1.
+    |
+    [factory value: box] on: Error do: [:error | nil].
+    ^box at: 1.
+  )
+
+  outcome: action = (
+    ^[action value printString] on: Error do: [:error | error messageText].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ClassMirror = platform mirrors ClassMirror.
+      Ephemeron = platform kernel Ephemeron.
+      point = escaped: [:box | Point box: box].
+      wide = escaped: [:box | Wide box: box].
+      pointBuilder = (ClassMirror reflecting: Point) mixin declaration asBuilder.
+      wideBuilder = (ClassMirror reflecting: Wide) mixin declaration asBuilder.
+    |
+    transcript
+        show: (outcome: [
+          Ephemeron new key: point.
+          #accepted.
+        ]);
+        newLine.
+    pointBuilder
+        header source: 'public class Point box: box = Object new (| public itself = box at: 1 put: self. public never = Error signal: ''stop''. |)'.
+    pointBuilder install.
+    wideBuilder
+        header source: 'public class Wide box: box = Object new (| public itself = box at: 1 put: self. public never = Error signal: ''stop''. public added = 3. |)'.
+    wideBuilder install.
+    transcript
+        show: (outcome: [
+          Ephemeron new key: point.
+          #accepted.
+        ]);
+        show: ' ';
+        show: (outcome: [
+          Ephemeron new key: wide.
+          #accepted.
+        ]);
+        show: ' ';
+        show: (outcome: [wide added]);
+        newLine.
+  )
+)

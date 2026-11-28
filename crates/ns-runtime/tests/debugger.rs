@@ -12746,6 +12746,50 @@ mod evaluation {
         }
     }
 
+    /// A value class whose slot initializer a breakpoint stops in, and a
+    /// run that hashes the instance once its factory has returned.
+    const CONSTRUCTING: &str = indoc! {"
+        class Constructing = Object <: Value () (
+          class Point x: xValue = Value new (
+            |
+              public x = xValue.
+              public y = x + 1.
+            |
+          ) ()
+          public run = (
+            | point = Point x: 41. |
+            point hash.
+            ^point y
+          )
+        ) : ()
+    "};
+
+    ns_runtime::for_each_lowering! {
+        /// An evaluation at a stop inside a value's initializer meets the
+        /// instance under construction as the initializer would: `self
+        /// hash` is refused, and the refusal is the evaluation's answer;
+        /// the factory then returns, and the run hashes the complete value.
+        // spec: semantics.value.under-construction
+        fn an_evaluation_hashing_a_value_under_construction_signals(lowering) {
+            let (description, answer) = stopped_at(
+                CONSTRUCTING,
+                lowering,
+                "Constructing",
+                "public y = x + 1.",
+                |remote| error_description(remote, 0, "self hash"),
+            );
+            assert!(
+                description.contains(
+                    "cannot hash an instance of Point: it is still under construction, and \
+                     an instance of a value class is a value only once its factory has \
+                     returned"
+                ),
+                "{description}"
+            );
+            assert_eq!(answer, 42);
+        }
+    }
+
     /// A send inside a protected block, whose handler notes a catch.
     const HANDLING: &str = indoc! {"
         class Handling = Object new (

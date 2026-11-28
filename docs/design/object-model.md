@@ -649,7 +649,9 @@ Sending the factory message to a class object then does this
 
 1. **One** instance `o` is allocated — distinct identity, every slot declared by
    the class and its superclasses initially nil. There is no separate instance
-   per inheritance level; `o` is threaded through every step below.
+   per inheritance level; `o` is threaded through every step below. An
+   instance of a class that inherits `Value` is marked under construction
+   (the header's bit 32, "The header word" below).
 2. An instance-initializer activation `i` of the class's own level is
    created, with the factory message's arguments.
 3. In the context of `i`, the superclass clause's message is evaluated, and
@@ -660,7 +662,10 @@ Sending the factory message to a class object then does this
 4. Once the chain above has run, this class's own slot clauses execute on `o`, in
    declaration order.
 5. This class's own initializer expressions execute on `o`.
-6. `i` returns to the factory method, which returns `o` to the caller.
+6. `i` returns to the factory method, which clears `o`'s mark
+   (`CompleteInstance`) and returns `o` to the caller. An initializer that
+   never returns -- an unwind past it, a signal it does not handle --
+   leaves `o` marked for good; storing `o` while it is marked is allowed.
 
 Step 3 is why a class body has no access to the factory's actual parameters
 except through slots explicitly extracted in the initializer: only `i` sees them.
@@ -677,12 +682,13 @@ initializer`…`: args. ^o`, `Newspeak2SqueakCompilation.ns:1991-2025`;
 SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`, `MixinBuilder.java:547-600`;
 Primordial Soup's `Newspeak2PrimordialSoupCompilation.ns:1907-1961`).
 The factory entry of the metaclass mixin ("Class sides and metaclasses"
-below) carries `compiler::factory_body` of its arity, three instructions
+below) carries `compiler::factory_body` of its arity, four instructions
 ([compiler.md](compiler.md), "The three initializer bodies"): step 1,
 `AllocateInstance` on the class object the factory was sent to; step 2,
 `InitializeInstance`, the initializer of that class object's own level on
-the new instance with the factory's own arguments; and the return of the
-instance, whose initializer's answer is not used. So `Foo new` is an
+the new instance with the factory's own arguments; `CompleteInstance`,
+which clears the instance's under-construction mark; and the return of
+the instance, whose initializer's answer is not used. So `Foo new` is an
 ordinary send that the lookup and the inline caches answer
 ([dispatch.md](dispatch.md), "Resolve, then act"), and a factory activation
 (`Step::Factory`, `FrameKind::Factory`) like any method's, which a JIT can
@@ -1018,6 +1024,160 @@ exist is an instance that passes for a value and is not one.
   crafted artifact gets the verdict its decoded structure implies, like any
   other decoded class; a ready-made *instance* decoded from an image is not
   re-checked ("What is still unchecked" in [core-library.md](core-library.md)).
+
+**"Have been initialized": a value is under construction until its factory
+returns** (`r[semantics.value.under-construction]`; decided with the user on
+2026-11-28). The fourth condition is checked slot by slot as each is
+initialized, but §3.1.1 also asks that the slots "have been initialized",
+which no single store can tell: an initializer can hand `self` out -- as an
+argument, into an `Array`, into a slot of another value -- before its later
+slots run. Such an instance read with an uninitialized slot, and its `hash`,
+derived from its state, changed once the rest were initialized, so a hashed
+collection that had stored it lost it. The instance is therefore marked
+under construction by its factory's allocation and unmarked by the
+factory's `CompleteInstance` once the initializer has returned normally
+("Instantiation" above; "The header word" below); a construction cut short
+-- an unwind past it, a signal its initializer does not handle -- never
+reaches that instruction, so an instance it handed out stays marked for
+good and never becomes a value -- across an image too, which writes it
+under a body tag of its own ([image-format.md](image-format.md), "A value
+cut short keeps its mark"). A signal its handler resumes does not cut
+the construction short: the initializer goes on and the factory returns
+(`goldens/library/value/a_construction_resumed_after_a_signal_completes.ns`).
+Each factory unmarks only its own instance, so a value whose initializer
+builds another of its class completes the inner one first
+(`goldens/library/value/a_value_built_inside_another_ones_initializer_completes_on_its_own.ns`).
+
+While an instance is marked, it answers no question whose answer depends
+on its state, and a question whose answer is fixed whatever its state is
+answered (decided with the user on 2026-11-28: a question of the second
+kind has the same answer before and after the factory returns, so
+answering it reveals nothing of the partial state and withholds nothing
+the instance will have):
+
+- **`Value`'s own `=` and `hash`**, the derived ones, and through them
+  `==` and `identityHash`, which `Value` declares as `=` and `hash`. A
+  value class that declares an `=` or a `hash` of its own replaces the
+  derived one, its refusal included, and decides for itself; its `==` and
+  `identityHash` follow it. The equality leaf
+  (`builtins/value.rs`) refuses a marked receiver before anything else --
+  the numeric tower and the classes included. A marked argument is
+  answered `false` where the walk's class comparison finds that the two
+  classes cannot be equal -- `nil = aPoint`, `true = aPoint`, as the
+  number, String and Symbol leaves already answer `3 = aPoint` and `'abc' =
+  aPoint` without reading the argument's state -- and refused where the
+  comparison would go on to its slots. Every pair the walk reaches among
+  the slots is held to the same rule, its receiver's side as the receiver:
+  that side is the slot `valueEquals:` sends `=` to when the leaf
+  declines, and that send refuses a marked receiver whose `=` is
+  `Value`'s, so the leaf and the fallback never answer one comparison
+  apart. A slot pair whose receiver's side is of a class with its own
+  `=` is that `=`'s to decide, whatever the other slot holds, so the
+  walk asks first, below the root, whether it computes the receiver
+  side's `=` itself (`receiver_equality`: `Value`'s, an immediate's, or
+  that of a number, a String or a Symbol of the kernel's own class or
+  of a class object whose `=` is `Behavior`'s) and declines the pair
+  where it does not -- before its tower and its class test, which would
+  answer by shape for a `=` that may answer otherwise, and before the
+  marks, which are no reason to refuse such a pair: the fallback's send
+  decides, refusing or not as that `=` does
+  (`goldens/library/value/a_slot_with_its_own_equality_is_compared_by_it_against_any_slot.ns`).
+  The classes are compared as `valueEquals:` compares them, by `==` sent
+  to the receiver's class: by `Behavior>>==`'s rule, unless that class's
+  class side declares `==` of its own, which a flag of its metaclass's
+  application says without a lookup (`LevelFacts::declares_identity`,
+  `Heap::class_side_declares_identity`); there the walk declines and
+  that `==` decides; `valueEquals:` reads every slot through readers
+  that refuse a subject under construction (`valueSlotCountOf:asking:`,
+  `valueSlotOf:at:asking:`, in the words of the question they are
+  asked), so a marked argument is refused there wherever that `==` lets
+  the comparison go on to the slots
+  (`goldens/library/value/a_class_side_identity_decides_whether_two_values_classes_are_equal.ns`).
+  It examines the slots in declaration order, each unfolded before the
+  next, and a class pair's enclosing objects and superclasses in
+  `behaviorEquals:`'s order, so that a refusal and an unequal pair are
+  met in the order that method meets them; and it finds `nil` equal to
+  `UndefinedObject new`, as `valueEquals:` does, neither having slots.
+  `the_leaves_answer_as_the_methods_they_stand_for_over_every_shape`
+  holds the walks to `valueEquals:`, `behaviorEquals:` and
+  `valueHashOfSlots` over every pair of every shape. The lookup it
+  makes for an instance is the one the walk made for it anyway, handed
+  on to `compare_node`. The walk answers whichever it
+  meets first, a refusal, an unequal pair or such a decline, in its
+  order. The hash leaf refuses its receiver and every marked node it
+  unfolds, since hashing reads state, and declines at the first node
+  whose `hash` is its own, which `valueHashOfSlots` sends that `hash`
+  (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`;
+  the definition below).
+  A refusal is an error, never a decline: a decline would run
+  `valueEquals:` or `valueHashOfSlots`, which would compare or hash
+  exactly the partial state the refusal withholds
+  (`goldens/library/value/a_value_under_construction_compares_unequal_to_another_class.ns`).
+- **A value's hash is defined over a breadth-first prefix of its
+  unfolding** (`r[runtime.value.hash]`): the first 4096 nodes, visited
+  from a queue -- the value first, then each node's slots in declaration
+  order -- a node whose `=` and `hash` are both `Value`'s unfolded and
+  adding its slot count, any other adding its own `hash`, and the sum
+  masked to its low 60 bits after every addition. The leaf
+  (`builtins/value.rs`, `derived_hash`) and `Value>>valueHashOfSlots`
+  follow it alike, the method asking the leaf which nodes it unfolds
+  (`valueHashUnfolds:ifFail:`), so the leaf declines only at a node
+  whose `hash` it cannot send and the two never answer apart
+  (`equal_values_hash_alike_by_their_breadth_first_unfolding`, and the
+  differential test over every shape). Two equal values unfold to the
+  same sequence of nodes however their states share structure -- a ring
+  of one value and an equal ring of two -- so they hash alike, and a
+  value whose state reaches itself hashes by a finite prefix rather
+  than not at all. Decided with the user on 2026-11-28 (option B), over
+  keeping a cut sum as the leaf's exception and over detecting cycles:
+  Bracha's VMs have no structural value hash to follow, and OCaml's
+  `Hashtbl.hash` walks a value breadth-first within a bound in the same
+  way.
+- Every refusal names the marked object's class and the question, through
+  one builder, `instantiate::under_construction_error`, in the "cannot
+  <action> …: <reason>" form of the other value errors -- `cannot compare
+  an instance of Point: it is still under construction, and an instance of
+  a value class is a value only once its factory has returned`, `cannot
+  hash an instance of Point: …` and `cannot tell whether an instance of
+  Point is a value: …` (the wording decided with the user on 2026-11-28).
+- **Whether it is a value**, `objectIsValue:ifFail:` (`builtins/weak.rs`,
+  after its decline for a future). `false` would be wrong too: the instance
+  becomes a value the moment its factory returns, so an `Ephemeron` or a
+  `WeakMap` that keyed it would hold a value as a weak key from then on.
+  Refusing it there is what lets `Ephemeron>>key:` and `WeakMap>>at:put:`,
+  which ask the question, go without a check of their own
+  (`goldens/library/value/a_value_under_construction_is_no_weak_key.ns`).
+
+What stays allowed is storing the instance and using it as an enclosing
+object. A value module's own slots build its nested values while the module
+is still under construction -- `| origin = Point x: 0 |`, each `Point`
+nested in the marked module -- and comparing two of them compares their
+slots without reaching the module
+(`goldens/library/value/a_value_module_builds_its_nested_values.ns`); and two
+values may reach each other, an `A` whose slot holds a `B` that holds the
+`A` still being built, which §3.1.1's phrasing, a condition on every object
+reachable, admits as a cycle. Once both factories have returned, the cycle
+compares and hashes as values do
+(`goldens/library/value/values_in_a_cycle_compare_once_complete.ns`).
+Refusing the store instead, as a value's fourth condition refuses a
+non-value, would have outlawed both.
+
+The prior art leaves this open. Bracha's formal semantics defines value
+status as the greatest fixed point of the structural conditions,
+"initialized immutable slots" among them
+(`prior-art/newspeak/formal-semantics/newspeak-semantics.tex`, near its
+module definitions), and the actor semantics transfers "only a fully
+initialized value" (`actor-semantics.tex`), but neither says what an
+instance is before then. Eurasia marks an instance of a value class at its
+allocation and records the gap itself: "the end of construction is not
+marked, so an initializer that hands out `self` before it finishes can
+expose a partly built value", proposing a syntactic value class whose end of
+construction the compiler could mark
+(`prior-art/newspeak/EURASIA_ACTORS_DESIGN_2026-11-17.md`, section 5). SOMns
+decides value status per class and checks the slots once the initializer
+has run (`IsValueCheckNode`), with no state for the time in between. Here
+the end of construction is the factory's return, which every instantiation
+passes through, so no syntax is needed to find it.
 
 **`Kernel` and the VM mirror are values, as in SOMns**
 (`r[semantics.value]`; decided with the user
@@ -2239,7 +2399,7 @@ the lock bits into one 64-bit word:
 | 22-26 | the format |
 | 27-30 | the age: the scavenges a young object has survived, at most 15; 0 for a new object and meaningless for an old one ([memory.md](memory.md), "The age table and the tenuring threshold") |
 | 31 | the remembered bit: set on an old object in the remembered set, never on a young one ([memory.md](memory.md), "The remembered set and its limit") |
-| 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
+| 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`); in an ordinary instance (`FixedPointers`), the under-construction mark of an instance of a value class, set by its factory's allocation and cleared by its `CompleteInstance` (`Heap::object_under_construction`, `r[vm.heap.under-construction-only-on-value-instances]`) -- the two meanings share the bit because no object has both formats, and every reader asks the format first |
 | 33 | the mark bit, set while a collection runs and cleared as compaction moves the object ([memory.md](memory.md), "Marking") |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
 | 56-63 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header |

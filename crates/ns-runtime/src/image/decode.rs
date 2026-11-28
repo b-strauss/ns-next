@@ -809,6 +809,11 @@ pub enum DecodeError {
     /// code -- a customized copy's unchecked slot reads above all -- would
     /// read as what it is not.
     ProgramInstanceBody,
+    /// An `OBJECT_INSTANCE_UNDER_CONSTRUCTION` record of a class that does
+    /// not inherit `Value`: only a factory of a value class marks its
+    /// instance, so only a crafted image holds one, and the mark would make
+    /// value equality and hash refuse an ordinary object for good.
+    UnderConstructionOutsideValueClass,
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
     /// never writes: one that fits `i64` (which travels as an `i64`), a zero
     /// top digit, or a negative zero. Accepting one would give an integer a
@@ -1409,6 +1414,11 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an object of a program class is not an instance record, but every instance \
                  of that class is one"
+            ),
+            DecodeError::UnderConstructionOutsideValueClass => write!(
+                f,
+                "an object is marked under construction, but its class does not inherit \
+                 Value, and only an instance of a value class is ever under construction"
             ),
             DecodeError::NonCanonicalInteger => {
                 write!(f, "an integer is not in its one canonical encoding")
@@ -2408,6 +2418,7 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             ..
         } => vec![*destination, *left, *right],
         Instruction::AllocateInstance { destination } => vec![*destination],
+        Instruction::CompleteInstance { instance } => vec![*instance],
         // Its arguments are the body's own, which `argument_count` names
         // and the body's register count was checked against.
         Instruction::InitializeInstance {
@@ -2919,6 +2930,9 @@ fn decode_instruction(
         }
         OPCODE_ALLOCATE_INSTANCE => Instruction::AllocateInstance {
             destination: reader.read_u16()?,
+        },
+        OPCODE_COMPLETE_INSTANCE => Instruction::CompleteInstance {
+            instance: reader.read_u16()?,
         },
         OPCODE_INITIALIZE_INSTANCE => {
             let instance = reader.read_u16()?;
@@ -4376,6 +4390,38 @@ fn check_program_instances<'gc>(
     Ok(())
 }
 
+/// An object record's body tag, an instance under construction read as an
+/// instance, and whether it carries the mark: the two records are laid out
+/// alike, so every check and every size an instance record is held to holds
+/// a marked one too.
+fn instance_body_and_mark(body: u8) -> (u8, bool) {
+    if body == OBJECT_INSTANCE_UNDER_CONSTRUCTION {
+        (OBJECT_INSTANCE, true)
+    } else {
+        (body, false)
+    }
+}
+
+/// Every object marked under construction is an instance of a class that
+/// inherits `Value`: only a value class's factory marks its instance
+/// (`Heap::allocate_instance_with`), so only a crafted image marks another,
+/// and the mark would make value equality and hash refuse that object for
+/// good. Checked after `rebuild_applications`, since whether a program
+/// class inherits `Value` is its application's, which exists only then.
+fn check_under_construction<'gc>(
+    heap: &Heap<'gc>,
+    objects: &[ObjectReference<'gc>],
+) -> Result<(), DecodeError> {
+    for object in objects {
+        if heap.object_under_construction(*object)
+            && !heap.class_inherits_value(heap.object_class(*object))
+        {
+            return Err(DecodeError::UnderConstructionOutsideValueClass);
+        }
+    }
+    Ok(())
+}
+
 /// Every field the format types as a class reference really names a class
 /// object, and a class object's own `class` is its metaclass or, for a
 /// metaclass, `Metaclass`.
@@ -4715,7 +4761,9 @@ impl Sizing<'_, '_, '_> {
         let future = header == Some(BuiltinClass::FutureImplementation);
         let fraction = header == Some(BuiltinClass::Fraction);
         reader.read_u32()?; // the identity hash, checked by the second pass
-        let body = reader.read_u8()?;
+        // An instance under construction is sized as any instance: only the
+        // second pass, which builds its header, reads the mark.
+        let (body, _) = instance_body_and_mark(reader.read_u8()?);
         // A shipped class that is no builtin lays its instances out with
         // slots, as the loading binary declares them: a record of any other
         // shape under its header would make an object its code reads as
@@ -5136,7 +5184,10 @@ pub fn decode_graph_section<'gc>(
             return Err(DecodeError::IdentityHashTooWide(identity_hash));
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
-        let body = reader.read_u8()?;
+        // Every check below holds a marked instance to what an instance is
+        // held to; that its class inherits `Value` is checked once the
+        // class's application exists (`check_under_construction`).
+        let (body, under_construction) = instance_body_and_mark(reader.read_u8()?);
         // The first pass refused it already; restated here, beside the
         // layout check below, as what filling the record rests on.
         if shipped_non_builtin && body != OBJECT_INSTANCE {
@@ -5261,7 +5312,11 @@ pub fn decode_graph_section<'gc>(
                     *object,
                     class,
                     identity_hash,
-                    PlaceholderFormat::Instance,
+                    if under_construction {
+                        PlaceholderFormat::InstanceUnderConstruction
+                    } else {
+                        PlaceholderFormat::Instance
+                    },
                 );
                 decode_fields_into(reader, context, &tables, *object, 0, count)?;
                 // Held to what the encoder writes; that its computation is
@@ -5513,6 +5568,7 @@ pub fn decode_graph_section<'gc>(
     drop(class_stamps);
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     check_program_instances(&context.mutator.heap, &objects)?;
+    check_under_construction(&context.mutator.heap, &objects)?;
     let roots = decode_values(reader, context, &tables)?;
     Ok(DecodedGraph {
         roots,

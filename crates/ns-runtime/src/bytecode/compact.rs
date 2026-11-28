@@ -297,6 +297,9 @@ pub enum CompactInstruction {
         destination: u8,
         instance: u8,
     },
+    CompleteInstance {
+        instance: u8,
+    },
     CheckAppliedClause {
         steps: u16,
         selector: Symbol,
@@ -858,6 +861,7 @@ impl CodeBuilder {
                 self.superclass_sites.len() < TABLE_LIMIT && fits(*destination)
             }
             Instruction::AllocateInstance { destination } => fits(*destination),
+            Instruction::CompleteInstance { instance } => fits(*instance),
             Instruction::CheckAppliedClause { .. } => true,
             Instruction::LoadVector {
                 destination: register,
@@ -1376,6 +1380,9 @@ impl CodeBuilder {
                 destination,
             } => CompactInstruction::InitializeInstance {
                 destination: narrow_register(destination),
+                instance: narrow_register(instance),
+            },
+            Instruction::CompleteInstance { instance } => CompactInstruction::CompleteInstance {
                 instance: narrow_register(instance),
             },
             Instruction::CheckAppliedClause { steps, selector } => {
@@ -1992,6 +1999,7 @@ fn emitted_entry(slot: CompactInstruction) -> EmittedEntry {
         | CompactInstruction::IntegerEqual { .. }
         | CompactInstruction::AllocateInstance { .. }
         | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CompleteInstance { .. }
         | CompactInstruction::CheckAppliedClause { .. }
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. } => EmittedEntry::Nothing,
@@ -2073,6 +2081,7 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
         | CompactInstruction::IntegerEqual { .. }
         | CompactInstruction::AllocateInstance { .. }
         | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CompleteInstance { .. }
         | CompactInstruction::CheckAppliedClause { .. }
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. }
@@ -2154,6 +2163,7 @@ fn narrow_addresses_own_slots(slot: CompactInstruction) -> bool {
         | CompactInstruction::IntegerEqual { .. }
         | CompactInstruction::AllocateInstance { .. }
         | CompactInstruction::InitializeInstance { .. }
+        | CompactInstruction::CompleteInstance { .. }
         | CompactInstruction::CheckAppliedClause { .. }
         | CompactInstruction::InitializeSuperclass { .. }
         | CompactInstruction::InitializeAppliedLevel { .. }
@@ -2668,6 +2678,9 @@ impl Tables<'_> {
             } => Instruction::InitializeInstance {
                 instance: register(instance),
                 destination: register(destination),
+            },
+            CompactInstruction::CompleteInstance { instance } => Instruction::CompleteInstance {
+                instance: register(instance),
             },
             CompactInstruction::CheckAppliedClause { steps, selector } => {
                 Instruction::CheckAppliedClause { steps, selector }
@@ -3286,6 +3299,9 @@ mod tests {
         let mut instructions = Vec::new();
         for destination in [7, 300] {
             instructions.push(Instruction::AllocateInstance { destination });
+            instructions.push(Instruction::CompleteInstance {
+                instance: destination,
+            });
             for count in [0_u16, 1, 2, 300] {
                 let arguments: Vec<u16> = (0..count).map(|index| index * 2 + 1).collect();
                 instructions.push(Instruction::InitializeInstance {
@@ -3350,6 +3366,7 @@ mod tests {
             let fits_a_byte = match instruction {
                 Instruction::AllocateInstance { destination }
                 | Instruction::InitializeSuperclass { destination, .. } => *destination <= 255,
+                Instruction::CompleteInstance { instance } => *instance <= 255,
                 Instruction::InitializeAppliedLevel {
                     argument_base,
                     destination,

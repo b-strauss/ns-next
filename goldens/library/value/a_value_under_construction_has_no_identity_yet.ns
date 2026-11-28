@@ -1,0 +1,39 @@
+/// newspeak-spec.pdf 3.1.1: a value's identity is its equality -- `Value`
+/// declares `==` as `=` and `identityHash` as `hash` -- and an object is a
+/// value object only once its slots "have been initialized". So an
+/// instance of a value class whose factory has not returned has no
+/// identity yet either: `self == self` and `self identityHash` refuse in
+/// its initializer, as `=` and `hash` do.
+///
+/// Each refusal is caught and its text kept in a slot, so the point
+/// completes, and is then identical to itself and hashes by its state.
+class AValueUnderConstructionHasNoIdentityYet = Object <: Value () (
+  public class Point x: anX = Value new (
+    |
+      public x = anX.
+      public identical = [
+        self == self.
+        'answered'.
+      ] on: Error do: [:error | error messageText].
+      public identityHashed = [
+        self identityHash.
+        'answered'.
+      ] on: Error do: [:error | error messageText].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      point = Point x: 1.
+    |
+    platform transcript
+        show: point identical;
+        newLine;
+        show: point identityHashed;
+        newLine;
+        show: (point == point) printString;
+        newLine;
+        show: (point identityHash = (Point x: 1) hash) printString;
+        newLine.
+  )
+)

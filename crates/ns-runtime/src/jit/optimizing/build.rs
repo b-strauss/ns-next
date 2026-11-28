@@ -2117,6 +2117,11 @@ fn relocate(
             instance: moved(instance),
             destination: moved(destination),
         },
+        SnapshotInstruction::CompleteInstance { instance } => {
+            SnapshotInstruction::CompleteInstance {
+                instance: moved(instance),
+            }
+        }
         SnapshotInstruction::CheckAppliedClause { steps, selector } => {
             SnapshotInstruction::CheckAppliedClause { steps, selector }
         }

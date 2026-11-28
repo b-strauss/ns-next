@@ -1,0 +1,6 @@
+rules = ["semantics.value.under-construction", "runtime.instantiate", "runtime.value.hash"]
+stdout = '''
+1
+nil
+cannot hash an instance of Point: it is still under construction, and an instance of a value class is a value only once its factory has returned
+'''

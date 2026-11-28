@@ -81,7 +81,10 @@ impl Primitive {
             ) => false,
             Primitive::Value(ValuePrimitive::SameAs) => true,
             Primitive::Value(
-                ValuePrimitive::Hash | ValuePrimitive::SlotCount | ValuePrimitive::SlotAt,
+                ValuePrimitive::Hash
+                | ValuePrimitive::SlotCount
+                | ValuePrimitive::SlotAt
+                | ValuePrimitive::HashUnfolds,
             ) => false,
             Primitive::Behavior(
                 // Declines, rather than answering `false`, for an argument
@@ -371,6 +374,10 @@ pub enum ValuePrimitive {
     Hash,
     SlotCount,
     SlotAt,
+    /// Whether the hash walk unfolds a node, which `Value>>valueHashOfSlots`
+    /// asks of each node its queue reaches, so that it unfolds exactly the
+    /// nodes the leaf does.
+    HashUnfolds,
 }
 
 /// §3.2's `Class` and `Metaclass` forward to these; nothing else about a
@@ -1197,7 +1204,8 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: the derived equality and hash only read the two values' states,
     // on a work stack of their own, bounded, allocate no object, send
     // nothing, and decline -- for a shape they do not serve, or a future --
-    // having written nothing (`builtins::value`).
+    // or refuse an instance under construction, having written nothing
+    // (`builtins::value`).
     leaf(mirror(
         "value:sameAs:ifFail:",
         "=",
@@ -1210,14 +1218,19 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Value(ValuePrimitive::Hash),
     )),
     mirror(
-        "valueSlotCount:ifFail:",
-        "slotCount",
+        "valueSlotCount:asking:of:ifFail:",
+        "slotCountAsking:of:",
         Primitive::Value(ValuePrimitive::SlotCount),
     ),
     mirror(
-        "value:slotAt:ifFail:",
-        "slotAt:",
+        "value:slotAt:asking:of:ifFail:",
+        "slotAt:asking:of:",
         Primitive::Value(ValuePrimitive::SlotAt),
+    ),
+    mirror(
+        "valueHashUnfolds:ifFail:",
+        "hashUnfolds",
+        Primitive::Value(ValuePrimitive::HashUnfolds),
     ),
     // Leaf: reads its operands and allocates at most the number or the String
     // it answers; a decline and every error write nothing
@@ -3130,8 +3143,9 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Weak(WeakPrimitive::Collect),
     ),
     // Reported `isValue`, no kernel selector: a row's arity is its
-    // reported selector's, this leaf takes its subject alone, and it
-    // raises nothing whose text the selector would name.
+    // reported selector's and this leaf takes its subject alone. Its one
+    // error, the refusal of an instance under construction, names the
+    // class and not the selector.
     // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
     // store only once the index or the field is checked, through the write
     // barrier (`builtins::weak`).

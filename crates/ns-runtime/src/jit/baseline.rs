@@ -730,6 +730,19 @@ impl BodyAssembler {
         );
     }
 
+    /// `CompleteInstance`: `vm::complete_instance`'s clearing of the
+    /// instance's under-construction mark, inline
+    /// (`MacroAssembler::complete_instance`). It writes no frame word and
+    /// neither declines nor exits.
+    fn complete_instance(&mut self, instance: u16) -> Lowering {
+        let registers = self.registers();
+        let (value, header) = (registers.first, registers.second);
+        let macro_assembler = &mut self.macro_assembler;
+        macro_assembler.load_frame_register(value, instance);
+        macro_assembler.complete_instance(value, header);
+        Lowering::Template
+    }
+
     /// `AllocateInstance`: `allocate_instance_into`'s fresh instance of the
     /// class object the factory runs on, its receiver, bumped inline in
     /// eden and every field nil, its word into the frame's `destination`,
@@ -1699,6 +1712,7 @@ pub(super) fn lower(instruction: &Instruction, body: &mut BodyAssembler) -> Lowe
         } => body.load_own_slot(*destination, *own_index),
         Instruction::ReturnSlotIfFilled { own_index } => body.return_slot_if_filled(*own_index),
         Instruction::AllocateInstance { destination } => body.allocate_instance(*destination),
+        Instruction::CompleteInstance { instance } => body.complete_instance(*instance),
         // The futures (`closures::make_future`, `closures::resolve_future`).
         Instruction::MakeFuture { .. } if body.futures_exit => Lowering::Exit,
         Instruction::MakeFuture {

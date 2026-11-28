@@ -1,0 +1,41 @@
+/// newspeak-spec.pdf 3.1.1: an instance of a value class is a value once
+/// its slots have been initialized, and a value is equal to every value of
+/// its class with equal slots. A point made in a loop run often enough for
+/// its method and the factory to be compiled to baseline machine code --
+/// and, under the optimizing stress mode, optimized -- must still compare
+/// and hash as the interpreter's points do: the factory's allocation marks
+/// each one under construction and its completion clears the mark, in
+/// every tier.
+class ValuesMadeInAHotLoopCompareAsValues = Object <: Value () (
+  public class Point x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public y = aY.
+    |
+  ) ()
+
+  /// How many of `count` points made afresh equal, and hash as, a point
+  /// made afresh beside each.
+  equalPoints: count = (
+    |
+      equal ::= 0.
+    |
+    1 to: count do: [:index |
+      |
+        made = Point x: index y: index * 2.
+      |
+      (made = (Point x: index y: index * 2) and: [
+        made hash = (Point x: index y: index * 2) hash.
+      ]) ifTrue: [equal:: equal + 1].
+    ].
+    ^equal.
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (equalPoints: 2000) printString;
+        newLine;
+        show: ((Point x: 1 y: 2) hash = (Point x: 1 y: 2) hash) printString;
+        newLine.
+  )
+)

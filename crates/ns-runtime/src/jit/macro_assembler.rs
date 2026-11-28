@@ -3422,6 +3422,38 @@ impl MacroAssembler {
         assembler.jump_if(Condition::NotEqual, checked);
     }
 
+    /// `CompleteInstance`'s effect, `Heap::complete_instance`'s: clears the
+    /// under-construction bit in the header of the ordinary instance whose
+    /// word `value` holds. An immediate and an object of any other format,
+    /// whose bit is no mark -- a `LargeInteger`'s sign shares it -- are
+    /// left as they are, so that a crafted body completes nothing it should
+    /// not. The header holds no pointer, so the store takes no barrier.
+    /// Clobbers the flags, `value`, `header` and the idiom scratch
+    /// register.
+    pub(crate) fn complete_instance(&mut self, value: Register, header: Register) {
+        debug_assert!(
+            distinct(&[value, header, self.roles.idiom_scratch]),
+            "internal: the completion's registers are distinct"
+        );
+        let layout = crate::heap::Heap::machine_layout();
+        let (object_space, mask) = (self.roles.object_space, self.roles.idiom_scratch);
+        let skip = self.assembler.label();
+        self.jump_unless_object_word(value, skip);
+        let word = Memory {
+            base: value,
+            displacement: layout.header_displacement,
+        };
+        let assembler = &mut self.assembler;
+        assembler.add(value, object_space);
+        assembler.load(Width::Word64, header, word);
+        assembler.test_immediate(header, layout.instance_format_bits);
+        assembler.jump_if(Condition::NotEqual, skip);
+        assembler.move_immediate(mask, !layout.under_construction_bit);
+        assembler.and(header, mask);
+        assembler.store(Width::Word64, word, header);
+        assembler.bind(skip);
+    }
+
     /// Jumps to `label` unless the word in `value` names an object -- an
     /// immediate, `nil` among them. Clobbers the flags.
     pub(crate) fn jump_unless_object(&mut self, value: Register, label: Label) {

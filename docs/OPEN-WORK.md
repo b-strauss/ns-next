@@ -15,7 +15,17 @@ when they were written.
 
 ## Next
 
-**Hot swap in the debugger, the second of hot swap's three batches**
+**An install refuses to leave instances passing as values without being
+values** (decided with the user on 2026-11-28), on a branch of its own,
+before batch B: a mutable slot added to a value class that has
+instances is refused, and a class with instances re-parented onto
+`Value` has each instance checked, one whose slots all hold values
+becoming a value and any other refusing the install, atomically, its
+text naming the class and the reason ("Defects that change a correct
+program's output", "An install leaves existing instances passing as
+values without being values", below).
+
+Then **hot swap in the debugger, the second of hot swap's three batches**
 (batch B, split with the user on 2026-11-22;
 [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
 complete install"; [debugger.md](design/debugger.md), "Hot swap and
@@ -2386,8 +2396,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   "Source retention and provenance".
 - **Actors and real concurrency**: an M:N scheduler, per-actor heaps as
   snapshot units, promises for `<-:`, and copying value objects across an
-  actor boundary. The treatment of in-flight cross-actor promises at snapshot
-  time still needs design. How a turn waits for a promise is open
+  actor boundary -- a value under construction among them crossing as a
+  far reference, never as a value, since Bracha's formal semantics defines
+  the transfer of a value only for a fully initialized one
+  (`prior-art/newspeak/formal-semantics/actor-semantics.tex:41`;
+  `r[semantics.value.under-construction]`). The treatment of in-flight
+  cross-actor promises at snapshot time still needs design. How a turn
+  waits for a promise is open
   (decided with the user on 2026-11-24): callbacks and promise pipelining
   as Bracha and E have it, `await` as Swift's actors have it, or a parked
   stack as Go's goroutines and Java's virtual threads have it
@@ -3032,7 +3047,12 @@ constructs not built yet, each a rule whose identifier holds the segment
   by Fermat's theorem, some 120 multiplications in `u128`, where it used
   to hash the bits (an integer and an integral double skip the inverse); a
   value's derived hash (`builtins/value.rs`, `hash_node`) asks the tower
-  of every object it hashes whether it is a number; and an integer's leaf
+  for every number it hashes and looks up `hash` -- and, to unfold a
+  node, `=` -- in the class of every other object below the root; a value with a
+  node whose class brings its own `hash` (or `=`) within its first 4,096
+  nodes is hashed wholly by the Newspeak queue walk in
+  `Value>>valueHashOfSlots`, which sends that node its `hash` and asks
+  the leaf of every node whether it unfolds; and an integer's leaf
   with a `Float` argument (`3 * 2.5`, `3 < 2.5`) goes through the tower's
   classification, where `Float`'s own leaf takes a `SmallInteger` on its
   fast path, where machine code does not run the mixed row itself
@@ -3265,6 +3285,31 @@ constructs not built yet, each a rule whose identifier holds the segment
   golden of an exception passed with no outer handler, its expected
   output established from ANSI's definition, would pin it.
   [core-library.md](design/core-library.md).
+- **An install leaves existing instances passing as values without being
+  values** (noted 2026-11-28, with the under-construction mark; older
+  than it), by two routes, both observed: a mutable slot added to a value
+  class that has instances, and a plain class that has instances
+  re-parented onto `Value`. Either way the instances were never held to
+  §3.1.1's conditions after the install -- a slot of theirs is mutable --
+  yet `objectIsValue:` answers `true` for them and `Value`'s `=` and
+  `hash` compare and hash them by their state, so such an instance
+  mutates and its hash changes, at exit status 0.
+  `redecide_value_class` (`interpreter/install/superclasses.rs`) decides
+  the class's verdict again for later instantiations only. Decided with
+  the user on 2026-11-28: the install checks the existing instances and
+  refuses, atomically, when one would pass as a value without being one.
+  A mutable slot added to a value class that has instances is refused.
+  When a class with instances is re-parented onto `Value`, each instance
+  is checked, and one whose slots all hold values becomes a value, as
+  value status is a structural classification in Bracha's formal
+  semantics (`prior-art/newspeak/formal-semantics/newspeak-semantics.tex`,
+  about lines 2385-2391, and its commit check,
+  `prior-art/newspeak/formal-semantics/reflection-semantics.tex`, about
+  lines 1446-1458); otherwise the install is refused, its text naming the
+  class and the reason. The cost is the install's alone.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+  complete install"; [object-model.md](design/object-model.md), "A value
+  object's four conditions".
 
 ## Known defects and gaps
 
@@ -4165,13 +4210,15 @@ Small, deliberately left, none affecting an outcome.
   cost falls only on a fallback closure's run, as "Fallback blocks" in
   [execution.md](design/execution.md) intends: the common path pays nothing.
 - `builtins/value.rs`: the hash of a value class object, from its mixin's
-  name alone, collides for same-named nested classes under different
-  enclosing values. A collision breaks no contract, and folding in the
-  enclosing value is not plainly safe: the hash walk would unfold it, and
-  any node there that declines (an `Array` slot, `Kernel`'s `vmMirror`)
-  declines the whole hash, which `Behavior>>hash` then answers by identity,
-  so two equal class objects would hash apart. Distinguishing them needs a
-  walk that tolerates a decline below a class object -- a design decision.
+  name alone (`Behavior>>hash`), collides for same-named nested classes
+  under different enclosing values. A collision breaks no contract, and
+  folding in the enclosing value is not plainly safe: the leaf would
+  unfold it and decline at any node there whose `hash` is its own -- a
+  slot of a value class that declares `hash` -- and `Behavior>>hash`'s
+  fallback answers the identity hash, so two equal class objects would
+  hash apart. Distinguishing them needs that fallback to walk the
+  unfolding as `Value>>valueHashOfSlots` does, sending each such node
+  its own `hash` -- a design decision.
 - Every `<:` level gets a metaclass (`Mutator::new_applied_level` calls
   `attach_metaclass`) that no program sends to, part of the eager cost of
   building levels. Removing it is a design point, not a clean-up: the

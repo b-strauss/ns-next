@@ -1,0 +1,6 @@
+rules = ["semantics.value.under-construction", "semantics.value.identity"]
+stdout = '''
+built
+true
+true
+'''

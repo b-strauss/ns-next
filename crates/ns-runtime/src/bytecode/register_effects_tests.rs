@@ -367,6 +367,11 @@ fn every_sample() -> Vec<Sample> {
             &[("instance", &[2]), ("destination", &[1])],
         ),
         sample(
+            "CompleteInstance",
+            Instruction::CompleteInstance { instance: 2 },
+            &[("instance", &[2])],
+        ),
+        sample(
             "CheckAppliedClause",
             Instruction::CheckAppliedClause { steps: 1, selector },
             &[],

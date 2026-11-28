@@ -523,8 +523,9 @@ fn a_standalone_initializer_exists_only_for_a_declaration_with_clauses() {
 }
 
 /// A factory allocates an instance of the class it was sent to, runs that
-/// class's initializer on it with the factory's arguments, and answers the
-/// instance, whatever the initializer answers.
+/// class's initializer on it with the factory's arguments, completes it,
+/// and answers the instance, whatever the initializer answers.
+// spec: bytecode.instruction.complete-instance
 #[test]
 fn the_factory_body_allocates_initializes_and_returns_the_instance() {
     let body = ns_runtime::compiler::factory_body(2);
@@ -541,12 +542,13 @@ fn the_factory_body_allocates_initializes_and_returns_the_instance() {
                 instance: 15,
                 destination: 16,
             },
+            Instruction::CompleteInstance { instance: 15 },
             Instruction::Return { register: 15 },
         ]
     );
-    // Three instructions at the argument limit, whatever the arity.
+    // Four instructions at the argument limit, whatever the arity.
     let widest = ns_runtime::compiler::factory_body(255);
-    assert_eq!(widest.instructions().len(), 3);
+    assert_eq!(widest.instructions().len(), 4);
     assert_eq!(widest.register_count, 255 + HEADER_REGISTERS + 2);
     // Past it, the factory raises the too-large error when it is sent.
     let past = ns_runtime::compiler::factory_body(256);

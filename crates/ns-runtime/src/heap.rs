@@ -92,17 +92,28 @@ use value::{at_rest, branded};
 pub(crate) use world::{Invalidation, World, forward_identity};
 
 /// The header an ordinary instance of an application is born with --
-/// its guard, `FixedPointers`, its word count -- computed once when the
-/// application is registered, so that `new` writes it without looking
-/// anything up. Only for an instance whose header holds its count.
+/// its guard, `FixedPointers`, its word count and, for an application
+/// that inherits `Value`, the under-construction mark -- computed once
+/// when the application is registered, so that `new` writes it without
+/// looking anything up, in the interpreter and in machine code alike.
+/// Only for an instance whose header holds its count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InstanceHeader(u64);
 
 impl InstanceHeader {
-    pub(crate) fn for_slots(guard: DispatchId, slot_count: usize) -> Option<InstanceHeader> {
+    pub(crate) fn for_slots(
+        guard: DispatchId,
+        slot_count: usize,
+        inherits_value: bool,
+    ) -> Option<InstanceHeader> {
         let word_count = slot_count.saturating_add(1);
-        (word_count < WORD_COUNT_OVERFLOW)
-            .then(|| InstanceHeader(Header::new(guard, Format::FixedPointers, 0, word_count).0))
+        (word_count < WORD_COUNT_OVERFLOW).then(|| {
+            InstanceHeader(
+                Header::new(guard, Format::FixedPointers, 0, word_count)
+                    .with_under_construction(inherits_value)
+                    .0,
+            )
+        })
     }
 }
 
@@ -903,6 +914,11 @@ pub(crate) struct MachineLayout {
     pub(crate) remembered_bit: i32,
     /// `nil`'s word.
     pub(crate) nil_word: i32,
+    /// The header word's under-construction bit, meaningful only in an
+    /// instance's header, which `CompleteInstance` clears
+    /// (`Heap::complete_instance`); past the low half, so a mask of the
+    /// whole word.
+    pub(crate) under_construction_bit: u64,
     /// The header word's format bits all of which a ByteArray's format
     /// sets (`Format::AlignedBytes`), whose bytes `Heap::byte_array_at`
     /// reads, and no other format sets all of.
@@ -2940,7 +2956,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// An instance of `class` with `slot_count` nil fields under `header`,
-    /// which `class`'s application computed.
+    /// which `class`'s application computed, its under-construction mark
+    /// included.
     pub(crate) fn allocate_instance_with(
         &mut self,
         class: ClassReference<'gc>,
@@ -2950,13 +2967,68 @@ impl<'gc> Heap<'gc> {
         let header = Header(header.0);
         debug_assert_eq!(header.guard(), self.header_dispatch_id(class));
         debug_assert_eq!(header.word_count(), slot_count + 1);
+        debug_assert_eq!(
+            header.under_construction(),
+            self.class_inherits_value(class)
+        );
         let class_word = self.store(Value::object(class));
         if let Some((offset, fields)) = self.space.bump_object(header, class_word.bits()) {
             fields.fill(Word::NIL.bits());
             self.count_young_allocation();
             return self.object_handle(offset);
         }
-        self.allocate_instance(class, slot_count)
+        let instance = self.allocate_instance(class, slot_count);
+        if header.under_construction() {
+            self.mark_under_construction(instance);
+        }
+        instance
+    }
+
+    /// A factory's instance of `class` with `slot_count` nil fields, for an
+    /// application that precomputed no header -- one whose word count needs
+    /// the overflow word: marked under construction when `class` inherits
+    /// `Value`, as `allocate_instance_with`'s header marks it.
+    pub(crate) fn allocate_factory_instance(
+        &mut self,
+        class: ClassReference<'gc>,
+        slot_count: usize,
+    ) -> ObjectReference<'gc> {
+        let instance = self.allocate_instance(class, slot_count);
+        if self.class_inherits_value(class) {
+            self.mark_under_construction(instance);
+        }
+        instance
+    }
+
+    /// Sets `instance`'s under-construction mark: only a factory's
+    /// allocation of an instance of a value class does, and whatever
+    /// rebuilds a marked one -- an image's load (`shape_placeholder`), an
+    /// install's migration.
+    pub(crate) fn mark_under_construction(&mut self, instance: ObjectReference<'gc>) {
+        let header = self.header(instance);
+        debug_assert_eq!(header.format(), Format::FixedPointers);
+        self.set_header(instance, header.with_under_construction(true));
+    }
+
+    /// Whether `object` is an instance of a value class whose factory has
+    /// not returned (§3.1.1's "have been initialized"): marked by its
+    /// allocation, cleared by its factory's `CompleteInstance`, and kept
+    /// for good by a construction cut short. False for every format but
+    /// `FixedPointers`, whose header bit a `LargeInteger`'s sign shares.
+    pub fn object_under_construction(&self, object: ObjectReference<'gc>) -> bool {
+        let header = self.header(object);
+        header.format() == Format::FixedPointers && header.under_construction()
+    }
+
+    /// `CompleteInstance`'s work: clears `object`'s under-construction
+    /// mark; nothing for an object that carries none, nor for one of
+    /// another format, whose bit 32 is no mark. The header holds no
+    /// pointer, so the write takes no barrier.
+    pub(crate) fn complete_instance(&mut self, object: ObjectReference<'gc>) {
+        if self.object_under_construction(object) {
+            let header = self.header(object);
+            self.set_header(object, header.with_under_construction(false));
+        }
     }
 
     /// An `Array`-shaped object of `class` holding `elements`, in order.
@@ -3607,8 +3679,11 @@ impl<'gc> Heap<'gc> {
     /// writes them. The image decoder's second pass fills a record this way
     /// rather than building a block beside the placeholder the first pass
     /// sized, so a record costs its placeholder and nothing more while it is
-    /// read (`image::decode::decode_value` has the figures). The same
-    /// caveats as `fill_placeholder_class`'s apply.
+    /// read (`image::decode::decode_value` has the figures). An instance
+    /// under construction carries the mark its allocation set, which the
+    /// decoder holds to its class inheriting `Value` once the class's
+    /// application exists. The same caveats as `fill_placeholder_class`'s
+    /// apply.
     pub(crate) fn shape_placeholder(
         &mut self,
         object: ObjectReference<'gc>,
@@ -3616,13 +3691,19 @@ impl<'gc> Heap<'gc> {
         identity_hash: u32,
         format: PlaceholderFormat,
     ) {
+        let under_construction = format == PlaceholderFormat::InstanceUnderConstruction;
         let format = match format {
-            PlaceholderFormat::Instance => Format::FixedPointers,
+            PlaceholderFormat::Instance | PlaceholderFormat::InstanceUnderConstruction => {
+                Format::FixedPointers
+            }
             PlaceholderFormat::Array => Format::IndexablePointers,
             PlaceholderFormat::WeakArray => Format::WeakPointers,
             PlaceholderFormat::Ephemeron => Format::Ephemeron,
         };
         self.rewrite_placeholder_header(object, class, identity_hash, format, 0);
+        if under_construction {
+            self.mark_under_construction(object);
+        }
     }
 
     /// Stores `value` into field `index` of a placeholder being filled in
@@ -5958,8 +6039,11 @@ impl<'gc> Heap<'gc> {
         let index =
             ApplicationIndex::from_index(row).expect("more than u32::MAX applications in one heap");
         application.index = index;
-        application.instance_header =
-            InstanceHeader::for_slots(application.dispatch_ids.instances, application.slot_count);
+        application.instance_header = InstanceHeader::for_slots(
+            application.dispatch_ids.instances,
+            application.slot_count,
+            application.inherits_value,
+        );
         // The facts come from the literal alone, which every caller computes
         // from the same mixin; a debug build refuses one that does not, so that
         // no instantiation reads facts of another mixin than the one it runs.
@@ -6431,6 +6515,18 @@ impl<'gc> Heap<'gc> {
     ) -> Option<crate::mixin::LevelFacts> {
         self.class_application_entry(class)
             .map(|application| application.level_facts)
+    }
+
+    /// Whether `class`'s `==` may not be `Behavior`'s: its metaclass's
+    /// level declares `==` (`LevelFacts::declares_identity`). `Value`'s
+    /// `valueEquals:` compares two values' classes with `==`, so a value's
+    /// derived equality may decide the classes by `Behavior`'s rule only
+    /// where this is false. A flag of the application, read without a
+    /// lookup, since the walk asks it of every pair it compares by its
+    /// classes; false for a handle that is no class object.
+    pub(crate) fn class_side_declares_identity(&self, class: ClassReference<'gc>) -> bool {
+        self.class_application_entry(self.object_class(class))
+            .is_some_and(|application| application.level_facts.declares_identity)
     }
 
     /// The index of `class`'s application in the table: the identity of
@@ -10581,6 +10677,7 @@ impl<'gc> Heap<'gc> {
                     unreachable!("internal: the remembered bit lies in the header's low half")
                 }),
             nil_word: small(Word::NIL.bits()),
+            under_construction_bit: header::UNDER_CONSTRUCTION_BIT,
             aligned_bytes_format: small(header::ALIGNED_BYTES_BITS),
             unused_bytes_shift: small_count(header::UNUSED_SHIFT),
             unused_bytes_mask: small(header::UNUSED_BYTES_MASK),
@@ -16147,6 +16244,7 @@ mod tests {
         let values = [Value::small_integer(7), Value::nil(), Value::object(class)];
         for format in [
             PlaceholderFormat::Instance,
+            PlaceholderFormat::InstanceUnderConstruction,
             PlaceholderFormat::Array,
             PlaceholderFormat::WeakArray,
             PlaceholderFormat::Ephemeron,
@@ -16161,8 +16259,11 @@ mod tests {
                 "a field past the placeholder is refused"
             );
             let built = match format {
-                PlaceholderFormat::Instance => {
+                PlaceholderFormat::Instance | PlaceholderFormat::InstanceUnderConstruction => {
                     let instance = heap.allocate_instance(class, values.len());
+                    if format == PlaceholderFormat::InstanceUnderConstruction {
+                        heap.mark_under_construction(instance);
+                    }
                     for (index, value) in values.iter().enumerate() {
                         assert!(heap.instance_set_field(instance, index, *value));
                     }
@@ -20365,7 +20466,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let guard = heap.header_dispatch_id(class);
-        let header = InstanceHeader::for_slots(guard, 3).expect("small");
+        let header = InstanceHeader::for_slots(guard, 3, false).expect("small");
         let (templated, fast_bumps) = counting_fast_bumps(&mut heap, |heap| {
             heap.allocate_instance_with(class, header, 3)
         });
@@ -20376,8 +20477,8 @@ mod tests {
 
     #[test]
     fn no_template_past_254_words() {
-        assert!(InstanceHeader::for_slots(DispatchId::NONE, 253).is_some());
-        assert!(InstanceHeader::for_slots(DispatchId::NONE, 254).is_none());
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 253, false).is_some());
+        assert!(InstanceHeader::for_slots(DispatchId::NONE, 254, false).is_none());
     }
 
     #[test]

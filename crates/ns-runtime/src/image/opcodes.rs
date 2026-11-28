@@ -19,7 +19,8 @@
 //! said.
 
 // Instructions, numbered in the order `bytecode::Instruction` declares them,
-// except the four sends and the two initializer invocations. The sends were
+// except the four sends, the two initializer invocations and
+// `CompleteInstance`, which came after them. The sends were
 // retired at 7-10 (see `RETIRED_OPCODES`) once their call site widened from
 // a `u16` instruction index to a `u32` family number, reassigned to 21-24,
 // then retired a second time and reassigned at 25-28 once the number
@@ -30,7 +31,7 @@
 // (46-51). `MakeClosure` is retired at 11 and reassigned to 29 for the same
 // reason: closure conversion gave it a list of copied registers, so its old
 // bytes describe a different instruction.
-// Next free number: 52.
+// Next free number: 53.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -136,6 +137,10 @@ pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 50;
 /// An initializer's run of the own part of a level a `<:` clause adds
 /// (`Instruction::InitializeAppliedLevel`).
 pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 51;
+/// A factory body's completion: the under-construction mark the
+/// allocation set cleared once the initializer returned
+/// (`Instruction::CompleteInstance`).
+pub const OPCODE_COMPLETE_INSTANCE: u8 = 52;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction
@@ -269,8 +274,16 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 17.
+/// Next free number: 18.
 pub const OBJECT_INSTANCE: u8 = 0;
+/// An instance of a value class whose construction was cut short -- its
+/// under-construction mark still set (`Heap::object_under_construction`):
+/// laid out exactly as `OBJECT_INSTANCE`, a `u32` count and that many
+/// values, so that only the tag carries the mark and every other record and
+/// image stays as it was. The decoder rebuilds the instance marked, and
+/// refuses the tag on an object whose class does not inherit `Value`, which
+/// only a crafted image holds.
+pub const OBJECT_INSTANCE_UNDER_CONSTRUCTION: u8 = 17;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
 pub const OBJECT_ARRAY: u8 = 3;
