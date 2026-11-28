@@ -2295,6 +2295,8 @@ mod tests {
     /// header whole: a cut-short construction stays marked, and a complete
     /// value unmarked, through a scavenge into a survivor space, a tenure
     /// into the old space and a full collection's compaction.
+    // `collect_now` and `scavenge_now` are a debug build's.
+    #[cfg(debug_assertions)]
     // spec: vm.heap.under-construction-only-on-value-instances
     #[test]
     fn a_construction_mark_survives_a_scavenge_and_a_full_collection() {
