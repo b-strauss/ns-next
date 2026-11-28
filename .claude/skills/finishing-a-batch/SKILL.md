@@ -81,7 +81,14 @@ Create a todo for each item.
      `docs/design/README.md`'s map and in the status block of each document
      describing that subsystem, not only the one that introduced it;
    - every status block still names the code as it now is;
-   - `CLAUDE.md`'s crate descriptions still match.
+   - `CLAUDE.md`'s crate descriptions still match;
+   - the specification's book (`docs/spec/`) says what the code does, read
+     against the code, not the other documents: every rule the batch added
+     or changed and every other rule naming what it touched, the bytecode's
+     and the image format's tables, the VM invariants' detectors and
+     `Undetected:` lines, and the appendix of differences from Bracha's
+     Newspeak; `cargo xtask spec` passing checks only identifiers, pointers
+     and links, never whether a rule is true.
 6. **Stale statements.** Anything the batch made untrue is deleted or rewritten
    as current fact — never kept and labelled historical.
 7. **Scratch space.** Before deleting anything under `.temp/`, write deferred
