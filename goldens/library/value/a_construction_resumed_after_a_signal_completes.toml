@@ -1,0 +1,7 @@
+rules = ["semantics.value.under-construction", "runtime.handler-search"]
+stdout = '''
+2
+true
+true
+false
+'''

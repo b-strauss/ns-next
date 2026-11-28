@@ -1,0 +1,7 @@
+rules = ["semantics.value.under-construction", "semantics.value.identity"]
+stdout = '''
+an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned
+an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned
+true
+true
+'''

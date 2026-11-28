@@ -464,7 +464,14 @@ Four further rows serve `Value` itself rather than one builtin:
 derives from an instance's state, for a class that inherits `Value`'s `=`
 rather than declaring one; they decline anything else, and `Value`'s
 `ifFail:` block answers instead. Neither walk recurses or calls back into
-Newspeak.
+Newspeak. Both refuse, rather than decline, an instance still under
+construction that they meet -- the receiver, the argument or any object
+the walk reaches -- with `instantiate::under_construction_error`'s text,
+so that `valueEquals:` and `valueHashOfSlots` never compare or hash the
+slots built so far; `objectIsValue:ifFail:`, `Ephemeron`'s and
+`WeakMap`'s question about a key, refuses one with the same text
+([object-model.md](object-model.md), "A value object's four conditions",
+`r[semantics.value.under-construction]`).
 
 The last two are the first *reflective* leaves the mirror carries: given an
 object, how many slots its class's application declares, and what the slot
@@ -2431,7 +2438,10 @@ root sends the kernel instance it keeps, and one the instance understands
   future: it declines where it would answer `false` and a future is its
   subject, and the failure path asks again of the future's value
   (`interpreter::future::declines_for_a_future`), so a future standing for
-  a value is refused as the value is. `nil` is the key of an ephemeron
+  a value is refused as the value is. An instance of a value class still
+  under construction it neither accepts nor refuses as a value: the leaf
+  itself signals that the instance is under construction
+  (`r[semantics.value.under-construction]`). `nil` is the key of an ephemeron
   that has none, the state it is made in and the one its collected key
   leaves it in (`r[runtime.memory.ephemeron]`).
   `isKindOfEphemeron` answers `true`.

@@ -1,0 +1,35 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized", and a value's slots hold values. An `A`
+/// builds a `B` that holds the `A` still under construction: storing it is
+/// allowed, so two values can reach each other. Once both factories have
+/// returned, the cycle compares and hashes as any values do, the walk
+/// assuming a pair it has already met equal.
+class ValuesInACycleCompareOnceComplete = Object <: Value () (
+  public class A = Value new (
+    |
+      public b = B on: self.
+    |
+  ) ()
+
+  public class B on: anA = Value new (
+    |
+      public a = anA.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      first = A new.
+      second
+    |
+    platform transcript
+        show: 'built';
+        newLine.
+    second:: A new.
+    platform transcript
+        show: (first = second) printString;
+        newLine;
+        show: (first hash = second hash) printString;
+        newLine.
+  )
+)

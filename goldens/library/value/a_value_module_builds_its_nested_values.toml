@@ -1,0 +1,5 @@
+rules = ["semantics.value.under-construction"]
+stdout = '''
+0
+true
+'''

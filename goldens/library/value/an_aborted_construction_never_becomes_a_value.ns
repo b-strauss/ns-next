@@ -1,0 +1,34 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". An initializer that hands `self` out and
+/// is then cut short never initializes the rest, so the instance it handed
+/// out never becomes a value: it stays under construction for good, and
+/// its `hash` refuses long after the caller caught the signal.
+///
+/// Storing the instance is allowed -- the `Array` holds it, and its own
+/// slot `escaped` holds itself -- and its slots stay readable: the one the
+/// signal cut short reads `nil`.
+class AnAbortedConstructionNeverBecomesAValue = Object <: Value () (
+  public class Point x: anX box: box = Value new (
+    |
+      public x = anX.
+      public escaped = box at: 1 put: self.
+      public y = Error signal: 'stop'.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      box = Array new: 1.
+      escaped
+    |
+    [Point x: 1 box: box] on: Error do: [:error | nil].
+    escaped:: box at: 1.
+    platform transcript
+        show: escaped x printString;
+        newLine;
+        show: escaped y printString;
+        newLine;
+        show: ([escaped hash printString] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

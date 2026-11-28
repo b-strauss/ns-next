@@ -2020,6 +2020,38 @@ fn non_value_slot_error<'gc>(
     )
 }
 
+/// The refusal of a value question -- `=`, `hash` or whether it is a value
+/// -- about `object`, an instance of a value class whose factory has not
+/// returned (`Heap::object_under_construction`). §3.1.1 makes an object a
+/// value only once its slots "have been initialized", so until then it has
+/// no state to compare or hash by, and answering from the slots it has so
+/// far would let its equality and its hash change once it is complete.
+///
+/// It names the class only, never the slots built so far: the instance is
+/// no value, and its partial state is nothing a program may read through a
+/// value question. `receiver` is the receiver of the send the program
+/// wrote, which is `object` itself or the value it was compared with or
+/// reached from; `selector` is that send's. One text for every leaf that
+/// refuses, so the refusal reads the same whichever question met it first.
+#[cold]
+pub(crate) fn under_construction_error<'gc>(
+    mutator: &Mutator<'gc>,
+    selector: Symbol,
+    receiver: Value<'gc>,
+    object: ObjectReference<'gc>,
+) -> NewspeakError<'gc> {
+    let heap = mutator.heap();
+    let class = heap.class_display_name(heap.object_class(object));
+    NewspeakError::error(
+        selector,
+        receiver,
+        format!(
+            "an instance of {class} is still under construction: an instance of a value class \
+             is a value only once its factory has returned"
+        ),
+    )
+}
+
 /// A class's primary factory selector, defaulted to `new` for a class that
 /// declares none -- `mixin::factory_entry`'s rule, which is what puts the
 /// entry in the metaclass's method table, asked again here so that a

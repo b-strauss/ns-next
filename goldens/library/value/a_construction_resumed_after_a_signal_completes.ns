@@ -1,0 +1,33 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". A slot initializer that signals a
+/// resumable exception is not cut short when its handler resumes it: the
+/// resumed value initializes the slot, the factory returns, and the
+/// instance is a value that hashes and compares as any other.
+class AConstructionResumedAfterASignalCompletes = Object <: Value () (
+  public class Point x: anX = Value new (
+    |
+      public x = anX.
+      public y = Exception signal: 'y is needed'.
+    |
+  ) ()
+
+  /// A point whose `y` the handler gives.
+  pointX: anX = (
+    ^[Point x: anX] on: Exception do: [:exception | exception resume: anX * 2].
+  )
+
+  public main: platform args: arguments = (
+    |
+      point = pointX: 1.
+    |
+    platform transcript
+        show: point y printString;
+        newLine;
+        show: (point = (pointX: 1)) printString;
+        newLine;
+        show: (point hash = (pointX: 1) hash) printString;
+        newLine;
+        show: (point = (pointX: 2)) printString;
+        newLine.
+  )
+)

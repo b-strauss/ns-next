@@ -1,0 +1,4 @@
+rules = ["semantics.value.under-construction", "runtime.instantiate"]
+stdout = '''
+2000
+'''

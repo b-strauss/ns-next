@@ -1,0 +1,44 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". Each of these constructions hands `self`
+/// out and is then cut short by a caught signal, so every instance it
+/// handed out stays under construction and refuses `hash`.
+///
+/// The loop runs often enough for its method and the factory to be
+/// compiled to baseline machine code, whose allocation must mark each
+/// instance as the interpreter's does: an instance machine code left
+/// unmarked would answer a hash, and the count would fall short.
+class CutShortConstructionsInAHotLoopStayUnderConstruction = Object <: Value () (
+  public class Point x: anX box: box = Value new (
+    |
+      public x = anX.
+      public escaped = box at: 1 put: self.
+      public y = Error signal: 'stop'.
+    |
+  ) ()
+
+  /// How many of `count` instances, each handed out by a construction cut
+  /// short, refuse `hash` as still under construction.
+  refusedHashes: count = (
+    |
+      refused ::= 0.
+      expected = 'an instance of Point is still under construction: an instance of a value class is a value only once its factory has returned'.
+    |
+    1 to: count do: [:index |
+      |
+        box = Array new: 1.
+      |
+      [Point x: index box: box] on: Error do: [:error | nil].
+      ([
+        (box at: 1) hash.
+        false.
+      ] on: Error do: [:error | error messageText = expected]) ifTrue: [refused:: refused + 1].
+    ].
+    ^refused.
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (refusedHashes: 2000) printString;
+        newLine.
+  )
+)

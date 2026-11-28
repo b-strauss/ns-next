@@ -1197,7 +1197,8 @@ pub const MIRROR: &[MirrorEntry] = &[
     // Leaf: the derived equality and hash only read the two values' states,
     // on a work stack of their own, bounded, allocate no object, send
     // nothing, and decline -- for a shape they do not serve, or a future --
-    // having written nothing (`builtins::value`).
+    // or refuse an instance under construction, having written nothing
+    // (`builtins::value`).
     leaf(mirror(
         "value:sameAs:ifFail:",
         "=",
@@ -3130,8 +3131,9 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Weak(WeakPrimitive::Collect),
     ),
     // Reported `isValue`, no kernel selector: a row's arity is its
-    // reported selector's, this leaf takes its subject alone, and it
-    // raises nothing whose text the selector would name.
+    // reported selector's and this leaf takes its subject alone. Its one
+    // error, the refusal of an instance under construction, names the
+    // class and not the selector.
     // Leaf: reads, allocates or stores into a WeakArray or an Ephemeron, a
     // store only once the index or the field is checked, through the write
     // barrier (`builtins::weak`).

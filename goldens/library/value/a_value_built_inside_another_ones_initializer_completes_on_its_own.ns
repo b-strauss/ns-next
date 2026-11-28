@@ -1,0 +1,33 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized". A link's initializer makes the next link
+/// of its own class, so three constructions are under way at once, each
+/// nested in the one before; each link completes when its own factory
+/// returns, not when the outermost does.
+///
+/// So a link can hash the next one while it is itself still under
+/// construction, and once the outermost factory has returned every link
+/// hashes and compares as a value.
+class AValueBuiltInsideAnotherOnesInitializerCompletesOnItsOwn = Object <: Value () (
+  public class Link depth: aDepth = Value new (
+    |
+      public depth = aDepth.
+      public next = aDepth > 0 ifTrue: [Link depth: aDepth - 1] ifFalse: [nil].
+      public nextHash = next isNil ifTrue: [0] ifFalse: [next hash].
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      chain = Link depth: 2.
+    |
+    platform transcript
+        show: (chain = (Link depth: 2)) printString;
+        newLine;
+        show: (chain next = (Link depth: 1)) printString;
+        newLine;
+        show: (chain next next hash = (Link depth: 0) hash) printString;
+        newLine;
+        show: (chain nextHash = (Link depth: 1) hash) printString;
+        newLine.
+  )
+)

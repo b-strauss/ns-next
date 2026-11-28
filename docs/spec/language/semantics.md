@@ -36,8 +36,11 @@ inherits from `Value` and the conditions of
 r[semantics.value.conditions]
 An instance of a class that inherits from `Value` is made only when it
 can be a value object; otherwise the instantiation signals an error named
-under the class's primary factory, and nothing is made. Four conditions
-are checked, each where the instance would come into being:
+under the class's primary factory, and nothing is made. It becomes one
+only once its factory has returned
+([`semantics.value.under-construction`](#r-semantics.value.under-construction)).
+Four conditions are checked, each where the instance would come into
+being:
 
 1. No class from the instance's class up to its root declares a mutable
    slot: ``cannot instantiate Counter: a value object is deeply
@@ -56,6 +59,24 @@ the level whose enclosing object fails when it is not the class's own,
    slot it declares holds a value`.
 
 A class that breaks a condition but is never instantiated never fails.
+
+r[semantics.value.under-construction]
+An instance of a class that inherits from `Value` is a value object only
+once its factory has returned, its slots all initialized (Bracha §3.1.1:
+"have been initialized"); until then it is *under construction*, and a
+factory that never returns -- an unwind past its initializer, or a signal
+the initializer does not handle -- leaves it under construction for good.
+While an instance is under construction, `=` and `hash` sent to it, `=`
+sent to a value with it as the argument, either of them reaching it among
+a value's slots, `==` and `identityHash`, which answer as `=` and `hash`
+do, and the question whether it is a value -- which an `Ephemeron`'s
+`key:` and a `WeakMap`'s `at:put:` ask of a key -- signal `an instance of
+Point is still under construction: an instance of a value class is a value
+only once its factory has returned`, naming its class, an `Error` under
+the selector sent. Storing it -- in a variable, an `Array` or a slot of
+another value -- and using it as the enclosing object of the classes
+nested in it are allowed, so a value module can build values in its own
+slots and two values can reach each other.
 
 r[semantics.value.identity]
 A value object has no identity of its own: `Value` defines `==` as `=`,

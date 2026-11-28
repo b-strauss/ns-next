@@ -1,0 +1,30 @@
+/// newspeak-spec.pdf 3.1.1: an object is a value object only once its
+/// slots "have been initialized", and a value module is under construction
+/// while its own slots are. Its nested value classes are made all the
+/// same: an instance of a value class whose factory has not returned may
+/// be an enclosing object, and each point completes when its own factory
+/// returns.
+///
+/// So the module's slots can hold points and compare them: two instances
+/// of one class object are compared by their slots alone, never reaching
+/// the module still under construction.
+class AValueModuleBuildsItsNestedValues = Object <: Value (
+  |
+    origin = Point x: 0.
+    same = origin = (Point x: 0).
+  |
+) (
+  public class Point x: anX = Value new (
+    |
+      public x = anX.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: origin x printString;
+        newLine;
+        show: same printString;
+        newLine.
+  )
+)

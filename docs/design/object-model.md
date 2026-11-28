@@ -1025,6 +1025,81 @@ exist is an instance that passes for a value and is not one.
   other decoded class; a ready-made *instance* decoded from an image is not
   re-checked ("What is still unchecked" in [core-library.md](core-library.md)).
 
+**"Have been initialized": a value is under construction until its factory
+returns** (`r[semantics.value.under-construction]`; decided with the user on
+2026-11-28). The fourth condition is checked slot by slot as each is
+initialized, but §3.1.1 also asks that the slots "have been initialized",
+which no single store can tell: an initializer can hand `self` out -- as an
+argument, into an `Array`, into a slot of another value -- before its later
+slots run. Such an instance read with an uninitialized slot, and its `hash`,
+derived from its state, changed once the rest were initialized, so a hashed
+collection that had stored it lost it. The instance is therefore marked
+under construction by its factory's allocation and unmarked by the
+factory's `CompleteInstance` once the initializer has returned normally
+("Instantiation" above; "The header word" below); a construction cut short
+-- an unwind past it, a signal its initializer does not handle -- never
+reaches that instruction, so an instance it handed out stays marked for
+good and never becomes a value. A signal its handler resumes does not cut
+the construction short: the initializer goes on and the factory returns
+(`goldens/library/value/a_construction_resumed_after_a_signal_completes.ns`).
+Each factory unmarks only its own instance, so a value whose initializer
+builds another of its class completes the inner one first
+(`goldens/library/value/a_value_built_inside_another_ones_initializer_completes_on_its_own.ns`).
+
+While an instance is marked, every value question about it is refused rather
+than answered:
+
+- **`=` and `hash`**, and through them `==` and `identityHash`, which
+  `Value` declares as `=` and `hash`. The equality leaf
+  (`builtins/value.rs`) refuses when the receiver or the argument is
+  marked, before anything else -- the numeric tower and the classes
+  included, since an answer they gave without the slots would still be an
+  answer about an object that has no state yet -- and when its walk reaches
+  a marked object among the slots; the hash leaf likewise for its receiver
+  and every object its walk reaches. A refusal is an error, never a
+  decline: a decline would run `valueEquals:` or `valueHashOfSlots`, which
+  would compare or hash exactly the partial state the refusal withholds.
+  Both name the marked object's class through one text,
+  `instantiate::under_construction_error`.
+- **Whether it is a value**, `objectIsValue:ifFail:` (`builtins/weak.rs`,
+  after its decline for a future). `false` would be wrong too: the instance
+  becomes a value the moment its factory returns, so an `Ephemeron` or a
+  `WeakMap` that keyed it would hold a value as a weak key from then on.
+  Refusing it there is what lets `Ephemeron>>key:` and `WeakMap>>at:put:`,
+  which ask the question, go without a check of their own
+  (`goldens/library/value/a_value_under_construction_is_no_weak_key.ns`).
+
+What stays allowed is storing the instance and using it as an enclosing
+object. A value module's own slots build its nested values while the module
+is still under construction -- `| origin = Point x: 0 |`, each `Point`
+nested in the marked module -- and comparing two of them compares their
+slots without reaching the module
+(`goldens/library/value/a_value_module_builds_its_nested_values.ns`); and two
+values may reach each other, an `A` whose slot holds a `B` that holds the
+`A` still being built, which §3.1.1's phrasing, a condition on every object
+reachable, admits as a cycle. Once both factories have returned, the cycle
+compares and hashes as values do
+(`goldens/library/value/values_in_a_cycle_compare_once_complete.ns`).
+Refusing the store instead, as a value's fourth condition refuses a
+non-value, would have outlawed both.
+
+The prior art leaves this open. Bracha's formal semantics defines value
+status as the greatest fixed point of the structural conditions,
+"initialized immutable slots" among them
+(`prior-art/newspeak/formal-semantics/newspeak-semantics.tex`, near its
+module definitions), and the actor semantics transfers "only a fully
+initialized value" (`actor-semantics.tex`), but neither says what an
+instance is before then. Eurasia marks an instance of a value class at its
+allocation and records the gap itself: "the end of construction is not
+marked, so an initializer that hands out `self` before it finishes can
+expose a partly built value", proposing a syntactic value class whose end of
+construction the compiler could mark
+(`prior-art/newspeak/EURASIA_ACTORS_DESIGN_2026-11-17.md`, section 5). SOMns
+decides value status per class and checks the slots once the initializer
+has run (`IsValueCheckNode`), with no state for the time in between. Here
+the end of construction is the factory's return, which every instantiation
+passes through, so no syntax is needed to find it.
+
 **`Kernel` and the VM mirror are values, as in SOMns**
 (`r[semantics.value]`; decided with the user
 on 2026-09-23). `Kernel.ns`'s module is declared

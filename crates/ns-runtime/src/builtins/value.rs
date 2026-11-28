@@ -52,7 +52,7 @@ use crate::builtins::numbers::tower;
 use crate::builtins::primitive::{Primitive, ValuePrimitive};
 use crate::builtins::text;
 use crate::dispatch::{self, Lookup};
-use crate::interpreter::instantiate::class_object_is_a_value;
+use crate::interpreter::instantiate::{class_object_is_a_value, under_construction_error};
 use crate::types::*;
 use crate::{Mutator, Symbol};
 
@@ -89,7 +89,16 @@ pub(crate) fn execute<'gc>(
     match primitive {
         ValuePrimitive::SameAs => {
             let other = arguments.first(&mutator.heap)?;
-            let equal = derived_equality(mutator, receiver, other)?;
+            // A refusal, never a decline: `valueEquals:` would compare the
+            // slots built so far, which is the answer the refusal withholds.
+            let equal = match derived_equality(mutator, receiver, other) {
+                Ok(equal) => equal?,
+                Err(object) => {
+                    return Some(Err(under_construction_error(
+                        mutator, selector, receiver, object,
+                    )));
+                }
+            };
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Value(primitive),
@@ -99,9 +108,14 @@ pub(crate) fn execute<'gc>(
             )
             .map(|answer| Ok(Value::boolean(answer)))
         }
-        ValuePrimitive::Hash => {
-            derived_hash(mutator, receiver).map(|hash| Ok(Value::small_integer(hash)))
-        }
+        // Refused as `=` is, for the same reason: `valueHashOfSlots` would
+        // hash the slots built so far.
+        ValuePrimitive::Hash => match derived_hash(mutator, receiver) {
+            Ok(hash) => hash.map(|hash| Ok(Value::small_integer(hash))),
+            Err(object) => Some(Err(under_construction_error(
+                mutator, selector, receiver, object,
+            ))),
+        },
         ValuePrimitive::SlotCount => {
             let count = with_declared_slots(mutator, receiver, <[usize]>::len)?;
             Some(Ok(Value::small_integer(count as i64)))
@@ -381,7 +395,21 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
     }
 }
 
-/// Whether `left` and `right` are equal as values; `None` is the decline.
+/// `value` when it is an instance of a value class whose factory has not
+/// returned (`Heap::object_under_construction`); `None` for every other
+/// value, an immediate included.
+fn under_construction<'gc>(
+    mutator: &Mutator<'gc>,
+    value: Value<'gc>,
+) -> Option<ObjectReference<'gc>> {
+    value
+        .as_object()
+        .filter(|object| mutator.heap().object_under_construction(*object))
+}
+
+/// Whether `left` and `right` are equal as values; `None` is the decline,
+/// and `Err` the instance under construction the walk reached, which
+/// refuses the comparison whatever the other nodes would have answered.
 ///
 /// A pair already on `assumed` is taken to be equal: that is what makes a
 /// cyclic value answer `true` instead of unfolding forever, and it is
@@ -391,7 +419,7 @@ fn derived_equality<'gc>(
     mutator: &Mutator<'gc>,
     left: Value<'gc>,
     right: Value<'gc>,
-) -> Option<bool> {
+) -> Result<Option<bool>, ObjectReference<'gc>> {
     // Two class objects are the operands of `Behavior>>=` and `==`, and so
     // of every `self class == other class`, which was `Object`'s identity
     // leaf before class objects became values: answered here without
@@ -402,10 +430,10 @@ fn derived_equality<'gc>(
         && mutator.heap().is_class(second)
     {
         if first.same(second) {
-            return Some(true);
+            return Ok(Some(true));
         }
         if !classes_can_be_equal(mutator, first, second) {
-            return Some(false);
+            return Ok(Some(false));
         }
     }
     // The root pair is examined before the stack is used, so a pair its
@@ -423,6 +451,16 @@ fn derived_equality<'gc>(
     // The root pair is charged like a pushed one.
     let mut charged = 1usize;
     while let Some((first, second)) = root.take().or_else(|| work.pop()) {
+        // Before anything else, the root pair included: an instance whose
+        // factory has not returned has no state yet, so no verdict --
+        // not even one the tower or the classes would reach without its
+        // slots -- may be answered for a pair it is part of (§3.1.1, "have
+        // been initialized").
+        if let Some(object) =
+            under_construction(mutator, first).or_else(|| under_construction(mutator, second))
+        {
+            return Err(object);
+        }
         // The classes first, for every shape: §3.1.1's equality is equality
         // of state *within* a class, so two values whose classes are unequal
         // are unequal whatever their states look like. Two distinct classes
@@ -440,7 +478,7 @@ fn derived_equality<'gc>(
             .and_then(|left| Some((left, tower::operand(mutator.heap(), second)?)))
         {
             if !tower::equal(&left, &right) {
-                return Some(false);
+                return Ok(Some(false));
             }
             continue;
         }
@@ -453,7 +491,7 @@ fn derived_equality<'gc>(
             // two values of unrelated classes -- the common unequal pair --
             // answer without unfolding either.
             if !classes_can_be_equal(mutator, first_class, second_class) {
-                return Some(false);
+                return Ok(Some(false));
             }
             // A pair already assumed has been unfolded; pushing it again
             // would only spend budget on a node the walk discards.
@@ -462,15 +500,18 @@ fn derived_equality<'gc>(
                 None
             } else {
                 if charged >= NODE_BUDGET {
-                    return None;
+                    return Ok(None);
                 }
                 charged += 1;
                 Some((Value::object(first_class), Value::object(second_class)))
             }
         };
-        match compare_node(mutator, first, second)? {
+        let Some(pair) = compare_node(mutator, first, second) else {
+            return Ok(None);
+        };
+        match pair {
             Pair::Decided(true) => {}
-            Pair::Decided(false) => return Some(false),
+            Pair::Decided(false) => return Ok(Some(false)),
             // Assumed like a pair of instances, so a cycle through classes
             // -- a class whose enclosing value's slot holds that very class
             // -- ends where one through slots does.
@@ -481,11 +522,11 @@ fn derived_equality<'gc>(
                         .insert(identity_pair(mutator, first_class, second_class)) =>
             {
                 let Some(pairs) = class_state_pairs(mutator, first_class, second_class) else {
-                    return Some(false);
+                    return Ok(Some(false));
                 };
                 // Charged before they are pushed, like an instance's slots.
                 if pairs.len() > NODE_BUDGET - charged {
-                    return None;
+                    return Ok(None);
                 }
                 charged += pairs.len();
                 work.extend(pairs);
@@ -502,7 +543,7 @@ fn derived_equality<'gc>(
                 // already; checked because the alternative is zipping two
                 // different lengths and calling the shorter prefix equal.
                 if first_slots.len() != second_slots.len() {
-                    return Some(false);
+                    return Ok(Some(false));
                 }
                 if first_slots.len() > NODE_BUDGET - charged {
                     // Out of budget, with pairs still unexamined: decline
@@ -511,7 +552,7 @@ fn derived_equality<'gc>(
                     // grows past the budget. `Value`'s `ifFail:` block then
                     // answers, as it does for any other shape this leaf
                     // will not rule on.
-                    return None;
+                    return Ok(None);
                 }
                 charged += first_slots.len();
                 work.extend(first_slots.into_iter().zip(second_slots));
@@ -520,7 +561,7 @@ fn derived_equality<'gc>(
         }
         work.extend(classes);
     }
-    Some(true)
+    Ok(Some(true))
 }
 
 /// The key `assumed` remembers a pair of objects by, instances and class
@@ -620,16 +661,30 @@ fn class_state_pairs<'gc>(
     ])
 }
 
-/// The hash `value`'s state gives it; `None` is the decline. Every node
-/// reached contributes its own hash, and every instance its slot count, as
-/// the sum the answer is.
-fn derived_hash<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<i64> {
+/// The hash `value`'s state gives it; `None` is the decline, and `Err`
+/// the instance under construction the walk reached. Every node reached
+/// contributes its own hash, and every instance its slot count, as the sum
+/// the answer is.
+fn derived_hash<'gc>(
+    mutator: &Mutator<'gc>,
+    value: Value<'gc>,
+) -> Result<Option<i64>, ObjectReference<'gc>> {
     let mut work = vec![value];
     let mut total: i64 = 0;
     // The root is on the stack already.
     let mut charged = 1usize;
     while let Some(current) = work.pop() {
-        match hash_node(mutator, current)? {
+        // The root first: a hash taken from the slots an instance under
+        // construction has so far would change once the rest were
+        // initialized, and a hash cut off there would be no hash of the
+        // value it becomes.
+        if let Some(object) = under_construction(mutator, current) {
+            return Err(object);
+        }
+        let Some(node) = hash_node(mutator, current) else {
+            return Ok(None);
+        };
+        match node {
             Node::Leaf(hash) => total += hash,
             Node::State(object) => {
                 let slots = slots_of(mutator, object);
@@ -653,7 +708,7 @@ fn derived_hash<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<i64> {
             }
         }
     }
-    Some(total)
+    Ok(Some(total))
 }
 
 #[cfg(test)]
@@ -858,6 +913,10 @@ mod tests {
     /// because its enclosing `Outer` is. `Looped` holds its own `Inner` in a
     /// slot, so its state reaches itself through a class object's enclosing
     /// object: a cycle through classes.
+    ///
+    /// `escaped` answers an `Escaping` whose initializer handed it out and
+    /// was then cut short by a caught signal: an instance of a value class
+    /// that stays under construction for good.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
             class ValueFixture = Object <: Value () (
@@ -888,12 +947,21 @@ mod tests {
                 ) (
                     lazy public doubled = x + x.
                 )
+                class Escaping box: box = Value new (
+                    | public itself = box at: 1 put: self. public never = Error signal: 'stop'. |
+                ) ()
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
                 public lazy: xValue = ( ^Lazy x: xValue )
                 public tag = ( ^Tag new )
                 public boxed: contents = ( ^Boxed on: contents )
                 public outer: xValue = ( ^Outer x: xValue )
                 public looped: xValue = ( ^Looped x: xValue )
+                public escaped = (
+                    | box |
+                    box:: Array new: 1.
+                    [Escaping box: box] on: Error do: [:error | nil].
+                    ^box at: 1
+                )
             ) : ()
         "};
         let module = ns_syntax::parse(source).expect("the value fixture parses");
@@ -2123,5 +2191,103 @@ mod tests {
             DECLINED,
             "a String's state is its payload, not slots"
         );
+    }
+
+    /// The text every refusal of a value question about an `Escaping`
+    /// still under construction carries.
+    const ESCAPING_UNDER_CONSTRUCTION: &str = concat!(
+        "an instance of Escaping is still under construction: ",
+        "an instance of a value class is a value only once its factory has returned"
+    );
+
+    /// The refusal `result` carries: its selector and its text. Panics on
+    /// an answer, so a leaf that answers or declines fails the test.
+    fn refusal(interpreter: &mut Interpreter, result: HostResult, what: &str) -> (Symbol, String) {
+        match result {
+            Err(HostSignal::Error(error)) => (error.selector, error.message.to_string()),
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Ok(root) => interpreter.enter(|mutator| {
+                let answer = mutator.fetch(&root);
+                panic!("{what} answered {}", mutator.heap().describe(answer))
+            }),
+        }
+    }
+
+    /// `=` refuses a receiver or an argument whose factory never returned,
+    /// before it compares anything: its slots are not all initialized, so
+    /// it has no state to be equal by -- and a refusal, never a decline,
+    /// so `valueEquals:` never meets it either.
+    // spec: semantics.value.under-construction
+    #[test]
+    fn the_equality_leaf_refuses_an_operand_under_construction() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let one = interpreter.stash(Value::small_integer(1));
+        let point = send(&mut interpreter, &fixture, "pointX:y:", &[one.clone(), one]);
+        for (receiver, argument, what) in [
+            (&escaped, &escaped, "escaped = escaped"),
+            (&escaped, &point, "escaped = point"),
+            (&point, &escaped, "point = escaped"),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                receiver,
+                std::slice::from_ref(argument),
+            );
+            let (selector, message) = refusal(&mut interpreter, compared, what);
+            assert_eq!(selector, Symbol::EQUALS, "{what}");
+            assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION, "{what}");
+        }
+    }
+
+    /// `hash` refuses a receiver whose factory never returned: a hash taken
+    /// from the slots it has so far would change once the rest were
+    /// initialized.
+    // spec: semantics.value.under-construction
+    #[test]
+    fn the_hash_leaf_refuses_a_receiver_under_construction() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &escaped, &[]);
+        let (selector, message) = refusal(&mut interpreter, hashed, "escaped hash");
+        assert_eq!(selector, Symbol::intern("hash"));
+        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
+    }
+
+    /// A complete value may hold one under construction -- storing it is
+    /// allowed -- but neither walk answers past it: both reach it as a slot
+    /// and refuse there, rather than comparing or hashing the half-built
+    /// state.
+    // spec: semantics.value.under-construction
+    #[test]
+    fn the_walk_refuses_a_value_under_construction_it_reaches() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
+        let first = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&escaped),
+        );
+        let second = send(
+            &mut interpreter,
+            &fixture,
+            "boxed:",
+            std::slice::from_ref(&escaped),
+        );
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &first,
+            std::slice::from_ref(&second),
+        );
+        let (selector, message) = refusal(&mut interpreter, compared, "boxed = boxed");
+        assert_eq!(selector, Symbol::EQUALS);
+        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
+        let hashed = leaf(&mut interpreter, "valueHash:ifFail:", &first, &[]);
+        let (selector, message) = refusal(&mut interpreter, hashed, "boxed hash");
+        assert_eq!(selector, Symbol::intern("hash"));
+        assert_eq!(message, ESCAPING_UNDER_CONSTRUCTION);
     }
 }
