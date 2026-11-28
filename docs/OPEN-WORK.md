@@ -2386,7 +2386,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   "Source retention and provenance".
 - **Actors and real concurrency**: an M:N scheduler, per-actor heaps as
   snapshot units, promises for `<-:`, and copying value objects across an
-  actor boundary. The treatment of in-flight cross-actor promises at snapshot
+  actor boundary -- a value under construction among them crossing as a
+  far reference, never as a value, since Bracha's formal semantics defines
+  the transfer of a value only for a fully initialized one
+  (`prior-art/newspeak/formal-semantics/actor-semantics.tex:41`;
+  `r[semantics.value.under-construction]`). The treatment of in-flight cross-actor promises at snapshot
   time still needs design. How a turn waits for a promise is open
   (decided with the user on 2026-11-24): callbacks and promise pipelining
   as Bracha and E have it, `await` as Swift's actors have it, or a parked
@@ -3265,6 +3269,23 @@ constructs not built yet, each a rule whose identifier holds the segment
   golden of an exception passed with no outer handler, its expected
   output established from ANSI's definition, would pin it.
   [core-library.md](design/core-library.md).
+- **An install that re-parents a plain class onto `Value` leaves its
+  existing instances passing as values** (noted 2026-11-28, with the
+  under-construction mark; older than it). Those instances were built by
+  an ordinary factory, never held to §3.1.1's conditions -- their slots may
+  be mutable -- and carry no under-construction mark, so after the install
+  `objectIsValue:` answers `true` for them and `Value`'s `=` and `hash`
+  compare and hash them by their state, at exit status 0.
+  `redecide_value_class` (`interpreter/install/superclasses.rs`) decides
+  the class's verdict again for later instantiations only. Options, to be
+  decided with the user: refuse such an install while the class has
+  instances; check §3.1.1's conditions on each instance the install keeps
+  or migrates, refusing the install when one fails; or give such
+  instances a "never a value" state, refused by every value question as
+  an instance under construction is.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "The
+  complete install"; [object-model.md](design/object-model.md), "A value
+  object's four conditions".
 
 ## Known defects and gaps
 

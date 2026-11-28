@@ -9045,3 +9045,44 @@ and `vm.heap.obsolete-mixin-out-of-tree` state it.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
 the debugger, batch B, the first part of the debugger's stage 6.
+
+## Values under construction (2026-11-28)
+
+Plan: [half-built-values](superpowers/plans/2026-11-28-1043-half-built-values.md),
+its decisions taken with the user on 2026-11-28
+([object-model.md](design/object-model.md), "A value object's four
+conditions"). Branch `feature/half-built-values`.
+
+§3.1.1 makes an object a value only once its slots "have been
+initialized", and an instance of a value class is now no value until its
+factory has returned. Its factory's allocation marks it under
+construction -- bit 32 of a `FixedPointers` header, the bit a
+`LargeInteger`'s sign takes, part of the header every application of a
+class that inherits `Value` precomputes, so neither the interpreter's
+allocation nor machine code's tests anything new -- and the factory's
+new instruction `CompleteInstance`, after the initializer has returned,
+clears it. A construction cut short by an unwind or an unhandled signal
+never reaches it, so an instance it handed out stays under construction
+while its class inherits from `Value`. While marked, `=`, `hash`, `==`,
+`identityHash` and `objectIsValue:` signal an `Error` naming its class,
+so an `Ephemeron`'s `key:` and a `WeakMap`'s `at:put:` refuse it without
+a check of their own; storing it and using it as an enclosing object stay
+allowed, so a value module builds its nested values and two values can
+reach each other. An image carries the mark as object-body tag 17,
+`instance-under-construction`, refused for a class that does not inherit
+`Value`; the install's migration keeps it and clears it where the class
+is re-parented off `Value`. Fourteen goldens under `goldens/library/value/`
+pin it, and the book's rules `semantics.value.under-construction`,
+`runtime.value.equality`, `runtime.value.hash`, `runtime.value.is-value`,
+`bytecode.instruction.complete-instance`, `image.verify.under-construction`
+and `vm.heap.under-construction-only-on-value-instances` state it.
+
+- `62ec3fef` -- the plan.
+- `cc798968` -- the mark and `CompleteInstance`.
+- `148cf455` -- the value questions refused.
+- `25693167` -- the mark in an image.
+- `91b85ced` -- the mark through an install's migration.
+- `93d200db` -- the reviews' findings.
+
+What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": hot swap in
+the debugger, batch B, the first part of the debugger's stage 6.
