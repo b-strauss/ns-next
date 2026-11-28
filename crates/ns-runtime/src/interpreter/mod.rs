@@ -977,6 +977,40 @@ impl Interpreter {
         self.run_from_host(start, depth)
     }
 
+    /// A test's lexical send of `selector` to `receiver` from the code of
+    /// the builtin class `lexical_class`, which reaches that class's
+    /// private members (§5.9): `Value`'s `valueEquals:` and
+    /// `valueHashOfSlots`, and `Behavior`'s `behaviorEquals:`, which the
+    /// equality and hash leaves stand in for, so that a test can hold each
+    /// leaf to the method it answers for.
+    #[cfg(test)]
+    pub(crate) fn send_lexically(
+        &mut self,
+        receiver: &Root,
+        lexical_class: BuiltinClass,
+        selector: Symbol,
+        arguments: &[Root],
+    ) -> HostResult {
+        let depth = self.world.activation_depth();
+        let start = self.enter(|mutator| {
+            let receiver = mutator.fetch(receiver);
+            let arguments: Vec<Value> = arguments
+                .iter()
+                .map(|argument| mutator.fetch(argument))
+                .collect();
+            let class = mutator.builtin_class(lexical_class);
+            let resolved = mutator.resolve_lexical(receiver, Some(class), selector);
+            let decided = mutator.act(
+                resolved,
+                receiver,
+                selector,
+                Arguments::Values(&arguments.as_slice()),
+            );
+            mutator.start(decided, Arguments::Values(&arguments.as_slice()))
+        });
+        self.run_from_host(start, depth)
+    }
+
     /// Builds the class `nested` declares in the class of `enclosing`, as
     /// its implicit accessor would, whatever the accessor's access: the boot
     /// builds every class a shipped root declares this way, private ones

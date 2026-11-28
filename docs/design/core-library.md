@@ -1812,36 +1812,32 @@ moved"); Mandelbrot and NBody run about 4% faster.
 **`nil`, `true` and `false` are answered by identity.** Each is an
 immediate word, never under construction, of a kernel class no other
 class can be equal to. Its class has other instances -- `UndefinedObject
-new` and `True new` answer heap objects -- but the walk finds every one
-of them unequal to the immediate, its two leaves being of different
-shapes, unless it is still under construction: an argument under
-construction of a class that could be equal, as the constant's own is,
-the walk refuses. So `Value>>=`'s
-leaf decides a pair whose receiver is one of the three by comparing the
-two words, before the walk, wherever the argument is an immediate or a
-heap object whose header lacks the under-construction mark's bit; an
-argument with the bit -- a marked instance, or a negative `LargeInteger`,
-whose sign the bit is -- goes through the walk, which answers `false` or
-refuses a marked instance of a class that could be equal
-(`builtins/value.rs`, `constant_identity`, held to the walk over every
-shape of argument, a second instance of each constant's class complete
-and under construction included, by
+new` and `True new` answer heap objects -- which `valueEquals:` finds
+equal to the immediate, neither having any slot, and which the walk
+compares the same way (`compare_node`), refusing one still under
+construction. So `Value>>=`'s leaf decides a pair whose receiver is one
+of the three by comparing the two words, before the walk, wherever the
+argument is an immediate or a heap object of another application, told
+by the dispatch id in its header word; an argument of the constant's own
+application goes through the walk (`builtins/value.rs`,
+`constant_identity`, held to the walk over every shape of argument, a
+second instance of each constant's class complete and under
+construction included, by
 `the_constants_are_answered_by_identity_as_the_walk_answers_them`). The
 pair is the commonest the leaf sees -- Richards' `NoWork == packet`,
 which `Value>>==` answers with `=`, 366,000 times a run -- and its
-argument is a complete object, so it costs one test of a header word.
-The walk is inlined into `builtins::execute`, the one function every
-leaf enters, and the tests it gained for a value under construction made
-Richards 3% slower in each of three layouts, its machine code, inlining
-and exits unchanged; answered before the walk, the pair made Richards
-about 22% faster than before those tests (8.9 ms against 11.3 to 11.6
-ms). The test of the argument's bit, which keeps the answer the walk's
-for an argument under construction, measured 9.05 ms against 8.92 ms
-without it, within the spread of the rounds; the full test of the mark,
-its format included, measured 9.13 ms. These figures come from one
-pinned build per layout, not from the pooled protocol of
-[execution.md](execution.md).
-
+argument is a heap object of another class, so it costs one read of a
+header word. The walk is inlined into `builtins::execute`, the one
+function every leaf enters, and the tests it gained for a value under
+construction made Richards 3% slower in each of three layouts, its
+machine code, inlining and exits unchanged; answered before the walk,
+the pair made Richards about 22% faster than before those tests (8.9 ms
+against 11.3 to 11.6 ms). How the argument is tested matters at this
+rate: its class word, read through `Heap::object_class`, cost Richards
+3% (9.2 against 8.9 ms); its header word read as the dispatch id,
+without the block's bounds (`Heap::object_dispatch_id`), costs nothing
+measurable. These figures come from one pinned build per layout, not
+from the pooled protocol of [execution.md](execution.md).
 ## `ByteArray`, `StringBuilder` and the views
 
 The kernel completion's fifth sub-project ("The kernel completed

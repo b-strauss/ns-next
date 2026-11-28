@@ -41,6 +41,18 @@
 //! `numbers::tower`'s and `text`'s named helpers, which their `=` and
 //! `hash` primitives call too. A second copy of those rules is how the derived
 //! answer and the class's own would drift apart.
+//!
+//! **Each walk is a second implementation of the method it stands for**:
+//! the equality walk of `valueEquals:` (and, for a class object, of
+//! `behaviorEquals:`), the hash walk of `valueHashOfSlots`, each sending
+//! the slots' own `=` and `hash`. Wherever a walk answers or refuses
+//! without sending, it answers what that method would, or refuses where
+//! the method would read a state not built yet; where it cannot know, it
+//! declines and the method answers. The one exception is the node budget,
+//! past which the hash walk answers its sum so far, consistently for two
+//! equal values, where the method would not terminate on a cycle.
+//! `the_leaves_answer_as_the_methods_they_stand_for_over_every_shape`
+//! holds the walks to the methods over every shape, pair by pair.
 
 use crate::interpreter::Arguments;
 use std::collections::HashSet;
@@ -73,14 +85,14 @@ use crate::{Mutator, Symbol};
 /// It is also what keeps a truncated hash *consistent*: two equal values
 /// unfold to the same nodes in the same order and have the same slot
 /// counts at each of them, so both are charged alike and both stop at the
-/// same node. Every node contributes a hash below 2^32 plus a slot count
-/// below 2^16, so a sum of this many stays far inside an `i64`.
+/// same node. Every node contributes at most a `SmallInteger`, so a sum of
+/// this many stays far inside an `i128`.
 const NODE_BUDGET: usize = 4096;
 
-/// `nil`'s hash. Nothing but `nil` is equal to `nil` -- another instance of
-/// `UndefinedObject` is a heap object the walk finds unequal to it -- so
-/// any constant will do; 0 is the one `Object`'s identity hash already
-/// answered for it.
+/// `nil`'s hash: 0, what `valueHashOfSlots` answers for it -- its slot
+/// count, which is none -- and so what the walk answers for every other
+/// instance of `UndefinedObject`, each equal to `nil`, its state no slots
+/// either.
 const NIL_HASH: i64 = 0;
 
 pub(crate) fn execute<'gc>(
@@ -445,9 +457,15 @@ fn compare_node<'gc>(
             );
             derived.then_some(Pair::State(left, right))
         }
-        // One application, two shapes: nothing builds such a pair today,
-        // and answering "unequal" is the reading that cannot claim an
-        // equality it did not check.
+        // An immediate and a heap instance of its class -- `nil` and
+        // `UndefinedObject new`, `true` and `True new`: `valueEquals:`
+        // compares their declared slots, of which the immediate has none,
+        // so the two are equal exactly when the instance has none either.
+        (ValueKind::Object(object), _) | (_, ValueKind::Object(object)) => Some(Pair::Decided(
+            with_declared_slots(mutator, Value::object(object), <[usize]>::len) == Some(0),
+        )),
+        // Two immediates of one class but of different kinds: none exist,
+        // and "unequal" is the reading that claims no equality unchecked.
         _ => Some(Pair::Decided(false)),
     }
 }
@@ -460,15 +478,12 @@ fn hash_node<'gc>(
     value: Value<'gc>,
     receiver: Option<ReceiverEquality>,
 ) -> Option<Node<'gc>> {
-    // Every number's slot hash is its numeric hash folded by
-    // `content_hash`: equal numbers in two slots -- `3` and `3.0` -- hash
-    // alike, as `compare_node` makes them equal, and the fold keeps a
-    // slot's hash below 2^32, so the sum over a value's slots stays inside
-    // an `i64`.
-    let number = || {
-        tower::value_hash(mutator.heap(), value)
-            .map(|hash| Node::Leaf(crate::hash::content_hash(hash)))
-    };
+    // Every number's slot hash is the one its own `hash` answers -- the
+    // tower's, which `Integer>>hash`, `LargeInteger>>hash`, `Float>>hash`
+    // and `Number>>hash` answer too -- so that the walk sums what
+    // `valueHashOfSlots` sums; `3` and `3.0` hash alike, as `compare_node`
+    // makes them equal.
+    let number = || tower::value_hash(mutator.heap(), value).map(Node::Leaf);
     match value.kind() {
         ValueKind::Nil => Some(Node::Leaf(NIL_HASH)),
         // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
@@ -510,26 +525,24 @@ fn hash_node<'gc>(
     }
 }
 
-/// Whether `receiver` is `other`, when `receiver` is `nil`, `true` or
+/// Whether `receiver` equals `other`, when `receiver` is `nil`, `true` or
 /// `false`, exactly as `derived_equality` answers it; `None` for every
 /// other receiver, and for an argument the walk has to see.
 ///
 /// Each of the three is an immediate, never under construction, of a
-/// kernel class no other class can be equal to. Its class has other
-/// instances -- `UndefinedObject new` and `True new` answer heap objects --
-/// so identity is the walk's answer not because the immediate is alone in
-/// its class but because the walk finds every other instance unequal to
-/// it, an immediate and a heap object being leaves of different shapes,
-/// and every object of another class unequal by its class test. The one
-/// argument for which the walk answers otherwise is an instance under
-/// construction of a class that could be equal, which it refuses. Every
-/// argument whose header carries the mark's bit is therefore left to the
-/// walk, which answers it exactly: the test touches nothing for an
-/// immediate argument and one bit of the header word for a heap one, such
-/// as the packet of `nil == aPacket`. The bit alone, not the format the
-/// mark also asks for, because it is the cheaper test and still exact: a
-/// negative `LargeInteger`, whose sign the bit is, goes to the walk too,
-/// which answers it `false` as identity would.
+/// kernel class no other class can be equal to, so the walk's class test
+/// finds every object of another class unequal, under construction or not,
+/// and another immediate is equal exactly when it is the same. What is left
+/// is a heap instance of the constant's own class -- `UndefinedObject new`,
+/// `True new` -- which the walk compares by its state, as `valueEquals:`
+/// does, and refuses while it is under construction: such an argument is
+/// left to the walk. It is told by its dispatch id, the application's, read
+/// from the header for a heap argument and from a table for an immediate
+/// one -- the inline caches' own key, and cheaper than the class word, which
+/// cost Richards 3% (`docs/design/core-library.md`). An argument of another
+/// application can never be equal to the constant, and one of the constant's
+/// application that is not of its class -- a body-less declaration of its
+/// mixin -- the walk answers too.
 fn constant_identity<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
@@ -543,9 +556,9 @@ fn constant_identity<'gc>(
     // An identical argument is an immediate too, so only an unequal one
     // can be an object.
     if !identical
-        && other
-            .as_object()
-            .is_some_and(|object| mutator.heap().may_be_under_construction(object))
+        && other.as_object().is_some_and(|object| {
+            mutator.heap().object_dispatch_id(object) == mutator.heap().dispatch_id(receiver)
+        })
     {
         return None;
     }
@@ -660,6 +673,28 @@ fn derived_equality<'gc>(
         }
         let first_class = mutator.class_of(first);
         let second_class = mutator.class_of(second);
+        // `valueEquals:` compares the classes with `self class == other
+        // class`, a send to the receiver's class object, which answers by
+        // `Behavior>>==` -- the rule the class test below applies -- unless
+        // its class side declares `==` of its own; a program may. Where
+        // one does, the classes are that `==`'s to compare, so the walk
+        // declines -- asked of a pair `valueEquals:` would compare, the
+        // root's (but a class object's, whose `=` is `Behavior`'s) and a
+        // derived one's, from a flag of the metaclass's application. An
+        // argument under construction is refused all the same: whatever
+        // that `==` answers, `valueEquals:` would go on to the argument's
+        // slots, which it does not have yet.
+        if receiver.is_none_or(|receiver| receiver == ReceiverEquality::Derived)
+            && mutator.heap().class_side_declares_identity(first_class)
+            && first
+                .as_object()
+                .is_none_or(|object| !mutator.heap().is_class(object))
+        {
+            if let Some(object) = under_construction(mutator, second) {
+                return Err(object);
+            }
+            return Ok(None);
+        }
         let classes = if first_class.same(second_class) {
             None
         } else {
@@ -716,7 +751,10 @@ fn derived_equality<'gc>(
                     return Ok(None);
                 }
                 charged += pairs.len();
-                work.extend(pairs);
+                // Pushed back to front, so that they are examined in the
+                // order `behaviorEquals:` compares them: a refusal or an
+                // unequal pair is met where that method meets it.
+                work.extend(pairs.into_iter().rev());
             }
             Pair::Classes(..) => {}
             Pair::State(first_object, second_object)
@@ -742,7 +780,11 @@ fn derived_equality<'gc>(
                     return Ok(None);
                 }
                 charged += first_slots.len();
-                work.extend(first_slots.into_iter().zip(second_slots));
+                // Pushed back to front, so that the slots are examined in
+                // declaration order, each unfolded before the next, as
+                // `valueEquals:` compares them: a refusal or an unequal pair
+                // is met where that method meets it.
+                work.extend(first_slots.into_iter().zip(second_slots).rev());
             }
             Pair::State(..) => {}
         }
@@ -858,7 +900,10 @@ fn derived_hash<'gc>(
     value: Value<'gc>,
 ) -> Result<Option<i64>, ObjectReference<'gc>> {
     let mut work = vec![value];
-    let mut total: i64 = 0;
+    // Exact, as `valueHashOfSlots`'s sum is in Newspeak: every node adds
+    // at most a `SmallInteger`, and at most `NODE_BUDGET` of them are
+    // added, which an `i128` holds.
+    let mut total: i128 = 0;
     // The root is on the stack already.
     let mut charged = 1usize;
     let mut examining_root = true;
@@ -887,10 +932,10 @@ fn derived_hash<'gc>(
             return Ok(None);
         };
         match node {
-            Node::Leaf(hash) => total += hash,
+            Node::Leaf(hash) => total += i128::from(hash),
             Node::State(object) => {
                 let slots = slots_of(mutator, object);
-                total += slots.len() as i64;
+                total += slots.len() as i128;
                 // Unlike the comparison, a truncated hash is still a valid
                 // hash: two equal values unfold in the same order with the
                 // same slot counts, so both are cut at the same node and
@@ -910,7 +955,12 @@ fn derived_hash<'gc>(
             }
         }
     }
-    Ok(Some(total))
+    // A sum past the `SmallInteger` range is a `LargeInteger` in
+    // `valueHashOfSlots`; this leaf answers only a `SmallInteger`, so it
+    // declines and that method answers it.
+    Ok(i64::try_from(total)
+        .ok()
+        .filter(|total| (crate::SMALL_INTEGER_MIN..=crate::SMALL_INTEGER_MAX).contains(total)))
 }
 
 #[cfg(test)]
@@ -1124,7 +1174,10 @@ mod tests {
     /// `undefinedObject`, `truth` and `falsity` answer second instances of
     /// the constants' kernel classes, heap objects, and `myBoolean` one of a
     /// program's subclass of `Boolean`; `agreeable` one of a value class
-    /// whose own `=` answers `true` for anything; `large`, `negativeLarge` and
+    /// whose own `=` answers `true` for anything; `plain` an ordinary
+    /// object; `loose:` a value whose class side declares a `==` that
+    /// answers `true` for anything; `half` a `Fraction` and `symbol` a
+    /// Symbol; `large`, `negativeLarge` and
     /// `boxedFloat` answer numbers that are objects.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
@@ -1165,6 +1218,23 @@ mod tests {
                     public hash = ( ^7 )
                 )
                 public agreeable = ( ^Agreeable new )
+                class Plain = Object new () ()
+                public plain = ( ^Plain new )
+                class Loose x: xValue = Value new (
+                    | public x = xValue. |
+                ) () : (
+                    public == other = ( ^true )
+                )
+                public loose: xValue = ( ^Loose x: xValue )
+                class Numeral n: number = Value new (
+                    | public n = number. |
+                ) (
+                    public = other = ( ^n = other )
+                    public hash = ( ^n hash )
+                )
+                public numeral: number = ( ^Numeral n: number )
+                public half = ( ^1 / 2 )
+                public symbol = ( ^#abc )
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
                 public undefinedObject = ( ^UndefinedObject new )
                 public truth = ( ^True new )
@@ -1563,24 +1633,18 @@ mod tests {
         assert_eq!(first_hash, same_hash, "two equal Points hash alike");
     }
 
-    /// `hash_node` hashes an `Integer` slot with `hash::content_hash` of
-    /// its numeric hash while `Integer>>hash`, which the Newspeak fallback
-    /// sums, answers the integer itself. The two are allowed to differ only
-    /// because a value the leaf hashes and a value the fallback hashes can
-    /// never be equal: the leaf's decision is a question about the slots'
-    /// classes, and two values of one class whose slots' classes differ are
-    /// unequal slot by slot -- a pair of numbers apart, which are both
-    /// shapes the leaf hashes, alike when they are equal.
-    ///
-    /// Both shapes of one class are built here -- a `Boxed` holding an
-    /// `Integer`, which the leaf hashes, and a `Boxed` holding a `Tag`,
-    /// whose own `=` takes the leaf out of the decision -- and pinned
-    /// unequal in both directions, each shape hashing consistently within
-    /// itself. A change that let the leaf decide for one of an equal pair
-    /// would fail here rather than silently making two equal values hash
-    /// apart.
+    /// `hash_node` hashes an `Integer` slot with the integer's own hash,
+    /// which `Integer>>hash` answers and `valueHashOfSlots` sums, so a value
+    /// the leaf hashes and one the fallback hashes hash alike wherever they
+    /// are equal: a `Boxed` holding `3` and a `Boxed` holding a `Numeral`
+    /// whose own `=` finds it equal to `3` and whose own `hash` is `3`'s.
+    /// Two values of a shape each path takes alone still hash consistently
+    /// within it -- a `Boxed` holding an `Integer`, which the leaf hashes,
+    /// and a `Boxed` holding a `Tag`, whose own `=` takes the leaf out of
+    /// the decision.
+    // spec: runtime.value.hash
     #[test]
-    fn a_leaf_hashed_value_and_a_fallback_hashed_value_are_never_equal() {
+    fn a_leaf_hashed_value_hashes_as_the_fallback_hashes_an_equal_one() {
         let (mut interpreter, fixture) = a_value_fixture();
         let one = interpreter.stash(Value::small_integer(1));
         let decided = send(
@@ -1608,22 +1672,33 @@ mod tests {
             "a slot whose class brings its own `=` leaves the decision to Newspeak"
         );
 
-        for (receiver, argument) in [(&decided, &declined), (&declined, &decided)] {
-            let equal = send(
-                &mut interpreter,
-                receiver,
-                "=",
-                std::slice::from_ref(argument),
-            );
-            assert!(
-                !answered_flag(
-                    &mut interpreter,
-                    &equal,
-                    "a leaf-hashed against a fallback-hashed"
-                ),
-                "the two hashing rules never have to agree, because the two values are unequal"
-            );
-        }
+        let three = interpreter.stash(Value::small_integer(3));
+        let numeral = send(
+            &mut interpreter,
+            &fixture,
+            "numeral:",
+            std::slice::from_ref(&three),
+        );
+        let holding_three = send(&mut interpreter, &fixture, "boxed:", &[three]);
+        let holding_numeral = send(&mut interpreter, &fixture, "boxed:", &[numeral]);
+        let equal = send(
+            &mut interpreter,
+            &holding_numeral,
+            "=",
+            std::slice::from_ref(&holding_three),
+        );
+        assert!(
+            answered_flag(&mut interpreter, &equal, "a boxed numeral 3 = a boxed 3"),
+            "the numeral's own `=` finds the two slots equal"
+        );
+        let hashes = [&holding_numeral, &holding_three].map(|subject| {
+            let hashed = send(&mut interpreter, subject, "hash", &[]);
+            answered_number(&mut interpreter, &hashed, "a boxed 3's hash")
+        });
+        assert_eq!(
+            hashes[0], hashes[1],
+            "the fallback's hash of the one and the leaf's of the other agree"
+        );
 
         for (first, second, what) in [
             (&decided, &other_decided, "two leaf-hashed values"),
@@ -2782,9 +2857,7 @@ mod tests {
     /// so that `nil == anObject`, the commonest pair the leaf sees, never
     /// pays for the walk's tests: held here to what the walk itself
     /// answers for each of them against every shape of argument -- the
-    /// three constants, numbers immediate and boxed -- a negative
-    /// `LargeInteger`, whose sign is the mark's bit, among them --, a
-    /// string, an array,
+    /// three constants, numbers immediate and boxed, a string, an array,
     /// an object that is no value, a value, a class object, a second
     /// instance of each constant's class, an instance of a program's
     /// subclass of `Boolean` and instances under construction -- and to
@@ -2797,7 +2870,8 @@ mod tests {
     /// the heap, which is the state its factory leaves it in until it
     /// returns. Against it the walk refuses a constant of its own class,
     /// and the fast path leaves the pair to the walk, so `nil = it`
-    /// refuses as the walk does.
+    /// refuses as the walk does; a complete one it leaves to the walk too,
+    /// which finds it equal, its state being no slots, as the constant's.
     // spec: runtime.value.equality
     // spec: semantics.value.under-construction
     #[test]
@@ -2861,13 +2935,13 @@ mod tests {
                             matches!(walked, Ok(Some(equal)) if equal == identical),
                             "{what}: the walk answers otherwise"
                         ),
-                        // Left to the walk only for an argument with the
-                        // mark's bit -- one under construction, or a
-                        // negative LargeInteger -- never for the common pair.
+                        // Left to the walk only for a heap instance of the
+                        // constant's own class, never for the common pair.
                         None => assert!(
                             other.as_object().is_some_and(|object| mutator
                                 .heap()
-                                .may_be_under_construction(object)),
+                                .object_class(object)
+                                .same(mutator.class_of(receiver))),
                             "{what}: left to the walk"
                         ),
                     }
@@ -2938,6 +3012,347 @@ mod tests {
                 "{what}"
             );
         }
+    }
+
+    /// What a leaf or the method it stands for did with one pair: answered
+    /// (described), declined, refused an instance under construction, or
+    /// failed otherwise -- each as text, since a `Value` has no `Debug`.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Outcome {
+        Answered(String),
+        Declined,
+        Refused(String),
+        Failed(String),
+    }
+
+    fn outcome_of(interpreter: &mut Interpreter, result: HostResult, leaf: bool) -> Outcome {
+        match result {
+            Ok(root) => interpreter.enter(|mutator| {
+                let answer = mutator.fetch(&root);
+                if leaf && answer.as_small_integer() == Some(DECLINED) {
+                    Outcome::Declined
+                } else {
+                    Outcome::Answered(mutator.heap().describe(answer))
+                }
+            }),
+            Err(HostSignal::Error(error)) if error.message.contains("still under construction") => {
+                Outcome::Refused(error.message.to_string())
+            }
+            Err(HostSignal::Error(error)) => Outcome::Failed(error.message.to_string()),
+            Err(HostSignal::Return) => panic!("a non-local return escaped"),
+        }
+    }
+
+    /// Every shape the walks meet, each a root and the contents of a box:
+    /// immediates, boxed numbers, a Fraction, strings and a Symbol, class
+    /// objects -- one whose class side declares `==` among them --,
+    /// instances of `Value>>=` classes, values with their own `=` and
+    /// `hash`, an ordinary object, a value whose state reaches itself
+    /// through a class, nested values, and each instance also under
+    /// construction. Each entry names whether its root is marked.
+    fn every_shape(interpreter: &mut Interpreter, fixture: &Root) -> Vec<(String, Root, bool)> {
+        let mut shapes: Vec<(String, Root, bool)> = Vec::new();
+        let immediates = [
+            ("nil", Value::nil()),
+            ("true", Value::boolean(true)),
+            ("false", Value::boolean(false)),
+            ("0", Value::small_integer(0)),
+            ("3", Value::small_integer(3)),
+            ("0.0", Value::small_float(0.0)),
+        ];
+        for (name, value) in immediates {
+            shapes.push((name.to_string(), interpreter.stash(value), false));
+        }
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let built: Vec<(&str, &str, Vec<Root>)> = vec![
+            ("large", "large", vec![]),
+            ("negative large", "negativeLarge", vec![]),
+            ("boxed float", "boxedFloat", vec![]),
+            ("a half", "half", vec![]),
+            ("a symbol", "symbol", vec![]),
+            ("a point 1@2", "pointX:y:", vec![one.clone(), two.clone()]),
+            (
+                "another point 1@2",
+                "pointX:y:",
+                vec![one.clone(), two.clone()],
+            ),
+            ("a point 1@1", "pointX:y:", vec![one.clone(), one.clone()]),
+            ("a tag", "tag", vec![]),
+            ("an agreeable", "agreeable", vec![]),
+            ("a plain object", "plain", vec![]),
+            ("a loose 1", "loose:", vec![one.clone()]),
+            ("an outer 1", "outer:", vec![one.clone()]),
+            ("a looped 1", "looped:", vec![one.clone()]),
+            ("another looped 1", "looped:", vec![one.clone()]),
+            ("a my boolean", "myBoolean", vec![]),
+            ("an undefined object", "undefinedObject", vec![]),
+            (
+                "a numeral 3",
+                "numeral:",
+                vec![interpreter.stash(Value::small_integer(3))],
+            ),
+        ];
+        let mut instances = Vec::new();
+        for (name, selector, arguments) in built {
+            let root = send(interpreter, fixture, selector, &arguments);
+            instances.push((name.to_string(), root));
+        }
+        let strings = [
+            ("'abc'", a_string(interpreter, "abc")),
+            ("another 'abc'", a_string(interpreter, "abc")),
+        ];
+        for (name, root) in strings {
+            shapes.push((name.to_string(), root, false));
+        }
+        for (name, root) in &instances {
+            shapes.push((name.clone(), root.clone(), false));
+        }
+        let point_class = class_of(interpreter, &instances[5].1);
+        shapes.push(("the Point class".to_string(), point_class, false));
+        let loose_class = class_of(interpreter, &instances[11].1);
+        shapes.push(("the Loose class".to_string(), loose_class, false));
+        // Under construction: a second instance of each class with slots
+        // or its own `=`, marked through the heap as its factory leaves it.
+        for (name, selector, arguments) in [
+            (
+                "a marked point 1@2",
+                "pointX:y:",
+                vec![one.clone(), two.clone()],
+            ),
+            ("a marked tag", "tag", vec![]),
+            ("a marked agreeable", "agreeable", vec![]),
+            ("a marked loose 1", "loose:", vec![one.clone()]),
+            ("a marked my boolean", "myBoolean", vec![]),
+        ] {
+            let root = send(interpreter, fixture, selector, &arguments);
+            interpreter.enter(|mutator| {
+                let object = mutator.fetch(&root).as_object().expect("an instance");
+                mutator.heap.mark_under_construction(object);
+            });
+            shapes.push((name.to_string(), root, true));
+        }
+        let escaped = send(interpreter, fixture, "escaped", &[]);
+        shapes.push(("an escaped".to_string(), escaped, true));
+        // Two slots, the first unequal and the second under construction:
+        // which of the two the comparison meets first is its order's.
+        let marked_point = shapes
+            .iter()
+            .find(|(name, ..)| name == "a marked point 1@2")
+            .map(|(_, root, _)| root.clone())
+            .expect("a marked point");
+        for (name, x_value) in [
+            ("a point 1@marked", one.clone()),
+            ("a point 2@marked", two.clone()),
+        ] {
+            let root = send(
+                interpreter,
+                fixture,
+                "pointX:y:",
+                &[x_value, marked_point.clone()],
+            );
+            shapes.push((name.to_string(), root, false));
+        }
+        // Each shape a slot, and a box of a box of a point.
+        let mut boxes = Vec::new();
+        for (name, root, _) in &shapes {
+            let boxed = interpreter.send(
+                fixture,
+                Symbol::intern("boxed:"),
+                std::slice::from_ref(root),
+            );
+            // A slot must hold a value: an ordinary object is refused.
+            if let Ok(boxed) = boxed {
+                boxes.push((format!("a box of {name}"), boxed, false));
+            }
+        }
+        let deeper = send(
+            interpreter,
+            fixture,
+            "boxed:",
+            std::slice::from_ref(&boxes[0].1),
+        );
+        boxes.push(("a box of a box of nil".to_string(), deeper, false));
+        shapes.extend(boxes);
+        shapes
+    }
+
+    /// The leaves are a second implementation of the methods they stand
+    /// for: `Value>>=`'s of `valueEquals:`, `Behavior>>=`'s of
+    /// `behaviorEquals:`, `Value>>hash`'s of `valueHashOfSlots`. Held here
+    /// to them over every pair of every shape (`every_shape`), each pair
+    /// run through the leaf and through the method, sent lexically as the
+    /// leaf's failure block sends it:
+    ///
+    /// - where the leaf answers, the method answers the same;
+    /// - where the leaf refuses, the method refuses the same object -- but
+    ///   where an operand itself is under construction, whose state the
+    ///   method would read directly where the leaf refuses to;
+    /// - where the leaf declines, the method is the answer by construction;
+    /// - a hash leaf answers the very number `valueHashOfSlots` answers,
+    ///   or refuses where it does, and two values `=` finds equal hash
+    ///   alike.
+    // spec: runtime.value.equality
+    // spec: runtime.value.hash
+    // spec: semantics.value.under-construction
+    #[test]
+    fn the_leaves_answer_as_the_methods_they_stand_for_over_every_shape() {
+        let (mut interpreter, fixture) = a_value_fixture();
+        let shapes = every_shape(&mut interpreter, &fixture);
+        // Which method each receiver's `=` and `hash` are, by identity.
+        let (equality, hash) = interpreter.enter(|mutator| {
+            let lookup = |root: &Root, selector: &str| {
+                let class = mutator.class_of(mutator.fetch(root));
+                match crate::dispatch::lookup_public(
+                    mutator.heap(),
+                    class,
+                    Symbol::intern(selector),
+                ) {
+                    crate::dispatch::Lookup::Method(method, _) => Some(method),
+                    _ => None,
+                }
+            };
+            let value_class = mutator.builtin_class(crate::types::BuiltinClass::Value);
+            let value_mixin = mutator
+                .heap()
+                .class_application(value_class)
+                .expect("Value's application")
+                .mixin
+                .clone();
+            let class_class = mutator.builtin_class(crate::types::BuiltinClass::Class);
+            let behavior_equality =
+                match crate::dispatch::lookup_public(mutator.heap(), class_class, Symbol::EQUALS) {
+                    crate::dispatch::Lookup::Method(method, _) => method,
+                    _ => panic!("Behavior declares ="),
+                };
+            let values_equality = value_mixin
+                .compiled_method(Symbol::EQUALS)
+                .expect("=")
+                .clone();
+            let values_hash = value_mixin
+                .compiled_method(Symbol::intern("hash"))
+                .expect("hash")
+                .clone();
+            let equality: Vec<Option<crate::types::BuiltinClass>> = shapes
+                .iter()
+                .map(|(_, root, _)| {
+                    let found = lookup(root, "=")?;
+                    if std::rc::Rc::ptr_eq(&found, &values_equality) {
+                        Some(crate::types::BuiltinClass::Value)
+                    } else if std::rc::Rc::ptr_eq(&found, &behavior_equality) {
+                        Some(crate::types::BuiltinClass::Behavior)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let hash: Vec<bool> = shapes
+                .iter()
+                .map(|(_, root, _)| {
+                    lookup(root, "hash")
+                        .is_some_and(|found| std::rc::Rc::ptr_eq(&found, &values_hash))
+                })
+                .collect();
+            (equality, hash)
+        });
+        let mut compared = 0;
+        let mut declined = 0;
+        for (receiver_index, (receiver_name, receiver, receiver_marked)) in
+            shapes.iter().enumerate()
+        {
+            let Some(lexical_class) = equality[receiver_index] else {
+                continue;
+            };
+            let fallback = match lexical_class {
+                crate::types::BuiltinClass::Value => "valueEquals:",
+                _ => "behaviorEquals:",
+            };
+            for (argument_name, argument, argument_marked) in &shapes {
+                let what = format!("{receiver_name} = {argument_name}");
+                let leaf_result = leaf(
+                    &mut interpreter,
+                    "value:sameAs:ifFail:",
+                    receiver,
+                    std::slice::from_ref(argument),
+                );
+                let leaf_outcome = outcome_of(&mut interpreter, leaf_result, true);
+                if leaf_outcome == Outcome::Declined {
+                    declined += 1;
+                    continue;
+                }
+                if matches!(leaf_outcome, Outcome::Refused(_))
+                    && (*receiver_marked || *argument_marked)
+                {
+                    continue;
+                }
+                let method_result = interpreter.send_lexically(
+                    receiver,
+                    lexical_class,
+                    Symbol::intern(fallback),
+                    std::slice::from_ref(argument),
+                );
+                let method_outcome = outcome_of(&mut interpreter, method_result, false);
+                assert_eq!(leaf_outcome, method_outcome, "{what}");
+                compared += 1;
+            }
+        }
+        for (index, (name, root, marked)) in shapes.iter().enumerate() {
+            if !hash[index] || *marked {
+                continue;
+            }
+            let leaf_result = leaf(&mut interpreter, "valueHash:ifFail:", root, &[]);
+            let leaf_outcome = outcome_of(&mut interpreter, leaf_result, true);
+            if leaf_outcome == Outcome::Declined {
+                continue;
+            }
+            let method_result = interpreter.send_lexically(
+                root,
+                crate::types::BuiltinClass::Value,
+                Symbol::intern("valueHashOfSlots"),
+                &[],
+            );
+            let method_outcome = outcome_of(&mut interpreter, method_result, false);
+            assert_eq!(leaf_outcome, method_outcome, "{name} hash");
+        }
+        // Two values `=` finds equal hash alike, whichever path answered --
+        // but where a class's own `=` and `hash` decide, which keep that
+        // contract only as far as the program keeps it: `Agreeable`'s `=`
+        // answers `true` for anything, its `hash` 7.
+        let own_equality = |name: &str| name.contains("tag") || name.contains("agreeable");
+        for (receiver_name, receiver, receiver_marked) in &shapes {
+            for (argument_name, argument, argument_marked) in &shapes {
+                if *receiver_marked
+                    || *argument_marked
+                    || own_equality(receiver_name)
+                    || own_equality(argument_name)
+                {
+                    continue;
+                }
+                let Ok(equal) =
+                    interpreter.send(receiver, Symbol::EQUALS, std::slice::from_ref(argument))
+                else {
+                    continue;
+                };
+                let equal = interpreter.enter(|mutator| mutator.fetch(&equal).as_boolean());
+                if equal != Some(true) {
+                    continue;
+                }
+                let hashes = [receiver, argument].map(|subject| {
+                    let hashed = interpreter.send(subject, Symbol::intern("hash"), &[]);
+                    outcome_of(&mut interpreter, hashed, false)
+                });
+                if matches!(hashes[0], Outcome::Answered(_)) {
+                    assert_eq!(
+                        hashes[0], hashes[1],
+                        "{receiver_name} = {argument_name}, so their hashes agree"
+                    );
+                }
+            }
+        }
+        assert!(
+            compared > 1000,
+            "{compared} pairs compared, {declined} declined"
+        );
     }
 
     /// The mark is a header bit, and every mover copies or slides the

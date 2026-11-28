@@ -3010,15 +3010,6 @@ impl<'gc> Heap<'gc> {
         self.set_header(instance, header.with_under_construction(true));
     }
 
-    /// Whether `object`'s header carries the bit the under-construction
-    /// mark is: `object_under_construction` without its test of the
-    /// format, so true also for a negative `LargeInteger`, whose sign the
-    /// bit is. For a test that only has to know that an object is surely
-    /// not under construction, at the cost of one bit of a header word.
-    pub(crate) fn may_be_under_construction(&self, object: ObjectReference<'gc>) -> bool {
-        self.header(object).under_construction()
-    }
-
     /// Whether `object` is an instance of a value class whose factory has
     /// not returned (§3.1.1's "have been initialized"): marked by its
     /// allocation, cleared by its factory's `CompleteInstance`, and kept
@@ -6524,6 +6515,18 @@ impl<'gc> Heap<'gc> {
     ) -> Option<crate::mixin::LevelFacts> {
         self.class_application_entry(class)
             .map(|application| application.level_facts)
+    }
+
+    /// Whether `class`'s `==` may not be `Behavior`'s: its metaclass's
+    /// level declares `==` (`LevelFacts::declares_identity`). `Value`'s
+    /// `valueEquals:` compares two values' classes with `==`, so a value's
+    /// derived equality may decide the classes by `Behavior`'s rule only
+    /// where this is false. A flag of the application, read without a
+    /// lookup, since the walk asks it of every pair it compares by its
+    /// classes; false for a handle that is no class object.
+    pub(crate) fn class_side_declares_identity(&self, class: ClassReference<'gc>) -> bool {
+        self.class_application_entry(self.object_class(class))
+            .is_some_and(|application| application.level_facts.declares_identity)
     }
 
     /// The index of `class`'s application in the table: the identity of

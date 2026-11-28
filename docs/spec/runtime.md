@@ -222,40 +222,52 @@ r[runtime.value.equality]
 ([`semantics.value.identity`](language/semantics.md#r-semantics.value.identity)).
 
 1. Walk the pairs of objects the comparison reaches, from *left* and
-   *right*: each pair's classes and then its slots, the last declared
-   first, a pair already met assumed equal. Where a pair below the root
-   has a receiver's side whose `=` is not one this operation computes
-   itself -- `Value`'s; a number's, a String's or a Symbol's, of the
-   kernel's own class; a class object's `Behavior>>=` -- as a class that
-   declares its own `=` has, compare the slots instead in declaration
-   order, each pair by sending `=` to the receiver's slot, which decides
-   it, under construction or not, and runs this operation again for a
-   pair that is `Value`'s. The steps below hold every other pair.
+   *right*: each pair's classes, then its slots in declaration order,
+   each unfolded before the next -- the order `valueEquals:` compares
+   them in -- a pair already met assumed equal. Where a pair below the
+   root has a receiver's side whose `=` is not one this operation
+   computes itself -- `Value`'s; a number's, a String's or a Symbol's,
+   of the kernel's own class; a class object's `Behavior>>=` -- as a
+   class that declares its own `=` has, compare the slots instead in
+   declaration order, each pair by sending `=` to the receiver's slot,
+   which decides it, under construction or not, and runs this operation
+   again for a pair that is `Value`'s. The steps below hold every other
+   pair.
 2. If the pair's receiver's side is under construction
    ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)),
    signal `cannot compare an instance of C: it is still under
    construction, and an instance of a value class is a value only once
    its factory has returned`, naming that object's class, before anything
    else is compared.
-3. Otherwise, if the pair's classes cannot be equal, the pair is unequal,
-   whatever the state of its argument's side.
+3. Otherwise, where the receiver's side is a value whose class side
+   declares `==` of its own, that `==` compares the two classes, as
+   `valueEquals:` sends it: signal step 2's text if the argument's side
+   is under construction, and compare the slots by sending, as step 1
+   does. Otherwise the classes are compared by `Behavior>>==`: if they
+   cannot be equal, the pair is unequal, whatever the state of its
+   argument's side.
 4. Otherwise, if its argument's side is under construction, signal step
    2's text naming that object's class.
-5. The walk ends at the first pair that signals or is unequal, in its
+5. An immediate and another instance of its class -- `nil` and
+   `UndefinedObject new` -- are equal, neither having any slot.
+6. The walk ends at the first pair that signals or is unequal, in its
    order, answering `false` for an unequal one -- so a slot's own `=`
    sent before it has run -- and `true` when none is.
 
 r[runtime.value.hash]
-`Value`'s `hash`, sent to *value*: an Integer computed from the objects
-its slots reach, alike for every two values `=` makes equal; a slot whose
+`Value`'s `hash`, sent to *value*: its slot count plus the `hash` of
+every slot, as `valueHashOfSlots` sums them, each slot's `hash` the one
+its own class answers, a number's its tower hash; the sum exact, a
+`LargeInteger` where it leaves the `SmallInteger` range. A slot whose
 `=` is not one step 1 of `runtime.value.equality` compares itself -- a
 class that declares its own `=` -- is hashed by its own `hash`, under
 construction or not. If *value*, or an object its slots reach that is
-not such a slot, is under
-construction, signal `cannot hash an instance of C: it is still under
-construction, and an instance of a value class is a value only once its
-factory has returned`, naming that object's class, instead of answering.
-
+not such a slot, is under construction, signal `cannot hash an instance
+of C: it is still under construction, and an instance of a value class
+is a value only once its factory has returned`, naming that object's
+class, instead of answering. Past 4096 objects the sum is cut, at the
+same object for two equal values, so that a value whose state reaches
+itself still hashes.
 r[runtime.value.is-value]
 Whether *object* is a value object, as an `Ephemeron`'s `key:` and a
 `WeakMap`'s `at:put:` ask of a key before refusing a value: an object

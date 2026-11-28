@@ -1512,6 +1512,13 @@ pub struct LevelFacts {
     pub applied_clauses_pass_arguments: bool,
     pub factory_arity: Option<usize>,
     pub metaclass_factory: Option<Factory>,
+    /// Whether the mixin declares `==` itself. Read off a metaclass's
+    /// application, it says whether the class object's `==` may be its
+    /// class side's own rather than `Behavior`'s -- which a value's
+    /// derived equality assumes when it compares two values' classes
+    /// (`Heap::class_side_declares_identity`). A metaclass's superclass is
+    /// always `Class`, so its own level is the only one that can.
+    pub declares_identity: bool,
 }
 
 impl LevelFacts {
@@ -1537,6 +1544,7 @@ impl LevelFacts {
                 }),
                 _ => None,
             }),
+            declares_identity: mixin.compiled_method(Symbol::IDENTICAL).is_some(),
         }
     }
 }

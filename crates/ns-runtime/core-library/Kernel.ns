@@ -2140,18 +2140,22 @@ class Kernel vmMirror: mirror = Value (
     /// slot's class brings its own `=`, because a leaf may not send;
     /// `valueEquals:` then sends it.
     ///
-    /// The classes are compared first, with `=`: two instances of one
-    /// class, or of two class objects equal by `Behavior>>=` -- one value's
-    /// nested class under two equal enclosing values -- and nothing else,
-    /// so a value never equals an object of another class, nor `nil`. Then
-    /// the slots, in declaration order, each pair with the slot's own `=`:
-    /// `3` and `3.0` in one slot are equal, as they are anywhere. It keeps
+    /// The classes are compared first, with `==` sent to the receiver's
+    /// class: by `Behavior>>==`, two instances of one class, or of two
+    /// class objects equal by `Behavior>>=` -- one value's nested class
+    /// under two equal enclosing values -- and nothing else, so a value
+    /// never equals an object of another class, nor `nil`; a class side
+    /// that declares `==` of its own decides for itself. Then the slots,
+    /// in declaration order, each pair with the slot's own `=`: `3` and
+    /// `3.0` in one slot are equal, as they are anywhere. It keeps
     /// `Object>>=`'s contract wherever the slots' `=` keep it, and `hash`
     /// agrees. The numbers, Strings and Symbols decide their own `=`;
-    /// `true`, `false` and `nil` are compared here, each equal only to
-    /// itself. A receiver that holds no number although its class is a
-    /// number's -- `Fraction new`, an instance of a program's subclass of
-    /// `Number` -- lands here when its own `=` declines, and equals only
+    /// `true`, `false` and `nil` are compared here, each equal to itself
+    /// and to any other instance of its class -- `UndefinedObject new`,
+    /// `True new` -- since none of them has state, and to nothing else. A
+    /// receiver that holds no number although its class is a number's --
+    /// `Fraction new`, an instance of a program's subclass of `Number` --
+    /// lands here when its own `=` declines, and equals only
     /// an instance of its class whose slots are equal.
     ///
     /// @param other any object.
@@ -2162,7 +2166,8 @@ class Kernel vmMirror: mirror = Value (
     /// construction, and an instance of a value class is a value only once
     /// its factory has returned', naming the class, while the receiver is
     /// under construction, or `other` is and its class could be equal to
-    /// the receiver's -- an `other` of a class that cannot is unequal
+    /// the receiver's, as any class can where the receiver's class side
+    /// declares `==` -- an `other` of a class that cannot is unequal
     /// whatever its state, and answered `false` -- and likewise for each
     /// pair of slots the comparison reaches before it finds an unequal
     /// one, the receiver's slot in the receiver's part, but for a pair
@@ -2215,16 +2220,19 @@ class Kernel vmMirror: mirror = Value (
     /// makes equal hash alike whatever their slots' classes: a number slot
     /// hashes by its exact value, so `3` and `3.0` count alike. The class
     /// does not enter it, so instances of two classes with equal slots may
-    /// hash alike, which the contract allows. The leaf hashes every slot it
-    /// can by the rule of the slot's own class; where a slot's class
-    /// declares an `=` of its own it declines, as `=`'s leaf does on the
-    /// same values, and the answer is the slot count plus each slot's own
-    /// `hash` -- so a value whose slot's class declares `=` relies on that
-    /// class's `hash` agreeing with it. A value never changes, and neither
-    /// does its hash.
+    /// hash alike, which the contract allows. The answer is the slot count
+    /// plus each slot's own `hash`, whichever way it is computed: the leaf
+    /// hashes every slot it can by the rule of the slot's own class, and
+    /// where a slot's class declares an `=` of its own it declines, as
+    /// `=`'s leaf does on the same values, and the slots are sent `hash`
+    /// -- so a value whose slot's class declares `=` relies on that class's
+    /// `hash` agreeing with it. Only a value reaching more than 4096
+    /// objects is hashed by the ones it reaches first, so that a value
+    /// whose state reaches itself hashes too. A value never changes, and
+    /// neither does its hash.
     ///
-    /// @answers an Integer computed from the slots, alike for every two
-    /// values `=` makes equal.
+    /// @answers an Integer: the slot count plus the `hash` of every slot,
+    /// alike for every two values `=` makes equal.
     /// @signals Error 'cannot hash an instance of …: it is still under
     /// construction, and an instance of a value class is a value only once
     /// its factory has returned', naming the class, while the receiver or a
@@ -2987,8 +2995,9 @@ class Kernel vmMirror: mirror = Value (
 
     /// Hashes the receiver to a constant, unlike `false`'s.
     ///
-    /// `true` is equal only to itself (`Value>>=`), so any constant agrees
-    /// with `=`; its `identityHash` is this hash too.
+    /// `true` is equal only to an instance of `True`, none of which has
+    /// state (`Value>>=`), so any constant agrees with `=`; its
+    /// `identityHash` is this hash too.
     ///
     /// @answers 1.
     /// @see `Object>>hash`.
@@ -3108,8 +3117,9 @@ class Kernel vmMirror: mirror = Value (
 
     /// Hashes the receiver to a constant, unlike `true`'s.
     ///
-    /// `false` is equal only to itself (`Value>>=`), so any constant
-    /// agrees with `=`; its `identityHash` is this hash too.
+    /// `false` is equal only to an instance of `False`, none of which has
+    /// state (`Value>>=`), so any constant agrees with `=`; its
+    /// `identityHash` is this hash too.
     ///
     /// @answers 0.
     /// @see `Object>>hash`.

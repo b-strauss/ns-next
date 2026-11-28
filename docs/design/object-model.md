@@ -1082,13 +1082,35 @@ the instance will have):
   marks, which are no reason to refuse such a pair: the fallback's send
   decides, refusing or not as that `=` does
   (`goldens/library/value/a_slot_with_its_own_equality_is_compared_by_it_against_any_slot.ns`).
-  The lookup it makes for an instance is the one the walk made for it
-  anyway, handed on to `compare_node`. The walk answers whichever it
+  The classes are compared as `valueEquals:` compares them, by `==` sent
+  to the receiver's class: by `Behavior>>==`'s rule, unless that class's
+  class side declares `==` of its own, which a flag of its metaclass's
+  application says without a lookup (`LevelFacts::declares_identity`,
+  `Heap::class_side_declares_identity`); there the walk declines and
+  that `==` decides -- refusing a marked argument first, since
+  `valueEquals:` would go on to read its slots
+  (`goldens/library/value/a_class_side_identity_decides_whether_two_values_classes_are_equal.ns`).
+  It examines the slots in declaration order, each unfolded before the
+  next, and a class pair's enclosing objects and superclasses in
+  `behaviorEquals:`'s order, so that a refusal and an unequal pair are
+  met in the order that method meets them; and it finds `nil` equal to
+  `UndefinedObject new`, as `valueEquals:` does, neither having slots.
+  `the_leaves_answer_as_the_methods_they_stand_for_over_every_shape`
+  holds the walks to `valueEquals:`, `behaviorEquals:` and
+  `valueHashOfSlots` over every pair of every shape. The lookup it
+  makes for an instance is the one the walk made for it anyway, handed
+  on to `compare_node`. The walk answers whichever it
   meets first, a refusal, an unequal pair or such a decline, in its
   order. The hash leaf refuses its receiver and every marked object its
   walk hashes itself, since hashing reads state; it declines on the
   same slots the equality walk declines on, before answering any by its
-  shape, and `valueHashOfSlots` sends such a slot its own `hash`
+  shape, and `valueHashOfSlots` sends such a slot its own `hash`. What
+  it answers is what that method sums -- the slot count and each slot's
+  own hash, a number's its tower hash -- exactly, declining a sum past
+  the `SmallInteger` range, which that method answers as a
+  `LargeInteger`; only past its node budget does it answer the sum so
+  far, cut at the same node for two equal values, where that method would
+  not end on a value whose state reaches itself
   (`goldens/library/value/a_slot_under_construction_with_its_own_equality_is_compared_by_it.ns`).
   A refusal is an error, never a decline: a decline would run
   `valueEquals:` or `valueHashOfSlots`, which would compare or hash
