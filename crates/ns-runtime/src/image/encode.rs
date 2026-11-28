@@ -667,6 +667,10 @@ fn encode_instruction(
             writer.write_u16(*instance);
             writer.write_u16(*destination);
         }
+        Instruction::CompleteInstance { instance } => {
+            writer.write_u8(OPCODE_COMPLETE_INSTANCE);
+            writer.write_u16(*instance);
+        }
         Instruction::CheckAppliedClause { steps, selector } => {
             writer.write_u8(OPCODE_CHECK_APPLIED_CLAUSE);
             writer.write_u16(*steps);

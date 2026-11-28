@@ -393,6 +393,11 @@ fn every_instruction(block: &Rc<CompiledCode>) -> Vec<Sample> {
             &[("instance", Number(2)), ("destination", Number(1))],
         ),
         sample(
+            "CompleteInstance",
+            Instruction::CompleteInstance { instance: 2 },
+            &[("instance", Number(2))],
+        ),
+        sample(
             "CheckAppliedClause",
             Instruction::CheckAppliedClause { steps: 2, selector },
             &[("steps", Number(2)), ("selector", Text("with:with:"))],
@@ -648,6 +653,7 @@ fn the_books_wire_tags_are_the_encoders() {
         instruction("CheckAppliedClause", OPCODE_CHECK_APPLIED_CLAUSE),
         instruction("InitializeSuperclass", OPCODE_INITIALIZE_SUPERCLASS),
         instruction("InitializeAppliedLevel", OPCODE_INITIALIZE_APPLIED_LEVEL),
+        instruction("CompleteInstance", OPCODE_COMPLETE_INSTANCE),
         literal("Nil", LITERAL_NIL),
         literal("Boolean", LITERAL_BOOLEAN),
         literal("SmallInteger", LITERAL_SMALL_INTEGER),

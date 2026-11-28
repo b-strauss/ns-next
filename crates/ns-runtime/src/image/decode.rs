@@ -2408,6 +2408,7 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
             ..
         } => vec![*destination, *left, *right],
         Instruction::AllocateInstance { destination } => vec![*destination],
+        Instruction::CompleteInstance { instance } => vec![*instance],
         // Its arguments are the body's own, which `argument_count` names
         // and the body's register count was checked against.
         Instruction::InitializeInstance {
@@ -2919,6 +2920,9 @@ fn decode_instruction(
         }
         OPCODE_ALLOCATE_INSTANCE => Instruction::AllocateInstance {
             destination: reader.read_u16()?,
+        },
+        OPCODE_COMPLETE_INSTANCE => Instruction::CompleteInstance {
+            instance: reader.read_u16()?,
         },
         OPCODE_INITIALIZE_INSTANCE => {
             let instance = reader.read_u16()?;

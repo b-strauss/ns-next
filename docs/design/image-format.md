@@ -420,7 +420,7 @@ Instructions:
 - 42 `InitializeInstance`: a factory body's run of that class object's
   initializer on the instance, `instance` a `u16` and `destination` a `u16`.
   Its arguments are the running body's own argument registers, so it names
-  no list, and a factory body is three instructions whatever its arity.
+  no list, and a factory body is four instructions whatever its arity.
 - 43 `CheckAppliedClause`: §6.1's check of a `<:` clause, `steps` a `u16`
   and the selector as a send writes it.
 - 46 `SendLexical`: sends a message with an implicit receiver, the enclosing
@@ -444,9 +444,11 @@ Instructions:
 - 51 `InitializeAppliedLevel`: the own part of the level a `<:` clause adds
   `steps` above, `steps` a `u16`, the argument slots as a send writes them,
   and `destination` a `u16`.
+- 52 `CompleteInstance`: a factory body's completion, clearing the
+  under-construction mark of the instance in `instance`, a `u16`.
 
-An initializer body carries 43, 50 and 51 and a factory body 41 and 42, and
-the loader accepts all five in any body: a factory body never travels
+An initializer body carries 43, 50 and 51 and a factory body 41, 42 and
+52, and the loader accepts all six in any body: a factory body never travels
 (below), and what a crafted body can make disagree -- a receiver that is no
 class object, a level that is not there, an arity -- each instruction
 checks when it runs and raises an ordinary error for, never a panic
@@ -3210,7 +3212,7 @@ shipped world.
 - **A factory body is never on the wire, and an initializer frame names
   the body it runs by its kind** (`new` as compiled code, decided with the
   user on 2026-10-22; [object-model.md](object-model.md), "Instantiation").
-  A factory body is derived from the arity on load, three instructions for
+  A factory body is derived from the arity on load, four instructions for
   any arity, so an image can neither forge one nor amplify a two-byte arity
   into a body; a factory frame names its body by declaration. A row carries
   the code ids of all three initializer bodies and whether its declaration

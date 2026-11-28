@@ -13,7 +13,7 @@ mod image_structure;
 /// `instruction_name`. A new instruction adds an arm there, which the
 /// compiler demands, and raises this count beside it, which the tables'
 /// tests then hold their samples -- and so the book's rows -- to.
-pub(crate) const INSTRUCTION_KINDS: usize = 37;
+pub(crate) const INSTRUCTION_KINDS: usize = 38;
 
 /// The name of `instruction`'s kind, as the book's pages and rows give it.
 /// The match has no `_` arm, so that a new instruction must be named here.
@@ -53,6 +53,7 @@ pub(crate) fn instruction_name(instruction: &Instruction) -> &'static str {
         Instruction::IntegerBinary { .. } => "IntegerBinary",
         Instruction::AllocateInstance { .. } => "AllocateInstance",
         Instruction::InitializeInstance { .. } => "InitializeInstance",
+        Instruction::CompleteInstance { .. } => "CompleteInstance",
         Instruction::CheckAppliedClause { .. } => "CheckAppliedClause",
         Instruction::InitializeSuperclass { .. } => "InitializeSuperclass",
         Instruction::InitializeAppliedLevel { .. } => "InitializeAppliedLevel",

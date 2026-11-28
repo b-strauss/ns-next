@@ -696,7 +696,9 @@ impl<'gc> Mutator<'gc> {
     /// whose levels run no code, its answer written -- with the factory's
     /// program counter at `InitializeInstance`, as that send stores it.
     /// Answers the activation to run and where: the initializer from its
-    /// start, or the factory at its `Return`.
+    /// start, or the factory at its `CompleteInstance`, which the run loop
+    /// runs as it runs it after an initializer's return, so that the
+    /// instance is completed on either path.
     ///
     /// The run loop's order of errors is kept by not taking this path
     /// whenever one is raised: the initializer is decided first, which
@@ -746,7 +748,8 @@ impl<'gc> Mutator<'gc> {
         else {
             debug_assert!(!runs_code);
             // `InitializeInstance` answered the instance: written to its
-            // destination, and the factory carries on at its `Return`.
+            // destination, and the factory carries on at its
+            // `CompleteInstance`.
             self.heap
                 .set_register(register_base, registers.answer, instance);
             return Ok((factory, FACTORY_INITIALIZE + 1));
@@ -865,7 +868,7 @@ impl<'gc> Mutator<'gc> {
                 }),
             _ => self.allocate_refusing(class, |heap, class, slot_count, header| match header {
                 Some(header) => heap.allocate_instance_with(class, header, slot_count),
-                None => heap.allocate_instance(class, slot_count),
+                None => heap.allocate_factory_instance(class, slot_count),
             }),
         }
     }
@@ -1380,25 +1383,31 @@ pub(crate) struct FactoryRegisters {
 /// The registers of `code` when it is a factory body
 /// (`compiler::factory_body`) in its eight-byte form: `AllocateInstance`
 /// into the instance's register, `InitializeInstance` of it into the
-/// answer's, `Return` of the instance. `None` for every other body, which
-/// `Mutator::enter_factory_body` leaves to the run loop.
+/// answer's, `CompleteInstance` of it -- where the fast path's factory
+/// goes on -- and `Return` of the instance. `None` for every other body,
+/// which `Mutator::enter_factory_body` leaves to the run loop.
 pub(crate) fn factory_registers(code: &crate::bytecode::CompiledCode) -> Option<FactoryRegisters> {
     use crate::bytecode::CompactInstruction;
-    if code.instruction_count() != 3 {
+    if code.instruction_count() != 4 {
         return None;
     }
-    match (code.slot(0), code.slot(1), code.slot(2)) {
+    match (code.slot(0), code.slot(1), code.slot(2), code.slot(3)) {
         (
             CompactInstruction::AllocateInstance { destination },
             CompactInstruction::InitializeInstance {
                 destination: answer,
                 instance,
             },
+            CompactInstruction::CompleteInstance {
+                instance: completed,
+            },
             CompactInstruction::Return { register },
-        ) if instance == destination && register == destination => Some(FactoryRegisters {
-            instance: u16::from(instance),
-            answer: u16::from(answer),
-        }),
+        ) if instance == destination && completed == destination && register == destination => {
+            Some(FactoryRegisters {
+                instance: u16::from(instance),
+                answer: u16::from(answer),
+            })
+        }
         _ => None,
     }
 }

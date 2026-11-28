@@ -175,7 +175,8 @@ The primary factory of *class*
    clause that a host built past the resolver -- signal it, as
    `cannot instantiate C: ` and its reason; nothing is made.
 3. Let *o* be a new object of *class*, every slot of it and of its
-   superclasses `nil`.
+   superclasses `nil`. If *class* inherits from `Value`, *o* is marked
+   under construction.
 4. Run *class*'s initializer on *o* with *arguments*, which runs, in
    this order, the superclass clause's message, the superclass's
    initializer on *o*, each `<:` clause's message and its level's
@@ -186,7 +187,10 @@ The primary factory of *class*
    factory's signals `the superclass clause of class C sends #s, but the
    primary factory of class B is #t` (or `a mixin application clause of
    class C sends`...).
-5. Answer *o*.
+5. Clear *o*'s mark, if it carries one, and answer *o*. A run of the
+   initializer that does not return -- an unwind past it, a signal it
+   does not handle -- never reaches this step, and *o* stays marked for
+   good; storing *o* while it is marked is allowed.
 
 ### SlotRead(object, slot) and SlotWrite(object, slot, value)
 

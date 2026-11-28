@@ -193,7 +193,8 @@ impl InlineCaches {
                         | Instruction::BranchIfTrue { .. }
                         | Instruction::IntegerBinary { .. }
                         | Instruction::AllocateInstance { .. }
-                        | Instruction::InitializeInstance { .. } => continue,
+                        | Instruction::InitializeInstance { .. }
+                        | Instruction::CompleteInstance { .. } => continue,
                     };
                     let (Some(site), Some((selector, _))) =
                         (instruction.call_site(), instruction.sent_message())

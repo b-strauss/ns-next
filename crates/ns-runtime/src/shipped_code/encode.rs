@@ -767,8 +767,12 @@ impl Out {
                 self.u16(*instance);
                 self.u16(*destination);
             }
-            Instruction::CheckAppliedClause { steps, selector } => {
+            Instruction::CompleteInstance { instance } => {
                 self.u8(34);
+                self.u16(*instance);
+            }
+            Instruction::CheckAppliedClause { steps, selector } => {
+                self.u8(35);
                 self.u16(*steps);
                 self.symbol(*selector);
             }
@@ -779,7 +783,7 @@ impl Out {
                 argument_sources,
                 destination,
             } => {
-                self.u8(35);
+                self.u8(36);
                 self.u16(*steps);
                 self.symbol(*selector);
                 self.u16(*argument_base);
@@ -792,7 +796,7 @@ impl Out {
                 argument_sources,
                 destination,
             } => {
-                self.u8(36);
+                self.u8(37);
                 self.u16(*steps);
                 self.u16(*argument_base);
                 self.registers(argument_sources);

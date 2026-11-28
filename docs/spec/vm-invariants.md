@@ -665,13 +665,29 @@ Protects:
 r[vm.heap.precomputed-header-matches]
 A header precomputed for an allocation -- an application's instance
 header, the closure, frame and boxed float guards -- carries the guard a
-lookup of the object's class would answer; an application's dispatch id
-and slot count never change after it is registered, and the class word
-is read from the class object at every allocation.
+lookup of the object's class would answer, and an application's instance
+header carries the under-construction mark exactly when the application
+inherits from `Value`; an application's dispatch id, slot count and
+inheritance of `Value` never change after it is registered, and the
+class word is read from the class object at every allocation.
 
 Protects: [`runtime.instantiate`](runtime.md#r-runtime.instantiate),
 [`runtime.send`](runtime.md#r-runtime.send),
 [`semantics.class.per-enclosing-object`](language/semantics.md#r-semantics.class.per-enclosing-object)
+
+r[vm.heap.under-construction-only-on-value-instances]
+The under-construction mark is set only on an ordinary instance -- the
+format of an object of fixed pointer fields -- of a class that inherits
+from `Value`, by its factory's allocation, and cleared only by its
+factory's completion; no other allocation sets it, and an object of any
+other format never reads as marked. The mark shares its header bit with
+a large integer's sign, so a mark set or cleared on another format would
+change the integer's value, and a sign read as a mark would make a large
+integer look unfinished.
+
+Protects: [`runtime.instantiate`](runtime.md#r-runtime.instantiate),
+[`bytecode.instruction.complete-instance`](bytecode.md#r-bytecode.instruction.complete-instance),
+[`semantics.literal.integer`](language/semantics.md#r-semantics.literal.integer)
 
 r[vm.heap.value-tags]
 A value is one word whose low three bits say what it is -- a handle, a
@@ -3047,7 +3063,7 @@ rules whose breach it finds.
 | block bound check | debug | Every object access through a handle checks the header -- refusing a forwarded or free format -- and that the index ends where the header's word count says. | `vm.heap.no-forwarder-reached`, `vm.heap.objects-never-grow`, `vm.heap.access-within-object` |
 | old fill check | debug | The image decoder checks at every placeholder fill that the stored word names an old object. | `vm.heap.old-allocations-born-remembered`, `vm.image.nothing-collects-while-placeholders` |
 | new object poison check | debug | No word of a newly allocated closure, frame or boxed float may still be the nursery's poison when it is first read. | `vm.heap.allocation-initialized-before-read` |
-| precomputed guard check | debug | Each precomputed allocation header's guard is compared with the one a lookup of the object's class answers. | `vm.heap.precomputed-header-matches` |
+| precomputed guard check | debug | Each precomputed allocation header's guard is compared with the one a lookup of the object's class answers, and an instance header's under-construction mark with whether its class inherits from `Value`; setting the mark asserts the object is an ordinary instance. | `vm.heap.precomputed-header-matches`, `vm.heap.under-construction-only-on-value-instances` |
 | dispatch id recomputation | debug | Every read of an object's dispatch id recomputes it from the object's class and asserts that the header agrees. | `vm.dispatch.header-guard-stamped`, `vm.dispatch.reserved-guards`, `vm.image.code-runs-after-stamping` |
 | level facts check | debug | Registering an application checks its level facts and application row against its mixin. | `vm.dispatch.level-facts-agree`, `vm.machine.application-id-table` |
 | byte array alignment check | debug | Every reader of a byte array's data asserts the data begin at the block's 32-byte alignment. | `vm.heap.every-mover-realigns` |

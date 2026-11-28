@@ -74,20 +74,21 @@ fn the_instantiation_instructions_keep_their_numbers() {
     assert_eq!(OPCODE_CHECK_APPLIED_CLAUSE, 43);
     assert_eq!(OPCODE_INITIALIZE_SUPERCLASS, 50);
     assert_eq!(OPCODE_INITIALIZE_APPLIED_LEVEL, 51);
+    assert_eq!(OPCODE_COMPLETE_INSTANCE, 52);
 }
 
 /// The instruction section's "next free number" comment is where the next
 /// instruction takes its tag from, so it moves with every new one.
 // spec: bytecode.wire.tag-assigned-once
 #[test]
-fn the_next_free_instruction_tag_is_fifty_two() {
+fn the_next_free_instruction_tag_is_fifty_three() {
     // Line by line, so a checkout with CRLF line endings reads it too.
     let source = include_str!("../src/image/opcodes.rs");
     assert!(
         source
             .lines()
-            .any(|line| line == "// Next free number: 52."),
-        "image/opcodes.rs names 52 as the next free instruction tag"
+            .any(|line| line == "// Next free number: 53."),
+        "image/opcodes.rs names 53 as the next free instruction tag"
     );
 }
 

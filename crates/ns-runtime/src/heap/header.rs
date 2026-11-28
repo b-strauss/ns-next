@@ -1,8 +1,12 @@
 //! The header word every object begins with, in road step 3's layout
 //! (`docs/design/object-model.md`): bits 0-21 the dispatch guard, 22-26 the
 //! format, 27-30 the age, 31 the remembered bit, 32 a `LargeInteger`'s
-//! negative bit, 33 the mark bit, 34-55 the identity hash and 56-63 the
-//! number of words after the header (255: the count is in an overflow word).
+//! negative bit or an ordinary instance's under-construction mark, 33 the
+//! mark bit, 34-55 the identity hash and 56-63 the number of words after
+//! the header (255: the count is in an overflow word). Bit 32 is shared
+//! because its two meanings never meet: a `LargeInteger` is
+//! `SixtyFourBit`, an instance of a value class `FixedPointers`, and each
+//! reader asks the format first.
 //! The collector sets the mark bit while a collection runs and clears it as
 //! it compacts, so that outside a collection no object is marked. The age
 //! and the remembered bit belong to the generational collector and are
@@ -23,6 +27,10 @@ pub(super) const REMEMBERED_BIT: u64 = 1 << 31;
 /// tenured at its next scavenge whatever the threshold says.
 pub(super) const MAX_AGE: u8 = 15;
 const NEGATIVE_BIT: u64 = 1 << 32;
+/// An instance of a value class whose factory has not returned: the sign's
+/// bit, read only for a `FixedPointers` object. Machine code's completion
+/// clears it (`Heap::machine_layout`).
+pub(super) const UNDER_CONSTRUCTION_BIT: u64 = NEGATIVE_BIT;
 const MARK_BIT: u64 = 1 << 33;
 const HASH_SHIFT: u32 = 34;
 const HASH_MASK: u64 = (IDENTITY_HASH_LIMIT as u64) - 1;
@@ -248,6 +256,22 @@ impl Header {
         }
     }
 
+    /// Whether this ordinary instance of a value class is still under
+    /// construction: set by its factory's allocation, cleared by its
+    /// `CompleteInstance`. Meaningful only for `Format::FixedPointers`, whose
+    /// bit 32 no sign uses; `Heap::object_under_construction` asks the format.
+    pub(super) fn under_construction(self) -> bool {
+        self.0 & UNDER_CONSTRUCTION_BIT != 0
+    }
+
+    pub(super) fn with_under_construction(self, under_construction: bool) -> Header {
+        if under_construction {
+            Header(self.0 | UNDER_CONSTRUCTION_BIT)
+        } else {
+            Header(self.0 & !UNDER_CONSTRUCTION_BIT)
+        }
+    }
+
     /// Whether the running collection has reached this object; clear
     /// outside a collection.
     pub(super) fn marked(self) -> bool {
@@ -309,6 +333,21 @@ mod tests {
         assert_eq!(header.word_count(), 254);
         assert_eq!(header.identity_hash(), IDENTITY_HASH_LIMIT - 1);
         assert!(header.negative());
+        // An instance's mark shares the sign's bit, which only a
+        // `LargeInteger` reads, and disturbs no other field either.
+        let instance = Header::new(guard, Format::FixedPointers, 0, 254)
+            .with_identity_hash(IDENTITY_HASH_LIMIT - 1)
+            .with_under_construction(true);
+        assert!(instance.under_construction());
+        assert_eq!(instance.guard(), guard);
+        assert_eq!(instance.format(), Format::FixedPointers);
+        assert_eq!(instance.word_count(), 254);
+        assert_eq!(instance.identity_hash(), IDENTITY_HASH_LIMIT - 1);
+        assert!(!instance.marked());
+        assert!(!instance.remembered());
+        let completed = instance.with_under_construction(false);
+        assert!(!completed.under_construction());
+        assert_eq!(completed.0, instance.0 & !(1 << 32));
         let aligned = Header::new(guard, Format::AlignedBytes, 7, 12);
         assert_eq!(aligned.format(), Format::AlignedBytes);
         assert_eq!(aligned.unused(), 7);

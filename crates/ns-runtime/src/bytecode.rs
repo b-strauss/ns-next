@@ -458,6 +458,18 @@ pub enum Instruction {
         instance: u16,
         destination: u16,
     },
+    /// A factory body's completion: clears the under-construction mark the
+    /// allocation set on the instance in `instance`, once its initializer
+    /// has returned normally, so that an instance of a value class becomes
+    /// a value only then. On a value that carries no mark it does nothing,
+    /// so that a crafted body can at most complete an instance early, never
+    /// mark one.
+    ///
+    /// Reads only a register of the activation executing it and writes
+    /// none, so its `outer_reach_of` reach is 0.
+    CompleteInstance {
+        instance: u16,
+    },
     /// §6.1's check for a `<:` clause: the level the clause adds, `steps`
     /// above the activation's class, has a primary factory of `selector`.
     /// Writes no register.
@@ -1261,6 +1273,7 @@ impl Instruction {
             | Instruction::BranchIfTrue { .. }
             | Instruction::IntegerBinary { .. }
             | Instruction::AllocateInstance { .. }
+            | Instruction::CompleteInstance { .. }
             | Instruction::InitializeInstance { .. } => None,
         }
     }
@@ -1335,6 +1348,7 @@ impl Instruction {
             | Instruction::BranchIfTrue { .. }
             | Instruction::IntegerBinary { .. }
             | Instruction::AllocateInstance { .. }
+            | Instruction::CompleteInstance { .. }
             | Instruction::InitializeInstance { .. }
             | Instruction::CheckAppliedClause { .. } => None,
         }
@@ -1471,6 +1485,7 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             | Instruction::BranchIfTrue { .. }
             | Instruction::IntegerBinary { .. }
             | Instruction::AllocateInstance { .. }
+            | Instruction::CompleteInstance { .. }
             | Instruction::InitializeInstance { .. }
             | Instruction::CheckAppliedClause { .. }
             | Instruction::InitializeSuperclass { .. }
@@ -1546,7 +1561,8 @@ pub(crate) fn registers_read(instruction: &Instruction) -> impl Iterator<Item = 
         // The values a converted closure is handed are read out of this
         // frame when the closure is made.
         Instruction::MakeClosure { copied, .. } => ([None, None], copied),
-        Instruction::InitializeInstance { instance, .. } => ([Some(*instance), None], &[]),
+        Instruction::InitializeInstance { instance, .. }
+        | Instruction::CompleteInstance { instance } => ([Some(*instance), None], &[]),
         Instruction::LoadVector { vector, .. } => ([Some(*vector), None], &[]),
         Instruction::StoreVector { vector, source, .. } => ([Some(*vector), Some(*source)], &[]),
         Instruction::IntegerBinary { left, right, .. } => ([Some(*left), Some(*right)], &[]),
@@ -1609,6 +1625,7 @@ pub(crate) fn register_written(instruction: &Instruction) -> Option<u16> {
         | Instruction::InitializeSlotProvisionally { .. }
         | Instruction::ReturnSlotIfFilled { .. }
         | Instruction::CheckAppliedClause { .. }
+        | Instruction::CompleteInstance { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
         | Instruction::NonLocalReturn { .. }
@@ -1663,6 +1680,7 @@ pub(crate) fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::NonLocalReturn { .. }
         | Instruction::SignalNonBoolean { .. }
         | Instruction::AllocateInstance { .. }
+        | Instruction::CompleteInstance { .. }
         | Instruction::InitializeInstance { .. }
         | Instruction::CheckAppliedClause { .. }
         | Instruction::InitializeSuperclass { .. }
@@ -1804,6 +1822,7 @@ pub(crate) fn addresses_own_slots_of(instructions: &[Instruction]) -> bool {
         | Instruction::BranchIfTrue { .. }
         | Instruction::IntegerBinary { .. }
         | Instruction::AllocateInstance { .. }
+        | Instruction::CompleteInstance { .. }
         | Instruction::InitializeInstance { .. }
         | Instruction::CheckAppliedClause { .. }
         | Instruction::InitializeSuperclass { .. }
@@ -2144,6 +2163,7 @@ fn format_instruction(instruction: &Instruction) -> String {
             instance,
             destination,
         } => format!("InitializeInstance r{destination} <- r{instance} (arguments)"),
+        Instruction::CompleteInstance { instance } => format!("CompleteInstance r{instance}"),
         Instruction::CheckAppliedClause { steps, selector } => {
             format!("CheckAppliedClause steps {steps} #{selector}")
         }
@@ -2458,6 +2478,10 @@ mod tests {
                     destination: 3,
                 },
                 "InitializeInstance r3 <- r2 (arguments)",
+            ),
+            (
+                Instruction::CompleteInstance { instance: 2 },
+                "CompleteInstance r2",
             ),
             (
                 Instruction::CheckAppliedClause {

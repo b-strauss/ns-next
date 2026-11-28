@@ -253,3 +253,60 @@ fn a_value_class_over_a_non_value_enclosing_object_is_created_but_not_instantiat
          its enclosing object, an instance of Root, is not one"
     );
 }
+
+/// An instance of a value class carries its under-construction mark from its
+/// allocation until its factory returns: a completed value has lost it, an
+/// instance whose initializer escaped it and was then cut short by a caught
+/// signal keeps it, and an object of any other format never reads as marked,
+/// not even a `LargeInteger` whose sign shares the header's bit. The last
+/// point is made in a loop long enough for its factory to run as machine
+/// code, whose allocation and completion must agree with the interpreter's.
+// spec: runtime.instantiate
+// spec: vm.heap.under-construction-only-on-value-instances
+#[test]
+fn a_value_is_marked_only_until_its_factory_returns() {
+    let source = indoc! {"
+        class Probe = Value () (
+          class Point x: ax box: box fail: block = Value (
+            | public x = box at: 1 put: self. public y = block value. |
+          ) ()
+          public answer = (
+            | box completed last |
+            completed:: Point x: 1 box: (Array new: 1) fail: [2].
+            box:: Array new: 1.
+            [Point x: 1 box: box fail: [Error signal: 'stop']] on: Error do: [:error | nil].
+            1 to: 100 do: [:index | last:: Point x: index box: (Array new: 1) fail: [index]].
+            ^{completed. box at: 1. Array new: 2. -1267650600228229401496703205376. last}
+          )
+        )
+    "};
+    let (mut interpreter, class, _resolved) = load(source);
+    let probe = expect_ok(interpreter.instantiate(&class, &[]), "Probe new");
+    let answer = expect_ok(
+        interpreter.send(&probe, Symbol::intern("answer"), &[]),
+        "Probe answer",
+    );
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let array = mutator
+            .fetch(&answer)
+            .as_object()
+            .expect("the answer is an Array");
+        let marks: Vec<bool> = (0..5)
+            .map(|index| {
+                let element = heap
+                    .array_element(array, index)
+                    .and_then(|element| element.as_object())
+                    .expect("every element is an object");
+                heap.object_under_construction(element)
+            })
+            .collect();
+        assert_eq!(marks, [false, true, false, false, false]);
+        let large = heap
+            .array_element(array, 3)
+            .and_then(|element| element.as_object())
+            .and_then(|element| heap.large_integer(element))
+            .expect("the last element is a LargeInteger");
+        assert!(large.is_negative(), "its sign bit is set");
+    });
+}

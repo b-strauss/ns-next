@@ -3627,10 +3627,17 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
 ### The headers precomputed
 
 - **An ordinary instance's header is on its `MixinApplication`**
-  (`instance_header`, an `InstanceHeader`): its guard, `FixedPointers`
-  and its word count, computed by `Heap::register_application` from the
-  row's `dispatch_ids` and `slot_count`, which never change after it (an
-  edit makes a new row); `None` when the count does not fit the header.
+  (`instance_header`, an `InstanceHeader`): its guard, `FixedPointers`,
+  its word count and, for an application that inherits `Value`, the
+  under-construction mark, computed by `Heap::register_application` from
+  the row's `dispatch_ids`, `slot_count` and `inherits_value`, which never
+  change after it (an edit makes a new row); `None` when the count does
+  not fit the header. So the interpreter's allocation and machine code's
+  (`MacroAssembler::load_instance_header`) mark an instance of a value
+  class without a test of their own; the one path without the header, a
+  count past the header's, marks it in `Heap::allocate_factory_instance`.
+  Only a factory's allocation marks: a migration's, a kernel instance's
+  and a future's go through `Heap::allocate_instance`, which never does.
   The class word comes from the class object at every allocation, since a
   class object is per enclosing instance. The factory body's allocation
   (`instantiate::allocate_for_factory`) reads the header beside the
@@ -3647,7 +3654,8 @@ Cogit's `genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
   object: a closure's fixed fields and its copied values, a frame's fixed
   fields and its body's register count, a float's two words. A debug
   build asserts that each precomputed guard is the one
-  `Heap::header_dispatch_id` would have looked up
+  `Heap::header_dispatch_id` would have looked up, and an instance
+  header's mark whether its class inherits `Value`
   (`r[vm.heap.precomputed-header-matches]`).
 - **What the fast path writes**
   (`r[vm.heap.allocation-initialized-before-read]`): the header word and

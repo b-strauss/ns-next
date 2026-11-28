@@ -19,7 +19,8 @@
 //! said.
 
 // Instructions, numbered in the order `bytecode::Instruction` declares them,
-// except the four sends and the two initializer invocations. The sends were
+// except the four sends, the two initializer invocations and
+// `CompleteInstance`, which came after them. The sends were
 // retired at 7-10 (see `RETIRED_OPCODES`) once their call site widened from
 // a `u16` instruction index to a `u32` family number, reassigned to 21-24,
 // then retired a second time and reassigned at 25-28 once the number
@@ -30,7 +31,7 @@
 // (46-51). `MakeClosure` is retired at 11 and reassigned to 29 for the same
 // reason: closure conversion gave it a list of copied registers, so its old
 // bytes describe a different instruction.
-// Next free number: 52.
+// Next free number: 53.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -136,6 +137,10 @@ pub const OPCODE_INITIALIZE_SUPERCLASS: u8 = 50;
 /// An initializer's run of the own part of a level a `<:` clause adds
 /// (`Instruction::InitializeAppliedLevel`).
 pub const OPCODE_INITIALIZE_APPLIED_LEVEL: u8 = 51;
+/// A factory body's completion: the under-construction mark the
+/// allocation set cleared once the initializer returned
+/// (`Instruction::CompleteInstance`).
+pub const OPCODE_COMPLETE_INSTANCE: u8 = 52;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

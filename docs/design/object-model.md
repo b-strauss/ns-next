@@ -649,7 +649,9 @@ Sending the factory message to a class object then does this
 
 1. **One** instance `o` is allocated — distinct identity, every slot declared by
    the class and its superclasses initially nil. There is no separate instance
-   per inheritance level; `o` is threaded through every step below.
+   per inheritance level; `o` is threaded through every step below. An
+   instance of a class that inherits `Value` is marked under construction
+   (the header's bit 32, "The header word" below).
 2. An instance-initializer activation `i` of the class's own level is
    created, with the factory message's arguments.
 3. In the context of `i`, the superclass clause's message is evaluated, and
@@ -660,7 +662,10 @@ Sending the factory message to a class object then does this
 4. Once the chain above has run, this class's own slot clauses execute on `o`, in
    declaration order.
 5. This class's own initializer expressions execute on `o`.
-6. `i` returns to the factory method, which returns `o` to the caller.
+6. `i` returns to the factory method, which clears `o`'s mark
+   (`CompleteInstance`) and returns `o` to the caller. An initializer that
+   never returns -- an unwind past it, a signal it does not handle --
+   leaves `o` marked for good; storing `o` while it is marked is allowed.
 
 Step 3 is why a class body has no access to the factory's actual parameters
 except through slots explicitly extracted in the initializer: only `i` sees them.
@@ -677,12 +682,13 @@ initializer`…`: args. ^o`, `Newspeak2SqueakCompilation.ns:1991-2025`;
 SOMns's `MixinBuilder.assemblePrimaryFactoryMethod`, `MixinBuilder.java:547-600`;
 Primordial Soup's `Newspeak2PrimordialSoupCompilation.ns:1907-1961`).
 The factory entry of the metaclass mixin ("Class sides and metaclasses"
-below) carries `compiler::factory_body` of its arity, three instructions
+below) carries `compiler::factory_body` of its arity, four instructions
 ([compiler.md](compiler.md), "The three initializer bodies"): step 1,
 `AllocateInstance` on the class object the factory was sent to; step 2,
 `InitializeInstance`, the initializer of that class object's own level on
-the new instance with the factory's own arguments; and the return of the
-instance, whose initializer's answer is not used. So `Foo new` is an
+the new instance with the factory's own arguments; `CompleteInstance`,
+which clears the instance's under-construction mark; and the return of
+the instance, whose initializer's answer is not used. So `Foo new` is an
 ordinary send that the lookup and the inline caches answer
 ([dispatch.md](dispatch.md), "Resolve, then act"), and a factory activation
 (`Step::Factory`, `FrameKind::Factory`) like any method's, which a JIT can
@@ -2239,7 +2245,7 @@ the lock bits into one 64-bit word:
 | 22-26 | the format |
 | 27-30 | the age: the scavenges a young object has survived, at most 15; 0 for a new object and meaningless for an old one ([memory.md](memory.md), "The age table and the tenuring threshold") |
 | 31 | the remembered bit: set on an old object in the remembered set, never on a young one ([memory.md](memory.md), "The remembered set and its limit") |
-| 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
+| 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`); in an ordinary instance (`FixedPointers`), the under-construction mark of an instance of a value class, set by its factory's allocation and cleared by its `CompleteInstance` (`Heap::object_under_construction`, `r[vm.heap.under-construction-only-on-value-instances]`) -- the two meanings share the bit because no object has both formats, and every reader asks the format first |
 | 33 | the mark bit, set while a collection runs and cleared as compaction moves the object ([memory.md](memory.md), "Marking") |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
 | 56-63 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header |

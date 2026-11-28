@@ -1405,7 +1405,7 @@ ns-runtime::opcode_tags retired_object_body_tags_are_refused
 ns-runtime::opcode_tags slot_kind_tags_are_fixed
 ns-runtime::opcode_tags the_instantiation_instructions_keep_their_numbers
 ns-runtime::opcode_tags the_integer_binary_opcode_keeps_its_tag
-ns-runtime::opcode_tags the_next_free_instruction_tag_is_fifty_two
+ns-runtime::opcode_tags the_next_free_instruction_tag_is_fifty_three
 ns-runtime::opcode_tags the_non_boolean_signal_keeps_its_number
 ns-runtime::opcode_tags the_simultaneous_slot_instructions_keep_their_numbers
 ns-runtime::reach_wiring every_interpreter_is_built_after_its_record

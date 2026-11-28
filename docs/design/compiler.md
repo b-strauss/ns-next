@@ -176,6 +176,10 @@ assignment's value.
 - `InitializeInstance { instance, destination }` — a factory body's run of
   that class object's own level's initializer on `instance`, with the
   body's own arguments.
+- `CompleteInstance { instance }` — a factory body's completion: clears
+  the under-construction mark the allocation set on an instance of a
+  value class, once the initializer has returned; on anything else it
+  does nothing.
 - `CheckAppliedClause { steps, selector }` — §6.1's check of a `<:` clause
   against the primary factory of the class it named, whose level is
   `steps` above the running initializer's.
@@ -376,12 +380,14 @@ used.
 
 **A factory's body is synthesized, not lowered**
 (`r[vm.compiler.factory-body-synthesized]`). `compiler::factory_body`
-of the factory's arity is three instructions whatever the arity: it
+of the factory's arity is four instructions whatever the arity: it
 allocates an instance of the class object the factory was sent to
 (`AllocateInstance`), runs that class's initializer on it with the
 factory's own arguments, the body's argument registers, so it names no
-list (`InitializeInstance`), and returns the instance (`Return`), not the
-initializer's answer. It depends on nothing but the arity, and needs no
+list (`InitializeInstance`), completes it (`CompleteInstance`), which an
+initializer cut short by an unwind or a signal never reaches, so that an
+instance of a value class stays marked under construction for good, and
+returns the instance (`Return`), not the initializer's answer. It depends on nothing but the arity, and needs no
 AST and no resolver; `mixin::factory_entry` attaches it to every factory
 entry, so no image carries one and none can forge one, and the reference
 lowering has no shape of its own to check here. A host's `Interpreter::instantiate` runs `factory_body` of its
