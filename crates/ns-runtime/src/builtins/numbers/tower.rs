@@ -72,8 +72,9 @@ impl Operand {
 /// new` and a `LargeInteger new` among them.
 ///
 /// Inlined, so that a value that is no object -- `nil`, a Boolean, a
-/// Character -- is refused without a call: value equality asks this of
-/// both sides of every `nil == anObject`.
+/// Character -- is refused without a call: value equality's walk asks
+/// this of the receiver's side of every pair it examines, a slot's
+/// `nil = anObject` among them.
 #[inline(always)]
 pub(crate) fn operand<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Operand> {
     match value.kind() {

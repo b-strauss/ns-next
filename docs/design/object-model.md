@@ -1055,8 +1055,11 @@ kind has the same answer before and after the factory returns, so
 answering it reveals nothing of the partial state and withholds nothing
 the instance will have):
 
-- **`=` and `hash`**, and through them `==` and `identityHash`, which
-  `Value` declares as `=` and `hash`. The equality leaf
+- **`Value`'s own `=` and `hash`**, the derived ones, and through them
+  `==` and `identityHash`, which `Value` declares as `=` and `hash`. A
+  value class that declares an `=` or a `hash` of its own replaces the
+  derived one, its refusal included, and decides for itself; its `==` and
+  `identityHash` follow it. The equality leaf
   (`builtins/value.rs`) refuses a marked receiver before anything else --
   the numeric tower and the classes included. A marked argument is
   answered `false` where the walk's class comparison finds that the two

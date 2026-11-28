@@ -9064,16 +9064,19 @@ new instruction `CompleteInstance`, after the initializer has returned,
 clears it. A construction cut short by an unwind or an unhandled signal
 never reaches it, so an instance it handed out stays under construction
 while its class inherits from `Value`. While marked, it answers no
-question whose answer depends on its state: `=`, `hash`, `==`,
-`identityHash` and `objectIsValue:` sent to it signal an `Error` naming
-the question and its class -- `cannot compare an instance of Point: it is
-still under construction, …` -- so an `Ephemeron`'s `key:` and a
-`WeakMap`'s `at:put:` refuse it without a check of their own; a question
+question whose answer depends on its state: `Value`'s own `=` and
+`hash`, the derived ones, `==` and `identityHash` through them, and
+`objectIsValue:` sent to it signal an `Error` naming the question and
+its class -- `cannot compare an instance of Point: it is still under
+construction, …` -- so an `Ephemeron`'s `key:` and a `WeakMap`'s
+`at:put:` refuse it without a check of their own, while a value class
+that declares its own `=` or `hash` decides for itself; a question
 whose answer is fixed whatever its state is answered, so `nil = aPoint`
 and `3 = aPoint` answer `false`, while a `Point` compared with it
 signals (both decided with the user on 2026-11-28); storing it and
-using it as an enclosing object stay allowed, so a value module builds its nested values and two values can
-reach each other. An image carries the mark as object-body tag 17,
+using it as an enclosing object stay allowed, so a value module builds
+its nested values and two values can reach each other. An image
+carries the mark as object-body tag 17,
 `instance-under-construction`, refused for a class that does not inherit
 `Value`; the install's migration keeps it and clears it where the class
 is re-parented off `Value`. Fourteen goldens under `goldens/library/value/`
@@ -9087,8 +9090,9 @@ instance under construction, measured Richards 3% slower in each of
 three layouts, by its 366,000 `nil == anObject` a run; `Value>>=`'s
 leaf now answers a pair whose receiver is `nil`, `true` or `false` by
 identity before the walk, and Richards runs about 22% faster than
-before the branch ([core-library.md](design/core-library.md), "`nil`,
-`true` and `false` are answered by identity").
+before the branch, both figures from one pinned build per layout
+([core-library.md](design/core-library.md), "`nil`, `true` and `false`
+are answered by identity").
 
 - `62ec3fef` -- the plan.
 - `cc798968` -- the mark and `CompleteInstance`.

@@ -77,8 +77,10 @@ use crate::{Mutator, Symbol};
 /// below 2^16, so a sum of this many stays far inside an `i64`.
 const NODE_BUDGET: usize = 4096;
 
-/// `nil`'s hash. `UndefinedObject` is a singleton below `Value`, so any constant will
-/// do; 0 is the one `Object`'s identity hash already answered for it.
+/// `nil`'s hash. Nothing but `nil` is equal to `nil` -- another instance of
+/// `UndefinedObject` is a heap object the walk finds unequal to it -- so
+/// any constant will do; 0 is the one `Object`'s identity hash already
+/// answered for it.
 const NIL_HASH: i64 = 0;
 
 pub(crate) fn execute<'gc>(
@@ -91,14 +93,12 @@ pub(crate) fn execute<'gc>(
     match primitive {
         ValuePrimitive::SameAs => {
             let other = arguments.first(&mutator.heap)?;
-            // `nil`, `true` and `false` are each the one instance of a class
-            // no other class can be equal to, and never under construction,
-            // so their pair is decided by identity -- what the walk's class
-            // test answers -- without the walk. It is the common pair: every
-            // `nil == anObject` (`Value>>==`), 366,000 a run of Richards,
-            // whose cost the walk's tests for an instance under construction
-            // raised 3% in three layouts.
-            let equal = if let Some(constant) = constant_identity(receiver, other) {
+            // A pair whose receiver is `nil`, `true` or `false` is decided
+            // by identity before the walk, as the walk would decide it
+            // (`constant_identity` says why the two agree), because it is
+            // the commonest pair: every `nil == anObject` (`Value>>==`),
+            // 366,000 a run of Richards.
+            let equal = if let Some(constant) = constant_identity(mutator, receiver, other) {
                 constant
             } else {
                 // A refusal, never a decline: `valueEquals:` would compare
@@ -418,17 +418,45 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
 }
 
 /// Whether `receiver` is `other`, when `receiver` is `nil`, `true` or
-/// `false`; `None` for every other receiver. Each of the three is the
-/// only instance of its class, a class of the kernel no other class can be
-/// equal to, so it equals exactly itself: `derived_equality` answers the
-/// same, by its class test or by comparing the two as leaves.
-fn constant_identity<'gc>(receiver: Value<'gc>, other: Value<'gc>) -> Option<bool> {
-    if receiver.is_nil() {
-        return Some(other.is_nil());
+/// `false`, exactly as `derived_equality` answers it; `None` for every
+/// other receiver, and for an argument the walk has to see.
+///
+/// Each of the three is an immediate, never under construction, of a
+/// kernel class no other class can be equal to. Its class has other
+/// instances -- `UndefinedObject new` and `True new` answer heap objects --
+/// so identity is the walk's answer not because the immediate is alone in
+/// its class but because the walk finds every other instance unequal to
+/// it, an immediate and a heap object being leaves of different shapes,
+/// and every object of another class unequal by its class test. The one
+/// argument for which the walk answers otherwise is an instance under
+/// construction of a class that could be equal, which it refuses. Every
+/// argument whose header carries the mark's bit is therefore left to the
+/// walk, which answers it exactly: the test touches nothing for an
+/// immediate argument and one bit of the header word for a heap one, such
+/// as the packet of `nil == aPacket`. The bit alone, not the format the
+/// mark also asks for, because it is the cheaper test and still exact: a
+/// negative `LargeInteger`, whose sign the bit is, goes to the walk too,
+/// which answers it `false` as identity would.
+fn constant_identity<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    other: Value<'gc>,
+) -> Option<bool> {
+    let identical = if receiver.is_nil() {
+        other.is_nil()
+    } else {
+        other.as_boolean() == Some(receiver.as_boolean()?)
+    };
+    // An identical argument is an immediate too, so only an unequal one
+    // can be an object.
+    if !identical
+        && other
+            .as_object()
+            .is_some_and(|object| mutator.heap().may_be_under_construction(object))
+    {
+        return None;
     }
-    receiver
-        .as_boolean()
-        .map(|receiver| other.as_boolean() == Some(receiver))
+    Some(identical)
 }
 
 /// `value` when it is an instance of a value class whose factory has not
@@ -967,6 +995,11 @@ mod tests {
     /// `escaped` answers an `Escaping` whose initializer handed it out and
     /// was then cut short by a caught signal: an instance of a value class
     /// that stays under construction for good.
+    ///
+    /// `undefinedObject`, `truth` and `falsity` answer second instances of
+    /// the constants' kernel classes, heap objects, and `myBoolean` one of a
+    /// program's subclass of `Boolean`; `large`, `negativeLarge` and
+    /// `boxedFloat` answer numbers that are objects.
     fn a_value_fixture() -> (Interpreter, Root) {
         let source = indoc! {"
             class ValueFixture = Object <: Value () (
@@ -1000,7 +1033,15 @@ mod tests {
                 class Escaping box: box = Value new (
                     | public itself = box at: 1 put: self. public never = Error signal: 'stop'. |
                 ) ()
+                class MyBoolean = Boolean new () ()
                 public pointX: xValue y: yValue = ( ^Point x: xValue y: yValue )
+                public undefinedObject = ( ^UndefinedObject new )
+                public truth = ( ^True new )
+                public falsity = ( ^False new )
+                public myBoolean = ( ^MyBoolean new )
+                public large = ( ^123456789012345678901234567890 )
+                public negativeLarge = ( ^0 - 123456789012345678901234567890 )
+                public boxedFloat = ( ^1.0e300 )
                 public lazy: xValue = ( ^Lazy x: xValue )
                 public tag = ( ^Tag new )
                 public boxed: contents = ( ^Boxed on: contents )
@@ -2431,10 +2472,22 @@ mod tests {
     /// so that `nil == anObject`, the commonest pair the leaf sees, never
     /// pays for the walk's tests: held here to what the walk itself
     /// answers for each of them against every shape of argument -- the
-    /// three constants, numbers, a string, an array, an object that is no
-    /// value, a value, a class object and an instance under construction,
-    /// which is unequal to them since their classes cannot be equal to its
-    /// own -- and to answering nothing for any other receiver.
+    /// three constants, numbers immediate and boxed -- a negative
+    /// `LargeInteger`, whose sign is the mark's bit, among them --, a
+    /// string, an array,
+    /// an object that is no value, a value, a class object, a second
+    /// instance of each constant's class, an instance of a program's
+    /// subclass of `Boolean` and instances under construction -- and to
+    /// answering nothing for any other receiver.
+    ///
+    /// The kernel's initializers of `UndefinedObject`, `True`, `False` and
+    /// `Boolean` run no program code, so a program never sees one of their
+    /// instances under construction; a debugger stopped in one can. Such
+    /// an instance is made here by setting a complete one's mark through
+    /// the heap, which is the state its factory leaves it in until it
+    /// returns. Against it the walk refuses a constant of its own class,
+    /// and the fast path leaves the pair to the walk, so `nil = it`
+    /// refuses as the walk does.
     // spec: runtime.value.equality
     // spec: semantics.value.under-construction
     #[test]
@@ -2447,6 +2500,28 @@ mod tests {
         let escaped = send(&mut interpreter, &fixture, "escaped", &[]);
         let string = a_string(&mut interpreter, "nil");
         let array = an_array(&mut interpreter);
+        let instances = ["undefinedObject", "truth", "falsity", "myBoolean"];
+        let complete = instances.map(|selector| send(&mut interpreter, &fixture, selector, &[]));
+        let marked = instances.map(|selector| send(&mut interpreter, &fixture, selector, &[]));
+        interpreter.enter(|mutator| {
+            for root in &marked {
+                let object = mutator.fetch(root).as_object().expect("a heap instance");
+                mutator.heap.mark_under_construction(object);
+            }
+        });
+        let large = send(&mut interpreter, &fixture, "large", &[]);
+        let negative_large = send(&mut interpreter, &fixture, "negativeLarge", &[]);
+        let boxed_float = send(&mut interpreter, &fixture, "boxedFloat", &[]);
+        interpreter.enter(|mutator| {
+            for number in [&large, &negative_large, &boxed_float] {
+                let number = mutator.fetch(number);
+                assert!(
+                    number.as_object().is_some(),
+                    "{} is an object",
+                    mutator.heap().describe(number)
+                );
+            }
+        });
         let mut arguments: Vec<Root> = [
             Value::nil(),
             Value::boolean(true),
@@ -2457,35 +2532,102 @@ mod tests {
         .into_iter()
         .map(|value| interpreter.stash(value))
         .collect();
-        arguments.extend([string, array, fixture, point, point_class, escaped]);
+        arguments.extend([string, array, fixture, point, point_class, escaped.clone()]);
+        arguments.extend(complete);
+        arguments.extend(marked.iter().cloned());
+        arguments.extend([large, negative_large, boxed_float]);
         interpreter.enter(|mutator| {
             for receiver in [Value::nil(), Value::boolean(true), Value::boolean(false)] {
                 for argument in &arguments {
                     let other = mutator.fetch(argument);
-                    let walked = match derived_equality(mutator, receiver, other) {
-                        Ok(Some(equal)) => equal,
-                        Ok(None) => panic!("the walk declined a constant's pair"),
-                        Err(_) => panic!("the walk refused a constant's pair"),
-                    };
-                    assert_eq!(
-                        constant_identity(receiver, other),
-                        Some(walked),
+                    let what = format!(
                         "{} = {}",
                         mutator.heap().describe(receiver),
                         mutator.heap().describe(other)
                     );
+                    let walked = derived_equality(mutator, receiver, other);
+                    match constant_identity(mutator, receiver, other) {
+                        Some(identical) => assert!(
+                            matches!(walked, Ok(Some(equal)) if equal == identical),
+                            "{what}: the walk answers otherwise"
+                        ),
+                        // Left to the walk only for an argument with the
+                        // mark's bit -- one under construction, or a
+                        // negative LargeInteger -- never for the common pair.
+                        None => assert!(
+                            other.as_object().is_some_and(|object| mutator
+                                .heap()
+                                .may_be_under_construction(object)),
+                            "{what}: left to the walk"
+                        ),
+                    }
                 }
             }
             for argument in &arguments[3..] {
                 let receiver = mutator.fetch(argument);
                 assert_eq!(
-                    constant_identity(receiver, Value::nil()),
+                    constant_identity(mutator, receiver, Value::nil()),
                     None,
                     "{} is no constant",
                     mutator.heap().describe(receiver)
                 );
             }
         });
+        // Through the whole leaf: a constant against an instance of its own
+        // class under construction refuses it, and against one of a class
+        // that cannot be equal to its own -- `escaped`, `myBoolean` --
+        // answers `false`.
+        let [marked_nil, marked_true, marked_false, marked_boolean] = marked;
+        let nil = interpreter.stash(Value::nil());
+        let truth = interpreter.stash(Value::boolean(true));
+        let falsity = interpreter.stash(Value::boolean(false));
+        for (receiver, argument, what) in [
+            (
+                &nil,
+                &marked_nil,
+                "nil = UndefinedObject new, under construction",
+            ),
+            (&truth, &marked_true, "true = True new, under construction"),
+            (
+                &falsity,
+                &marked_false,
+                "false = False new, under construction",
+            ),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                receiver,
+                std::slice::from_ref(argument),
+            );
+            let (selector, _) = refusal(&mut interpreter, compared, what);
+            assert_eq!(selector, Symbol::EQUALS, "{what}");
+        }
+        for (receiver, argument, what) in [
+            (&nil, &escaped, "nil = escaped"),
+            (
+                &truth,
+                &marked_boolean,
+                "true = MyBoolean new, under construction",
+            ),
+            (
+                &truth,
+                &marked_false,
+                "true = False new, under construction",
+            ),
+        ] {
+            let compared = leaf(
+                &mut interpreter,
+                "value:sameAs:ifFail:",
+                receiver,
+                std::slice::from_ref(argument),
+            );
+            assert_eq!(
+                answered_boolean(&mut interpreter, compared, what),
+                Some(false),
+                "{what}"
+            );
+        }
     }
 
     /// The mark is a header bit, and every mover copies or slides the

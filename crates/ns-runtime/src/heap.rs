@@ -3010,6 +3010,15 @@ impl<'gc> Heap<'gc> {
         self.set_header(instance, header.with_under_construction(true));
     }
 
+    /// Whether `object`'s header carries the bit the under-construction
+    /// mark is: `object_under_construction` without its test of the
+    /// format, so true also for a negative `LargeInteger`, whose sign the
+    /// bit is. For a test that only has to know that an object is surely
+    /// not under construction, at the cost of one bit of a header word.
+    pub(crate) fn may_be_under_construction(&self, object: ObjectReference<'gc>) -> bool {
+        self.header(object).under_construction()
+    }
+
     /// Whether `object` is an instance of a value class whose factory has
     /// not returned (§3.1.1's "have been initialized"): marked by its
     /// allocation, cleared by its factory's `CompleteInstance`, and kept

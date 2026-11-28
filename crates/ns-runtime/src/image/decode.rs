@@ -812,7 +812,7 @@ pub enum DecodeError {
     /// An `OBJECT_INSTANCE_UNDER_CONSTRUCTION` record of a class that does
     /// not inherit `Value`: only a factory of a value class marks its
     /// instance, so only a crafted image holds one, and the mark would make
-    /// an ordinary object refuse `=`, `hash` and `==` for good.
+    /// value equality and hash refuse an ordinary object for good.
     UnderConstructionOutsideValueClass,
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
     /// never writes: one that fits `i64` (which travels as an `i64`), a zero
@@ -4405,7 +4405,7 @@ fn instance_body_and_mark(body: u8) -> (u8, bool) {
 /// Every object marked under construction is an instance of a class that
 /// inherits `Value`: only a value class's factory marks its instance
 /// (`Heap::allocate_instance_with`), so only a crafted image marks another,
-/// and the mark would make that object refuse `=`, `hash` and `==` for
+/// and the mark would make value equality and hash refuse that object for
 /// good. Checked after `rebuild_applications`, since whether a program
 /// class inherits `Value` is its application's, which exists only then.
 fn check_under_construction<'gc>(

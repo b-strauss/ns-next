@@ -1792,9 +1792,11 @@ derived equality reads the second side of a pair only when the first is a
 number. Every other case goes to the tower;
 `the_float_fast_path_agrees_with_the_tower` holds the fast path to it over
 every pair of its samples. The first build of the tower lacked these and
-was measurably slower: Richards by 7.5%, since its `NoWork == packet`, with
-`NoWork` nil, goes through a value's equality, which then asked the heap of
-both sides whether each was a number; Mandelbrot by 6.3% and CD by 2.8%,
+was measurably slower: Richards by 7.5%, since a value's equality then
+asked the heap of both sides of every pair whether each was a number --
+its `NoWork == packet`, with `NoWork` nil, went through that walk then, as
+a slot holding `nil` compared with an object still does; Mandelbrot by
+6.3% and CD by 2.8%,
 since `Float`'s comparison and arithmetic called their operation through a
 function pointer, with a store-forwarding stall after the call, and a
 `Float` with a `SmallInteger` went through the whole classification.
@@ -1805,22 +1807,38 @@ Json's 1.005, within the noise (three pinned builds a side, pooled, by the
 protocol of [execution.md](execution.md), "What removing the re-entries
 moved"); Mandelbrot and NBody run about 4% faster.
 
-**`nil`, `true` and `false` are answered by identity.** Each is the one
-instance of a kernel class no other class can be equal to, and never
-under construction, so `Value>>=`'s leaf decides a pair whose receiver is
-one of them by comparing the two words, before the walk: what the walk's
-class test, or its comparison of two leaves, answers
+**`nil`, `true` and `false` are answered by identity.** Each is an
+immediate word, never under construction, of a kernel class no other
+class can be equal to. Its class has other instances -- `UndefinedObject
+new` and `True new` answer heap objects -- but the walk finds every one
+of them unequal to the immediate, its two leaves being of different
+shapes, unless it is still under construction: an argument under
+construction of a class that could be equal, as the constant's own is,
+the walk refuses. So `Value>>=`'s
+leaf decides a pair whose receiver is one of the three by comparing the
+two words, before the walk, wherever the argument is an immediate or a
+heap object whose header lacks the under-construction mark's bit; an
+argument with the bit -- a marked instance, or a negative `LargeInteger`,
+whose sign the bit is -- goes through the walk, which answers `false` or
+refuses a marked instance of a class that could be equal
 (`builtins/value.rs`, `constant_identity`, held to the walk over every
-shape of argument by
-`the_constants_are_answered_by_identity_as_the_walk_answers_them`). It
-is the commonest pair the leaf sees -- Richards' `NoWork == packet`,
-which `Value>>==` answers with `=`, 366,000 times a run. The walk is
-inlined into `builtins::execute`, the one function every leaf enters,
-and the tests it gained for a value under construction made Richards
-3% slower in each of three layouts, its machine code, inlining and exits
-unchanged; answered before the walk, the pair made Richards about 22%
-faster than before those tests (8.9 ms against 11.3 to 11.6 ms, one
-pinned build in each of the three layouts).
+shape of argument, a second instance of each constant's class complete
+and under construction included, by
+`the_constants_are_answered_by_identity_as_the_walk_answers_them`). The
+pair is the commonest the leaf sees -- Richards' `NoWork == packet`,
+which `Value>>==` answers with `=`, 366,000 times a run -- and its
+argument is a complete object, so it costs one test of a header word.
+The walk is inlined into `builtins::execute`, the one function every
+leaf enters, and the tests it gained for a value under construction made
+Richards 3% slower in each of three layouts, its machine code, inlining
+and exits unchanged; answered before the walk, the pair made Richards
+about 22% faster than before those tests (8.9 ms against 11.3 to 11.6
+ms). The test of the argument's bit, which keeps the answer the walk's
+for an argument under construction, measured 9.05 ms against 8.92 ms
+without it, within the spread of the rounds; the full test of the mark,
+its format included, measured 9.13 ms. These figures come from one
+pinned build per layout, not from the pooled protocol of
+[execution.md](execution.md).
 
 ## `ByteArray`, `StringBuilder` and the views
 

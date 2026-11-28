@@ -72,13 +72,17 @@ class off `Value` clears the mark,
 construction answers no question whose answer depends on its state, and
 a question whose answer is fixed whatever its state is answered:
 
-1. `=` and `hash` sent to it, `==` and `identityHash`, which answer as
-   `=` and `hash` do, and the question whether it is a value -- which an
-   `Ephemeron`'s `key:` and a `WeakMap`'s `at:put:` ask of a key --
-   signal.
+1. `Value`'s own `=` and `hash` -- the derived equality and hash --
+   sent to it, `==` and `identityHash`, which answer as `=` and `hash`
+   do, and the question whether it is a value -- which an `Ephemeron`'s
+   `key:` and a `WeakMap`'s `at:put:` ask of a key -- signal. A value
+   class that declares an `=` or a `hash` of its own decides for itself
+   what that method answers, and `==` and `identityHash` answer as it
+   does.
 2. `=` sent to a value with it as the argument answers `false` when the
    value's class and its class cannot be equal -- `nil = aPoint`, `true =
-   aPoint`, `3 = aPoint`, `'abc' = aPoint` -- and signals when they can.
+   aPoint`, `3 = aPoint`, `'abc' = aPoint` -- and `Value`'s own `=`
+   signals when they can.
 3. Among a value's slots, the comparison holds each pair it reaches to
    the same rule, the receiver's slot as the receiver and the argument's
    as the argument, and `hash` signals at every one it reaches.

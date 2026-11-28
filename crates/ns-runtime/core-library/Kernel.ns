@@ -2084,12 +2084,14 @@ class Kernel vmMirror: mirror = Value (
   /// An instance becomes a value when its factory returns: §3.1.1 also asks
   /// that its slots "have been initialized", and until they all are it is
   /// under construction. While it is, it answers no question whose answer
-  /// depends on its state: `=`, `hash`, `==` and `identityHash` sent to it
-  /// signal rather than answer from the slots built so far, and so does
-  /// asking whether it is a value, as `Ephemeron>>key:` and
-  /// `WeakMap>>at:put:` do. A question whose answer is fixed whatever its
-  /// state is answered: compared as the argument of an object of a class
-  /// it cannot be equal to -- `nil = aPoint`, `3 = aPoint` -- it is
+  /// depends on its state: this class's own `=` and `hash`, the derived
+  /// ones, and through them `==` and `identityHash`, signal rather than
+  /// answer from the slots built so far, and so does asking whether it is
+  /// a value, as `Ephemeron>>key:` and `WeakMap>>at:put:` do; a subclass
+  /// that declares an `=` or a `hash` of its own decides that question for
+  /// itself. A question whose answer is fixed whatever its state is
+  /// answered: compared by the derived `=` as the argument of an object of
+  /// a class it cannot be equal to -- `nil = aPoint`, `3 = aPoint` -- it is
   /// unequal to it. It may still be stored, in a slot of another
   /// value among other places, and be the enclosing object of the classes
   /// nested in it. A factory cut short -- by an unwind past it, or a signal
@@ -2129,7 +2131,8 @@ class Kernel vmMirror: mirror = Value (
   public class Value = Object () (
     /// Compares the receiver with `other` by class and slots: a value has
     /// no identity of its own. It signals itself only for an instance
-    /// still under construction, though a slot's own `=` may.
+    /// still under construction, though a slot's own `=` may; a subclass
+    /// that declares its own `=` replaces this one, refusal included.
     ///
     /// §3.1.1: a value object is globally unique, in the sense that no
     /// other object is equal to it -- so equality is derived from state,
@@ -2187,13 +2190,15 @@ class Kernel vmMirror: mirror = Value (
     /// @param other any object.
     /// @answers what `=` answers; a subclass's own `=` decides it, so it
     /// is a Boolean only where that `=` answers one.
-    /// @signals Error what `=` signals for an instance under construction:
+    /// @signals Error what `=` signals. Where `=` is `Value`'s own, the
+    /// derived equality, it signals for an instance under construction:
     /// always for the receiver, and for the receiver's side of each pair
     /// of slots the comparison reaches; for `other`, and the other side of
     /// such a pair, only where its class could be equal to the one it is
     /// compared with, an `other` of a class that cannot being unequal and
     /// answered `false`. An instance whose factory has not returned has no
-    /// identity yet.
+    /// identity yet. A value class that declares an `=` of its own decides
+    /// for itself, and its `==` signals only where that `=` does.
     /// @see `=` and `Object>>==`.
     public == other = (
       ^self = other.
