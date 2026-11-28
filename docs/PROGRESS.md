@@ -9071,8 +9071,8 @@ still under construction, …` -- so an `Ephemeron`'s `key:` and a
 `WeakMap`'s `at:put:` refuse it without a check of their own; a question
 whose answer is fixed whatever its state is answered, so `nil = aPoint`
 and `3 = aPoint` answer `false`, while a `Point` compared with it
-signals (both decided with the user on 2026-11-28); storing it and using it as an enclosing object stay
-allowed, so a value module builds its nested values and two values can
+signals (both decided with the user on 2026-11-28); storing it and
+using it as an enclosing object stay allowed, so a value module builds its nested values and two values can
 reach each other. An image carries the mark as object-body tag 17,
 `instance-under-construction`, refused for a class that does not inherit
 `Value`; the install's migration keeps it and clears it where the class
@@ -9099,8 +9099,10 @@ before the branch ([core-library.md](design/core-library.md), "`nil`,
 - `80729e35`, `1126091f` -- this entry and the open work; the
   collection test in a debug build only.
 - `c4896f47` -- the questions a value under construction answers, the
-  refusal's wording and the final review's findings; this entry's list
-  follows it.
+  refusal's wording and the final review's findings.
+- `33993efb`, `03253464` -- this entry, and the install that leaves
+  instances passing as values named next.
+- `101e5af5` -- `nil`, `true` and `false` answered by identity.
 
 What is next is in [OPEN-WORK.md](OPEN-WORK.md), "Next": an install that
 refuses to leave instances passing as values without being values, then

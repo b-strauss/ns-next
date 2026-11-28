@@ -2187,10 +2187,12 @@ class Kernel vmMirror: mirror = Value (
     /// @param other any object.
     /// @answers what `=` answers; a subclass's own `=` decides it, so it
     /// is a Boolean only where that `=` answers one.
-    /// @signals Error what `=` signals, where `=` signals for an instance
-    /// under construction -- the receiver, or an `other` or a value the
-    /// comparison reaches whose class could be equal to the one it is
-    /// compared with: an instance whose factory has not returned has no
+    /// @signals Error what `=` signals for an instance under construction:
+    /// always for the receiver, and for the receiver's side of each pair
+    /// of slots the comparison reaches; for `other`, and the other side of
+    /// such a pair, only where its class could be equal to the one it is
+    /// compared with, an `other` of a class that cannot being unequal and
+    /// answered `false`. An instance whose factory has not returned has no
     /// identity yet.
     /// @see `=` and `Object>>==`.
     public == other = (

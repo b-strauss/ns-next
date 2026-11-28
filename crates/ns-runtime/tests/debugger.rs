@@ -12770,7 +12770,7 @@ mod evaluation {
         /// hash` is refused, and the refusal is the evaluation's answer;
         /// the factory then returns, and the run hashes the complete value.
         // spec: semantics.value.under-construction
-        fn an_evaluation_comparing_a_value_under_construction_signals(lowering) {
+        fn an_evaluation_hashing_a_value_under_construction_signals(lowering) {
             let (description, answer) = stopped_at(
                 CONSTRUCTING,
                 lowering,
