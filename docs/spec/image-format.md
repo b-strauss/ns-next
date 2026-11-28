@@ -128,6 +128,7 @@ object-body      ephemeron                13
 object-body      mixin                    14
 object-body      frame                    15
 object-body      body-less-class          16
+object-body      instance-under-construction 17
 mixin-reference  row                      0
 mixin-reference  retired                  1
 mixin-reference  shipped                  2
@@ -417,6 +418,7 @@ object-body/object-body/weak-array         count:u32  element:value*count
 object-body/object-body/ephemeron          count:u32  field:value*count
 object-body/object-body/mixin              mixin:reified-mixin  side:mixin-side
 object-body/object-body/frame              frame:frame
+object-body/object-body/instance-under-construction  count:u32  field:value*count
 object-body/object-body/body-less-class    stamp:u64  record:class-record  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class
 class-record/mixin-reference
 class-record/mixin-reference/row           row:row-id  has_superclass:u8  superclass:class-reference?has_superclass  has_enclosing:u8  enclosing:value?has_enclosing  has_declaring_class:u8  declaring_class:class-reference?has_declaring_class  has_clause:u8  applying_row:row-id?has_clause  clause:u32?has_clause  named:class-reference?has_clause
@@ -729,8 +731,18 @@ r[image.verify.program-instances]
     made and as an edit migrates it. A class object is the exception: it
     is written as a class record.
 
+r[image.verify.under-construction]
+24. Only an instance of a class that inherits `Value` is written as an
+    `instance-under-construction` record: an instance of a value class
+    whose construction was cut short before the image was written
+    ([`semantics.value.under-construction`](language/semantics.md#r-semantics.value.under-construction)).
+    A load rebuilds it still under construction, so that it answers no
+    value question after the load either, and refuses the record for an
+    object of any other class. The record is laid out as an `instance`
+    record and held to every rule an instance record is held to.
+
 r[image.verify.shipped-instances]
-24. Every object of a shipped class whose layout the loading binary
+25. Every object of a shipped class whose layout the loading binary
     declares is an instance record of exactly that class's slot count.
     That is every shipped class but those whose objects are written as
     records of their own: arrays, strings, symbols, closures, classes,
@@ -742,14 +754,14 @@ r[image.verify.shipped-instances]
       `Fraction new` makes it, since a fraction is written as a value.
 
 r[image.verify.value-classes]
-25. A load does not trust the image about whether a class meets the
+26. A load does not trust the image about whether a class meets the
     value-class conditions (§3.1.1). It decides them again for every
     class the image carries, as building the class from its source
     decides them. So a value class whose enclosing objects are not all
     values refuses to be instantiated after a load, as it did before.
 
 r[image.verify.numbers]
-26. A number is written in its one canonical form:
+27. A number is written in its one canonical form:
     - A `LargeInteger` holds to
       [`bytecode.verify.large-integer`](bytecode.md#r-bytecode.verify.large-integer):
       its sign byte is 0 or 1, its value does not fit an `i64`, its most
@@ -758,7 +770,7 @@ r[image.verify.numbers]
       its denominator is greater than 1, and the two share no factor.
 
 r[image.verify.hashes]
-27. Every identity hash fits the 22 bits an object's header holds: it is
+28. Every identity hash fits the 22 bits an object's header holds: it is
     below 4,194,304. A tag-named hash is never 0, and each shipped name
     has at most one. Every class, body-less class and metaclass record's
     creation stamp is below 2^59, half the `SmallInteger` range, so that
@@ -766,10 +778,10 @@ r[image.verify.hashes]
     have the same.
 
 r[image.verify.started-image-roots]
-28. A started image has exactly one root, the application `load` starts.
+29. A started image has exactly one root, the application `load` starts.
 
 r[image.verify.mirror]
-29. No image holds the VM mirror, nor an instance of its class or of
+30. No image holds the VM mirror, nor an instance of its class or of
     `Top`, and neither class stands where a program could reach it
     ([`runtime.vm-mirror`](runtime.md#r-runtime.vm-mirror)):
     - the mirror's class has no declaration, so no shipped name names it
@@ -915,7 +927,7 @@ built included, is dropped with it
    ([`image.verify.modules`](#r-image.verify.modules),
    [`image.verify.root-rule`](#r-image.verify.root-rule)); read the
    tag-named hashes ([`image.hashes`](#r-image.hashes)); and hold the
-   graph to rules 15 to 29
+   graph to rules 15 to 30
    ([`image.shipped.positions`](#r-image.shipped.positions) to
    [`image.verify.mirror`](#r-image.verify.mirror)), each a record shows
    alone as it is read and the rest once every record exists. Refuse a

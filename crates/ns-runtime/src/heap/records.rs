@@ -81,13 +81,16 @@ pub struct NewClosure<'gc> {
 }
 
 /// The format a placeholder filled in place takes (`Heap::shape_placeholder`):
-/// an instance's, an `Array`'s, a `WeakArray`'s or an `Ephemeron`'s. The
+/// an instance's -- one still under construction among them, a value whose
+/// construction was cut short before the image was written -- an `Array`'s,
+/// a `WeakArray`'s or an `Ephemeron`'s. The
 /// image decoder allocates every record of its object table first, at the
 /// size its first pass read, so that a reference may point forward, and
 /// fills each in place afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaceholderFormat {
     Instance,
+    InstanceUnderConstruction,
     Array,
     WeakArray,
     Ephemeron,

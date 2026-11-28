@@ -140,6 +140,7 @@ fn the_books_image_tags_are_the_encoders() {
         OBJECT_EPHEMERON,
         OBJECT_MIXIN,
         OBJECT_BODY_LESS_CLASS,
+        OBJECT_INSTANCE_UNDER_CONSTRUCTION,
         MIXIN_ROW,
         MIXIN_SHIPPED,
         MIXIN_SIDE_INSTANCE,

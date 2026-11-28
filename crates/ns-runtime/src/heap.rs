@@ -3677,8 +3677,11 @@ impl<'gc> Heap<'gc> {
     /// writes them. The image decoder's second pass fills a record this way
     /// rather than building a block beside the placeholder the first pass
     /// sized, so a record costs its placeholder and nothing more while it is
-    /// read (`image::decode::decode_value` has the figures). The same
-    /// caveats as `fill_placeholder_class`'s apply.
+    /// read (`image::decode::decode_value` has the figures). An instance
+    /// under construction carries the mark its allocation set, which the
+    /// decoder holds to its class inheriting `Value` once the class's
+    /// application exists. The same caveats as `fill_placeholder_class`'s
+    /// apply.
     pub(crate) fn shape_placeholder(
         &mut self,
         object: ObjectReference<'gc>,
@@ -3686,13 +3689,19 @@ impl<'gc> Heap<'gc> {
         identity_hash: u32,
         format: PlaceholderFormat,
     ) {
+        let under_construction = format == PlaceholderFormat::InstanceUnderConstruction;
         let format = match format {
-            PlaceholderFormat::Instance => Format::FixedPointers,
+            PlaceholderFormat::Instance | PlaceholderFormat::InstanceUnderConstruction => {
+                Format::FixedPointers
+            }
             PlaceholderFormat::Array => Format::IndexablePointers,
             PlaceholderFormat::WeakArray => Format::WeakPointers,
             PlaceholderFormat::Ephemeron => Format::Ephemeron,
         };
         self.rewrite_placeholder_header(object, class, identity_hash, format, 0);
+        if under_construction {
+            self.mark_under_construction(object);
+        }
     }
 
     /// Stores `value` into field `index` of a placeholder being filled in
@@ -16221,6 +16230,7 @@ mod tests {
         let values = [Value::small_integer(7), Value::nil(), Value::object(class)];
         for format in [
             PlaceholderFormat::Instance,
+            PlaceholderFormat::InstanceUnderConstruction,
             PlaceholderFormat::Array,
             PlaceholderFormat::WeakArray,
             PlaceholderFormat::Ephemeron,
@@ -16235,8 +16245,11 @@ mod tests {
                 "a field past the placeholder is refused"
             );
             let built = match format {
-                PlaceholderFormat::Instance => {
+                PlaceholderFormat::Instance | PlaceholderFormat::InstanceUnderConstruction => {
                     let instance = heap.allocate_instance(class, values.len());
+                    if format == PlaceholderFormat::InstanceUnderConstruction {
+                        heap.mark_under_construction(instance);
+                    }
                     for (index, value) in values.iter().enumerate() {
                         assert!(heap.instance_set_field(instance, index, *value));
                     }

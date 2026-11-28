@@ -284,6 +284,7 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_EPHEMERON,
         OBJECT_MIXIN,
         OBJECT_BODY_LESS_CLASS,
+        OBJECT_INSTANCE_UNDER_CONSTRUCTION,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -294,7 +295,7 @@ fn retired_object_body_tags_are_refused() {
         .chain(RETIRED_OBJECT_BODIES.iter())
         .max()
         .map_or(0, |highest| highest + 1);
-    assert_eq!(next_free, 17);
+    assert_eq!(next_free, 18);
 }
 
 /// The graph section's tags, pinned for the same reason as the instruction
@@ -330,6 +331,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_EPHEMERON, 13);
     assert_eq!(OBJECT_MIXIN, 14);
     assert_eq!(OBJECT_BODY_LESS_CLASS, 16);
+    assert_eq!(OBJECT_INSTANCE_UNDER_CONSTRUCTION, 17);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_SHIPPED, 2);
@@ -480,6 +482,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_EPHEMERON,
             OBJECT_MIXIN,
             OBJECT_BODY_LESS_CLASS,
+            OBJECT_INSTANCE_UNDER_CONSTRUCTION,
         ],
         &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,

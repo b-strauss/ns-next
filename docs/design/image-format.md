@@ -454,10 +454,14 @@ class object, a level that is not there, an arity -- each instruction
 checks when it runs and raises an ordinary error for, never a panic
 (`interpreter/instantiate.rs`;
 `an_instantiation_instruction_a_crafted_image_runs_raises_an_error`, each
-of the five in its narrow and its wide form, through a real
-`image::load`).
+of the five but `CompleteInstance` in its narrow and its wide form, through
+a real `image::load`). `CompleteInstance` raises nothing: on an object that
+carries no mark -- a negative `LargeInteger`, whose sign shares the mark's
+header bit, among them -- it changes nothing, so a crafted body can at most
+complete an instance early
+(`a_completion_a_crafted_image_runs_on_another_object_changes_nothing`).
 
-The next free instruction number is 46. A send's `CallSite` -- its number
+The next free instruction number is 53. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see
@@ -914,6 +918,23 @@ the one thing anything asked of them was how many there were, and that is its
 body's `argument_count` — nor its home, which `Heap::closure_home` derives
 from the captured frame. That is a different record shape, so the closure
 body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the record is 6.
+
+**A value cut short keeps its mark.** An instance of a value class whose
+construction was cut short -- its initializer handed `self` out and a
+caught signal ended it -- stays under construction for good
+([object-model.md](object-model.md)), and is written as
+`OBJECT_INSTANCE_UNDER_CONSTRUCTION` (body tag 17), laid out exactly as an
+instance record (tag 0): a `u32` count and that many values (decided with
+the user on 2026-11-28). The tag, not a field, carries the mark, so every
+other record and every image already written stay as they were, and the
+encoder uses it only for a marked instance (`Heap::object_under_construction`).
+Both decoder passes read the record as an instance record, held to every
+rule one is held to; the second shapes its placeholder with the mark
+(`PlaceholderFormat::InstanceUnderConstruction`), so the loaded instance
+refuses `=`, `hash` and `==` as it did before the image was written, and
+`inspect` prints it as an `instance under construction`. Writing it as an
+ordinary instance would have made it, once loaded, a value its factory never
+finished (`an_aborted_construction_stays_under_construction_across_an_image`).
 
 **Frames are object records.** A reified frame is an object of the frame
 format, an instance of the kernel-private `Activation`
@@ -1447,6 +1468,18 @@ of an object with fewer, or an array or a string as what it is not
 ([execution.md](execution.md), "Speculation", "Own slots at fixed
 offsets"; `a_record_of_a_program_class_carries_exactly_its_layout`,
 `a_record_of_a_program_class_with_another_body_is_refused`).
+
+**Only a value class's instance is under construction**
+(`r[image.verify.under-construction]`). Only a value class's factory marks
+its instance, so an `OBJECT_INSTANCE_UNDER_CONSTRUCTION` record of any
+other class -- a program's, a shipped one's or a builtin's -- is a crafted
+image's, and the mark would make that object refuse `=`, `hash` and `==`
+for good. Whether a program class inherits `Value` is its application's,
+which exists only once the applications are rebuilt, so the check
+(`check_under_construction`) runs beside `check_program_instances`, after
+that and before any decoded code runs, over every record
+(`UnderConstructionOutsideValueClass`;
+`an_image_marking_an_instance_of_a_class_that_is_no_value_class_is_refused`).
 
 **The loader builds before the graph, and only what the binary has.** After
 the first passes and before the tenure, the loader builds the shipped modules
@@ -2405,6 +2438,12 @@ raised while assembling -- a refused factory, a resolve error, an
 initializer that raises -- fails the build with the status and report `run`
 gives the same error, so a golden whose assembly fails round-trips as that
 failure.
+
+`build` writes once the application's factory and initializers have
+returned, before `main:args:`, so every construction they started has
+finished or was cut short: an instance it writes marked under construction
+is one a caught signal cut short, and loads still marked ("A value cut short
+keeps its mark" above).
 
 **Every refusal of the writer is stated with its text** in the
 specification (`r[image.write.refusals]`, `r[image.write.limits]`), and every

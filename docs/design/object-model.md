@@ -1039,7 +1039,9 @@ factory's `CompleteInstance` once the initializer has returned normally
 ("Instantiation" above; "The header word" below); a construction cut short
 -- an unwind past it, a signal its initializer does not handle -- never
 reaches that instruction, so an instance it handed out stays marked for
-good and never becomes a value. A signal its handler resumes does not cut
+good and never becomes a value -- across an image too, which writes it
+under a body tag of its own ([image-format.md](image-format.md), "A value
+cut short keeps its mark"). A signal its handler resumes does not cut
 the construction short: the initializer goes on and the factory returns
 (`goldens/library/value/a_construction_resumed_after_a_signal_completes.ns`).
 Each factory unmarks only its own instance, so a value whose initializer

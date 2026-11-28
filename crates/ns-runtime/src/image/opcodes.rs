@@ -274,8 +274,16 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 17.
+/// Next free number: 18.
 pub const OBJECT_INSTANCE: u8 = 0;
+/// An instance of a value class whose construction was cut short -- its
+/// under-construction mark still set (`Heap::object_under_construction`):
+/// laid out exactly as `OBJECT_INSTANCE`, a `u32` count and that many
+/// values, so that only the tag carries the mark and every other record and
+/// image stays as it was. The decoder rebuilds the instance marked, and
+/// refuses the tag on an object whose class does not inherit `Value`, which
+/// only a crafted image holds.
+pub const OBJECT_INSTANCE_UNDER_CONSTRUCTION: u8 = 17;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
 pub const OBJECT_ARRAY: u8 = 3;
